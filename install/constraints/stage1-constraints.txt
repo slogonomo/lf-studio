@@ -1,0 +1,17 @@
+# Exact versions pip resolves against in install/40-stage1.sh (observed working set on a DGX Spark).
+torch==2.12.0+cu130
+torchvision==0.27.0+cu130
+triton==3.7.0
+diffusers==0.40.0
+transformers==5.15.1
+safetensors==0.8.0
+accelerate==1.0.1
+nvidia-cudnn-frontend==1.27.0
+nvidia-cutlass-dsl==4.8.0.dev0
+cuda-python==13.3.1
+apache-tvm-ffi==0.1.13.post3
+huggingface-hub==1.29.0
+av==18.1.0
+imageio==2.37.4
+imageio-ffmpeg==0.6.0
+einops==0.9.0.dev0

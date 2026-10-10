@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv*/
+
+# never commit models, generated media, run state or local settings
+*.safetensors
+*.pt
+*.ckpt
+*.mp4
+*.mov
+*.webm
+*.wav
+*.jpg
+*.png
+jobs.json
+load-times.json
+*.log
+paths-*.json
+existing-paths.json
+env
+.env
+*.bak
+*.orig
+*.rej
+
+# local scratch
+/runtime/
+/outputs/
+/checkpoints/
+/screenshots/

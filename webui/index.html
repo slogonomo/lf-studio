@@ -1,0 +1,463 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Sol-H3 Studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23d98a3a'/%3E%3Ccircle cx='12' cy='12' r='4.5' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f5f3ee;--bg2:#ece8e0;--panel:#ffffff;--panel2:#f8f6f2;--line:#e5e0d6;--line2:#d6cfc2;
+  --fg:#1d1b18;--mut:#6b655c;--faint:#9a9388;
+  --acc:#c4742a;--acc2:#e0964c;--accbg:#fbeedd;--accfg:#fff;
+  --ok:#2d7a5f;--okbg:#e2f1ea;--warn:#a35f0e;--warnbg:#fcefdc;--bad:#b3261e;--badbg:#fbe7e5;
+  --shadow:0 1px 2px rgba(40,30,15,.06),0 10px 28px rgba(40,30,15,.07);
+  --r:16px;--r2:11px;--mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0d0c0a;--bg2:#15130f;--panel:#181613;--panel2:#1f1d19;--line:#2a2823;--line2:#3a362f;
+  --fg:#eee8de;--mut:#a59d90;--faint:#6f685e;
+  --acc:#e9a04f;--acc2:#f5bb72;--accbg:#2d2316;--accfg:#1b1206;
+  --ok:#76cba8;--okbg:#14261f;--warn:#f0b45d;--warnbg:#2b2113;--bad:#f2877e;--badbg:#2e1716;
+  --shadow:0 1px 2px rgba(0,0,0,.45),0 14px 36px rgba(0,0,0,.35);
+  color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;min-height:100vh;color:var(--fg);-webkit-font-smoothing:antialiased;
+  font:14.5px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  background:radial-gradient(1100px 520px at 12% -12%,color-mix(in srgb,var(--acc) 11%,transparent),transparent 62%),
+             radial-gradient(900px 480px at 100% 0%,color-mix(in srgb,#6a7cff 5%,transparent),transparent 60%),var(--bg)}
+button,input,select,textarea{font:inherit;color:inherit}
+[hidden]{display:none!important}
+.wrap{max-width:1360px;margin:0 auto;padding:20px max(20px,env(safe-area-inset-left)) 64px}
+
+/* header */
+.top{display:flex;align-items:center;gap:16px;justify-content:space-between;flex-wrap:wrap;margin-bottom:20px}
+.brand{display:flex;align-items:center;gap:13px}
+.logo{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;flex:none;
+  background:conic-gradient(from 210deg,#8a4513,var(--acc) 30%,var(--acc2) 55%,#ffd9a3 70%,var(--acc) 85%,#8a4513);
+  box-shadow:0 0 0 1px rgba(255,255,255,.08) inset,0 6px 20px color-mix(in srgb,var(--acc) 35%,transparent)}
+.brand h1{font-size:20px;letter-spacing:-.015em;margin:0;font-weight:750}
+.brand h1 span{color:var(--acc)}
+.brand p{margin:1px 0 0;color:var(--mut);font-size:12.5px}
+.status{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:999px;
+  padding:6px 7px 6px 14px;box-shadow:var(--shadow);font-size:13px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--faint);flex:none}
+.status[data-s=ready] .dot{background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 22%,transparent)}
+.status[data-s=loading] .dot,.status[data-s=busy] .dot,.status[data-s=unloading] .dot{background:var(--warn);animation:pulse 1.3s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--warn) 22%,transparent)}}
+.status .k{color:var(--mut)}
+#loaded{font-weight:650}
+#loadtimer{font:12px var(--mono);color:var(--warn)}
+#loadtimer:empty{display:none}
+.pillbtn{border:1px solid var(--line2);background:var(--panel2);border-radius:999px;padding:4px 11px;font-size:12px;color:var(--mut);cursor:pointer}
+.pillbtn:hover{color:var(--fg);border-color:var(--bad)}
+
+/* layout */
+.layout{display:grid;grid-template-columns:minmax(0,440px) minmax(0,1fr);gap:22px;align-items:start}
+@media(max-width:920px){.layout{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.create{padding:18px 18px 16px;position:sticky;top:14px;max-height:calc(100vh - 28px);overflow:auto;scrollbar-width:thin}
+@media(max-width:920px){.create{position:static;max-height:none}}
+.sec{margin-bottom:17px}
+.lbl{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 7px;
+  font-size:11px;font-weight:750;letter-spacing:.075em;text-transform:uppercase;color:var(--mut)}
+.lbl small{font-weight:500;letter-spacing:0;text-transform:none;color:var(--faint);font-size:12px}
+.row2{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px}
+@media(max-width:420px){.row2{grid-template-columns:1fr}}
+
+/* segmented radio controls */
+.seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:3px;background:var(--bg2);border:1px solid var(--line);border-radius:13px;padding:3px}
+.seg input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.seg label{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:8px 6px;border-radius:10px;cursor:pointer;
+  color:var(--mut);font-size:12.5px;font-weight:650;text-align:center;transition:background .15s,color .15s,box-shadow .15s;min-height:38px}
+.seg label:hover{color:var(--fg)}
+.seg label svg{opacity:.75}
+.seg input:checked+label{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.14),0 0 0 1px var(--line2)}
+.seg input:checked+label svg{color:var(--acc);opacity:1}
+.seg input:focus-visible+label{outline:2px solid var(--acc);outline-offset:1px}
+.seg label small{font-weight:500;font-size:11px;color:var(--faint)}
+.aspect{display:block;border:1.8px solid currentColor;border-radius:3px}
+.len{grid-template-columns:repeat(9,minmax(0,1fr));grid-auto-flow:row}
+.len label{padding:8px 0;font-variant-numeric:tabular-nums;font-size:13px}
+
+/* drop zones (a real file input sits underneath each) */
+.drops{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center}
+.drops .arrow{color:var(--faint)}
+.drop{position:relative;border:1.5px dashed var(--line2);border-radius:var(--r2);background:var(--panel2);min-height:96px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;text-align:center;padding:10px;cursor:pointer;transition:border-color .15s,background .15s;color:var(--mut);font-size:12.5px;overflow:hidden}
+.drop:hover,.drop.over{border-color:var(--acc);background:var(--accbg);color:var(--fg)}
+.drop:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.drop input{display:none}
+.drop .thumbs{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+.drop .thumbs img,.drop .thumbs video{height:66px;max-width:130px;object-fit:cover;border-radius:7px;background:#000}
+.drop .thumbs .chipf{font-size:11.5px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:5px 8px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drop .clear{position:absolute;top:6px;right:6px;border:1px solid var(--line2);background:var(--panel);border-radius:50%;width:22px;height:22px;line-height:18px;
+  font-size:15px;color:var(--mut);cursor:pointer;display:none;padding:0}
+.drop .clear:hover{color:var(--bad)}
+.drop.has .clear{display:block}
+.drop .ph b{display:block;color:var(--fg);font-size:13px;margin-bottom:2px}
+.drop .ph svg{display:block;margin:0 auto 5px;color:var(--faint)}
+.drop.has .ph{display:none}
+.refgrid{display:grid;gap:8px}
+
+/* prompt */
+textarea{width:100%;min-height:176px;resize:vertical;border:1px solid var(--line2);border-radius:var(--r2);background:var(--panel2);padding:11px 12px;font-size:13px;line-height:1.55}
+textarea::placeholder{color:var(--faint)}
+textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--acc) 55%,transparent);outline-offset:0;border-color:transparent}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{border:1px solid var(--line2);background:transparent;border-radius:999px;padding:3px 10px;font-size:12px;color:var(--mut);cursor:pointer}
+.chip:hover{color:var(--fg);border-color:var(--acc)}
+.chip.ex{background:var(--accbg);border-color:color-mix(in srgb,var(--acc) 40%,transparent);color:var(--fg)}
+
+/* seed */
+.seedrow{display:flex;gap:8px;align-items:center}
+.seedrow input[type=number]{flex:1;min-width:0;border:1px solid var(--line2);border-radius:var(--r2);background:var(--panel2);padding:8px 10px;font:13px var(--mono)}
+.iconbtn{border:1px solid var(--line2);background:var(--panel2);border-radius:var(--r2);padding:8px 12px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap}
+.iconbtn:hover{border-color:var(--acc)}
+.iconbtn:active svg{transform:rotate(90deg)}
+.iconbtn svg{transition:transform .2s}
+.toggle{display:flex;align-items:center;gap:9px;margin-top:10px;font-size:13px;color:var(--mut);cursor:pointer;user-select:none}
+.toggle input{appearance:none;-webkit-appearance:none;margin:0;width:34px;height:20px;border-radius:999px;background:var(--line2);position:relative;cursor:pointer;transition:background .15s;flex:none}
+.toggle input::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.3)}
+.toggle input:checked{background:var(--acc)}
+.toggle input:checked::after{transform:translateX(14px)}
+.toggle input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+
+/* generate */
+#go{width:100%;border:0;border-radius:13px;padding:13px 16px;cursor:pointer;display:flex;justify-content:center;align-items:baseline;gap:7px;
+  background:linear-gradient(180deg,var(--acc2),var(--acc));color:var(--accfg);font-weight:750;font-size:15px;
+  box-shadow:0 1px 0 rgba(255,255,255,.28) inset,0 8px 22px color-mix(in srgb,var(--acc) 32%,transparent);transition:filter .15s,transform .05s}
+#go:hover{filter:brightness(1.06)}#go:active{transform:translateY(1px)}
+#go:disabled{filter:saturate(.4);cursor:progress}
+#go.reload{background:var(--panel2);color:var(--warn);box-shadow:0 0 0 1.5px color-mix(in srgb,var(--warn) 70%,transparent) inset}
+#go .eta{font-weight:500;opacity:.85;font-size:13px}
+#reloadnote{font-size:12.5px;color:var(--warn);margin-top:8px}
+#reloadnote:empty,#err:empty{display:none}
+#err{color:var(--bad);font-size:13px;margin-top:8px}
+.foot{font-size:12px;color:var(--faint);margin:14px 2px 0;line-height:1.6}
+.foot b{color:var(--mut);font-weight:600}
+
+/* gallery */
+.gallery{padding:16px 18px 18px;min-height:320px}
+.ghead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:14px}
+.ghead h2{margin:0;font-size:16px;letter-spacing:-.01em}
+.ghead span{color:var(--mut);font-size:12.5px}
+#jobs{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;align-items:start}
+.empty{grid-column:1/-1;border:1.5px dashed var(--line2);border-radius:var(--r);padding:56px 20px;text-align:center;color:var(--mut)}
+.empty b{display:block;color:var(--fg);font-size:15px;margin-bottom:4px}
+.empty svg{color:var(--acc);margin-bottom:8px}
+.job{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;display:flex;flex-direction:column;animation:rise .3s ease-out}
+.job[data-status=failed]{border-color:color-mix(in srgb,var(--bad) 35%,var(--line))}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}}
+.media{position:relative;background:#0a0908;overflow:hidden}
+.media video{position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;background:#000}
+.ph2{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#d4cabb;padding:10px;text-align:center;
+  background:radial-gradient(60% 45% at 50% 42%,rgba(233,160,79,.17),transparent 72%),linear-gradient(110deg,#11100e 20%,#1d1a16 40%,#11100e 60%);
+  background-size:100% 100%,250% 100%;animation:shimmer 3.2s linear infinite}
+@keyframes shimmer{from{background-position:0 0,100% 0}to{background-position:0 0,-150% 0}}
+.job[data-status=queued] .ph2{animation:none}
+.job[data-status=failed] .ph2{background:linear-gradient(120deg,#1c1010,#251414);animation:none}
+.ph2 .big{font:600 24px var(--mono);letter-spacing:.02em;color:#f6ead7}
+.ph2 .small{font-size:12px;color:#aea291}
+.bar{width:64%;max-width:260px;height:4px;border-radius:99px;background:rgba(255,255,255,.12);overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#e9a04f,#ffd49a);border-radius:99px;transition:width 1s linear}
+.body{padding:11px 13px 12px;display:flex;flex-direction:column;gap:7px;flex:1}
+.tags{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.tag{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--bg2);border:1px solid var(--line);color:var(--mut);font-variant-numeric:tabular-nums;white-space:nowrap}
+.st{font-weight:700;font-size:11.5px;padding:2px 9px;border-radius:999px}
+.st.ok{background:var(--okbg);color:var(--ok)}.st.wait{background:var(--warnbg);color:var(--warn)}.st.bad{background:var(--badbg);color:var(--bad)}
+.p{font-size:12.5px;color:var(--mut);white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer;word-break:break-word}
+.p.open{-webkit-line-clamp:unset;display:block}
+.info{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+.errtxt{font-size:12px;color:var(--bad);word-break:break-word}
+.errtxt:empty{display:none}
+.acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:auto;padding-top:3px}
+.act{border:1px solid var(--line2);background:var(--panel);border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--fg);text-decoration:none;display:inline-flex;align-items:center;gap:5px}
+.act:hover{border-color:var(--acc)}
+.act.pri{background:var(--accbg);border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+.seedv{font:600 12px var(--mono);color:var(--fg)}
+.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translate(-50%,16px);background:var(--fg);color:var(--bg);padding:9px 15px;border-radius:11px;
+  font-size:13px;opacity:0;transition:.2s;pointer-events:none;z-index:9;box-shadow:var(--shadow)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <div class="brand">
+    <div class="logo" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg></div>
+    <div><h1>Sol-H3 <span>Studio</span></h1><p>MiniMax H3 draft → LTX-2.5 refine · <span id="res">1344×768</span> video with sound, on one DGX Spark</p></div>
+  </div>
+  <div class="status" id="status" data-s="idle" role="status" aria-live="polite">
+    <span class="dot"></span><span><span class="k">Models</span> <span id="loaded">…</span></span><span id="loadtimer"></span>
+    <button type="button" class="pillbtn" id="unload" title="Free the GPU memory">Unload</button>
+  </div>
+</header>
+
+<div class="layout">
+<form class="panel create" id="f" autocomplete="off">
+  <div class="sec">
+    <div class="lbl">Mode</div>
+    <div class="seg" role="radiogroup" aria-label="Mode">
+      <input type="radio" name="task" id="t-t2va" value="t2va"><label for="t-t2va"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7V5h16v2M9 19h6M12 5v14"/></svg>Text<small>prompt only</small></label>
+      <input type="radio" name="task" id="t-fl2va" value="fl2va"><label for="t-fl2va"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="2.5" y="6" width="7" height="12" rx="1.5"/><rect x="14.5" y="6" width="7" height="12" rx="1.5"/><path d="M10.5 12h3" stroke-linecap="round"/></svg>Keyframes<small>first / last</small></label>
+      <input type="radio" name="task" id="t-ref2va" value="ref2va"><label for="t-ref2va"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="4" width="13" height="10" rx="1.5"/><path d="M8 18h11a2 2 0 0 0 2-2V8" stroke-linecap="round"/><circle cx="8" cy="8.5" r="1.4"/></svg>Reference<small>image · video · audio</small></label>
+    </div>
+  </div>
+
+  <div class="sec row2">
+    <div>
+      <div class="lbl">Format</div>
+      <div class="seg" role="radiogroup" aria-label="Format">
+        <input type="radio" name="orientation" id="o-landscape" value="landscape"><label for="o-landscape"><span class="aspect" style="width:30px;height:17px"></span>16:9</label>
+        <input type="radio" name="orientation" id="o-portrait" value="portrait"><label for="o-portrait"><span class="aspect" style="width:12px;height:21px"></span>9:16</label>
+      </div>
+    </div>
+    <div>
+      <div class="lbl">Length <small id="lenout"></small></div>
+      <div class="seg len" role="radiogroup" aria-label="Length in seconds">
+        <input type="radio" name="seconds" id="s3" value="3"><label for="s3">3</label>
+        <input type="radio" name="seconds" id="s4" value="4"><label for="s4">4</label>
+        <input type="radio" name="seconds" id="s5" value="5"><label for="s5">5</label>
+        <input type="radio" name="seconds" id="s6" value="6"><label for="s6">6</label>
+        <input type="radio" name="seconds" id="s7" value="7"><label for="s7">7</label>
+        <input type="radio" name="seconds" id="s8" value="8"><label for="s8">8</label>
+        <input type="radio" name="seconds" id="s10" value="10"><label for="s10">10</label>
+        <input type="radio" name="seconds" id="s12" value="12"><label for="s12">12</label>
+        <input type="radio" name="seconds" id="s15" value="15"><label for="s15">15</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec" id="fl" hidden>
+    <div class="lbl">Keyframes <small>one or both</small></div>
+    <div class="drops">
+      <div class="drop" tabindex="0" role="button" aria-label="First frame"><input type="file" name="first_frame" accept="image/*"><button type="button" class="clear" aria-label="Remove">×</button>
+        <div class="ph"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg><b>First frame</b>drop or click</div><div class="thumbs"></div></div>
+      <svg class="arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      <div class="drop" tabindex="0" role="button" aria-label="Last frame"><input type="file" name="last_frame" accept="image/*"><button type="button" class="clear" aria-label="Remove">×</button>
+        <div class="ph"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg><b>Last frame</b>drop or click</div><div class="thumbs"></div></div>
+    </div>
+  </div>
+
+  <div class="sec" id="ref" hidden>
+    <div class="lbl">References <small>tagged in upload order</small></div>
+    <div class="refgrid">
+      <div class="drop" tabindex="0" role="button" aria-label="Reference images"><input type="file" name="ref_images" accept="image/*" multiple><button type="button" class="clear" aria-label="Remove">×</button>
+        <div class="ph"><b>Images</b>&lt;Picture 1&gt;, &lt;Picture 2&gt;, … · subjects, props, places</div><div class="thumbs"></div></div>
+      <div class="drop" tabindex="0" role="button" aria-label="Reference videos"><input type="file" name="ref_videos" accept="video/*" multiple><button type="button" class="clear" aria-label="Remove">×</button>
+        <div class="ph"><b>Videos</b>&lt;Video 1&gt;, … · motion, camera, look · 2–15 s, sound included</div><div class="thumbs"></div></div>
+      <div class="drop" tabindex="0" role="button" aria-label="Reference audio"><input type="file" name="ref_audio" accept="audio/*" multiple><button type="button" class="clear" aria-label="Remove">×</button>
+        <div class="ph"><b>Audio</b>&lt;Audio 1&gt;, … · voice, music, ambience</div><div class="thumbs"></div></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="lbl"><label for="prompt" style="all:inherit">Prompt</label> <small id="hint"></small></div>
+    <textarea name="prompt" id="prompt" required spellcheck="true"></textarea>
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <div class="sec">
+    <div class="lbl"><label for="seed" style="all:inherit">Seed</label></div>
+    <div class="seedrow">
+      <input type="number" name="seed" id="seed" value="42" min="0" max="2147483647" inputmode="numeric">
+      <button type="button" class="iconbtn" id="roll" title="Pick a random seed"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><circle cx="8.5" cy="8.5" r="1.3" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/></svg>Roll</button>
+    </div>
+    <label class="toggle"><input type="checkbox" id="autoroll"> New random seed every run</label>
+  </div>
+
+  <button type="submit" id="go">Generate</button>
+  <div id="reloadnote"></div>
+  <div id="err" role="alert"></div>
+  <p class="foot">If mode, format and length match what's loaded, the clip starts right away. Changing any of them reloads the models first.
+  Times shown are <b>measured on a DGX Spark</b> with nothing else running.</p>
+</form>
+
+<section class="panel gallery" aria-label="Clips">
+  <div class="ghead"><h2>Clips</h2><span id="count"></span></div>
+  <div id="jobs"><div class="empty" id="nojobs"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="2.5" y="5" width="15" height="14" rx="2"/><path d="m17.5 10 4-2.5v9l-4-2.5"/></svg>
+    <b>No clips yet</b>Write a prompt and press Generate. The first clip also loads the models.</div></div>
+</section>
+</div>
+</div>
+<div class="toast" id="toast" aria-live="polite"></div>
+
+<script>
+// Rules: polling only changes text/attributes of existing elements - never rebuilds the form, a card
+// or a <video>, so playing clips keep playing. Changing one field never changes another. Choices persist per browser.
+const $=id=>document.getElementById(id), form=$('f');
+// Formats follow MiniMax's H3 prompt-writing guides (huggingface.co/MiniMaxAI/MiniMax-H3,
+// docs/VIDEO_PROMPT_WRITING_GUIDE_*_en.md). Example content: t2va adapted from the "mountain-lake" case of NVIDIA's
+// examples/prompts.jsonl; fl2va and ref2va adapted from the examples in NVIDIA's Sol-H3-Spark README.
+const EX={t2va:"integrated_multimodal_description: A wide aerial shot follows an eagle gliding over a turquoise alpine lake, with pine forest, a narrow waterfall and snow-covered peaks visible in the background. Its wings flex gently as it banks through the warm afternoon light. The camera maintains its distance and reveals the landscape in one continuous shot. Natural colors, realistic feathers, no cuts or text.\noverall_soundscape: Wind moving through the valley, a distant eagle call and soft waterfall noise.\nnon_diegetic_music: None.",
+fl2va:"ALIGN\nintegrated_multimodal_description: A red fox walks from the woodland edge into the clearing. The camera stays wide.\noverall_soundscape: Soft wind and leaves rustling.",
+ref2va:"subject_definitions: <Subject 1> is the person in <Picture 1>. <Audio 1> provides the voice reference.\nsummary: [reference generation] <Subject 1> stands in a garden and greets the camera.\nretention_analysis: <Subject 1>: fully_preserved - face, hair and clothing as in <Picture 1>.\ndetailed_description: [Shot 1] A static medium shot. <Subject 1> faces the camera and says, <d>[English] Welcome to the garden.</d>\noverall_soundscape: Quiet outdoor ambience.\nnon_diegetic_music: N/A"};
+// fl2va alignment line: Picture 1 = first frame at 0 s, Picture 2 = last frame at the selected length
+const alignLine=()=>`How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; Picture 2 aligns with the ${(+val('seconds')||5).toFixed(2)}-second mark.`;
+const example=t=>EX[t].replace('ALIGN',alignLine());
+const HINT={t2va:"H3 base format",fl2va:"start with the alignment line",ref2va:"H3 full-reference format"};
+const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","non_diegetic_music: N/A"],
+  fl2va:["alignment line","integrated_multimodal_description:","overall_soundscape:"],
+  ref2va:["subject_definitions:","summary: [reference generation]","retention_analysis:","detailed_description: [Shot 1]","overall_soundscape:","non_diegetic_music: N/A"]};
+// seconds per clip once the models are loaded, measured on a DGX Spark (t2va 16:9); clips over 10 s also reload the
+// prompt encoder each time
+const ETA={3:40,4:45,5:60,6:70,7:80,8:90,10:125,12:150,15:195};
+const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
+const fmtS=s=>s<90?`${Math.round(s)} s`:`${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')} min`;
+const clock=s=>{s=Math.max(0,s);return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;};
+const store={get(k,d){try{const v=localStorage.getItem('solh3.'+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem('solh3.'+k,v)}catch(e){}}};
+const val=n=>{const el=form.querySelector(`input[name="${n}"]:checked`);return el?el.value:''};
+const setRadio=(n,v)=>{const el=form.querySelector(`input[name="${n}"][value="${v}"]`);if(el)el.checked=true;return !!el;};
+const prompt=$('prompt'),seed=$('seed'),autoroll=$('autoroll');
+const keyText=k=>`${TASK[k[0]]} · ${FMT[k[1]]} · ${k[2]||5} s`;
+const RES={landscape:'1344×768',portrait:'768×1344'};
+function resUI(){setText($('res'),RES[val('orientation')]||RES.landscape);}
+// clip time: hh:mm today, otherwise with the date (and the year if it is not this year)
+function stamp(ts){const d=new Date(ts*1000),n=new Date(),t=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  if(d.toDateString()===n.toDateString())return t;
+  const o=d.getFullYear()===n.getFullYear()?{month:'short',day:'numeric'}:{year:'numeric',month:'short',day:'numeric'};
+  return `${d.toLocaleDateString([],o)}, ${t}`;}
+function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),2200);}
+
+// restore persisted choices (each field on its own)
+setRadio('task',store.get('task','t2va'))||setRadio('task','t2va');
+setRadio('orientation',store.get('orientation','landscape'))||setRadio('orientation','landscape');
+setRadio('seconds',store.get('seconds','5'))||setRadio('seconds','5');
+autoroll.checked=store.get('autoroll','0')==='1';seed.value=store.get('seed','42');prompt.value=store.get('prompt','');
+
+function modeUI(){const t=val('task');$('fl').hidden=t!=='fl2va';$('ref').hidden=t!=='ref2va';$('hint').textContent=HINT[t];prompt.placeholder=example(t);
+  const c=$('chips');c.textContent='';
+  const ex=document.createElement('button');ex.type='button';ex.className='chip ex';ex.textContent='Example';ex.title='Replace the prompt with an example';
+  ex.onclick=()=>{prompt.value=example(t);store.set('prompt',prompt.value);prompt.focus();};c.append(ex);
+  CHIPS[t].forEach(k=>{const b=document.createElement('button');b.type='button';b.className='chip';
+    b.textContent='+ '+(k==='alignment line'?'alignment line':k.replace(/:$/,'').split(':')[0]);b.title='Insert at the cursor';
+    b.onclick=()=>{const ins=k==='alignment line'?alignLine():k;const at=prompt.selectionStart??prompt.value.length;
+      const pre=prompt.value.slice(0,at),post=prompt.value.slice(at),lead=pre&&!pre.endsWith('\n')?'\n':'';
+      prompt.value=pre+lead+ins+' '+post;store.set('prompt',prompt.value);prompt.focus();const p=(pre+lead+ins+' ').length;prompt.setSelectionRange(p,p);};
+    c.append(b);});}
+form.addEventListener('change',e=>{const n=e.target.name;
+  if(n==='task'||n==='orientation'||n==='seconds'){store.set(n,val(n));if(n==='task')modeUI();
+    if(n==='seconds')prompt.placeholder=example(val('task'));if(n==='orientation')resUI();updateGo();}});
+autoroll.addEventListener('change',()=>store.set('autoroll',autoroll.checked?'1':'0'));
+seed.addEventListener('input',()=>store.set('seed',seed.value));
+prompt.addEventListener('input',()=>store.set('prompt',prompt.value));
+prompt.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();form.requestSubmit();}});
+const rnd=()=>Math.floor(Math.random()*2147483647);
+$('roll').onclick=()=>{seed.value=rnd();store.set('seed',seed.value);};
+modeUI();resUI();
+
+// drop zones: previews for what's attached; drag-and-drop fills the native input, so the form posts it as before
+document.querySelectorAll('.drop').forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs');
+  const show=()=>{th.querySelectorAll('[data-url]').forEach(el=>URL.revokeObjectURL(el.dataset.url));th.textContent='';
+    const files=[...inp.files];z.classList.toggle('has',files.length>0);
+    files.forEach(f=>{let el;const url=URL.createObjectURL(f);
+      if(f.type.startsWith('image/')){el=document.createElement('img');el.src=url;el.alt=f.name;}
+      else if(f.type.startsWith('video/')){el=document.createElement('video');el.src=url;el.muted=true;el.playsInline=true;el.loop=true;el.autoplay=true;}
+      else{el=document.createElement('span');el.className='chipf';el.textContent='♪ '+f.name;URL.revokeObjectURL(url);th.append(el);return;}
+      el.dataset.url=url;el.title=f.name;th.append(el);});};
+  z.addEventListener('click',e=>{if(!e.target.closest('.clear'))inp.click();});
+  z.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click();}});
+  z.querySelector('.clear').addEventListener('click',e=>{e.stopPropagation();inp.value='';show();});
+  inp.addEventListener('click',e=>e.stopPropagation());
+  inp.addEventListener('change',show);
+  ['dragenter','dragover'].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.add('over');}));
+  ['dragleave','drop'].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.remove('over');}));
+  z.addEventListener('drop',e=>{const want=inp.accept.split('/')[0],dt=new DataTransfer();
+    [...e.dataTransfer.files].filter(f=>f.type.startsWith(want+'/')).slice(0,inp.multiple?12:1).forEach(f=>dt.items.add(f));
+    if(!dt.files.length){toast(`That zone takes ${want} files`);return;}inp.files=dt.files;show();});
+  show();});
+
+let state={now:Date.now()/1000,session:{key:null,state:'idle',since:0},jobs:[]},skew=0;
+const now=()=>Date.now()/1000+skew;                 // server clock (the timers compare with server timestamps)
+const active=j=>j.status!=='done'&&j.status!=='failed';
+// the mode/format/length that will be loaded once everything already queued has run
+function effectiveKey(){const q=state.jobs.filter(active);
+  if(q.length){const last=q.reduce((a,b)=>a.created>b.created?a:b);return [last.task,last.orientation,last.seconds||5];}
+  return state.session.preloading?state.session.loading_key:state.session.key;}
+function updateGo(){const k=effectiveKey(),want=[val('task'),val('orientation'),+val('seconds')],go=$('go');
+  const same=!!k&&k[0]===want[0]&&k[1]===want[1]&&(k[2]||5)===want[2],eta=ETA[want[2]]||60;
+  go.classList.toggle('reload',!same);
+  const warm=same&&state.session.preloading&&!state.jobs.some(active);
+  // early in the warm-up a job for the same settings stops it and loads the models itself (server: takeover_until);
+  // a job for other settings stops it unless a queued job waits for it
+  const takeover=warm&&now()<(state.session.takeover_until||0);
+  const html=takeover?`Generate <span class="eta">· stops the warm-up, loads the models first</span>`
+    :warm?`Generate <span class="eta">· starts after the warm-up</span>`:same?`Generate <span class="eta">· ~${fmtS(eta)}</span>`:`Generate <span class="eta">· ${k?(state.session.preloading&&!state.jobs.some(active)?'stops the warm-up, loads':'reloads'):'loads'} the models first</span>`;
+  if(go.innerHTML!==html)go.innerHTML=html;
+  setText($('lenout'),`~${fmtS(eta)} per clip`);
+  const noManifest=Array.isArray(state.tasks_ready)&&!state.tasks_ready.includes(want[0]);
+  setText($('reloadnote'),noManifest?`The server has no path manifest for ${TASK[want[0]]} mode (run install/70-manifests.sh).`
+    :same||!k?'':`${state.session.preloading&&!state.jobs.some(active)?'Warming up':'Loaded'}${state.jobs.some(active)?' after the queue':''}: ${keyText(k)}. Selected: ${keyText(want)}.`);}
+
+form.addEventListener('submit',async e=>{e.preventDefault();$('err').textContent='';
+  if(!prompt.value.trim()){$('err').textContent='Write a prompt first (or press Example).';prompt.focus();return;}
+  if(autoroll.checked){seed.value=rnd();store.set('seed',seed.value);}
+  const go=$('go');go.disabled=true;
+  try{const r=await fetch('/api/generate',{method:'POST',body:new FormData(form)});const j=await r.json();
+    if(!r.ok)$('err').textContent=j.error||'failed';else toast(`Queued · seed ${seed.value}`);}
+  catch(err){$('err').textContent='Could not reach the server: '+err;}
+  go.disabled=false;poll();});
+$('unload').onclick=async()=>{const r=await fetch('/api/unload',{method:'POST'});
+  if(!r.ok)$('err').textContent=(await r.json()).error;else toast('Models unloaded');poll();};
+
+// ---- clips: one card per job, built once; afterwards only text/attributes change
+const els={};
+function card(j){const d=document.createElement('article');d.className='job';d.dataset.id=j.id;
+  const media=document.createElement('div');media.className='media';media.style.aspectRatio=j.orientation==='portrait'?'4 / 5':'16 / 9';   // portrait is pillarboxed so cards stay a sane height
+  media.innerHTML='<div class="ph2"><div class="big">0:00</div><div class="bar"><i></i></div><div class="small"></div></div>';
+  const body=document.createElement('div');body.className='body';
+  body.innerHTML=`<div class="tags"><span class="st"></span><span class="tag"></span><span class="tag"></span><span class="tag"></span></div>
+   <div class="p" title="Click to expand"></div><div class="info"></div><div class="errtxt"></div>
+   <div class="acts"><span class="tag">seed <span class="seedv"></span></span><button type="button" class="act reuse-seed" title="Put this seed in the form">Use seed</button>
+   <button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt and seed">Remix</button><span class="dl"></span></div>`;
+  const t=body.querySelectorAll('.tags .tag');t[0].textContent=TASK[j.task]||j.task;t[1].textContent=FMT[j.orientation]||j.orientation;t[2].textContent=`${j.seconds||5} s`;
+  const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
+  body.querySelector('.seedv').textContent=j.seed;
+  body.querySelector('.reuse-seed').onclick=()=>{seed.value=j.seed;store.set('seed',seed.value);autoroll.checked=false;store.set('autoroll','0');toast(`Seed ${j.seed}`);};
+  body.querySelector('.reuse-all').onclick=()=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
+    prompt.value=j.prompt;seed.value=j.seed;autoroll.checked=false;
+    [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed],['autoroll','0']].forEach(([k,v])=>store.set(k,v));
+    modeUI();updateGo();window.scrollTo({top:0,behavior:'smooth'});
+    $('err').textContent=j.task!=='t2va'?'Settings loaded - attach the image/video/audio files again.':'';toast('Settings loaded');};
+  d.append(media,body);return d;}
+function setText(el,t){if(el.textContent!==t)el.textContent=t;}
+function render(){const s=state.session,k=s.key,t=now();
+  const sState=s.state||'idle',st=$('status');if(st.dataset.s!==sState)st.dataset.s=sState;
+  setText($('loaded'),sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));
+  setText($('loadtimer'),sState==='loading'?clock(t-s.since):'');
+  $('unload').hidden=!k&&sState==='idle';
+  const box=$('jobs');if(state.jobs.length&&$('nojobs'))$('nojobs').remove();
+  const done=state.jobs.filter(j=>j.status==='done').length,run=state.jobs.filter(active).length;
+  setText($('count'),state.jobs.length?`${done} clip${done===1?'':'s'}${run?` · ${run} in progress`:''}`:'');
+  const ordered=[...state.jobs].sort((a,b)=>b.created-a.created);
+  const queue=state.jobs.filter(j=>j.status==='queued').sort((a,b)=>a.created-b.created);
+  ordered.forEach((j,i)=>{let d=els[j.id];
+    if(!d){d=els[j.id]=card(j);const prev=ordered.slice(0,i).map(x=>els[x.id]).filter(Boolean).pop();if(prev)prev.after(d);else box.prepend(d);}
+    if(d.dataset.status!==j.status)d.dataset.status=j.status;
+    const loading=/load|retry|starting/.test(j.status),cls=j.status==='done'?'ok':j.status==='failed'?'bad':'wait',stEl=d.querySelector('.st');
+    if(stEl.className!=='st '+cls)stEl.className='st '+cls;
+    setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='queued'?'Queued':loading?'Loading models':'Generating');
+    const when=stamp(j.created);
+    setText(d.querySelector('.info'),j.e2e_s?`${when} · ${j.includes_model_load?`${fmtS(j.e2e_s)} incl. model load`:j.cold_start_s?`made in ${fmtS(j.e2e_s)} · +${fmtS(j.cold_start_s)} model load`:`made in ${fmtS(j.e2e_s)}`}`:when);
+    setText(d.querySelector('.errtxt'),j.error||(j.first_error?'Recovered after: '+j.first_error:''));
+    const media=d.querySelector('.media');
+    if(j.status==='done'&&!media.dataset.done){media.dataset.done='1';            // the <video> is created exactly once
+      media.textContent='';const v=document.createElement('video');v.controls=true;v.preload='none';v.playsInline=true;
+      v.poster='/poster/'+j.id;v.src='/video/'+j.id;media.append(v);
+      const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.download=`sol-h3_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;a.textContent='Download';
+      d.querySelector('.dl').replaceWith(a);}
+    else if(!media.dataset.done){const ph=media.querySelector('.ph2'),big=ph.querySelector('.big'),small=ph.querySelector('.small'),bar=ph.querySelector('.bar');
+      if(j.status==='failed'){setText(big,'Failed');setText(small,'details below');bar.hidden=true;}
+      else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading?'starts after the warm-up':'next up');bar.hidden=true;}
+      else{bar.hidden=false;const t0=j.phase_since||j.started||j.created,el=t-t0,eta=loading?(j.load_eta||240):(ETA[j.seconds||5]||60);
+        setText(big,clock(el));
+        setText(small,loading?(j.status.startsWith('retry')?'Worker error - reloading the models':`Loading models, then your clip · last time ${fmtS(eta)}`)
+                             :`Generating · usually ~${fmtS(eta)}`);
+        const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}
+  });
+  updateGo();}
+async function poll(){try{const r=await fetch('/api/state',{cache:'no-store'});state=await r.json();if(state.now)skew=state.now-Date.now()/1000;render();}catch(e){}}
+poll();setInterval(poll,2000);setInterval(render,1000);
+</script>

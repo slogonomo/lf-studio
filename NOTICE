@@ -1,0 +1,42 @@
+sol-h3-studio
+Copyright 2026 slogonomo
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Unofficial. Not affiliated with or endorsed by NVIDIA, MiniMax or Lightricks. NVIDIA, DGX Spark and NVIDIA Sync
+are trademarks of NVIDIA Corporation; MiniMax and MiniMax H3 are trademarks of MiniMax; LTX is a trademark of
+Lightricks. The names are used only to describe what this project works with.
+
+This repository contains:
+
+- patches/sol-h3-studio.patch: modifications of NVIDIA's Sol-H3-Spark package in NVlabs/Sana
+  (https://github.com/NVlabs/Sana, branch sol-engine, models/minimax_h3/Sol-H3-Spark, and one shared module,
+  models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py). NVlabs/Sana is released by
+  NVIDIA under the Apache License, Version 2.0. Each file the patch modifies is marked "Modified by sol-h3-studio";
+  docs/PATCH.md describes every change.
+- Among the modified files, runtime/qwen_ops/media.py contains code derived from FastVideo
+  (https://github.com/hao-ai-lab/FastVideo, by Hao AI Lab), licensed under the Apache License, Version 2.0.
+- webui/index.html and bench/prompts/bench.jsonl contain example prompts taken or adapted from NVIDIA's
+  Sol-H3-Spark (README.md and examples/prompts.jsonl), Apache License, Version 2.0. The prompt formats and section
+  names in webui/index.html follow MiniMax's H3 prompt-writing guides
+  (https://huggingface.co/MiniMaxAI/MiniMax-H3, docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md and
+  docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md).
+
+Sol-H3-Spark and the Sol Video Inference Engine are by NVIDIA Research:
+  Sol Video Inference Engine: Agent-Native Full-Stack Acceleration Framework for Efficient Video Generation.
+  Yitong Li, Junsong Chen, Haopeng Li, Haozhe Liu, Jincheng Yu, Ligeng Zhu, Ping Luo, Song Han, Enze Xie.
+  arXiv:2606.23743, 2026.
+
+Not included here, obtained separately by the user, each under its own terms:
+
+- Model weights: MiniMaxAI/MiniMax-H3, FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA,
+  lightx2v/Minimax-h3-Turbo, Comfy-Org/MiniMax-H3, Lightricks/LTX-2.5, LBH-123-AI/Minimax_h3_latent_Upscaler,
+  Efficient-Large-Model/H3-to-LTX-Latent-Adapter. See README.md, "Model terms".
+- Source dependencies fetched by NVIDIA's prepare.py: FastVideo (Apache-2.0), FlashAttention (BSD-3-Clause),
+  ComfyUI (GPL-3.0), Lightricks LTX-2 (LTX-2.x Community License), the LBH-123-AI H3 latent upscaler
+  (https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler: MIT since 2026-09-17, commit 40316cf; the
+  revision NVIDIA pins, d7c01b9, has no license file, and NVIDIA's notices say no license is declared).
+- The H3 latent upscaler weights (LBH-123-AI/Minimax_h3_latent_Upscaler): the model card states Apache-2.0, in its
+  text at the revision NVIDIA pins (13ccf95) and in its metadata since 2026-09-17.
+- The Docker image built by install/60-qwen-image.sh: NVIDIA NGC PyTorch base image (NVIDIA terms) with ComfyUI
+  (GPL-3.0). qwen-image/ contains only a Dockerfile and three small stub files; do not redistribute the built image.

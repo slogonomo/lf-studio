@@ -1,0 +1,1685 @@
+sol-h3-studio patch for NVlabs/Sana, branch sol-engine, base commit 6c2f582ba9681dfe352ae4ca23b6f0030cf120cf.
+Apply from the root of a Sana checkout:  git apply /path/to/sol-h3-studio.patch
+What it changes and how to switch each part off: docs/PATCH.md in the sol-h3-studio repository.
+License: Apache-2.0 (the files it modifies are Apache-2.0 NVlabs/Sana code).
+
+diff --git a/models/minimax_h3/Sol-H3-Spark/infer.py b/models/minimax_h3/Sol-H3-Spark/infer.py
+index be0076a..ef2447e 100644
+--- a/models/minimax_h3/Sol-H3-Spark/infer.py
++++ b/models/minimax_h3/Sol-H3-Spark/infer.py
+@@ -8,6 +8,8 @@ import signal
+ 
+ from runtime.config import (TASKS, REF_IMAGE_MATCH_CHOICES, REF_STAGE1_ATTN_CHOICES,
+                             load_paths, normalize_case, read_cases)
++# Modified by sol-h3-studio: adds --orientation, --seconds and --deliver-first.
++from runtime.geometry import ORIENTATIONS
+ from runtime.pipeline import Pipeline
+ 
+ 
+@@ -27,6 +29,12 @@ def main(argv=None):
+                         help="Ref2VA only: match each image to the stage1 (default) or stage2 pixel area")
+     parser.add_argument("--ref-stage1-attn", choices=REF_STAGE1_ATTN_CHOICES,
+                         help="Ref2VA only: dense FA4 (default) or dense-first Sol-Attn; Stage2 is unchanged")
++    parser.add_argument("--orientation", choices=ORIENTATIONS, default=None,
++                        help="landscape 1344x768 (default; env SOL_H3_ORIENTATION) or portrait 768x1344")
++    parser.add_argument("--seconds", type=float, default=None,
++                        help="clip length 3-15 s (sol-h3-studio extension; default: frozen 5 s route)")
++    parser.add_argument("--deliver-first", action="store_true",
++                        help="sol-h3-studio: the model-loading pass renders the first case instead of a throwaway warmup")
+     parser.add_argument("--output-dir", type=Path, required=True, help="New directory; existing runs are never overwritten")
+     args = parser.parse_args(argv)
+     try:
+@@ -62,11 +70,16 @@ def main(argv=None):
+     signal.signal(signal.SIGTERM, interrupted)
+     signal.signal(signal.SIGINT, interrupted)
+     pipeline = Pipeline(paths, args.output_dir, task=cases[0]["task"],
+-                        ref_image_match=args.ref_image_match, ref_stage1_attn=args.ref_stage1_attn)
++                        ref_image_match=args.ref_image_match, ref_stage1_attn=args.ref_stage1_attn,
++                        orientation=args.orientation, seconds=args.seconds)
+     try:
+-        print("Loading models and running one full warmup (reported separately).", flush=True)
+-        pipeline.start(cases[0])
+-        for case in cases:
++        if args.deliver_first:   # sol-h3-studio: the loading pass renders cases[0] for real (web-UI behaviour)
++            print("Loading models; the first case doubles as the warmup.", flush=True)
++            print(json.dumps(pipeline.start(cases[0], deliver=True), ensure_ascii=False), flush=True)
++        else:
++            print("Loading models and running one full warmup (reported separately).", flush=True)
++            pipeline.start(cases[0])
++        for case in cases[1:] if args.deliver_first else cases:
+             print(json.dumps(pipeline.generate(case), ensure_ascii=False), flush=True)
+         pipeline.finish()
+         print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/config.py b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
+index 03804f7..7883b08 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/config.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
+@@ -6,6 +6,9 @@ import os
+ from pathlib import Path
+ import re
+ 
++# Modified by sol-h3-studio: portrait orientation, clip length and the persistent compile-cache location.
++from .geometry import ORIENTATIONS, orient_recipe
++
+ PACKAGE = Path(__file__).resolve().parents[1]
+ TASKS = ("t2va", "fl2va", "ref2va")
+ REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
+@@ -19,12 +22,39 @@ REQUIRED_PATHS = (
+ )
+ 
+ 
+-def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None):
++def compile_cache_root():
++    """sol-h3-studio: Inductor/Triton cache root kept across sessions; "session" restores upstream's per-session caches.
++
++    SOL_H3_COMPILE_CACHE wins. Otherwise $SOL_H3_SPARK_RUNTIME_ROOT/cache/compile when that is set,
++    else ~/.cache/sol-h3-studio/compile.
++    """
++    explicit = os.environ.get("SOL_H3_COMPILE_CACHE")
++    if explicit:
++        return explicit
++    runtime_root = os.environ.get("SOL_H3_SPARK_RUNTIME_ROOT")
++    if runtime_root:
++        return str(Path(runtime_root) / "cache" / "compile")
++    return str(Path.home() / ".cache" / "sol-h3-studio" / "compile")
++
++
++def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None, orientation=None, seconds=None):
+     recipe = json.loads((PACKAGE / "configs/default.json").read_text())
+     # This is a record of the implemented recipe, not an ablation interface.
+     canonical = json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()
+     if hashlib.sha256(canonical).hexdigest() != FROZEN_RECIPE_SHA256:
+         raise ValueError("The frozen recipe record was modified; it would not describe this implementation")
++    # sol-h3-studio: portrait is derived after the hash check, like the Ref2VA options below.
++    orientation = os.environ.get("SOL_H3_ORIENTATION", "landscape") if orientation is None else orientation
++    if orientation not in ORIENTATIONS:
++        raise ValueError(f"orientation must be one of {ORIENTATIONS}")
++    recipe = orient_recipe(recipe, orientation)
++    # sol-h3-studio: optional duration (3-15 s), derived after the hash check; None/5.17 s keeps the frozen 124 -> 121.
++    seconds = os.environ.get("SOL_H3_SECONDS") if seconds is None else seconds
++    if seconds not in (None, ""):
++        from .geometry import draft_frames_for_seconds, frame_geometry
++        frames = frame_geometry(draft_frames_for_seconds(seconds))
++        recipe["stage1"]["frames"], recipe["output"]["frames"] = frames["draft_frames"], frames["output_frames"]
++        recipe["duration_s"] = round(frames["output_frames"] / 24, 2)
+     if task not in TASKS:
+         raise ValueError(f"task must be one of {TASKS}")
+     if task != "ref2va" and (ref_image_match is not None or ref_stage1_attn is not None):
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/fastload.py b/models/minimax_h3/Sol-H3-Spark/runtime/fastload.py
+new file mode 100644
+index 0000000..578786d
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/fastload.py
+@@ -0,0 +1,275 @@
++"""sol-h3-studio: faster safetensors -> GPU weight loading on DGX Spark (GB10).
++
++Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-Spark package.
++
++On GB10 a host->GPU copy whose source is a file-backed mmap runs at ~1 GiB/s, versus ~18 GiB/s from
++anonymous RAM (measured on a DGX Spark with a warm page cache; any loader that copies straight from an
++mmap to the GPU pays this on GB10).
++`safetensors.safe_open(..., device="cuda").get_tensor()` builds the tensor on the mmap and copies it to the GPU.
++This wrapper opens the file on CPU and reads it with O_DIRECT (below); if that is unavailable it clones each
++tensor into anonymous RAM (one tensor at a time, transient), then copies it to the device. Byte-identical
++weights. Disable with SPARK_FAST_SAFETENSORS=0.
++"""
++# O_DIRECT reads (SPARK_DIRECT_IO, default 1). The NVMe streams ~11.8 GB/s with large direct reads, but the loaders
++# pull weights through mmap page faults with the default 128 KiB read-ahead (~1.3-2 GB/s), and whatever they read
++# also fills the page cache, which on GB10 competes with GPU memory. _DirectReader reads each safetensors file in
++# big aligned chunks (parallel preadv, O_DIRECT) into a few reusable anonymous windows; get_tensor() slices a window
++# and copies to the GPU. Falls back to the mmap path per file if O_DIRECT is unavailable or access is too random.
++# SPARK_DIRECT_AHEAD=0 turns off the forward read-ahead of the next window.
++
++from __future__ import annotations
++
++import json
++import mmap
++import os
++import struct
++from concurrent.futures import ThreadPoolExecutor
++
++ENABLED = os.environ.get("SPARK_FAST_SAFETENSORS", "1") == "1"
++DIRECT = os.environ.get("SPARK_DIRECT_IO", "1") == "1"
++_ALIGN = 4096
++_WINDOW = 256 * 1024 * 1024
++_READERS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="spark-direct")
++_DTYPES = None
++
++
++def _torch_dtypes():
++    global _DTYPES
++    if _DTYPES is None:
++        import torch
++        _DTYPES = {"BF16": torch.bfloat16, "F16": torch.float16, "F32": torch.float32, "F64": torch.float64,
++                   "I8": torch.int8, "U8": torch.uint8, "I16": torch.int16, "I32": torch.int32, "I64": torch.int64,
++                   "BOOL": torch.bool, "F8_E4M3": torch.float8_e4m3fn, "F8_E5M2": torch.float8_e5m2}
++    return _DTYPES
++
++
++_AHEAD = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spark-direct-ahead")
++
++
++def _ceil(n):
++    return -(-n // _ALIGN) * _ALIGN
++
++
++class _DirectReader:
++    """Chunked O_DIRECT reads of one safetensors file into up to 3 reusable page-aligned windows (LRU).
++    While the caller copies tensors out of one window, the next window is read in the background."""
++
++    def __init__(self, path, windows=3):
++        with open(path, "rb") as stream:
++            size = struct.unpack("<Q", stream.read(8))[0]
++            header = json.loads(stream.read(size))
++        header.pop("__metadata__", None)
++        self.base = 8 + size
++        self.meta = {name: (info["dtype"], info["shape"], *info["data_offsets"]) for name, info in header.items()}
++        self.file_size = os.path.getsize(path)
++        self.fd = os.open(path, os.O_RDONLY | os.O_DIRECT)
++        self.windows = []            # {"buf", "start", "end", "future"}; most recently used first
++        self.max_windows = windows
++        self.bytes_read = 0
++        self.gave_up = False
++        self.ahead = os.environ.get("SPARK_DIRECT_AHEAD", "1") == "1"
++        self.max_start = -1          # streaming frontier: read ahead only while access moves forward
++        self.front = ()              # windows to keep when a backward jump needs a window of its own
++
++    def close(self):
++        for window in self.windows:
++            self._settle(window)          # never close the fd under a background read
++        if self.fd is not None:
++            os.close(self.fd)
++            self.fd = None
++        self.windows = []
++
++    def _read_into(self, buf, begin, length):
++        view = memoryview(buf)
++        step = max(16 * 1024 * 1024, _ceil(-(-length // 4)))
++        def part(offset):
++            done, want = 0, min(step, length - offset)
++            while done < want:
++                got = os.preadv(self.fd, [view[offset + done:offset + want]], begin + offset + done)
++                if got <= 0:
++                    break
++                done += got
++            return done
++        return sum(_READERS.map(part, range(0, length, step)))
++
++    def _settle(self, window):
++        future, window["future"] = window["future"], None
++        if future is not None:
++            try:
++                total = future.result()
++            except OSError:
++                total = 0
++            window["end"] = window["start"] + total
++            self.bytes_read += total
++
++    def _plan(self, start, end):
++        begin = start // _ALIGN * _ALIGN
++        return begin, min(max(_WINDOW, _ceil(end - begin)), _ceil(self.file_size - begin))
++
++    def _buffer(self, length, keep=()):
++        buf = None
++        if len(self.windows) >= self.max_windows:
++            victim = next((w for w in reversed(self.windows) if w not in keep), None)
++            if victim is not None:
++                self._settle(victim)
++                self.windows.remove(victim)
++                buf = victim["buf"]
++        if buf is None or len(buf) < length:
++            buf = mmap.mmap(-1, max(length, _WINDOW))
++        return buf
++
++    def _fill(self, start, end, keep=()):
++        begin, length = self._plan(start, end)
++        buf = self._buffer(length, keep)
++        window = {"buf": buf, "start": begin, "end": begin, "future": None}
++        total = self._read_into(buf, begin, length)
++        window["end"] = begin + total
++        self.bytes_read += total
++        self.windows.insert(0, window)
++        if self.bytes_read > 2 * self.file_size + 2 * _WINDOW:    # random access pattern: stop, use mmap
++            self.gave_up = True
++        return window
++
++    def _read_ahead(self, window):
++        begin = window["end"]
++        if (not self.ahead or begin >= self.file_size or begin % _ALIGN
++                or any(w["start"] == begin for w in self.windows)):
++            return
++        begin, length = self._plan(begin, begin + 1)
++        buf = self._buffer(length, keep=(window,))
++        ahead = {"buf": buf, "start": begin, "end": begin + length, "future": None}   # planned until settled
++        ahead["future"] = _AHEAD.submit(self._read_into, buf, begin, length)
++        self.windows.insert(1 if self.windows and self.windows[0] is window else 0, ahead)
++
++    def _covering(self, start, end):
++        for window in self.windows:
++            if window["start"] <= start and end <= window["end"]:
++                self._settle(window)
++                if end <= window["end"]:
++                    return window
++        return None
++
++    def tensor(self, name):
++        import torch
++        dtype, shape, lo, hi = self.meta[name]
++        start, end = self.base + lo, self.base + hi
++        target = _torch_dtypes()[dtype]
++        forward = start >= self.max_start
++        self.max_start = max(self.max_start, start)
++        window = self._covering(start, end)
++        if window is None and forward:
++            # straddling two consecutive windows (the second one read ahead): join the two parts, no re-read
++            first = next((w for w in self.windows if w["start"] <= start < w["end"] and w["future"] is None), None)
++            second = next((w for w in self.windows if first is not None and w["start"] == first["end"]), None)
++            if second is not None:
++                self._settle(second)
++                if end <= second["end"]:
++                    joined = torch.empty(end - start, dtype=torch.uint8)
++                    cut = first["end"] - start
++                    joined[:cut] = torch.frombuffer(first["buf"], dtype=torch.uint8, count=cut, offset=start - first["start"])
++                    joined[cut:] = torch.frombuffer(second["buf"], dtype=torch.uint8, count=end - first["end"], offset=0)
++                    self.windows.remove(second)
++                    self.windows.insert(0, second)
++                    self._read_ahead(second)
++                    self.front = (second,) + tuple(w for w in self.windows if w["start"] == second["end"])
++                    return joined.view(target).reshape(shape)
++        if window is None:
++            window = self._fill(start, end, keep=() if forward else self.front)
++            if not (window["start"] <= start and end <= window["end"]):
++                raise OSError(f"short O_DIRECT read for {name}")
++        else:
++            self.windows.remove(window)
++            self.windows.insert(0, window)
++        if forward:
++            self._read_ahead(window)
++            self.front = (window,) + tuple(w for w in self.windows if w["start"] == window["end"])
++        raw = torch.frombuffer(window["buf"], dtype=torch.uint8, count=end - start, offset=start - window["start"])
++        if (start - window["start"]) % target.itemsize:
++            raw = raw.clone()
++        return raw.view(target).reshape(shape)
++
++
++class _FastHandle:
++    def __init__(self, inner, device, path=None):
++        self._inner, self._device = inner, device
++        self._reader = None
++        if DIRECT and path is not None:
++            try:
++                self._reader = _DirectReader(path)
++            except (OSError, ValueError, KeyError):
++                self._reader = None
++
++    def __enter__(self):
++        self._inner.__enter__()
++        return self
++
++    def __exit__(self, *exc):
++        if self._reader is not None:
++            self._reader.close()
++            self._reader = None
++        return self._inner.__exit__(*exc)
++
++    def get_tensor(self, name):
++        reader = self._reader
++        if reader is not None and not reader.gave_up and name in reader.meta:
++            try:
++                return reader.tensor(name).to(self._device)   # O_DIRECT window -> GPU (sync copy)
++            except OSError:
++                reader.gave_up = True
++        tensor = self._inner.get_tensor(name)          # CPU view on the mmap
++        return tensor.clone().to(self._device)          # anon RAM -> fast H2D
++
++    def __getattr__(self, name):                        # keys, metadata, get_slice, offset_keys, ...
++        return getattr(self._inner, name)
++
++
++def _wrap(original):
++    if getattr(original, "_spark_fast", False):
++        return original
++
++    def safe_open(filename, framework="pt", device="cpu", *args, **kwargs):
++        target = str(device)
++        if not ENABLED or framework not in ("pt", "torch") or target == "cpu":
++            return original(filename, framework=framework, device=device, *args, **kwargs)
++        return _FastHandle(original(filename, framework=framework, device="cpu", *args, **kwargs), target, filename)
++
++    safe_open._spark_fast = True
++    safe_open.__wrapped__ = original
++    return safe_open
++
++
++def load_file(filename, device="cpu"):
++    """Drop-in for safetensors.torch.load_file: O_DIRECT chunked read, tensors cloned out of the read window
++    (anonymous RAM, so a later .to("cuda") is a fast copy); mmap fallback."""
++    from safetensors.torch import load_file as original
++    if not (ENABLED and DIRECT):
++        return original(filename, device=device)
++    try:
++        reader = _DirectReader(filename)
++    except (OSError, ValueError, KeyError):
++        return original(filename, device=device)
++    try:
++        out = {}
++        for name in sorted(reader.meta, key=lambda n: reader.meta[n][2]):     # file order
++            tensor = reader.tensor(name)
++            out[name] = tensor.clone() if str(device) == "cpu" else tensor.to(device)
++        return out
++    except OSError:
++        return original(filename, device=device)
++    finally:
++        reader.close()
++
++
++def install(*modules):
++    """Replace `safe_open` in safetensors and in modules that imported it by name."""
++    if not ENABLED:
++        return []
++    import safetensors
++    patched = []
++    safetensors.safe_open = _wrap(safetensors.safe_open)
++    patched.append("safetensors.safe_open")
++    for module in modules:
++        if hasattr(module, "safe_open"):
++            module.safe_open = _wrap(module.safe_open)
++            patched.append(f"{module.__name__}.safe_open")
++    return patched
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/geometry.py b/models/minimax_h3/Sol-H3-Spark/runtime/geometry.py
+new file mode 100644
+index 0000000..11328f3
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/geometry.py
+@@ -0,0 +1,99 @@
++"""Canvas geometry derived from the recipe. Importing this module loads no GPU framework.
++
++Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-Spark package.
++
++The frozen record (configs/default.json) describes the landscape 672x384 ->
++1344x768 route. Portrait is an opt-in derived recipe with width/height (and
++the matching latent/tile axes) transposed. Durations other than the frozen 5 s
++(124 -> 121 frames) are derived the same way (draft_frames_for_seconds).
++"""
++
++ORIENTATIONS = ("landscape", "portrait")
++DRAFT_FRAMES, OUTPUT_FRAMES = 124, 121           # frozen 5 s route (default)
++H3_CHANNELS, H3_SPATIAL, H3_LATENT_FRAMES = 24, 16, 37
++LTX_CHANNELS, LTX_SPATIAL, ADAPTER_LATENT_FRAMES, REFINER_LATENT_FRAMES = 128, 32, 17, 16
++AUDIO_SAMPLES = 161333  # 121 frames at 24 fps and 32 kHz
++MAX_REFINER_VIDEO_TOKENS = 65536                  # Stage2 AttentionManager(max_tokens)
++MIN_SECONDS, MAX_SECONDS = 3.0, 15.0
++
++
++# sol-h3-studio duration extension ---------------------------------------------------------
++def draft_frames_for_seconds(seconds):
++    """H3 frame count for a duration: 24 fps snapped UP to H3's 17k+5 grid (the ComfyUI template rule)."""
++    seconds = float(seconds)
++    if not MIN_SECONDS <= seconds <= MAX_SECONDS + 0.2:
++        raise ValueError(f"duration must be between {MIN_SECONDS:g} and {MAX_SECONDS:g} seconds")
++    n = max(5, round(seconds * 24))
++    return n + (5 - n % 17) % 17
++
++
++def output_frames_for(draft_frames):
++    """LTX output: the largest 8m+1 frame count not exceeding the draft (124 -> 121, 243 -> 241)."""
++    return ((int(draft_frames) - 1) // 8) * 8 + 1
++
++
++def frame_geometry(draft_frames):
++    """Temporal shapes for one draft length, using the adapter's own alignment rules."""
++    n = int(draft_frames)
++    if n < 5 or (n - 5) % 17:
++        raise ValueError("H3 draft frames must be on the 17k+5 grid (73, 90, ..., 124, ..., 362)")
++    clip, comp, drop = 17, 4, 3                       # h3_ltx_adapter/constants.py
++    h3_latent = ((n + clip - 1) // clip) * ((clip + comp - 1) // comp) - drop
++    padded = ((n - 1 + 7) // 8) * 8 + 1
++    out = output_frames_for(n)
++    refiner = (out - 1) // 8 + 1
++    return {"draft_frames": n, "output_frames": out, "h3_latent_frames": h3_latent,
++            "adapter_latent_frames": (padded - 1) // 8 + 1, "refiner_latent_frames": refiner,
++            "audio_samples": int(out / 24 * 32000)}
++
++
++def orient_recipe(recipe, orientation="landscape"):
++    """Return the recipe for one orientation; call only after the frozen hash check."""
++    if orientation not in ORIENTATIONS:
++        raise ValueError(f"orientation must be one of {ORIENTATIONS}")
++    if orientation == "landscape":
++        return recipe
++    for section in ("stage1", "output"):
++        values = recipe[section]
++        values["width"], values["height"] = values["height"], values["width"]
++    shape = recipe["handoff"]["refiner_input_shape"]
++    shape[3], shape[4] = shape[4], shape[3]
++    tiles = recipe["stage2"]["tiles"]
++    tiles["height"], tiles["width"] = tiles["width"], tiles["height"]
++    tiles["height_overlap"], tiles["width_overlap"] = tiles["width_overlap"], tiles["height_overlap"]
++    recipe["orientation"] = orientation
++    return recipe
++
++
++def from_recipe(config=None):
++    """Derived shapes for every stage; a partial/absent config means the frozen landscape route."""
++    config = config or {}
++    stage1 = config.get("stage1", {})
++    output = config.get("output", {})
++    draft_h, draft_w = int(stage1.get("height", 384)), int(stage1.get("width", 672))
++    out_h, out_w = int(output.get("height", 768)), int(output.get("width", 1344))
++    frames = frame_geometry(stage1.get("frames", DRAFT_FRAMES))
++    if output.get("frames", OUTPUT_FRAMES) != frames["output_frames"]:
++        raise ValueError(f"output frames must be {frames['output_frames']} for a {frames['draft_frames']}-frame draft")
++    if frames["refiner_latent_frames"] * (2 * draft_h // LTX_SPATIAL) * (2 * draft_w // LTX_SPATIAL) > MAX_REFINER_VIDEO_TOKENS:
++        raise ValueError("duration exceeds the Stage2 token budget")
++    if (out_h, out_w) != (2 * draft_h, 2 * draft_w):
++        raise ValueError("the H3 x2 upscaler requires the output canvas to be exactly twice the draft")
++    if any(value % LTX_SPATIAL for value in (draft_h, draft_w)):
++        raise ValueError("draft height/width must be multiples of 32 (H3 VAE 16 x DiT patch 2)")
++    tiles = config.get("stage2", {}).get("tiles", {
++        "temporal": 128, "temporal_overlap": 24,
++        "height": 448, "height_overlap": 64, "width": 768, "width_overlap": 64})
++    return {
++        "orientation": config.get("orientation", "landscape"),
++        "draft_height": draft_h, "draft_width": draft_w, "draft_frames": frames["draft_frames"],
++        "output_height": out_h, "output_width": out_w, "output_frames": frames["output_frames"],
++        "h3": (1, H3_CHANNELS, frames["h3_latent_frames"], draft_h // H3_SPATIAL, draft_w // H3_SPATIAL),
++        "h3_upscaled": (1, H3_CHANNELS, frames["h3_latent_frames"], out_h // H3_SPATIAL, out_w // H3_SPATIAL),
++        "adapter_output": (1, LTX_CHANNELS, frames["adapter_latent_frames"], out_h // LTX_SPATIAL, out_w // LTX_SPATIAL),
++        "refiner_input": (1, LTX_CHANNELS, frames["refiner_latent_frames"], out_h // LTX_SPATIAL, out_w // LTX_SPATIAL),
++        "audio": (1, 2, frames["audio_samples"]),
++        "tiles": {"frames": {"tile_size": tiles["temporal"], "overlap": tiles["temporal_overlap"]},
++                  "height": {"tile_size": tiles["height"], "overlap": tiles["height_overlap"]},
++                  "width": {"tile_size": tiles["width"], "overlap": tiles["width_overlap"]}},
++    }
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/latent_transfer.py b/models/minimax_h3/Sol-H3-Spark/runtime/latent_transfer.py
+index d14e6f8..2aca017 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/latent_transfer.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/latent_transfer.py
+@@ -10,7 +10,9 @@ from .config import TASKS
+ 
+ H3_SHAPE = (1, 24, 37, 24, 42)
+ AUDIO_SHAPE = (1, 2, 161333)
+-MAX_PAYLOAD_BYTES = 4 * 1024**2
++# Modified by sol-h3-studio: payload cap for 15 s clips (15 s latent + PCM ~9 MB; was 4 MiB for 5 s) and
++# shape arguments for load_payload (clip length, orientation).
++MAX_PAYLOAD_BYTES = 32 * 1024**2
+ WIRE_METADATA = {
+     "input_variant": "h3_adapter", "primary_kind": "h3_normalized_latent",
+     "normalization": "released_h3_per_channel_mean_std", "generation_frames": 124,
+@@ -65,13 +67,13 @@ def load_latent_capture(directory, *, request_id=None):
+             "capture_sha256": sha256(path)}
+ 
+ 
+-def load_payload(row, *, torch_module):
++def load_payload(row, *, torch_module, h3_shape=H3_SHAPE, audio_shape=AUDIO_SHAPE):
+     torch = torch_module
+     payload = torch.load(row["payload_path"], map_location="cpu", weights_only=True)
+     if not isinstance(payload, dict) or set(payload) != {"h3_normalized", "audio"}:
+         raise ValueError("unexpected Stage1 tensor keys")
+-    for key, shape, dtype in (("h3_normalized", H3_SHAPE, torch.bfloat16),
+-                              ("audio", AUDIO_SHAPE, torch.float32)):
++    for key, shape, dtype in (("h3_normalized", tuple(h3_shape), torch.bfloat16),
++                              ("audio", tuple(audio_shape), torch.float32)):
+         value = payload[key]
+         if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
+                 or value.dtype != dtype or not bool(torch.isfinite(value).all())):
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
+index 9aad551..7facb80 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
+@@ -6,8 +6,11 @@ from pathlib import Path
+ import signal
+ import subprocess
+ import time
++# Modified by sol-h3-studio: overlapped loading, deliver-first start(), transient Qwen for long clips,
++# persistent compile caches and the mimalloc purge setting for workers.
++from concurrent.futures import ThreadPoolExecutor
+ 
+-from .config import PACKAGE, load_recipe
++from .config import PACKAGE, compile_cache_root, load_recipe
+ from .worker import write_json
+ 
+ 
+@@ -45,6 +48,20 @@ def worker_environment(name, paths):
+         env.pop("LD_LIBRARY_PATH", None)
+     elif name == "stage2":
+         env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
++    # sol-h3-studio: persistent Stage1 compile cache (default /tmp is wiped on reboot)
++    cache = compile_cache_root()
++    if name == "stage1" and cache != "session":
++        for var, part in (("TORCHINDUCTOR_CACHE_DIR", "inductor"), ("TRITON_CACHE_DIR", "triton")):
++            Path(cache, "stage1", part).mkdir(parents=True, exist_ok=True)
++            env[var] = str(Path(cache, "stage1", part))
++    # sol-h3-studio: PyTorch's aarch64 wheels allocate CPU tensors with a bundled mimalloc that, by default, never
++    # returns freed memory to the OS while the process idles (MemAvailable stays down by every transient CPU buffer:
++    # staging copies, decoded frames, ...). Purge immediately instead - on unified memory that RAM is also VRAM.
++    env.setdefault("MIMALLOC_PURGE_DELAY", "0")
++    if cache != "session" and name in ("stage1", "stage2"):
++        # sol-h3-studio: keep Triton autotune winners on disk too (sol_attn / block-sparse autotune re-ran on every cold
++        # start; measured first clip 127 -> 124 s)
++        env.setdefault("TRITON_CACHE_AUTOTUNING", "1")
+     env["PYTHONPATH"] = os.pathsep.join(roots)
+     return env
+ 
+@@ -120,15 +137,24 @@ class Pipeline:
+     """
+ 
+     def __init__(self, paths, output_root, *, task="t2va", ref_image_match=None,
+-                 ref_stage1_attn=None, worker_factory=Worker):
++                 ref_stage1_attn=None, orientation=None, seconds=None, worker_factory=Worker):
+         self.paths = paths
+         self.task = task
+         self.config = load_recipe(task, ref_image_match=ref_image_match,
+-                                  ref_stage1_attn=ref_stage1_attn)
++                                  ref_stage1_attn=ref_stage1_attn, orientation=orientation,
++                                  seconds=seconds)
+         self.root = Path(output_root).resolve()
+         self.root.mkdir(parents=True, exist_ok=False)
+         self.worker_factory = worker_factory
+         self.stage1 = self.stage2 = self.qwen = None
++        # sol-h3-studio: clips longer than 10 s don't fit with Qwen resident next to Stage1+Stage2 on one Spark
++        # (15 s hit MemAvailable 4 GiB in the Stage2 refine). Those sessions load Qwen per request instead.
++        from . import geometry as _geometry
++        self.transient_qwen = (_geometry.from_recipe(self.config)["output_frames"]
++                               > int(os.environ.get("SOL_H3_RESIDENT_QWEN_MAX_FRAMES", "241")))
++        self.started = False
++        self.qwen_loads = 0
++        self._qwen_future = None
+         self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
+                        "timing": "same-host monotonic request entry to completed muxed MP4",
+                        "warmup_excluded": True, "first_formal_request_included": True,
+@@ -138,32 +164,99 @@ class Pipeline:
+     def save(self):
+         write_json(self.root / "results.json", self.report)
+ 
+-    def start(self, case):
++    def start(self, case, deliver=False):
++        """Load every model with one full pass through the pipeline.
++
++        deliver=False: the pass is a warmup (seed 999, reported separately), as upstream.
++        deliver=True (sol-h3-studio web UI): the pass *is* the first request, so its MP4 is returned as a normal
++        row instead of being thrown away - the first clip arrives one whole generation sooner.
++        sol-h3-studio overlap (same peaks as upstream's sequential order, measured): the warmup Qwen encodes
++        while Stage1 spawns; Stage2 loads while Stage1 compiles, but only after Stage1's BF16 load and FP8
++        conversion finished; the resident Qwen loads in the background after the first MP4.
++        """
+         if case.get("task", "t2va") != self.task:
+             raise ValueError("The request task must match the pipeline's model family")
+         started = time.monotonic_ns()
+-        self.stage1 = self.worker_factory("stage1", self.root / "stage1-worker", self.paths, self.config)
+-        temporary_qwen = self.worker_factory("qwen", self.root / "warmup-qwen-worker", self.paths, self.config)
+-        warmup = dict(case, seed=999, request_id="warmup")
+-        request = self.root / "warmup"
++        pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sol-h3-spawn")
++        stage1 = pool.submit(self.worker_factory, "stage1", self.root / "stage1-worker", self.paths, self.config)
++        stage2 = None
++        pass_case = dict(case) if deliver else dict(case, seed=999, request_id="warmup")
++        request_id = case["case_id"] if deliver else "warmup"
++        request = self.root / request_id
+         request.mkdir()
++        row = {"case_id": case["case_id"], "seed": case["seed"], "task": self.task, "status": "RUNNING",
++               "request_start_monotonic_ns": started, "includes_model_load": True} if deliver else None
++        if row is not None:
++            self.report["requests"].append(row)
+         try:
+-            conditioning = temporary_qwen.call(case=warmup, output_root=str(request / "qwen"))
+-        finally:
+-            temporary_qwen.close()
+-        s1 = self.stage1.call(case=warmup, conditioning_path=conditioning["conditioning_path"],
+-                              outputdir=str(request / "stage1"))
+-        self.stage2 = self.worker_factory("stage2", self.root / "stage2-worker", self.paths, self.config)
+-        self.stage2.call("prepare", request_id="warmup", output_root=str(request / "stage2"))
+-        s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"), request_id="warmup")
+-        self.stage2.call("release_idle_cache")
+-        self.qwen = self.worker_factory("qwen", self.root / "qwen-worker", self.paths, self.config)
+-        self.report.update(status="READY", startup_and_warmup_s=(time.monotonic_ns() - started) / 1e9,
+-                           warmup={"case_id": case["case_id"], "seed": 999, "output": s2["output"]})
++            temporary_qwen = self.worker_factory("qwen", self.root / "warmup-qwen-worker", self.paths, self.config)
++            try:
++                conditioning = temporary_qwen.call(case=pass_case, output_root=str(request / "qwen"))
++            finally:
++                temporary_qwen.close()
++            self.stage1 = stage1.result()
++            response = self.stage1.submit(case=pass_case, conditioning_path=conditioning["conditioning_path"],
++                                          outputdir=str(request / "stage1"))
++            stage2 = pool.submit(self._spawn_stage2_when_stage1_resident, response)
++            s1 = self.stage1.wait(response)
++            self.stage2 = stage2.result()
++            self.stage2.call("prepare", request_id=request_id, output_root=str(request / "stage2"))
++            s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
++                                  request_id=request_id)
++            ended = s2.get("final_mp4_complete_monotonic_ns", time.monotonic_ns())
++            self.stage2.call("release_idle_cache")
++        except BaseException as error:
++            for future, attr in ((stage1, "stage1"), (stage2, "stage2")):
++                if future is not None and getattr(self, attr) is None:
++                    try:
++                        setattr(self, attr, future.result())   # joined so close() can stop it
++                    except BaseException:
++                        pass
++            if row is not None:
++                row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
++                self.save()
++            pool.shutdown(wait=False)
++            raise
++        if not self.transient_qwen:
++            self._qwen_future = pool.submit(self.worker_factory, "qwen", self.root / "qwen-worker", self.paths,
++                                            self.config)
++        pool.shutdown(wait=False)
++        self.started = True
++        self.report.update(status="READY", transient_qwen=self.transient_qwen,
++                           startup_and_warmup_s=(time.monotonic_ns() - started) / 1e9,
++                           first_request_delivered=deliver,
++                           warmup={"case_id": case["case_id"], "seed": pass_case["seed"], "output": s2["output"]})
++        if row is not None:
++            row.update(status="PASS", output=s2["output"], e2e_s=(ended - started) / 1e9,
++                       final_mp4_complete_monotonic_ns=ended, qwen_s=conditioning["request_wall_s"],
++                       stage1_s=s1["request_wall_s"], stage2_s=s2["stage2_request_s"],
++                       stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
+         self.save()
++        return row
++
++    def _spawn_stage2_when_stage1_resident(self, response, marker="Loaded deferred module transformer"):
++        """Start Stage2 once Stage1's transformer is loaded and FP8 (its BF16 peak is over)."""
++        log = self.root / "stage1-worker" / "worker.log"
++        process = getattr(self.stage1, "process", None)
++        while not Path(response).exists():
++            if process is not None and process.poll() is not None:
++                raise RuntimeError("Stage1 exited before its transformer was resident; not starting Stage2")
++            try:
++                if marker in log.read_text(errors="replace"):
++                    break
++            except OSError:
++                break                        # no log (test double): wait for the response instead
++            time.sleep(0.5)
++        return self.worker_factory("stage2", self.root / "stage2-worker", self.paths, self.config)
++
++    def _resident_qwen(self):
++        if self.qwen is None and self._qwen_future is not None:
++            future, self._qwen_future = self._qwen_future, None
++            self.qwen = future.result()
++        return self.qwen
+ 
+     def generate(self, case):
+-        if self.qwen is None:
++        if not self.started:
+             raise RuntimeError("Call start() before generate()")
+         if case.get("task", "t2va") != self.task:
+             raise ValueError("Use a separate pipeline for a different task")
+@@ -175,13 +268,22 @@ class Pipeline:
+         started = time.monotonic_ns()
+         row["request_start_monotonic_ns"] = started
+         try:
+-            self.stage2.call("release_idle_cache", qwen_resident=True)
+-            conditioning = self.qwen.call(case=case, output_root=str(request / "qwen"))
++            self.stage2.call("release_idle_cache", qwen_resident=not self.transient_qwen)
++            if self.transient_qwen:
++                self.qwen_loads += 1
++                qwen = self.worker_factory("qwen", self.root / f"qwen-worker-{self.qwen_loads}", self.paths, self.config)
++                try:
++                    conditioning = qwen.call(case=case, output_root=str(request / "qwen"))
++                finally:
++                    qwen.close()
++            else:
++                conditioning = self._resident_qwen().call(case=case, output_root=str(request / "qwen"))
+             preparation = self.stage2.submit("prepare", request_id=case["case_id"],
+                                              output_root=str(request / "stage2"))
+             s1 = self.stage1.call(case=case, conditioning_path=conditioning["conditioning_path"],
+                                   outputdir=str(request / "stage1"))
+-            self.qwen.call("release_idle_cache")
++            if self.qwen is not None:
++                self.qwen.call("release_idle_cache")
+             self.stage2.wait(preparation)
+             s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
+                                   request_id=case["case_id"])
+@@ -195,7 +297,8 @@ class Pipeline:
+                        qwen_s=conditioning["request_wall_s"], stage1_s=s1["request_wall_s"],
+                        stage2_s=s2["stage2_request_s"],
+                        stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
+-            self.qwen.call("release_idle_cache")
++            if self.qwen is not None:
++                self.qwen.call("release_idle_cache")
+         except BaseException as error:
+             row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
+             self.report["status"] = "FAIL"
+@@ -213,6 +316,11 @@ class Pipeline:
+ 
+     def close(self):
+         try:
++            if self._qwen_future is not None:
++                try:
++                    self._resident_qwen()
++                except BaseException:
++                    pass
+             if self.qwen is not None:
+                 self.qwen.close()
+         finally:
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
+index a3ba15c..dc8d5b6 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
+@@ -142,6 +142,9 @@ def load_resident_checkpoint(checkpoint, torch):
+ class Session:
+     def __init__(self, paths: dict, work_dir: str, config: dict):
+         self.reference_target_area = reference_target_area(config)
++        # Modified by sol-h3-studio: the keyframe/reference-video canvas follows the (possibly portrait) draft size.
++        stage1 = config.get('stage1', {})
++        self.canvas = (int(stage1.get('height', 384)), int(stage1.get('width', 672)))
+         checkpoint = Path(paths['qwen_checkpoint']).expanduser().resolve(strict=True)
+         comfy_root = Path(paths['comfy_root']).expanduser().resolve(strict=True)
+         self.work_dir = Path(work_dir).resolve()
+@@ -252,7 +255,8 @@ class Session:
+         try:
+             before = self.release_idle_cache()
+             torch.cuda.reset_peak_memory_stats()
+-            tokenize_kwargs, prepared_media = prepare_inputs(case, torch, target_area=self.reference_target_area)
++            tokenize_kwargs, prepared_media = prepare_inputs(case, torch, target_area=self.reference_target_area,
++                                                         canvas=getattr(self, 'canvas', (384, 672)))
+             identity = {'task': case.get('task', 't2va'), 'external_anchor_used': False,
+                 'input_conditioned': case.get('task', 't2va') != 't2va',
+                 'input_spec': input_spec(case), 'prepared_media': prepared_media}
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py
+index 39080d4..554c8de 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py
+@@ -73,19 +73,22 @@ def prepare_reference_image(image, height, width):
+     return image.resize((width, height), Image.Resampling.LANCZOS)
+ 
+ 
+-def resolve_canvas_size(aspect_width, aspect_height):
++def resolve_canvas_size(aspect_width, aspect_height, short_side=768, max_area=768 * 1344):
++    # Modified by sol-h3-studio: short_side/max_area default to H3's native canvas; sol-h3-studio passes the
++    # draft canvas for reference videos (like the default Stage1-sized reference images) - see stage1.py.
++    # prepare_reference_frames and prepare_inputs gained matching canvas arguments.
+     if aspect_width <= 0 or aspect_height <= 0:
+         raise ValueError("reference video dimensions must be positive")
+     ratio = aspect_width / aspect_height
+     if not 1 / 4 <= ratio <= 4:
+         raise ValueError("reference video aspect ratio must be between 1:4 and 4:1")
+     if ratio >= 1:
+-        width, height = 768 * ratio, 768.0
++        width, height = short_side * ratio, float(short_side)
+     else:
+-        width, height = 768.0, 768 / ratio
++        width, height = float(short_side), short_side / ratio
+     area = width * height
+-    if area > 768 * 1344:
+-        scale = (768 * 1344 / area) ** 0.5
++    if area > max_area:
++        scale = (max_area / area) ** 0.5
+         width, height = width * scale, height * scale
+     return max(32, round(height / 32) * 32), max(32, round(width / 32) * 32)
+ 
+@@ -108,12 +111,12 @@ def resample_reference_frames(frames, fps):
+     return np.repeat(frames, repeats, axis=0)
+ 
+ 
+-def prepare_reference_frames(frames, num_frames=124):
++def prepare_reference_frames(frames, num_frames=124, short_side=768, max_area=768 * 1344):
+     import numpy as np
+     from PIL import Image
+     _validate_frames(frames)
+     frames = frames[:num_frames]
+-    height, width = resolve_canvas_size(frames.shape[2], frames.shape[1])
++    height, width = resolve_canvas_size(frames.shape[2], frames.shape[1], short_side, max_area)
+     if frames.shape[1:3] == (height, width):
+         return frames
+     return np.stack([np.asarray(Image.fromarray(frame).resize(
+@@ -168,7 +171,7 @@ def decode_reference_video(path):
+     return result, float(rate), has_audio
+ 
+ 
+-def prepare_inputs(case, torch, *, target_area=None):
++def prepare_inputs(case, torch, *, target_area=None, canvas=(384, 672)):
+     """Build native ``clip.tokenize`` kwargs and JSON-safe preparation facts."""
+     task = case.get("task", "t2va")
+     if task == "t2va":
+@@ -189,10 +192,10 @@ def prepare_inputs(case, torch, *, target_area=None):
+                 continue
+             # Native FastVideo stretches the first *existing* keyframe, even
+             # when it is last-only; subsequent keyframes are center-cropped.
+-            image = prepare_keyframe_image(load_rgb(path), 384, 672, stretch=not images)
++            image = prepare_keyframe_image(load_rgb(path), *canvas, stretch=not images)
+             images.append(image_tensor(image))
+             prepared.append({"type": "image", "path": path, "anchor": anchor,
+-                             "shape": [384, 672, 3], "has_audio": False})
++                             "shape": [*canvas, 3], "has_audio": False})
+         if not images:
+             raise ValueError("fl2va requires a first or last frame")
+         return {"images": images}, prepared
+@@ -209,7 +212,8 @@ def prepare_inputs(case, torch, *, target_area=None):
+                              "shape": [height, width, 3], "has_audio": False})
+         elif kind == "video":
+             frames, fps, has_audio = decode_reference_video(path)
+-            frames = prepare_reference_frames(resample_reference_frames(frames, fps))
++            frames = prepare_reference_frames(resample_reference_frames(frames, fps),
++                                              short_side=min(canvas), max_area=canvas[0] * canvas[1])
+             indices, timestamps = reference_video_samples(len(frames))
+             if has_audio:
+                 items.append({"type": "audio"})
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
+index 3fec9da..e369272 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
+@@ -13,6 +13,9 @@ from .stage1_ops.lookup import install_exact_t2va_lookup, quantized_linear_name
+ from .stage1_ops import native, vsa, sol
+ from .stage1_ops.tasks import input_spec, native_inputs, ref_lora_alpha, task_of, validate_prepared_media
+ from .qwen_ops.media import reference_target_area, resolve_reference_image_size
++# Modified by sol-h3-studio: clip-length/orientation geometry, O_DIRECT weight loading, VAEs built on the GPU,
++# audio-VAE side-load, raised recompile limit, reference videos at the draft canvas (see "sol-h3-studio:" notes).
++from . import geometry
+ 
+ 
+ def install_reference_image_size(reference_module, target_area):
+@@ -38,12 +41,45 @@ def validate_native_attention(before, after, *, require_calls=True):
+ 
+ 
+ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+-                   reference_budget_source=None):
++                   reference_budget_source=None, latent_shape=geometry.from_recipe()["h3"],
++                   audio_samples=geometry.from_recipe()["audio"][2]):
+     import torch
+     from fastvideo.pipelines.lazy_module import is_lazy_module
+     from fastvideo.layers.lora.linear import BaseLayerWithLoRA
+     from fastvideo.layers.linear import LinearBase
+     from fastvideo.layers.quantization.fp8_config import FP8Config, FP8QuantizeMethod, convert_model_to_fp8
++    # sol-h3-studio: every new prompt length (text tokens) recompiles the fullgraph DiT regions; FastVideo caps
++    # recompiles at 16 (layers/lora/linear.py), so a long-lived web-UI session died after ~4 distinct prompt
++    # lengths ('Dynamo recompile limit exceeded'). Allow many shapes; each new length still costs ~8-10 s once.
++    import torch._dynamo
++    torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 1024)
++    torch._dynamo.config.accumulated_recompile_limit = max(torch._dynamo.config.accumulated_recompile_limit, 65536)
++    # sol-h3-studio duration extension: FastVideo validates 5.0-15.0 s, which rejects 3-4 s drafts and the 362-frame
++    # (15.08 s) grid point that ComfyUI's H3 template uses for 15 s. MiniMax's card lists 4-15 s as trained.
++    import fastvideo.pipelines.basic.minimax_h3.stages.minimax_h3_input_preparation as _h3_inputs
++    _h3_inputs.MINIMAX_H3_MIN_DURATION, _h3_inputs.MINIMAX_H3_MAX_DURATION = 3.0, 15.1
++    # sol-h3-studio: fast safetensors->GPU (O_DIRECT reads, mmap fallback). See runtime/fastload.py.
++    from . import fastload
++    import fastvideo.models.loader.weight_utils as _fv_weight_utils
++    fastload.install(_fv_weight_utils)
++    import fastvideo.pipelines.lora_pipeline as _fv_lora_pipeline
++    _fv_lora_pipeline.load_file = fastload.load_file        # 5.3 GB constructor LoRA adapter, same bytes
++    # sol-h3-studio: the video VAE (10 GB, fl2va/ref2va) and audio VAE were built on the CPU - random init of every
++    # parameter with OMP_NUM_THREADS=1 - then moved, then overwritten by a strict load_state_dict from mmap'd
++    # files: ~70 s for the video VAE. Build them on the GPU (init there is ~free; every weight is still loaded
++    # strictly from the checkpoint) and read the files with O_DIRECT.
++    import fastvideo.models.loader.component_loader as _fv_component_loader
++    _fv_component_loader.safetensors_load_file = fastload.load_file
++    if os.environ.get("SOL_H3_VAE_ON_DEVICE", "1") == "1":
++        for _loader_name in ("VAELoader", "AudioDecoderLoader"):
++            _loader_cls = getattr(_fv_component_loader, _loader_name, None)
++            if _loader_cls is None or getattr(_loader_cls.load, "_spark_on_device", False):
++                continue
++            def _load_on_device(self, *args, _original=_loader_cls.load, **kwargs):
++                with torch.device("cuda"):
++                    return _original(self, *args, **kwargs)
++            _load_on_device._spark_on_device = True
++            _loader_cls.load = _load_on_device
+     from .stage1_ops import native as control, capture, vsa, regional
+     pipe = worker.pipeline
+     state = {"task": task, "transformer_materializations": 0, "video_vae_materializations": 0,
+@@ -55,6 +91,12 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+     if task == "ref2va" and reference_area is not None:
+         from fastvideo.pipelines.basic.minimax_h3 import reference
+         install_reference_image_size(reference, reference_area)
++        # sol-h3-studio: reference VIDEOS at the draft canvas instead of H3's native 768p canvas (identical rule in
++        # qwen_ops/media.prepare_inputs). Native size added ~32k tokens per 5 s reference and made the draft ~13x slower.
++        from .qwen_ops.media import resolve_canvas_size as _canvas
++        _draft_h, _draft_w = latent_shape[3] * 16, latent_shape[4] * 16
++        reference.resolve_canvas_size = lambda w, h: _canvas(w, h, min(_draft_h, _draft_w), _draft_h * _draft_w)
++        state["reference_video_canvas"] = {"short_side": min(_draft_h, _draft_w), "max_area": _draft_h * _draft_w}
+         state["reference_image_resize"] = {"mode": "match", "pixel_budget": reference_area,
+                                            "budget_source": reference_budget_source}
+     sol_route = sol.RequestRoute(state) if attention == sol.POLICY else None
+@@ -155,6 +197,26 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+             regional.install(model, state)
+         return model
+     pipe.modules["transformer"].set_materialize_transform(quantize_after_merge)
++    # sol-h3-studio: materialize the small audio VAE on a side thread while the first denoise runs. Natively it
++    # loads lazily after the denoise, ~5.7 s on the critical path of every cold start. Joined before audio decode.
++    audio_prefetch = {}
++    audio_lazy, transformer_lazy = pipe.modules.get("audio_vae"), pipe.modules["transformer"]
++    prefetch_audio = is_lazy_module(audio_lazy) and os.environ.get("SOL_H3_AUDIO_VAE_PREFETCH", "1") == "1"
++    if prefetch_audio:
++        import threading
++        def load_audio_vae():
++            try:
++                audio_lazy.materialize()
++            except BaseException as error:           # the native lazy path retries (and raises) on first use
++                audio_prefetch["error"] = f"{type(error).__name__}: {error}"
++        def start_audio_prefetch(model):
++            # after the transformer is resident (loading both at once slowed the transformer load ~4 s)
++            if "thread" not in audio_prefetch and not audio_lazy.is_materialized:
++                audio_prefetch["thread"] = threading.Thread(target=load_audio_vae, name="audio-vae-prefetch", daemon=True)
++                audio_prefetch["thread"].start()
++            return model
++        transformer_lazy.set_materialize_transform(start_audio_prefetch)
++    state["audio_vae_prefetch"] = prefetch_audio
+     control.install_fa4_audit(worker)  # Native FA4 handles the two text-refiner blocks.
+     original_post_init = pipe.post_init
+     def post_init():
+@@ -192,7 +254,16 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+         keep = {id(pipe.modules[name]) for name in ("transformer", "vae", "audio_vae")}
+         for stage in pipe._stages:
+             stage._lazy_modules_to_release = tuple(m for m in stage._lazy_modules_to_release if id(m) not in keep)
+-        capture.install_capture(worker)
++        audio_stage = pipe._stage_name_mapping.get("audio_decoding_stage")
++        if audio_stage is not None and audio_prefetch is not None:
++            original_audio_forward = audio_stage.forward
++            def audio_forward(batch, args):
++                thread = audio_prefetch.get("thread")
++                if thread is not None and thread.is_alive():
++                    thread.join()
++                return original_audio_forward(batch, args)
++            audio_stage.forward = audio_forward
++        capture.install_capture(worker, latent_shape=latent_shape, audio_samples=audio_samples)
+         capture.arm_capture(worker, state["case"]["target"])
+         pipe.post_init = original_post_init
+     pipe.post_init = post_init
+@@ -271,6 +342,7 @@ class Session:
+         self.task = task_of(config.get("stage1", config))
+         self.attention = config.get("stage1", config).get("attention")
+         self.reference_area = reference_target_area(config)
++        self.geometry = geometry.from_recipe(config)
+         self.reference_budget_source = config.get("stage1", config).get(
+             "reference_image_resize", {}).get("budget_source")
+         if self.attention == sol.POLICY and self.task != "ref2va":
+@@ -280,8 +352,9 @@ class Session:
+         profile = self.basic.parse_args([
+             "--model-path", str(Path(paths["h3_model"]).expanduser().resolve(strict=True)),
+             "--prompt", "session", "--output", str(self.root), "--num-gpus", "1",
+-            "--execution-backend", "mp", "--height", "384", "--width", "672",
+-            "--num-frames", "124", "--steps", "5", "--lazy-module-load",
++            "--execution-backend", "mp", "--height", str(self.geometry["draft_height"]),
++            "--width", str(self.geometry["draft_width"]),
++            "--num-frames", str(self.geometry["draft_frames"]), "--steps", "5", "--lazy-module-load",
+             "--no-warmup", "--repeats", "1"])
+         if self.task == "ref2va":
+             profile.vsa = False
+@@ -325,7 +398,9 @@ class Session:
+         try:
+             self.rpc(functools.partial(install_worker, task=self.task, attention=self.attention,
+                                       reference_area=self.reference_area,
+-                                      reference_budget_source=self.reference_budget_source))
++                                      reference_budget_source=self.reference_budget_source,
++                                      latent_shape=self.geometry["h3"],
++                                      audio_samples=self.geometry["audio"][2]))
+         except BaseException:
+             self.generator.shutdown()
+             self.closed = True
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/capture.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/capture.py
+index 81e37ba..d380c78 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/capture.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/capture.py
+@@ -2,7 +2,8 @@
+ from pathlib import Path
+ from .tasks import input_spec, task_of
+ 
+-def install_capture(worker):
++# Modified by sol-h3-studio: latent shape and audio length are arguments (clip length, orientation).
++def install_capture(worker, latent_shape=(1, 24, 37, 24, 42), audio_samples=161333):
+     """Install when native lazy decode stages exist; never decode H3 video."""
+     import hashlib
+     import json
+@@ -40,7 +41,7 @@ def install_capture(worker):
+             state["condition_audio_rows"] = int(layout.num_condition_audio_rows)
+             if fastvideo_args.output_type == "latent" or fastvideo_args.video_decode_backend != "h3-vae":
+                 raise RuntimeError("native audio decode configuration drift")
+-            if tuple(batch.raw_latent_shape) != (1, 24, 37, 24, 42):
++            if tuple(batch.raw_latent_shape) != tuple(latent_shape):
+                 raise RuntimeError(f"unexpected H3 geometry: {batch.raw_latent_shape}")
+             _, channels, frames, height, width = batch.raw_latent_shape
+             native = unpatchify_video_tokens(
+@@ -60,13 +61,13 @@ def install_capture(worker):
+         target = state["target"] if rank0 else None
+         if target is not None:
+             pcm = result.extra["audio"]
+-            if pcm.ndim != 2 or pcm.shape[1] != 2 or pcm.shape[0] < 161333:
++            if pcm.ndim != 2 or pcm.shape[1] != 2 or pcm.shape[0] < audio_samples:
+                 raise RuntimeError(f"unexpected native stereo PCM: {pcm.shape}")
+             if pcm.dtype != torch.float32 or result.extra["audio_sample_rate"] != 32000:
+                 raise RuntimeError("native PCM dtype/sample rate drift")
+             native = state.pop("native_normalized")
+             video = native.to(torch.bfloat16).contiguous()
+-            audio = pcm[:161333].transpose(0, 1).unsqueeze(0).clamp(-1, 1).contiguous()
++            audio = pcm[:audio_samples].transpose(0, 1).unsqueeze(0).clamp(-1, 1).contiguous()
+             if not bool(torch.isfinite(audio).all()):
+                 raise RuntimeError("nonfinite native PCM")
+             directory = Path(target["directory"])
+@@ -94,7 +95,7 @@ def install_capture(worker):
+                                   "normalization": "released_h3_per_channel_mean_std",
+                                   "source": "original packed final latent unpatchified before VAE denormalize"},
+                 "audio": {"shape": list(audio.shape), "dtype": str(audio.dtype), "sample_rate": 32000,
+-                          "native_shape": list(pcm.shape), "temporal_trim": "first 161333 samples for 121-frame Stage2",
++                          "native_shape": list(pcm.shape), "temporal_trim": f"first {audio_samples} samples for the Stage2 output frames",
+                           "processing": "transpose TC to BCT; clamp [-1,1], original native PCM unchanged"},
+                 "native_video_shape": None,
+                 "latent_only_transfer": True,
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/vsa.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/vsa.py
+index 7f691fa..6c775e5 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/vsa.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/vsa.py
+@@ -12,7 +12,11 @@ VSA_SOURCE_SHA = "b7c6d4e470ee232b50d16d71c2b21806f414f9baa4447434b2da66c94dc0fa
+ COUNTERS = ("vsa_forward_calls", "compression_branch_calls", "block_mask_calls",
+             "triton_sparse_kernel_calls", "dense_text_calls", "cudnn_bsa_calls",
+             "warmup_reference_calls")
+-WARMUP_REFERENCE_CALLS = 200
++# Modified by sol-h3-studio: the first request checks cuDNN BSA against the original Triton kernel. Upstream checks all 200
++# selected-attention calls (each adds a Triton reference pass and two host syncs: ~30 s of every cold start on
++# Spark). Default here: the first 8 calls (layers 0-7 of the first update, same kernel, real data) - still a
++# numerical check of the actual kernel on this driver/cuDNN. SOL_H3_BSA_CHECK_CALLS=200 restores upstream.
++WARMUP_REFERENCE_CALLS = min(200, max(1, int(os.environ.get("SOL_H3_BSA_CHECK_CALLS", "8"))))
+ BSA_ATOL = BSA_RTOL = 0.03
+ 
+ 
+@@ -99,7 +103,7 @@ def validate_request(before, after):
+             or len(after["step_calls"]) != 4 or len(before["step_calls"]) != 4):
+         raise RuntimeError("official VSA counter geometry changed")
+     previous_bsa = before.get("cudnn_bsa_calls", 0)
+-    expected_reference = 200 if backend == "cudnn_bsa" and previous_bsa == 0 else 0
++    expected_reference = WARMUP_REFERENCE_CALLS if backend == "cudnn_bsa" and previous_bsa == 0 else 0
+     expected = dict(zip(COUNTERS, (200, 200, 200, 200 if backend == "triton" else 0,
+                                    2, 200 if backend == "cudnn_bsa" else 0, expected_reference)))
+     delta = {key: after.get(key, 0) - before.get(key, 0) for key in COUNTERS}
+@@ -112,7 +116,7 @@ def validate_request(before, after):
+         if (previous_bsa % 200 or audit.get("passed_calls") != WARMUP_REFERENCE_CALLS
+                 or audit.get("status") != "PASS"
+                 or after.get("warmup_reference_calls") != WARMUP_REFERENCE_CALLS):
+-            raise RuntimeError("first full warmup must validate all 200 actual BSA calls; later references forbidden")
++            raise RuntimeError(f"first full warmup must validate {WARMUP_REFERENCE_CALLS} actual BSA calls; later references forbidden")
+         order = after.get("bsa_index_order", {})
+         before_order = before.get("bsa_index_order", {})
+         match_order = order.get("match_triton_order", False)
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
+index 8f1a36c..3441bf2 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
+@@ -14,6 +14,9 @@ import os
+ from pathlib import Path
+ import time
+ 
++# Modified by sol-h3-studio: clip-length/orientation geometry, persistent compile cache, Inductor autotune-cache
++# fix, O_DIRECT weight loading and load-timing prints (see "sol-h3-studio:" notes).
++from .config import compile_cache_root
+ from .latent_transfer import (WIRE_METADATA, load_latent_capture, load_payload,
+                               sha256, validate_request_id, write_new)
+ from .prompt_cache import FIXED_PROMPT, load_cache
+@@ -22,6 +25,7 @@ from .stage2_ops.h3_upscale import (ADAPTER_OUTPUT, H3_INPUT, H3_UPSCALED,
+ from .stage2_ops.models import SIGMAS, TILES, construct, public_refiner_modules
+ from .stage2_ops.conv_direct_nhwc import installed_direct_upsample_nhwc
+ from .stage2_ops.writer_chunking import tracked_writer_chunks
++from . import geometry as canvas
+ 
+ REQUIRED_PATHS = ("transformer", "refiner_lora", "output_video_vae", "audio_vae",
+                   "adapter_dir", "h3_upscaler_source", "h3_upscaler_checkpoint", "prompt_cache")
+@@ -33,7 +37,8 @@ def _refiner_class(base, compat, session):
+     class SparkRefiner(compat.OfficialCompatRefiner):
+         def __init__(self):
+             construct(self, session.paths, torch=torch, dist=session.dist,
+-                      compile_enabled=session.compile_enabled, base=base, compat=compat)
++                      compile_enabled=session.compile_enabled, base=base, compat=compat,
++                      geometry=session.geometry)
+ 
+         def first_frame_path(self, record):
+             return None
+@@ -50,8 +55,14 @@ def _refiner_class(base, compat, session):
+             return session.prompt_cache.contexts(prompt, self.device)
+ 
+         def prepare_input(self, source_path):
++            shape = session.geometry
+             return session.payload["h3_normalized"].to(self.device), {
+-                "wire_metadata": dict(WIRE_METADATA), "transport": "same_request_H3_and_PCM",
++                "wire_metadata": dict(WIRE_METADATA, generation_frames=shape["draft_frames"],
++                                      adapter_pixel_frames=shape["draft_frames"],
++                                      padded_canvas_frames=(shape["adapter_output"][2] - 1) * 8 + 1,
++                                      emitted_frames=shape["output_frames"], pixel_height=shape["draft_height"],
++                                      pixel_width=shape["draft_width"]),
++                "transport": "same_request_H3_and_PCM",
+                 "preprocess": "normalized_h3_x2_then_adapter_crop_t16",
+                 "latent_upsampler": False}
+ 
+@@ -63,17 +74,18 @@ def _refiner_class(base, compat, session):
+                     raise RuntimeError(f"H3 bridge shape/dtype/layout contract failed: {shape}")
+                 return value
+ 
+-            checked(normalized, H3_INPUT)
++            shape = getattr(session, "geometry", None) or canvas.from_recipe()
++            checked(normalized, tuple(shape["h3"]))
+             self.h3_upscaler_calls += 1
+             highres, self._h3_upscale_s = base._timed_cuda(
+-                lambda: upscale_comfy_normalized_h3(self.h3_upscaler, normalized))
+-            checked(highres, H3_UPSCALED)
++                lambda: upscale_comfy_normalized_h3(self.h3_upscaler, normalized, shape["h3_upscaled"]))
++            checked(highres, tuple(shape["h3_upscaled"]))
+             self.adapter_convert_calls += 1
+             latent, self._h3_adapter_s = base._timed_cuda(lambda: self.h3_ltx_adapter.convert(
+-                highres, pixel_frames=124, pixel_height=768, pixel_width=1344,
+-                input_normalization="normalized"))
+-            checked(latent, ADAPTER_OUTPUT)
+-            return checked(latent[:, :, :16].contiguous(), REFINER_INPUT)
++                highres, pixel_frames=shape["draft_frames"], pixel_height=shape["output_height"],
++                pixel_width=shape["output_width"], input_normalization="normalized"))
++            checked(latent, tuple(shape["adapter_output"]))
++            return checked(latent[:, :, :shape["refiner_input"][2]].contiguous(), tuple(shape["refiner_input"]))
+ 
+         def encode_source_audio(self, source_path):
+             from ltx_core.model.audio_vae import encode_audio
+@@ -107,14 +119,17 @@ def _refiner_class(base, compat, session):
+             session.writer_chunk_receipt = {"chunk_frames": 16, "source_chunks": 0,
+                 "emitted_chunks": 0, "frames": 0, "source_layouts": [], "complete": False}
+             chunks = tracked_writer_chunks(chunks, session.writer_chunk_receipt,
+-                                           expected_dtype=torch.bfloat16)
++                                           expected_dtype=torch.bfloat16,
++                                           frame_shape=(session.geometry["output_height"],
++                                                        session.geometry["output_width"], 3),
++                                           expected_frames=session.geometry["output_frames"])
+             audio = base._normalize_audio(Audio(waveform=session.payload["audio"], sampling_rate=32000))
+             temporary = output_path.with_name(f".{output_path.stem}.partial-{os.getpid()}.mp4")
+             if temporary.exists() or output_path.exists():
+                 raise FileExistsError(output_path)
+             try:
+                 base.encode_video(video=iter(chunks), fps=24, audio=audio,
+-                    output_path=str(temporary), video_chunks_number=8,
++                    output_path=str(temporary), video_chunks_number=-(-session.geometry["output_frames"] // 16),
+                     crf=19, preset="veryfast", thread_count=8)
+                 if not temporary.is_file() or temporary.stat().st_size == 0:
+                     raise RuntimeError("video encoder produced no output")
+@@ -133,6 +148,47 @@ def _refiner_class(base, compat, session):
+     return SparkRefiner
+ 
+ 
++def _install_autotune_cache_fix(debug=False):
++    """sol-h3-studio: honour Inductor's saved coordinate-descent results for kernels loaded from the FX graph cache.
++
++    A statically launchable CachingAutotuner is pickled into the FX cache; for some kernels its compile_results
++    were already pruned to one config, and CachingAutotuner.recheck_autotune_cache (torch 2.13) re-hashes *that*
++    list, which never equals the configs_hash the result was saved under (the original candidate list). Every new
++    process therefore re-ran coordinate-descent tuning for the same 11 Stage2 kernels (~3-4 s) and re-saved the
++    same .best_config. After an upstream miss, read the entry with the kernel's own AutotuneCache (same key =
++    kernel source hash + torch version, same configs_hash that save() used), then do what upstream does on a hit.
++    """
++    from torch._inductor.runtime import triton_heuristics as th
++    original = th.CachingAutotuner.recheck_autotune_cache
++    if getattr(original, "_spark_fix", False):
++        return
++
++    def recheck(self_, reload_kernel_from_src):
++        original(self_, reload_kernel_from_src)
++        info = getattr(self_, "autotune_cache_info", None) or {}
++        cache = getattr(getattr(self_, "save_cache_hook", None), "__self__", None)
++        if info.get("autotune_cache_state") != "miss" or cache is None or not hasattr(cache, "read_best"):
++            return
++        best = cache.read_best(self_.inductor_meta, [r.config for r in self_.compile_results])
++        if best is None or not getattr(best, "found_by_coordesc", False):
++            return
++        wanted = th.triton_config_to_hashable(best)
++        match = next((r for r in self_.compile_results if th.triton_config_to_hashable(r.config) == wanted), None)
++        if match is not None:
++            match.config.found_by_coordesc = True
++            self_.compile_results = [match]
++        else:
++            if self_.fn.fn is None:
++                self_.fn = reload_kernel_from_src().fn
++            self_.compile_results = [self_._precompile_config(best)]
++        info["autotune_cache_state"] = "hit (spark fallback)"
++        if debug:
++            print(f"[sol-h3-studio] fallback hit {Path(self_.filename).name[:14]} -> {wanted}", flush=True)
++
++    recheck._spark_fix = True
++    th.CachingAutotuner.recheck_autotune_cache = recheck
++
++
+ class Session:
+     """Construct once, prepare/run sequential requests, then close the worker."""
+ 
+@@ -146,6 +202,7 @@ class Session:
+         self.final_mp4_complete_monotonic_ns = None
+         self.writer_chunk_receipt = None
+         self.timings = {}
++        self.geometry = canvas.from_recipe(config)
+         config = config.get("stage2", config)
+         self.compile_enabled = config.get("compile", True)
+         self.fixed_prompt = config.get("fixed_prompt", FIXED_PROMPT)
+@@ -159,11 +216,22 @@ class Session:
+             if not path.is_file() or not path.stat().st_size:
+                 raise FileNotFoundError(path)
+         self.work_dir = Path(work_dir).resolve()
+-        cache_root = self.work_dir / "compile"
++        # sol-h3-studio: persistent compile cache across sessions (was per-session -> Stage2 max-autotune recompiled on
++        # every cold start; measured Stage2 warm-up 121 -> 57 s with the cache). Inductor/Triton caches are keyed on
++        # graph + config + versions, so reuse is safe.
++        # SOL_H3_COMPILE_CACHE=session restores the original per-session behaviour (runtime/config.py compile_cache_root).
++        persistent = compile_cache_root()
++        cache_root = self.work_dir / "compile" if persistent == "session" else Path(persistent) / "stage2"
+         for env, part in (("TORCHINDUCTOR_CACHE_DIR", "inductor"), ("TRITON_CACHE_DIR", "triton")):
+             directory = cache_root / part
+             directory.mkdir(parents=True, exist_ok=True)
+             os.environ[env] = str(directory)
++        if os.environ.get("SPARK_AUTOTUNE_CACHE_FIX", "1") == "1":
++            _install_autotune_cache_fix(debug=os.environ.get("SPARK_DEBUG_AUTOTUNE") == "1")
++        # sol-h3-studio: fast safetensors->GPU for the LTX transformer/LoRA/VAEs (runtime/fastload.py)
++        from . import fastload
++        self.fastload_patched = fastload.install()
++        # (no page-cache prefetch here: Stage2 loads while Stage1 compiles, and a 54 GB read-ahead slowed both)
+         try:
+             self._construct()
+         except BaseException:
+@@ -185,8 +253,10 @@ class Session:
+             self._owns_dist = True
+         if dist.get_world_size() != 1:
+             raise RuntimeError("Spark requires one distributed rank")
++        print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')} dist ready (+{(time.monotonic_ns() - self.started_ns) / 1e9:.1f}s since Session init)", flush=True)
+         self.prompt_cache = load_cache(self.paths["prompt_cache"], prompt=self.fixed_prompt, torch_module=torch)
+-        base, compat = public_refiner_modules(self.ltx_root)
++        base, compat = public_refiner_modules(self.ltx_root, self.geometry)
++        print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')} refiner modules imported (+{(time.monotonic_ns() - self.started_ns) / 1e9:.1f}s)", flush=True)
+         with torch.inference_mode():
+             self.models = _refiner_class(base, compat, self)()
+         self.conv_layout_receipt = self.stack.enter_context(installed_direct_upsample_nhwc(torch_module=torch))
+@@ -231,12 +301,13 @@ class Session:
+         try:
+             row = load_latent_capture(capture_dir, request_id=request_id)
+             self.current_capture = row
+-            self.payload = load_payload(row, torch_module=self.torch)
++            self.payload = load_payload(row, torch_module=self.torch, h3_shape=self.geometry["h3"],
++                                        audio_shape=self.geometry["audio"])
+             receipt.update(case_id=row["case_id"], capture=row)
+             models = self.models
+             before = models.h3_upscaler_calls, models.adapter_convert_calls, self.prompt_cache.context_calls
+             layout_before = self.conv_layout_receipt["calls"]
+-            output = root / "refined_1344x768_121f.mp4"
++            output = root / f"refined_{self.geometry['output_width']}x{self.geometry['output_height']}_{self.geometry['output_frames']}f.mp4"
+             record = {"prompt_id": row["case_id"], "prompt": self.fixed_prompt, "seed": row["seed"],
+                       "source_index": row["source_index"], "index": 0, "_source_path": "/dev/null"}
+             with self.torch.inference_mode():
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/h3_upscale.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/h3_upscale.py
+index 4e6e910..47a0c62 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/h3_upscale.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/h3_upscale.py
+@@ -111,7 +111,8 @@ def load_upscaler(source_path, checkpoint_path, *, device, torch_module):
+     return model, route
+ 
+ 
+-def upscale_comfy_normalized_h3(model, normalized):
++# Modified by sol-h3-studio: target_shape argument (clip length, orientation).
++def upscale_comfy_normalized_h3(model, normalized, target_shape=H3_UPSCALED):
+     """Match the author node around a normalized Comfy H3 LATENT.
+ 
+     Comfy H3 VAEEncode already returns normalized H3. The author's node still
+@@ -121,6 +122,6 @@ def upscale_comfy_normalized_h3(model, normalized):
+     mean, std = model.comfy_latents_mean, model.comfy_latents_std
+     samples = normalized.to(device=mean.device, dtype=mean.dtype, copy=True)
+     network_input = (samples - mean) / std
+-    output = model(network_input, scale=2.0, target_size=H3_UPSCALED[2:], enable_chunking=True)
++    output = model(network_input, scale=2.0, target_size=tuple(target_shape[2:]), enable_chunking=True)
+     output = output * std + mean
+     return output.to(dtype=normalized.dtype)
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
+index dafe5ee..9513659 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
+@@ -7,6 +7,8 @@ pixel-input VAE, LTX upsampler and preview-decoder models.
+ from __future__ import annotations
+ 
+ from collections import Counter
++# Modified by sol-h3-studio: geometry arguments (clip length, orientation) and load-timing prints.
++import time
+ import gc
+ import importlib
+ import os
+@@ -22,7 +24,7 @@ TILES = {"frames": {"tile_size": 128, "overlap": 24},
+          "width": {"tile_size": 768, "overlap": 64}}
+ 
+ 
+-def public_refiner_modules(ltx_root):
++def public_refiner_modules(ltx_root, geometry=None):
+     ltx_root = Path(ltx_root).resolve(strict=True)
+     for package in ("ltx-core", "ltx-pipelines", "ltx-kernels"):
+         source = ltx_root / "packages" / package / "src"
+@@ -34,17 +36,27 @@ def public_refiner_modules(ltx_root):
+     for path in (model_root / "super_acceleration/stage2", model_root.parents[1]):
+         if str(path) not in sys.path:
+             sys.path.insert(0, str(path))
+-    os.environ["H3_LTX_SOURCE_FRAMES"] = "124"
+-    os.environ["H3_LTX_OUTPUT_FRAMES"] = "121"
++    # sol-h3-studio: the shared module reads these at import (once per Stage2 worker process = per session)
++    os.environ["H3_LTX_SOURCE_FRAMES"] = str(geometry["draft_frames"] if geometry else 124)
++    os.environ["H3_LTX_OUTPUT_FRAMES"] = str(geometry["output_frames"] if geometry else 121)
+     os.environ["SOL_ATTN_STRICT"] = "1"
+     base = importlib.import_module("refiner_encoder_ablation_single_gpu")
+     compat = importlib.import_module("official_compat_h3_refiner_diagnostic")
+-    if (base.FRAME_COUNT, base.WIDTH, base.HEIGHT, tuple(base.STAGE2_SIGMAS)) != (121, 1344, 768, SIGMAS):
++    want_frames = geometry["output_frames"] if geometry else 121
++    if (base.FRAME_COUNT, base.WIDTH, base.HEIGHT, tuple(base.STAGE2_SIGMAS)) != (want_frames, 1344, 768, SIGMAS):
+         raise RuntimeError("public Refiner geometry or sigma contract changed")
++    if geometry is not None and geometry["orientation"] != "landscape":
++        # The shared modules read these globals at call time (pixel shapes,
++        # decoder chunk and output-metadata checks). Token count is unchanged.
++        height, width = geometry["output_height"], geometry["output_width"]
++        latent = tuple(geometry["refiner_input"])
++        if latent[2] * latent[3] * latent[4] != base.EXPECTED_VIDEO_TOKENS:
++            raise RuntimeError("derived orientation changes the Stage2 token budget")
++        base.WIDTH, base.HEIGHT, base.TARGET_LATENT_SHAPE = width, height, latent
+     return base, compat
+ 
+ 
+-def construct(models, paths, *, torch, dist, compile_enabled, base, compat):
++def construct(models, paths, *, torch, dist, compile_enabled, base, compat, geometry=None):
+     from .h3_ltx_adapter import H3ToLTXAdapter
+     from ltx_core.model.transformer.model import LTXModelType
+ 
+@@ -52,27 +64,36 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat):
+     models.device, models.dtype = torch.device("cuda", 0), torch.bfloat16
+     models.compile_enabled = compile_enabled
+     models.attention_backend = "sol"
++    height, width = (768, 1344) if geometry is None else (geometry["output_height"], geometry["output_width"])
++    tiles = TILES if geometry is None else geometry["tiles"]
+     models.variant_config = {"encoder": "h3_adapter", "latent_upsampler": False,
+-                             "pixel_width": 1344, "pixel_height": 768}
++                             "pixel_width": width, "pixel_height": height}
+     models.stage2_audio_enabled, models.retain_allocator_cache = True, True
+     models.output_decoder_backend = "official_vae"
+     models.stage2_sigmas = SIGMAS
+     models.sigmas = torch.tensor(SIGMAS, device=models.device, dtype=torch.float32)
+     models.last_decoder_stream_info = None
++    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} upscaler+adapter start", flush=True)
+     models.h3_upscaler_calls = models.adapter_convert_calls = 0
+     models.h3_upscaler, models.h3_spatial_route = load_upscaler(
+         paths["h3_upscaler_source"], paths["h3_upscaler_checkpoint"],
+         device=models.device, torch_module=torch)
++    if geometry is not None:
++        models.h3_spatial_route.update(orientation=geometry["orientation"],
++            **{f"{key}_shape": list(geometry[key]) for key in ("h3_upscaled", "refiner_input")},
++            h3_input_shape=list(geometry["h3"]), adapter_native_output_shape=list(geometry["adapter_output"]))
+     models.h3_ltx_adapter = H3ToLTXAdapter.from_pretrained(
+         paths["adapter_dir"], device=models.device, dtype=models.dtype)
+ 
+-    pixel_shape = base.VideoPixelShape(batch=1, frames=121, height=768, width=1344, fps=24)
++    frames = 121 if geometry is None else geometry["output_frames"]
++    pixel_shape = base.VideoPixelShape(batch=1, frames=frames, height=height, width=width, fps=24)
+     latent_shape = base.VideoLatentShape.from_pixel_shape(pixel_shape, scale_factors=base.VIDEO_SCALE_FACTORS)
+     models.video_tools = base.VideoLatentTools(base.VideoLatentPatchifier(patch_size=1),
+         latent_shape, 24.0, scale_factors=base.VIDEO_SCALE_FACTORS)
+     registry = base.ModelRegistry()
+     compilation = (base.CompilationConfig(mode=base.COMPILE_MODE, fullgraph=False,
+         dynamic=None, seq_dim_dynamic=False, capture=False) if compile_enabled else None)
++    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} transformer build start", flush=True)
+     lora = base.LoraPathStrengthAndSDOps(str(paths["refiner_lora"]), 0.8, base.LTXV_LORA_COMFY_RENAMING_MAP)
+     stage = base.DiffusionStage.from_checkpoint(str(paths["transformer"]), models.dtype,
+         models.device, loras=(lora,), quantization=None, registry=registry,
+@@ -96,6 +117,7 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat):
+         attn_mgr=manager, registry=registry,
+         tracker=base.TransformerWeightTracker(group=dist.group.WORLD, no_lora_swap=True))
+     models.transformer = stage._build_transformer(video_tools=models.video_tools).requires_grad_(False)
++    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} transformer built", flush=True)
+     models.sol_attention = base.Stage2SolAttention(models.transformer,
+         isolate_sol_from_compile=compile_enabled)
+     models.sol_backend = base._actual_sol_backend()
+@@ -113,20 +135,22 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat):
+         device=models.device, dtype=models.dtype).eval().requires_grad_(False)
+     models.audio_tools = compat.AudioLatentTools(compat.AudioPatchifier(patch_size=1),
+         compat.AudioLatentShape.from_video_pixel_shape(pixel_shape))
++    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} audio encoder built", flush=True)
+     decoder_block = compat.VideoDecoder(str(paths["output_video_vae"]), models.dtype,
+         models.device, registry=registry, alloc_trim_strategy=base.AllocatorTrimStrategy.DEFER)
+     # Original explicit Conv tiles. Resolve before constructing decoder weights.
+     models.tiling_config = compat.TileSizeConfig(**{
+-        name: compat.DimensionSizeConfig(**value) for name, value in TILES.items()})
++        name: compat.DimensionSizeConfig(**value) for name, value in tiles.items()})
+     models.tiling_config.validate(
+         compat.tiling_scale_factors_for_vae(str(paths["output_video_vae"])), pixel_shape)
+-    models.tiling_source = "original_Conv128_448x768"
++    models.tiling_source = f"original_Conv128_{tiles['height']['tile_size']}x{tiles['width']['tile_size']}"
+     gc.collect()
+     torch.cuda.empty_cache()
+     models.video_decoder = decoder_block._decoder_builder.build(
+         device=models.device, dtype=models.dtype).eval().requires_grad_(False)
+     if type(models.video_decoder).__name__ != "ConvVideoDecoder":
+         raise RuntimeError("the output checkpoint must build the original ConvVideoDecoder")
++    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} video decoder built", flush=True)
+     models.parameter_dtypes = dict(Counter(str(p.dtype) for p in models.transformer.parameters()))
+     if (not models.parameter_dtypes.get("torch.bfloat16")
+             or not set(models.parameter_dtypes) <= {"torch.bfloat16", "torch.float32"}):
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/writer_chunking.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/writer_chunking.py
+index 9264fee..31b3db2 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/writer_chunking.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/writer_chunking.py
+@@ -1,16 +1,17 @@
+ """Writer views preserving original decoder checks and the native encoder."""
+ 
+ 
+-def tracked_writer_chunks(chunks, receipt, *, expected_dtype):
++# Modified by sol-h3-studio: frame_shape and expected_frames arguments (clip length, orientation).
++def tracked_writer_chunks(chunks, receipt, *, expected_dtype, frame_shape=(768, 1344, 3), expected_frames=121):
+     """Use the gated 16-frame slicing expression without copies or casts.
+ 
+     Exhaust the original iterator so its finite/frame-count checks still run.
+     Receipt contains CPU metadata only, including partial counts on failure.
+     """
+     for chunk in chunks:
+-        if (chunk.ndim != 4 or tuple(chunk.shape[1:]) != (768, 1344, 3)
++        if (chunk.ndim != 4 or tuple(chunk.shape[1:]) != tuple(frame_shape)
+                 or chunk.dtype != expected_dtype):
+-            raise RuntimeError("writer chunk16 requires original BF16 768x1344 RGB")
++            raise RuntimeError(f"writer chunk16 requires original BF16 {frame_shape[0]}x{frame_shape[1]} RGB")
+         receipt["source_chunks"] += 1
+         receipt["source_layouts"].append({"shape": list(chunk.shape), "dtype": str(chunk.dtype),
+                                           "stride": list(chunk.stride())})
+@@ -19,6 +20,6 @@ def tracked_writer_chunks(chunks, receipt, *, expected_dtype):
+             receipt["emitted_chunks"] += 1
+             receipt["frames"] += int(view.shape[0])
+             yield view
+-    if receipt["frames"] != 121:
+-        raise RuntimeError(f"writer chunk16 consumed {receipt['frames']} frames, expected 121")
++    if receipt["frames"] != expected_frames:
++        raise RuntimeError(f"writer chunk16 consumed {receipt['frames']} frames, expected {expected_frames}")
+     receipt["complete"] = True
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_geometry.py b/models/minimax_h3/Sol-H3-Spark/tests/test_geometry.py
+new file mode 100644
+index 0000000..087bed3
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_geometry.py
+@@ -0,0 +1,36 @@
++"""sol-h3-studio: CPU tests of the derived portrait / clip-length geometry (not part of upstream Sol-H3-Spark)."""
++import unittest
++
++from runtime import geometry
++from runtime.config import load_recipe
++
++
++class GeometryTests(unittest.TestCase):
++    def test_default_is_frozen_landscape(self):
++        shape = geometry.from_recipe(load_recipe(orientation="landscape"))
++        self.assertEqual((shape["draft_height"], shape["draft_width"]), (384, 672))
++        self.assertEqual(shape["h3"], (1, 24, 37, 24, 42))
++        self.assertEqual(shape["h3_upscaled"], (1, 24, 37, 48, 84))
++        self.assertEqual(shape["refiner_input"], (1, 128, 16, 24, 42))
++        self.assertEqual(shape, geometry.from_recipe())
++
++    def test_portrait_is_derived_after_the_hash_check(self):
++        for task in ("t2va", "fl2va", "ref2va"):
++            recipe = load_recipe(task, orientation="portrait")
++            self.assertEqual((recipe["stage1"]["width"], recipe["stage1"]["height"]), (384, 672))
++            self.assertEqual((recipe["output"]["width"], recipe["output"]["height"]), (768, 1344))
++            self.assertEqual(recipe["handoff"]["refiner_input_shape"], [1, 128, 16, 42, 24])
++            if task == "ref2va":
++                self.assertEqual(recipe["stage1"]["reference_image_resize"]["pixel_budget"], 384 * 672)
++            shape = geometry.from_recipe(recipe)
++            self.assertEqual(shape["h3"], (1, 24, 37, 42, 24))
++            self.assertEqual(shape["adapter_output"], (1, 128, 17, 42, 24))
++            self.assertEqual(shape["tiles"]["height"], {"tile_size": 768, "overlap": 64})
++            self.assertEqual(shape["tiles"]["width"], {"tile_size": 448, "overlap": 64})
++        self.assertNotIn("orientation", load_recipe())
++        with self.assertRaises(ValueError):
++            load_recipe(orientation="square")
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
+index 6c20301..b359d3f 100644
+--- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
+@@ -3,13 +3,15 @@
+ import json
+ import contextlib
+ import io
++import os
+ from pathlib import Path
+ import tempfile
+ import time
+ import unittest
+ from unittest import mock
+ 
+-from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS
++# Modified by sol-h3-studio: deliver-first, background Qwen, new Pipeline arguments and the compile-cache location.
++from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root
+ from runtime.pipeline import Pipeline, await_json, worker_environment
+ 
+ 
+@@ -84,6 +86,28 @@ class PipelineTests(unittest.TestCase):
+             finally:
+                 pipeline.close()
+ 
++    def test_deliver_first_returns_the_first_request_and_reuses_models(self):
++        FakeWorker.events = []
++        case = {"case_id": "first", "prompt": "A bird glides over a mountain lake.", "seed": 7}
++        with tempfile.TemporaryDirectory() as directory:
++            pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FakeWorker)
++            try:
++                row = pipeline.start(case, deliver=True)
++                self.assertEqual((row["status"], row["seed"], row["case_id"]), ("PASS", 7, "first"))
++                self.assertTrue(Path(row["output"]).is_file())
++                self.assertTrue(row["includes_model_load"])
++                second = pipeline.generate(dict(case, case_id="second"))
++                pipeline.finish()
++                self.assertEqual([r["case_id"] for r in pipeline.report["requests"]], ["first", "second"])
++                self.assertEqual(second["status"], "PASS")
++                events = FakeWorker.events
++                self.assertEqual(events.count(("start", "stage1")), 1)
++                self.assertEqual(events.count(("start", "stage2")), 1)
++                self.assertEqual(events.count(("start", "qwen")), 2)
++                self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
++            finally:
++                pipeline.close()
++
+     def test_does_not_overwrite_run(self):
+         with tempfile.TemporaryDirectory() as directory:
+             with self.assertRaises(FileExistsError):
+@@ -196,7 +220,7 @@ class PipelineTests(unittest.TestCase):
+                                 ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
+             try:
+                 pipeline.start(case)
+-                for worker in (pipeline.stage1, pipeline.stage2, pipeline.qwen):
++                for worker in (pipeline.stage1, pipeline.stage2, pipeline._resident_qwen()):  # loads in background
+                     self.assertEqual(worker.config, pipeline.config)
+                     self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
+                     self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
+@@ -225,7 +249,8 @@ class PipelineTests(unittest.TestCase):
+                     infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
+                                 "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
+                     factory.assert_called_once_with({}, root / "run", task="ref2va",
+-                                                    ref_image_match="stage2", ref_stage1_attn="sol")
++                                                    ref_image_match="stage2", ref_stage1_attn="sol",
++                                                    orientation=None, seconds=None)
+             for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
+                 with mock.patch.object(infer, "load_paths") as paths, \
+                      mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
+@@ -260,11 +285,26 @@ class PipelineTests(unittest.TestCase):
+ 
+     def test_stage1_environment_keeps_fa4_isolated(self):
+         paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
+-        env = worker_environment("stage1", paths)
++        with tempfile.TemporaryDirectory() as cache, \
++             mock.patch.dict(os.environ, {"SOL_H3_COMPILE_CACHE": cache}):   # keep the test out of $HOME
++            env = worker_environment("stage1", paths)
++            self.assertEqual(env["TORCHINDUCTOR_CACHE_DIR"], str(Path(cache, "stage1", "inductor")))
+         self.assertIn("/deps/fa4/nvidia_cutlass_dsl/python_packages", env["PYTHONPATH"])
+         self.assertEqual(env["HF_HUB_OFFLINE"], "1")
+         self.assertNotIn("HF_TOKEN", env)
+ 
++    def test_compile_cache_location(self):
++        home = str(Path.home())
++        with mock.patch.dict(os.environ, {"HOME": home}, clear=True):
++            self.assertEqual(compile_cache_root(), str(Path(home, ".cache/sol-h3-studio/compile")))
++        with mock.patch.dict(os.environ, {"SOL_H3_SPARK_RUNTIME_ROOT": "/rt"}, clear=True):
++            self.assertEqual(compile_cache_root(), "/rt/cache/compile")
++        with mock.patch.dict(os.environ, {"SOL_H3_SPARK_RUNTIME_ROOT": "/rt", "SOL_H3_COMPILE_CACHE": "session"},
++                             clear=True):
++            self.assertEqual(compile_cache_root(), "session")
++            env = worker_environment("stage1", {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"})
++        self.assertNotIn("TORCHINDUCTOR_CACHE_DIR", env)
++        self.assertNotIn("TRITON_CACHE_AUTOTUNING", env)
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py b/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
+index 4af9048..840b1da 100644
+--- a/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
+@@ -92,7 +92,7 @@ class QwenMediaContracts(unittest.TestCase):
+         frames = np.arange(126, dtype=np.uint8)[:, None, None, None] * np.ones((126, 1, 1, 3), dtype=np.uint8)
+         with patch.object(media, "resolve_canvas_size", return_value=(2, 2)) as canvas:
+             prepared = media.prepare_reference_frames(frames)
+-        canvas.assert_called_once_with(1, 1)
++        canvas.assert_called_once_with(1, 1, 768, 768 * 1344)   # Modified by sol-h3-studio: canvas arguments
+         self.assertEqual(prepared.shape, (124, 2, 2, 3))
+         np.testing.assert_array_equal(prepared[:, 0, 0, 0], np.arange(124))
+ 
+@@ -201,7 +201,7 @@ class QwenMediaContracts(unittest.TestCase):
+             np.testing.assert_array_equal(items[2]["data"][:, 0, 0, 0], np.array([0, 12, 24], dtype=np.float32) / 255)
+             self.assertEqual(items[3]["data"].shape, (1, 2048, 4096, 3))
+         with patch.object(media, "decode_reference_video", side_effect=[(frames, 24, True), (frames, 24, False)]), \
+-             patch.object(media, "prepare_reference_frames", side_effect=lambda value: value):
++             patch.object(media, "prepare_reference_frames", side_effect=lambda value, **kw: value):
+             receipt = self._run_fake_session(case, check)
+         self.assertEqual(receipt["input_spec"], {"task": "ref2va", "first_frame": None,
+                                               "last_frame": None, "references": refs})
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_stage1_contracts.py b/models/minimax_h3/Sol-H3-Spark/tests/test_stage1_contracts.py
+index 052502f..e4a87c4 100644
+--- a/models/minimax_h3/Sol-H3-Spark/tests/test_stage1_contracts.py
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_stage1_contracts.py
+@@ -7,12 +7,13 @@ from unittest.mock import Mock, patch
+ 
+ from runtime import qwen, stage1
+ from runtime.stage1_ops.lookup import require_lookup_step, t2va_lookup_plan
+-from runtime.stage1_ops.vsa import COUNTERS, metadata_contract, validate_request
++# Modified by sol-h3-studio: the BSA self-check length is configurable (SOL_H3_BSA_CHECK_CALLS).
++from runtime.stage1_ops.vsa import COUNTERS, WARMUP_REFERENCE_CALLS, metadata_contract, validate_request
+ from runtime.qwen_ops.direct_io import DirectLoadError, iter_direct_chunks, preadv_fill_chunk
+ 
+ 
+ def vsa_receipt(requests):
+-    reference = 200 if requests else 0
++    reference = WARMUP_REFERENCE_CALLS if requests else 0
+     value = dict(zip(COUNTERS, (200 * requests, 200 * requests, 200 * requests,
+                                0, 2 * requests, 200 * requests, reference)))
+     value.update(active_compression_gates=50, selected_attention_backend="cudnn_bsa",
+@@ -56,7 +57,7 @@ class Stage1Contracts(unittest.TestCase):
+ 
+     def test_reference_runs_once_and_counters_cover_all_layers(self):
+         first, second = vsa_receipt(1), vsa_receipt(2)
+-        self.assertEqual(validate_request(None, first)["request_counts"]["warmup_reference_calls"], 200)
++        self.assertEqual(validate_request(None, first)["request_counts"]["warmup_reference_calls"], WARMUP_REFERENCE_CALLS)
+         self.assertEqual(validate_request(first, second)["request_counts"]["warmup_reference_calls"], 0)
+         missing = copy.deepcopy(second)
+         missing["layer_calls"][13] -= 1
+diff --git a/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py b/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py
+index 74e22a9..fadd48c 100644
+--- a/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py
++++ b/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py
+@@ -73,9 +73,12 @@ try:
+     FRAME_COUNT = int(os.environ.get("H3_LTX_OUTPUT_FRAMES", "121"))
+ except ValueError as exc:
+     raise RuntimeError("H3_LTX source/output frame counts must be integers") from exc
+-if (SOURCE_FRAME_COUNT, FRAME_COUNT) not in {(124, 121), (243, 241)}:
++# Modified by sol-h3-studio: any H3 17k+5 draft -> LTX 8m+1 output (largest 8m+1 not above the draft), 3-15 s.
++if (SOURCE_FRAME_COUNT < 73 or (SOURCE_FRAME_COUNT - 5) % 17 or (FRAME_COUNT - 1) % 8
++        or FRAME_COUNT != ((SOURCE_FRAME_COUNT - 1) // 8) * 8 + 1
++        or ((FRAME_COUNT - 1) // 8 + 1) * 24 * 42 > 65536):
+     raise RuntimeError(
+-        "H3_LTX frame profile must be 124->121 (5s) or 243->241 (10s)"
++        "H3_LTX frame profile must be an H3 17k+5 draft (73..362) -> largest 8m+1 output"
+     )
+ LATENT_FRAME_COUNT = (FRAME_COUNT - 1) // 8 + 1
+ WORLD_SIZE = 1
