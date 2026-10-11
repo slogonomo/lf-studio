@@ -459,14 +459,22 @@ class SeedText(PageTest):
     def selected(self):
         return self.page.evaluate("getSelection().toString()")
 
-    def test_a_click_or_tab_selects_the_seed_and_polls_keep_it(self):
-        a = self.studio.generate(seed=2034940401)[1]["id"]
+    def finished(self, **kw):
+        a = self.studio.generate(seed=2034940401, **kw)[1]["id"]
         self.studio.wait([a])
         card = f'article[data-id="{a}"]'
         self.page.wait_for_selector(f"{card} video")
+        return card
+
+    def wait_selected(self, text):
+        self.page.wait_for_function("t => getSelection().toString() === t", arg=text, timeout=3000)
+
+    def test_a_click_or_tab_selects_the_seed_and_polls_keep_it(self):
+        card = self.finished()
         self.page.evaluate(f"window.seedNode = document.querySelector('{card} .seedv').firstChild")
         self.page.click(f"{card} .seedv")
-        self.assertEqual(self.selected(), "2034940401")
+        self.wait_selected("2034940401")
+        self.assertFalse(self.page.evaluate("document.activeElement.classList.contains('seedv')"))  # mouse: no focus
         self.page.wait_for_timeout(2500)                                    # a poll and a render later
         self.assertEqual(self.selected(), "2034940401")
         self.assertTrue(self.page.evaluate(f"document.querySelector('{card} .seedv').firstChild === window.seedNode"))
@@ -474,24 +482,43 @@ class SeedText(PageTest):
         self.page.focus(f"{card} .reuse-all")
         self.page.keyboard.press("Shift+Tab")                               # keyboard: the seed is one Tab stop
         self.assertTrue(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
-        self.assertEqual(self.selected(), "2034940401")
+        self.wait_selected("2034940401")
+
+    def test_a_selection_of_your_own_stays(self):
+        card = self.finished(prompt="a red fox runs through snow")
+        whole = self.page.evaluate(f"""() => {{ const c = document.querySelector('{card}'), r = document.createRange();
+            r.setStart(c.querySelector('.p').firstChild, 0); r.setEnd(c.querySelector('.seedv').firstChild, 10);
+            getSelection().removeAllRanges(); getSelection().addRange(r); return getSelection().toString(); }}""")
+        self.assertTrue(whole.startswith("a red fox") and whole.endswith("seed 2034940401"), whole)
+        self.page.click(f"{card} .seedv", button="right")                  # context menu: Copy copies all of it
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.selected(), whole)
+        self.page.evaluate(f"""() => {{ const r = document.createRange();         // a caret at the prompt's start
+            r.setStart(document.querySelector('{card} .p').firstChild, 0); r.collapse(true);
+            getSelection().removeAllRanges(); getSelection().addRange(r); }}""")
+        self.page.click(f"{card} .seedv", modifiers=["Shift"])             # Shift+click extends to the seed
+        self.wait_selected(whole)
+        self.page.evaluate("getSelection().removeAllRanges()")
+        self.page.click(f"{card} .seedv", button="right")                  # nothing selected: the seed, for Copy
+        self.page.keyboard.press("Escape")
+        self.wait_selected("2034940401")
 
     def test_the_seed_is_readable(self):
-        a = self.studio.generate(seed=2034940401)[1]["id"]
-        self.studio.wait([a])
-        card = f'article[data-id="{a}"]'
-        self.page.wait_for_selector(f"{card} video")
+        card = self.finished()
         for scheme in ("light", "dark"):
             self.page.emulate_media(color_scheme=scheme)
+            # both colours through a canvas (any CSS colour format; the text blended over the card), then WCAG contrast
             ratio = self.page.evaluate(f"""() => {{
-                const lum = c => {{ const [r, g, b] = c.match(/\\d+/g).slice(0, 3).map(v => {{
+                const x = document.createElement('canvas').getContext('2d', {{willReadFrequently: true}});
+                const lum = () => {{ const [r, g, b] = [...x.getImageData(0, 0, 1, 1).data].slice(0, 3).map(v => {{
                     v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }});
                     return 0.2126 * r + 0.7152 * g + 0.0722 * b; }};
-                const fg = lum(getComputedStyle(document.querySelector('{card} .seedv')).color);
-                const bg = lum(getComputedStyle(document.querySelector('{card}')).backgroundColor);
+                const paint = c => {{ x.fillStyle = c; x.fillRect(0, 0, 1, 1); }};
+                paint(getComputedStyle(document.querySelector('{card}')).backgroundColor); const bg = lum();
+                paint(getComputedStyle(document.querySelector('{card} .seedv')).color); const fg = lum();
                 return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05); }}""")
             self.assertGreaterEqual(ratio, 4.5, f"seed contrast in {scheme} mode")
-
 
 if __name__ == "__main__":
     unittest.main()

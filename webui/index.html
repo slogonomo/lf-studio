@@ -469,9 +469,7 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
 
   const t=body.querySelectorAll('.tags .tag');t[0].textContent=TASK[j.task]||j.task;t[1].textContent=FMT[j.orientation]||j.orientation;t[2].textContent=`${j.seconds||5} s`;
   const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
-  // a click or Tab selects the seed, ready to copy (after a click WebKit drops the selection, hence the timeout)
-  const sv=body.querySelector('.seedv'),pick=()=>getSelection().selectAllChildren(sv);
-  if(j.seed==null)body.querySelector('.seedt').remove();else{sv.textContent=j.seed;sv.onfocus=pick;sv.onclick=()=>setTimeout(pick);}
+  if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
   // new seed (#14); unticked, it keeps the clip's seed
   body.querySelector('.reuse-all').onclick=()=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
@@ -489,6 +487,15 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
   body.querySelector('.del').onclick=e=>remove(j,e.detail===0);       // detail 0: Enter/Space, not a pointer
   d.append(media,body);return d;}
+// The seed is text: a click or Tab selects the number, ready to copy. The mouse never focuses it (WebKit clears the
+// selection when focus moves), so a selection the user made stays: a right-click inside one keeps it for Copy, and
+// Shift+click extends it to the seed.
+function seedPick(sv){const pick=()=>getSelection().selectAllChildren(sv);sv.onfocus=pick;
+  sv.onmousedown=e=>{e.preventDefault();const g=getSelection();
+    if(e.button||e.ctrlKey){if(g.isCollapsed||!g.containsNode(sv,true))pick();return;}       // context menu
+    if(e.shiftKey&&g.rangeCount&&!sv.contains(g.anchorNode))
+      g.extend(sv,sv.compareDocumentPosition(g.anchorNode)&Node.DOCUMENT_POSITION_PRECEDING?sv.childNodes.length:0);
+    else pick();};}
 // Delete moves the clip and its files to the server's trash; Undo (in the toast) moves back every clip deleted while
 // it showed. The server's state wins: /api/state lists deleted clips (other tabs remove those cards too), and a card
 // hidden here stays hidden only until a poll sent after the delete has answered (gone: id -> poll number). A clip
