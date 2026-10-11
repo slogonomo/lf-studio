@@ -58,6 +58,7 @@ class StubStudio:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
+                self._logf.close()
                 raise RuntimeError(f"stub studio exited: {self.log.read_text()[-2000:]}")
             try:
                 urllib.request.urlopen(self.url + "/health", timeout=1)

@@ -107,6 +107,19 @@ closes the session and loads the models again; the Generate button says so befor
 showed 50). 0.2 imports it once, when `jobs.db` does not exist yet, and leaves it as it was, so going back to 0.1
 shows the history as of that import.
 
+**Getting a deleted clip back after the Undo toast is gone.** Delete moves the clip's directory, its input files
+and its `SOLH3_PUBLISH_DIR` copy to `$SOL_H3_SPARK_RUNTIME_ROOT/trash/<clip id>/` and keeps it in the history,
+hidden, for `SOLH3_TRASH_DAYS` (default 7). Until then it can be restored with everything moved back where it was
+(the id is the directory name):
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "<clip id>"}' http://127.0.0.1:8190/api/undelete
+```
+
+If the publish folder can't be written when a clip is restored (an unmounted share), the clip comes back without
+its publish copy, which stays in the trash until it is emptied. Anything else left in the trash (from a delete or
+restore that failed half-way) is removed after the same number of days.
+
 ## Stopping
 
 Ctrl-C, SIGTERM or SIGHUP: the server closes its pipeline (up to ~40 s; the launcher waits up to

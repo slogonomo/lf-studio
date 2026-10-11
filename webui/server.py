@@ -19,11 +19,14 @@ Environment:
   SOLH3_PUBLISH_DIR          optional: also copy each finished clip (and its poster) here
   SOLH3_HOST, SOLH3_PORT     default 127.0.0.1 and 8190. 0.0.0.0 serves the whole LAN; there is no login.
   SOLH3_PRELOAD              1 (default): at start, warm up the settings of the last finished clip. 0: off.
+  SOLH3_TRASH_DAYS           days a deleted clip stays in $SOL_H3_SPARK_RUNTIME_ROOT/trash before it is removed
+                             for good (default 7)
   SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
 
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
+import contextlib
 import email.parser
 import email.policy
 import json
@@ -88,6 +91,12 @@ PRELOAD = os.environ.get("SOLH3_PRELOAD", "1") == "1"
 
 INPUTS = RUNTIME / "inputs" / "webui"
 SESSIONS = RUNTIME / "outputs" / "webui"
+TRASH = RUNTIME / "trash"        # deleted clips, one directory per job, until SOLH3_TRASH_DAYS have passed
+try:
+    TRASH_DAYS = float(os.environ.get("SOLH3_TRASH_DAYS") or 7)
+    assert math.isfinite(TRASH_DAYS) and TRASH_DAYS >= 0
+except (ValueError, AssertionError):
+    fail(f"SOLH3_TRASH_DAYS must be a number of days, 0 or more (got {os.environ.get('SOLH3_TRASH_DAYS')!r})")
 for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -166,6 +175,132 @@ def save_job(job):
         traceback.print_exc()
 
 
+def find_job(jid):
+    """The job with this id, unless it has been deleted."""
+    return next((j for j in jobs if j["id"] == jid and not j.get("deleted")), None)
+
+
+def in_sessions(case):
+    """Whether `case` is a clip's own directory, <SESSIONS>/<session>/<case_id> (paths compared resolved: the
+    pipeline records resolved paths, the runtime root may be reached through a symlink)."""
+    try:
+        return case.parent.parent.resolve() == SESSIONS.resolve()
+    except OSError:
+        return False
+
+
+def trash_paths(job):
+    """What deleting a job moves to the trash: the clip's own directory in its session (MP4, poster, intermediate
+    files; for clips made before per-clip directories, the MP4 and its poster), the directories of runs that did not
+    finish (case_dirs), its input directory, and its SOLH3_PUBLISH_DIR copy with poster."""
+    found = [Path(d) for d in job.get("case_dirs") or [] if in_sessions(Path(d))]
+    if job.get("output"):
+        out = Path(job["output"])
+        case = out.parent.parent                   # <session>/<case_id>/stage2/<clip>.mp4
+        found += [case] if case.name == job.get("case_id") and in_sessions(case) else [out, out.with_suffix(".jpg")]
+    found.append(INPUTS / job["id"])
+    if job.get("published"):
+        found += [Path(job["published"]), Path(job["published"]).with_suffix(".jpg")]
+    unique = []
+    for f in found:
+        if f.exists() and f not in unique:
+            unique.append(f)
+    return unique
+
+
+def delete_job(job):
+    """Move a finished job's files to TRASH/<id>/ and hide it. Undone by restore_job until purge_trash. If a move
+    fails, what was moved goes back and the error is raised."""
+    dest, moved = TRASH / job["id"], {}
+    try:
+        for i, src in enumerate(trash_paths(job)):
+            dest.mkdir(parents=True, exist_ok=True)
+            target = dest / f"{i}-{src.name}"
+            try:
+                shutil.move(str(src), str(target))
+            except OSError:
+                if src.exists() and target.exists():          # a copy across filesystems stopped part-way
+                    shutil.rmtree(target, ignore_errors=True) if target.is_dir() else target.unlink()
+                raise
+            moved[str(src)] = str(target)
+    except OSError:
+        for src, target in moved.items():
+            try:
+                shutil.move(target, src)
+            except OSError:
+                traceback.print_exc()                  # stays in the trash; purge_trash sweeps it later
+        with contextlib.suppress(OSError):
+            dest.rmdir()                               # only if empty
+        raise
+    job.update(deleted=time.time(), trashed=moved)
+    save_job(job)
+
+
+def trashed_path(job, path):
+    """Where `path` (an input of `job`) is now: under TRASH/<id>/ while the job is deleted, else where it was."""
+    for src, target in (job.get("trashed") or {}).items():
+        if path == src or path.startswith(src + "/"):
+            return target + path[len(src):]
+    return path
+
+
+def restore_job(job):
+    """Undo delete_job: move the files back where they were. The clip's own files are renames within the runtime
+    root; a SOLH3_PUBLISH_DIR copy that can't go back (an unmounted share) stays in the trash and the clip is
+    restored without it. Anything else that fails raises OSError, with what is left still recorded for a retry."""
+    trashed = job.get("trashed") or {}
+    publish = {job.get("published"), str(Path(job["published"]).with_suffix(".jpg"))} if job.get("published") else set()
+    for src, target in list(trashed.items()):
+        if Path(target).exists() and not Path(src).exists():
+            try:
+                if src in publish:
+                    if not Path(src).parent.is_dir():  # never create the share's folders on the local disk
+                        raise OSError(f"{Path(src).parent} is not there")
+                else:
+                    Path(src).parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(target, src)
+            except OSError as error:
+                if src not in publish:
+                    save_job(job)
+                    raise
+                log("could not put the publish copy back, it stays in the trash:", error)
+                job.pop("published", None)
+                continue
+        del trashed[src]
+    with contextlib.suppress(OSError):
+        (TRASH / job["id"]).rmdir()                    # empty unless something stayed; purge_trash sweeps that
+    job.pop("deleted", None)
+    job.pop("trashed", None)
+    save_job(job)
+
+
+def purge_trash():
+    """Remove clips deleted more than TRASH_DAYS ago, their files and their history entry, and anything else in
+    TRASH older than that (left over from a failed delete or restore)."""
+    cutoff = time.time() - TRASH_DAYS * 86400
+    with lock:
+        old = [j for j in jobs if j.get("deleted") and j["deleted"] < cutoff]
+        for j in old:
+            jobs.remove(j)
+        keep = {j["id"] for j in jobs if j.get("deleted")}
+    for j in old:
+        shutil.rmtree(TRASH / j["id"], ignore_errors=True)
+        try:
+            with db_lock:
+                db.execute("DELETE FROM jobs WHERE id = ?", (j["id"],))
+        except sqlite3.Error:
+            traceback.print_exc()
+    swept = 0
+    for d in TRASH.iterdir() if TRASH.is_dir() else []:
+        with contextlib.suppress(OSError):
+            if d.name not in keep and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d) if d.is_dir() else d.unlink()
+                swept += 1
+    if old or swept:
+        log(f"emptied the trash: {len(old)} clip(s) deleted more than {TRASH_DAYS:g} days ago"
+            + (f", {swept} leftover(s)" if swept else ""))
+
+
 def ready_tasks():
     """Tasks whose path manifest exists (install/70-manifests.sh writes them)."""
     return [t for t in TASKS if PATHS[t].is_file()]
@@ -236,6 +371,7 @@ def run_job(job):
         root = SESSIONS / f"{time.strftime('%Y%m%d-%H%M%S')}-{key[0]}-{key[1]}-{key[2]}s"
         p = new_pipeline(key, root)
         session["pipeline"] = p
+        job.setdefault("case_dirs", []).append(str(Path(p.root) / job["case_id"]))   # for Delete, even if it fails
         t0 = time.time()
         try:
             row = p.start(case, deliver=True)     # the loading pass renders this job (no throwaway warm-up)
@@ -249,6 +385,7 @@ def run_job(job):
     else:
         job["status"] = "generating"
         job["phase_since"] = time.time()
+        job.setdefault("case_dirs", []).append(str(Path(session["pipeline"].root) / job["case_id"]))
         session["state"] = "busy"
         t0 = time.time()
         try:
@@ -299,7 +436,7 @@ preload = {"pending": None}      # (key, case) to warm up when the app starts an
 def preload_candidate():
     """The last finished clip's settings, as a warm-up case (its prompt and inputs, seed 999).
     None when there is no such clip, its manifest is gone or its uploaded inputs are gone."""
-    last = next((j for j in reversed(jobs) if j.get("status") == "done"), None)
+    last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")), None)
     if last is None or not PATHS.get(last["task"], Path("/nonexistent")).is_file():
         return None
     case = {"case_id": "preload", "prompt": last["prompt"], "seed": 999, "task": last["task"]}
@@ -381,9 +518,13 @@ def abort_preload(reason):
 
 
 def worker_loop():
+    purged = time.time()                           # main() purged at start
     while True:
         wake.wait(5)
         wake.clear()
+        if time.time() - purged > 86400:
+            purged = time.time()
+            purge_trash()
         pending, preload["pending"] = preload["pending"], None
         if pending and session["pipeline"] is None and not any(j["status"] == "queued" for j in jobs):
             run_preload(*pending)
@@ -550,13 +691,14 @@ class H(BaseHTTPRequestHandler):
             ready = ready_tasks()
             with lock:
                 active = [j for j in jobs if j["status"] not in ("done", "failed")]
-                finished = [j for j in jobs if j["status"] in ("done", "failed")]
+                finished = [j for j in jobs if j["status"] in ("done", "failed") and not j.get("deleted")]
                 window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
-                state = {"now": time.time(), "tasks_ready": ready,
+                state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS,
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
                                                                  "takeover_until", "load_eta", "warm_s")},
                          "jobs": [dict(j) for j in window],
-                         "done": sum(j["status"] == "done" for j in finished), "more": len(finished) > PAGE}
+                         "done": sum(j["status"] == "done" for j in finished), "more": len(finished) > PAGE,
+                         "deleted": [j["id"] for j in jobs if j.get("deleted")]}       # still in the trash
             return self.send(200, state)
         if path == "/api/jobs":            # older clips: ?before=<created>&limit=<n>, newest first
             q = parse_qs(urlsplit(self.path).query)
@@ -566,12 +708,12 @@ class H(BaseHTTPRequestHandler):
             except ValueError:
                 return self.send(400, {"error": "before must be a number and limit an integer"})
             with lock:
-                older = [j for j in jobs if j["created"] < before]
+                older = [j for j in jobs if j["created"] < before and not j.get("deleted")]
                 page = [dict(j) for j in older[::-1][:limit]]
             return self.send(200, {"jobs": page, "more": len(older) > limit})
         m = re.fullmatch(r"/poster/([0-9a-f]{32})", path)
         if m:
-            mp4 = clip_file(next((j for j in jobs if j["id"] == m.group(1)), None))
+            mp4 = clip_file(find_job(m.group(1)))
             poster = mp4.with_suffix(".jpg") if mp4 else None
             if poster and not poster.exists():
                 make_poster(mp4)
@@ -580,7 +722,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, poster.read_bytes(), "image/jpeg", {"Cache-Control": "max-age=86400"})
         m = re.fullmatch(r"/api/inputs/([0-9a-f]{32})", path)
         if m:                      # a clip's input files, for Remix: what can be reused and what is gone
-            job = next((j for j in jobs if j["id"] == m.group(1)), None)
+            job = find_job(m.group(1))
             if job is None:
                 return self.send(404, {"error": "no such clip"})
             out, missing = {}, []
@@ -594,7 +736,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"task": job["task"], "inputs": out, "missing": missing})
         m = re.fullmatch(r"/input/([0-9a-f]{32})/([a-z_]+)/(\d+)", path)
         if m:
-            job = next((j for j in jobs if j["id"] == m.group(1)), None)
+            job = find_job(m.group(1))
             files = zone_files(job, m.group(2)) if job and m.group(2) in ZONES else []
             f = Path(files[int(m.group(3))]) if int(m.group(3)) < len(files) else None
             if not f or not f.is_file():
@@ -602,7 +744,7 @@ class H(BaseHTTPRequestHandler):
             return self.send_file(f, mimetypes.guess_type(f.name)[0] or "application/octet-stream")
         m = re.fullmatch(r"/video/([0-9a-f]{32})", path)
         if m:
-            mp4 = clip_file(next((j for j in jobs if j["id"] == m.group(1)), None))
+            mp4 = clip_file(find_job(m.group(1)))
             if not mp4:
                 return self.send(404, {"error": "no such video"})
             return self.send_file(mp4)
@@ -671,6 +813,35 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True})
             close_session("unload requested")
             return self.send(200, {"ok": True})
+        if self.path in ("/api/delete", "/api/undelete"):
+            try:
+                jid = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}").get("id")
+            except (ValueError, AttributeError):
+                return self.send(400, {"error": "expected JSON {\"id\": ...}"})
+            with lock:                     # file moves are renames within the runtime root (or a small copy)
+                job = next((j for j in jobs if j["id"] == jid), None)
+                if job is None:
+                    reply = 404, {"error": "no such clip"}
+                elif self.path == "/api/undelete":
+                    try:
+                        if job.get("deleted"):
+                            restore_job(job)
+                            log("restored", job["case_id"])
+                        reply = 200, {"ok": True, "job": dict(job)}
+                    except OSError as error:
+                        reply = 500, {"error": f"could not restore the clip: {error}"}
+                elif job["status"] not in ("done", "failed"):
+                    reply = 409, {"error": "the clip is still queued or running"}
+                elif job.get("deleted"):
+                    reply = 200, {"ok": True}
+                else:
+                    try:
+                        delete_job(job)
+                        log("deleted", job["case_id"], "to", TRASH / jid)
+                        reply = 200, {"ok": True}
+                    except OSError as error:
+                        reply = 500, {"error": f"could not move the clip to the trash: {error}"}
+            return self.send(*reply)
         if self.path != "/api/generate":
             return self.send(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length", "0"))
@@ -696,7 +867,8 @@ class H(BaseHTTPRequestHandler):
             # Remix: "keep" names files of clip "remix_from" to reuse, as zone:index in the order of /api/inputs
             src = None
             if fields.get("remix_from"):
-                src = next((j for j in jobs if j["id"] == fields["remix_from"]), None)
+                src = next((j for j in jobs if j["id"] == fields["remix_from"]), None)   # deleted too: its files
+                                                                                        # are in the trash
                 if src is None:
                     raise ValueError("the clip to remix is no longer in the list; attach the files again")
             keep = {}
@@ -710,7 +882,7 @@ class H(BaseHTTPRequestHandler):
 
             def kept(zone):
                 """The kept files of this zone, put into the new job's directory, in the order the form sent."""
-                available = zone_files(src, zone) if src else []
+                available = [trashed_path(src, f) for f in zone_files(src, zone)] if src else []
                 if any(i >= len(available) for i in keep.get(zone, {})):
                     raise ValueError("the remixed clip has fewer files than the form kept; attach them again")
                 return [reuse_input(job_dir, available[i]) for i in keep.get(zone, {})]
@@ -802,6 +974,7 @@ def main():
             j["status"] = "failed"
             j["error"] = "server restarted"
             save_job(j)
+    purge_trash()
     missing = [t for t in TASKS if t not in ready_tasks()]
     if missing:
         log("no path manifest for", ", ".join(missing), f"(looked for {PATHS_TEMPLATE})")

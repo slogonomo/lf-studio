@@ -217,5 +217,65 @@ class MissedPolls(PageTest):
         self.assertTrue(set(ids) <= shown, len(set(ids) - shown))
 
 
+class DeleteUndo(PageTest):
+    """#2: Delete removes the card at once; Undo in the toast brings it back with its video."""
+
+    def test_delete_then_undo(self):
+        a = self.studio.generate(prompt="to delete")[1]["id"]
+        self.studio.wait([a])
+        card = f'article[data-id="{a}"]'
+        self.page.wait_for_selector(f"{card} video")
+        self.assertIn("trash", self.page.get_attribute(f"{card} .del", "title"))
+        self.page.click(f"{card} .del")
+        self.page.wait_for_selector(card, state="detached")
+        self.page.wait_for_selector("#undo", state="visible")
+        self.page.wait_for_timeout(2500)                                    # a poll must not bring it back
+        self.assertEqual(self.page.query_selector(card), None)
+        self.assertEqual(self.studio.state()["jobs"], [])
+        self.page.click("#undo button")
+        self.page.wait_for_selector(f"{card} video")
+        self.page.wait_for_function("document.getElementById('count').textContent === '1 clip'")
+        self.assertEqual(self.studio.get(f"/video/{a}")[0], 200)
+
+    def test_stale_poll_and_other_tabs(self):
+        a, b = (self.studio.generate(prompt=f"clip {i}", seed=i)[1]["id"] for i in (1, 2))
+        self.studio.wait([a, b])
+        self.page.wait_for_selector(f'article[data-id="{b}"] video')
+        held = []
+        # polls answered by the server before the delete (still listing a) reach the page only after it
+        self.page.route("**/api/state", lambda route: held.append((route, route.fetch())))
+        self.page.wait_for_timeout(2500)
+        self.page.click(f'article[data-id="{a}"] .del')
+        self.page.wait_for_selector(f'article[data-id="{a}"]', state="detached")
+        self.assertTrue(held and any(a.encode() in r.body() for _, r in held))
+        for route, response in held:
+            route.fulfill(response=response)
+        self.page.unroute("**/api/state")
+        self.page.wait_for_timeout(2500)
+        self.assertIsNone(self.page.query_selector(f'article[data-id="{a}"]'))
+        other = self.ctx.new_page()                                            # another tab
+        other.goto(self.studio.url + "/")
+        other.wait_for_selector(f'article[data-id="{b}"] video')
+        self.page.click(f'article[data-id="{b}"] .del')
+        other.wait_for_selector(f'article[data-id="{b}"]', state="detached")
+        self.page.wait_for_selector("#nojobs", state="visible")               # nothing left: the empty message
+        self.assertIn("2 clips deleted", self.page.inner_text("#undo"))
+        self.page.click("#undo button")
+        self.page.wait_for_selector(f'article[data-id="{a}"] video')
+        self.page.wait_for_selector(f'article[data-id="{b}"] video')
+        other.wait_for_selector(f'article[data-id="{b}"]')                    # back in the other tab too
+        self.studio.post("/api/delete", json_body={"id": a})                  # deleted by hand (curl) ...
+        self.page.wait_for_selector(f'article[data-id="{a}"]', state="detached")
+        self.studio.post("/api/undelete", json_body={"id": a})                # ... and restored by hand
+        self.page.wait_for_selector(f'article[data-id="{a}"]')
+
+    def test_no_delete_while_running(self):
+        a = self.studio.generate(prompt="running", seconds=8)[1]["id"]
+        self.page.wait_for_selector(f'article[data-id="{a}"]')
+        self.assertFalse(self.page.is_visible(f'article[data-id="{a}"] .del'))
+        self.studio.wait([a])
+        self.page.wait_for_selector(f'article[data-id="{a}"] .del', state="visible")
+
+
 if __name__ == "__main__":
     unittest.main()

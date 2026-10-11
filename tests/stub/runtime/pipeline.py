@@ -33,6 +33,7 @@ class Pipeline:
 
     def _clip(self, case, request):
         if "STUB_FAIL" in case["prompt"]:
+            (request / "stage1").mkdir(parents=True, exist_ok=True)       # a run that died part-way leaves files
             raise RuntimeError("Worker exited with code 1 (STUB_FAIL)")
         w, h = self.size
         out = request / "stage2" / f"refined_{w}x{h}_{self.seconds * 24 + 1}f.mp4"
