@@ -32,7 +32,7 @@ prompt containing `STUB_FAIL` fails like a dead worker. `tests/stub/studio.py` g
 state directory and port under a temp directory; the tests use its `StubStudio` class. Add a test there for every
 server change.
 
-The patch has its own 69 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
+The patch has its own 73 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A
 second studio next to an installed one needs its own env file (`SOLH3_ENV=<file> bin/sol-h3-studio`) with its own
