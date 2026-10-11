@@ -458,7 +458,7 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
 function setText(el,t){if(el.textContent!==t)el.textContent=t;}
 // every job the page has seen, by id: the poll carries the active ones and the newest page, older pages come from
 // /api/jobs as the gallery scrolls (finished clips don't change, so only polled ones are updated afterwards)
-const known=new Map();let olderMore=null,loadingMore=false;
+const known=new Map();let olderMore=null,loadingMore=false,fillingGap=false;
 function insert(j){const box=$('jobs'),d=els[j.id]=card(j);d.dataset.created=j.created;
   const next=[...box.querySelectorAll('.job')].find(x=>+x.dataset.created<j.created);
   if(next)box.insertBefore(d,next);else box.append(d);return d;}
@@ -489,6 +489,7 @@ function render(){const s=state.session,k=s.key,t=now();
   setText($('loaded'),sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));
   setText($('loadtimer'),sState==='loading'?clock(t-s.since):'');
   $('unload').hidden=!k&&sState==='idle';
+  const had=[...known.values()];                     // what the page had before this poll
   state.jobs.forEach(j=>known.set(j.id,j));
   if(known.size&&$('nojobs'))$('nojobs').remove();
   const done=state.done??state.jobs.filter(j=>j.status==='done').length,run=state.jobs.filter(active).length;
@@ -496,16 +497,32 @@ function render(){const s=state.session,k=s.key,t=now();
   const queue=state.jobs.filter(j=>j.status==='queued').sort((a,b)=>a.created-b.created);
   state.jobs.forEach(j=>update(els[j.id]||insert(j),j,queue,s,t));
   $('more').hidden=!(olderMore??state.more);
+  // After missed polls (a sleeping laptop, a throttled background tab) clips that finished meanwhile can have left
+  // the poll window while the page still shows them running, and clips between the window and what the page had are
+  // missing: fetch that stretch.
+  const ids=new Set(state.jobs.map(j=>j.id)),stale=had.filter(j=>active(j)&&!ids.has(j.id));
+  const newestHad=Math.max(-Infinity,...had.filter(j=>!active(j)).map(j=>j.created));
+  const joined=!state.more||!had.length||state.jobs.some(j=>!active(j)&&j.created<=newestHad);
+  if(!fillingGap&&state.jobs.length&&(stale.length||!joined))fillGap(Math.min(newestHad,...stale.map(j=>j.created)));
   updateGo();}
-async function loadMore(){const more=$('more');if(loadingMore||more.hidden)return;loadingMore=true;
-  try{const before=Math.min(...[...known.values()].map(j=>j.created));
-    const r=await fetch(`/api/jobs?before=${before}&limit=24`,{cache:'no-store'}),x=await r.json();
-    x.jobs.forEach(j=>{if(!known.has(j.id)){known.set(j.id,j);update(insert(j),j,[],state.session,now());}});
-    olderMore=x.more;more.hidden=!x.more;}
+async function fillGap(target){fillingGap=true;
+  try{let before=Math.min(...state.jobs.map(j=>j.created));
+    for(let n=0;n<50;n++){const r=await fetch(`/api/jobs?before=${before}&limit=100`,{cache:'no-store'});if(!r.ok)break;
+      const x=await r.json();if(!Array.isArray(x.jobs)||!x.jobs.length)break;
+      x.jobs.forEach(j=>{known.set(j.id,j);update(els[j.id]||insert(j),j,[],state.session,now());});
+      before=x.jobs[x.jobs.length-1].created;if(!x.more||before<=target)break;}}
   catch(e){}
+  fillingGap=false;}
+async function loadMore(){const more=$('more');if(loadingMore||more.hidden)return;loadingMore=true;let got=false;
+  try{const before=Math.min(...[...known.values()].map(j=>j.created));
+    const r=await fetch(`/api/jobs?before=${before}&limit=24`,{cache:'no-store'});if(!r.ok)throw r.status;
+    const x=await r.json();if(!Array.isArray(x.jobs))throw 0;
+    x.jobs.forEach(j=>{if(!known.has(j.id)){known.set(j.id,j);update(insert(j),j,[],state.session,now());}});
+    olderMore=x.more;more.hidden=!x.more;got=true;}
+  catch(e){}                                  // the button stays for another try
   loadingMore=false;
   // keep going while the end of the list is on screen (a tall window shows more than one page)
-  if(!more.hidden&&more.getBoundingClientRect().top<innerHeight+600)setTimeout(loadMore,50);}
+  if(got&&!more.hidden&&more.getBoundingClientRect().top<innerHeight+600)setTimeout(loadMore,50);}
 $('more').onclick=loadMore;
 if('IntersectionObserver' in window)new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))loadMore();},{rootMargin:'600px'}).observe($('more'));
 async function poll(){try{const r=await fetch('/api/state',{cache:'no-store'});state=await r.json();if(state.now)skew=state.now-Date.now()/1000;render();}catch(e){}}

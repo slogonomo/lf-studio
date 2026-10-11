@@ -258,6 +258,62 @@ class History(StudioTest):
         self.assertEqual((job["status"], job["error"]), ("failed", "server restarted"))
 
 
+class HistoryImport(StudioTest):
+    """#5: the jobs.json import copes with odd entries, is retried after a failure and happens only once."""
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text("[{ not json")
+
+    def test_failed_import_retried_then_done_once(self):
+        self.assertIn("could not import", self.studio.log.read_text())
+        self.assertEqual(self.studio.state()["done"], 0)
+        jid = self.generate()                                                 # a clip made in this run is kept
+        self.studio.wait([jid])
+        self.studio.stop()
+        odd = [finished_job("1" * 32, created=50), finished_job("2" * 32, created="abc"),
+               finished_job("3" * 32, created=None), finished_job("4" * 32, created=50),
+               dict(finished_job("5" * 32), created=float("nan"))]
+        odd[-1].pop("created")
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(odd + [{"no": "id"}]))
+        self.studio.start()
+        self.assertIn("imported 5 jobs", self.studio.log.read_text())
+        jobs = sorted(self.studio.all_jobs().values(), key=lambda j: j["created"])
+        self.assertEqual(len(jobs), 6)
+        created = [j["created"] for j in jobs]
+        self.assertTrue(all(a < b for a, b in zip(created, created[1:])), created)   # strictly increasing
+        self.studio.stop()
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(history(3)))   # changed later: not imported
+        self.studio.start()
+        self.assertEqual(self.studio.state()["done"], 6)
+
+
+class HistoryOrder(StudioTest):
+    """#5: a request that takes longer (a reference video being normalized) is ordered by when it was added, so
+    paging (cursor = 'created') reaches every clip."""
+    load_s, clip_s = 1, 0.1
+
+    def test_slow_upload_does_not_hide_a_clip(self):
+        import threading
+        big = Path(tempfile.mkdtemp(prefix="sol-h3-big-")) / "big.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24:d=12",
+                        "-f", "lavfi", "-i", "sine=duration=12", "-shortest", "-pix_fmt", "yuv420p", str(big)],
+                       check=True)
+        slow = {}
+        t = threading.Thread(target=lambda: slow.update(r=self.studio.generate(
+            task="ref2va", files={"ref_videos": [("big.mp4", big.read_bytes())]})))
+        t.start()
+        time.sleep(0.4)
+        ids = [self.generate(seed=i) for i in range(24)]                     # posted while the video is normalized
+        t.join()
+        shutil.rmtree(big.parent)
+        self.assertEqual(slow["r"][0], 200, slow["r"])
+        ids.append(slow["r"][1]["id"])
+        self.studio.wait(ids, timeout=120)
+        self.assertEqual(set(self.studio.all_jobs()), set(ids))
+        jobs = sorted(self.studio.all_jobs().values(), key=lambda j: j["created"])
+        self.assertEqual(jobs[-1]["id"], slow["r"][1]["id"])                 # added last, so newest
+
+
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
     takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it."""

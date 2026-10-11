@@ -50,6 +50,8 @@ class StubStudio:
         self.log = self.root / "server.log"
 
     def start(self, timeout=15):
+        if getattr(self, "_logf", None):
+            self._logf.close()
         self._logf = self.log.open("a")
         self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=HERE, env=self.env,
                                      stdout=self._logf, stderr=subprocess.STDOUT)
@@ -110,14 +112,30 @@ class StubStudio:
         return self.post("/api/generate", dict(task=task, orientation=orientation, seconds=seconds, prompt=prompt,
                                                seed=seed, **fields), files)
 
+    def all_jobs(self):
+        """Every job the gallery can reach, by id: /api/state, then /api/jobs page by page."""
+        st = self.state()
+        jobs = {j["id"]: j for j in st["jobs"]}
+        before = min((j["created"] for j in st["jobs"]), default=float("inf"))
+        while st.get("more"):
+            page = json.loads(self.get(f"/api/jobs?before={before}&limit=100")[2])
+            jobs.update((j["id"], j) for j in page["jobs"] if j["id"] not in jobs)
+            if not page["more"] or not page["jobs"]:
+                break
+            before = page["jobs"][-1]["created"]
+        return jobs
+
     def job(self, jid):
-        return next((j for j in self.state()["jobs"] if j["id"] == jid), None)
+        jobs = {j["id"]: j for j in self.state()["jobs"]}
+        return jobs.get(jid) or self.all_jobs().get(jid)
 
     def wait(self, jids, timeout=60):
         """Wait until every job in jids is done or failed; returns them in order."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             jobs = {j["id"]: j for j in self.state()["jobs"]}
+            if any(i not in jobs for i in jids):
+                jobs = self.all_jobs()               # older than the newest page
             if all(jobs.get(i, {}).get("status") in ("done", "failed") for i in jids):
                 return [jobs[i] for i in jids]
             time.sleep(0.2)

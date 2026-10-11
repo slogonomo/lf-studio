@@ -27,6 +27,7 @@ the server removes both from its environment at start; otherwise a 5 s job would
 import email.parser
 import email.policy
 import json
+import math
 import mimetypes
 import os
 import re
@@ -105,27 +106,53 @@ db = None                        # sqlite3 connection to DB_FILE (open_db); writ
 db_lock = threading.Lock()
 
 
+def as_time(value):
+    """A job's 'created' as a finite float (0 for anything else, e.g. from a hand-edited jobs.json)."""
+    try:
+        t = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return t if math.isfinite(t) else 0.0
+
+
 def open_db():
-    """Open (or create) jobs.db and return every job, oldest first. The first time, import jobs.json from before
-    0.2, which stays as it was (no longer written)."""
+    """Open (or create) jobs.db and return every job, oldest first, with strictly increasing 'created' (the
+    gallery's paging cursor). Imports jobs.json from before 0.2 once; it stays as it was (no longer written)."""
     global db
-    new = not DB_FILE.exists()
     db = sqlite3.connect(DB_FILE, check_same_thread=False, isolation_level=None)    # autocommit
     db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, created REAL NOT NULL, data TEXT NOT NULL)")
-    if new and OLD_STATE_FILE.exists():
+    # user_version 1: jobs.json has been imported (or there was none). Set in the import's own transaction, so a
+    # failed or interrupted import is tried again at the next start.
+    if db.execute("PRAGMA user_version").fetchone()[0] == 0:
         try:
-            old = [j for j in json.loads(OLD_STATE_FILE.read_text()) if isinstance(j, dict) and j.get("id")]
+            old = json.loads(OLD_STATE_FILE.read_text()) if OLD_STATE_FILE.exists() else []
+            old = [j for j in old if isinstance(j, dict) and isinstance(j.get("id"), str)]
+            for j in old:
+                j["created"] = as_time(j.get("created"))
+            rows = [(j["id"], j["created"], json.dumps(j)) for j in old]
             with db_lock:
                 db.execute("BEGIN")
-                db.executemany("INSERT OR REPLACE INTO jobs VALUES (?, ?, ?)",
-                               [(j["id"], j.get("created") or 0, json.dumps(j)) for j in old])
-                db.execute("COMMIT")
-            log(f"imported {len(old)} jobs from {OLD_STATE_FILE} into {DB_FILE}")
+                try:
+                    db.executemany("INSERT OR IGNORE INTO jobs VALUES (?, ?, ?)", rows)
+                    db.execute("PRAGMA user_version = 1")
+                    db.execute("COMMIT")
+                except BaseException:
+                    db.execute("ROLLBACK")
+                    raise
+            if old:
+                log(f"imported {len(old)} jobs from {OLD_STATE_FILE} into {DB_FILE}")
         except (OSError, ValueError, TypeError, sqlite3.Error) as error:
-            log("could not import", OLD_STATE_FILE, error)
+            log("could not import", OLD_STATE_FILE, f"({error}); trying again at the next start")
     loaded = [json.loads(row[0]) for row in db.execute("SELECT data FROM jobs ORDER BY created, rowid")]
+    nudged, last = [], None
     for j in loaded:
-        j.setdefault("created", 0)
+        j["created"] = as_time(j.get("created"))
+        if last is not None and j["created"] <= last:      # equal or out-of-order times: 1 ms apart, in load order
+            j["created"] = last + 0.001
+            nudged.append(j)
+        last = j["created"]
+    for j in nudged:
+        save_job(j)
     return loaded
 
 
@@ -728,6 +755,9 @@ class H(BaseHTTPRequestHandler):
                 shutil.rmtree(job_dir, ignore_errors=True)     # a refused request leaves nothing behind
             return self.send(400, {"error": f"{type(e).__name__}: {e}"})
         with lock:
+            # 'created' orders the history and is the paging cursor: set it here, strictly increasing, so a request
+            # that took longer (a reference video being normalized) can't be appended after a later one
+            job["created"] = max(time.time(), jobs[-1]["created"] + 0.001 if jobs else 0)
             jobs.append(job)
             # a job already queued for the warm-up's settings runs first, so it keeps the warm-up
             waited_for = any(j["status"] == "queued" and (j["task"], j["orientation"], j.get("seconds", 5))
