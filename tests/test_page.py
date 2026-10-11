@@ -447,7 +447,8 @@ class SeedText(PageTest):
             for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", "Delete"]),
                                        (bad, "2147483646", ["Remix", "Delete"])):
                 card = f'article[data-id="{jid}"]'
-                self.assertRegex(self.page.inner_text(f"{card} .info"), rf"^\d.* · seed {seed}$")
+                self.assertTrue(self.page.inner_text(f"{card} .when"))
+                self.assertTrue(self.page.inner_text(f"{card} .info").endswith(f" · seed {seed}"))
                 self.assertIsNone(self.page.query_selector(f"{card} .reuse-seed"))
                 row = self.page.eval_on_selector_all(
                     f"{card} .acts > *", "els => els.filter(e => e.offsetWidth).map(e => "
@@ -455,12 +456,41 @@ class SeedText(PageTest):
                 self.assertEqual([name for name, _ in row], buttons, width)
                 self.assertEqual(len({top for _, top in row}), 1, f"one row at {width} px: {row}")
 
-    def test_a_click_selects_the_seed(self):
+    def selected(self):
+        return self.page.evaluate("getSelection().toString()")
+
+    def test_a_click_or_tab_selects_the_seed_and_polls_keep_it(self):
         a = self.studio.generate(seed=2034940401)[1]["id"]
         self.studio.wait([a])
-        self.page.wait_for_selector(f'article[data-id="{a}"] video')
-        self.page.click(f'article[data-id="{a}"] .seedv')
-        self.assertEqual(self.page.evaluate("getSelection().toString()"), "2034940401")
+        card = f'article[data-id="{a}"]'
+        self.page.wait_for_selector(f"{card} video")
+        self.page.evaluate(f"window.seedNode = document.querySelector('{card} .seedv').firstChild")
+        self.page.click(f"{card} .seedv")
+        self.assertEqual(self.selected(), "2034940401")
+        self.page.wait_for_timeout(2500)                                    # a poll and a render later
+        self.assertEqual(self.selected(), "2034940401")
+        self.assertTrue(self.page.evaluate(f"document.querySelector('{card} .seedv').firstChild === window.seedNode"))
+        self.page.evaluate("getSelection().removeAllRanges()")
+        self.page.focus(f"{card} .reuse-all")
+        self.page.keyboard.press("Shift+Tab")                               # keyboard: the seed is one Tab stop
+        self.assertTrue(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
+        self.assertEqual(self.selected(), "2034940401")
+
+    def test_the_seed_is_readable(self):
+        a = self.studio.generate(seed=2034940401)[1]["id"]
+        self.studio.wait([a])
+        card = f'article[data-id="{a}"]'
+        self.page.wait_for_selector(f"{card} video")
+        for scheme in ("light", "dark"):
+            self.page.emulate_media(color_scheme=scheme)
+            ratio = self.page.evaluate(f"""() => {{
+                const lum = c => {{ const [r, g, b] = c.match(/\\d+/g).slice(0, 3).map(v => {{
+                    v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }});
+                    return 0.2126 * r + 0.7152 * g + 0.0722 * b; }};
+                const fg = lum(getComputedStyle(document.querySelector('{card} .seedv')).color);
+                const bg = lum(getComputedStyle(document.querySelector('{card}')).backgroundColor);
+                return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05); }}""")
+            self.assertGreaterEqual(ratio, 4.5, f"seed contrast in {scheme} mode")
 
 
 if __name__ == "__main__":

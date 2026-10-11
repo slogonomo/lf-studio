@@ -184,7 +184,8 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .act:hover{border-color:var(--acc)}
 .act.pri{background:var(--accbg);border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
 .seedt{white-space:nowrap}
-.seedv{font-family:var(--mono);-webkit-user-select:all;user-select:all;cursor:text}
+.seedv{font-family:var(--mono);color:var(--mut);-webkit-user-select:all;user-select:all;cursor:text}
+.seedv:focus{outline:0}.seedv:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:3px}
 .toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translate(-50%,16px);background:var(--fg);color:var(--bg);padding:9px 15px;border-radius:11px;
   font-size:13px;opacity:0;transition:.2s;pointer-events:none;z-index:9;box-shadow:var(--shadow)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
@@ -462,13 +463,15 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   media.innerHTML='<div class="ph2"><div class="big">0:00</div><div class="bar"><i></i></div><div class="small"></div></div>';
   const body=document.createElement('div');body.className='body';
   body.innerHTML=`<div class="tags"><span class="st"></span><span class="tag"></span><span class="tag"></span><span class="tag"></span></div>
-   <div class="p" title="Click to expand"></div><div class="info"><span class="when"></span> <span class="seedt">· seed <span class="seedv" title="Click to select, then copy"></span></span></div><div class="errtxt"></div>
+   <div class="p" title="Click to expand"></div><div class="info"><span class="when"></span> <span class="seedt">· seed <span class="seedv" tabindex="0" title="Click (or Tab to it) to select, then copy"></span></span></div><div class="errtxt"></div>
    <div class="acts"><button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt, seed and input files">Remix</button><span class="dl"></span>
    <button type="button" class="act del" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button></div>`;
 
   const t=body.querySelectorAll('.tags .tag');t[0].textContent=TASK[j.task]||j.task;t[1].textContent=FMT[j.orientation]||j.orientation;t[2].textContent=`${j.seconds||5} s`;
   const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
-  if(j.seed==null)body.querySelector('.seedt').remove();else body.querySelector('.seedv').textContent=j.seed;
+  // a click or Tab selects the seed, ready to copy (after a click WebKit drops the selection, hence the timeout)
+  const sv=body.querySelector('.seedv'),pick=()=>getSelection().selectAllChildren(sv);
+  if(j.seed==null)body.querySelector('.seedt').remove();else{sv.textContent=j.seed;sv.onfocus=pick;sv.onclick=()=>setTimeout(pick);}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
   // new seed (#14); unticked, it keeps the clip's seed
   body.querySelector('.reuse-all').onclick=()=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
