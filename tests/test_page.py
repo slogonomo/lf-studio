@@ -396,5 +396,191 @@ class ReleaseReviewPage(PageTest):
         self.assertEqual(self.page.evaluate("!!document.activeElement.closest('article.job')"), True)
 
 
+class RemixSeed(PageTest):
+    """#14: Remix loads the clip's seed and leaves "New random seed every run" as it is."""
+
+    def remix(self, seed):
+        a = self.studio.generate(prompt="the source clip", seed=seed)[1]["id"]
+        self.studio.wait([a])
+        self.page.wait_for_selector(f'article[data-id="{a}"] .reuse-all')
+        self.page.click(f'article[data-id="{a}"] .reuse-all')
+        return a
+
+    def generate_from_page(self, a):
+        self.page.click("#go")
+        jobs = self.studio.wait_for(lambda s: len(s["jobs"]) == 2)["jobs"]
+        return next(j for j in jobs if j["id"] != a)
+
+    def test_ticked_stays_ticked_and_draws_a_new_seed(self):
+        self.page.check("#autoroll")
+        a = self.remix(777)
+        self.assertTrue(self.page.is_checked("#autoroll"))
+        self.assertEqual(self.page.input_value("#seed"), "777")
+        new = self.generate_from_page(a)                                    # Remix, then Generate in the same tab
+        self.assertNotEqual(int(new["seed"]), 777)
+        self.assertEqual(new["prompt"], "the source clip")
+        other = self.ctx.new_page()                                         # remembered as ticked: a new tab
+        other.goto(self.studio.url + "/")                                   # (a reload here would cancel a poll)
+        self.assertTrue(other.is_checked("#autoroll"))
+        other.close()
+
+    def test_unticked_uses_the_clips_seed(self):
+        self.page.fill("#seed", "5")
+        a = self.remix(777)
+        self.assertFalse(self.page.is_checked("#autoroll"))
+        self.assertEqual(self.page.input_value("#seed"), "777")
+        self.assertEqual(int(self.generate_from_page(a)["seed"]), 777)
+
+
+class SeedText(PageTest):
+    """#15: the seed is plain text next to the time; Remix, Download and Delete share one row."""
+
+    def test_seed_in_the_info_line_and_one_row_of_buttons(self):
+        ok = self.studio.generate(prompt="a long prompt " * 30, seed=2034940401, seconds=10)[1]["id"]
+        bad = self.studio.generate(prompt="STUB_FAIL", seed=2147483646)[1]["id"]
+        self.studio.wait([ok, bad])           # the page was open: the cards were built while queued, then updated
+        self.page.wait_for_selector(f'article[data-id="{ok}"] video')
+        self.page.wait_for_selector(f'article[data-id="{bad}"][data-status="failed"]')
+        for width in (1280, 390, 320):        # 320: the narrowest card (290 px)
+            self.page.set_viewport_size({"width": width, "height": 900})
+            self.page.wait_for_timeout(300)
+            for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", "Delete"]),
+                                       (bad, "2147483646", ["Remix", "Delete"])):
+                card = f'article[data-id="{jid}"]'
+                self.assertTrue(self.page.inner_text(f"{card} .when"))
+                self.assertTrue(self.page.inner_text(f"{card} .info").endswith(f" · seed {seed}"))
+                self.assertIsNone(self.page.query_selector(f"{card} .reuse-seed"))
+                row = self.page.eval_on_selector_all(
+                    f"{card} .acts > *", "els => els.filter(e => e.offsetWidth).map(e => "
+                                         "[e.textContent.trim(), Math.round(e.getBoundingClientRect().top)])")
+                self.assertEqual([name for name, _ in row], buttons, width)
+                self.assertEqual(len({top for _, top in row}), 1, f"one row at {width} px: {row}")
+
+    def selected(self):
+        return self.page.evaluate("getSelection().toString()")
+
+    def finished(self, **kw):
+        a = self.studio.generate(seed=2034940401, **kw)[1]["id"]
+        self.studio.wait([a])
+        card = f'article[data-id="{a}"]'
+        self.page.wait_for_selector(f"{card} video")
+        return card
+
+    def wait_selected(self, text):
+        self.page.wait_for_function("t => getSelection().toString() === t", arg=text, timeout=3000)
+
+    def test_a_click_or_tab_selects_the_seed_and_polls_keep_it(self):
+        card = self.finished()
+        self.page.evaluate(f"window.seedNode = document.querySelector('{card} .seedv').firstChild")
+        self.page.click(f"{card} .seedv")
+        self.wait_selected("2034940401")
+        self.assertFalse(self.page.evaluate("document.activeElement.classList.contains('seedv')"))  # mouse: no focus
+        self.page.wait_for_timeout(2500)                                    # a poll and a render later
+        self.assertEqual(self.selected(), "2034940401")
+        self.assertTrue(self.page.evaluate(f"document.querySelector('{card} .seedv').firstChild === window.seedNode"))
+        self.page.evaluate("getSelection().removeAllRanges()")
+        self.page.focus(f"{card} .reuse-all")
+        self.page.keyboard.press("Shift+Tab")                               # keyboard: the seed is one Tab stop
+        self.assertTrue(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
+        self.wait_selected("2034940401")
+
+    def select_prompt_to_seed(self, card):
+        return self.page.evaluate(f"""() => {{ const c = document.querySelector('{card}'), r = document.createRange();
+            r.setStart(c.querySelector('.p').firstChild, 0); r.setEnd(c.querySelector('.seedv').firstChild, 10);
+            getSelection().removeAllRanges(); getSelection().addRange(r); return getSelection().toString(); }}""")
+
+    def test_a_selection_of_your_own_stays(self):
+        card = self.finished(prompt="a red fox runs through snow")
+        whole = self.select_prompt_to_seed(card)
+        self.assertTrue(whole.startswith("a red fox") and whole.endswith("seed 2034940401"), whole)
+        self.page.click(f"{card} .seedv", button="right")                  # context menu: Copy copies all of it
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.selected(), whole)
+        self.page.focus(f"{card} .reuse-all")
+        self.page.keyboard.press("Shift+Tab")                               # the same with the seed focused
+        self.assertEqual(self.select_prompt_to_seed(card), whole)
+        self.page.click(f"{card} .seedv", button="right")
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.selected(), whole)
+        self.page.evaluate(f"""() => {{ const r = document.createRange();         // a caret at the prompt's start
+            r.setStart(document.querySelector('{card} .p').firstChild, 0); r.collapse(true);
+            getSelection().removeAllRanges(); getSelection().addRange(r); }}""")
+        self.page.click(f"{card} .seedv", modifiers=["Shift"])             # Shift+click extends to the seed
+        self.wait_selected(whole)
+
+    def test_the_mouse_leaves_focus_and_dragging_to_the_browser(self):
+        card = self.finished()
+        other = self.studio.generate(prompt="another clip")[1]["id"]
+        self.studio.wait([other])
+        self.page.wait_for_selector(f'article[data-id="{other}"] video')
+        cards = self.page.eval_on_selector_all(".job", "els => els.length")
+        self.page.focus(f'article[data-id="{other}"] .del')
+        self.page.click(f"{card} .seedv")                                   # focus leaves Delete, as on any text
+        self.page.keyboard.press("Space")
+        self.page.wait_for_timeout(500)
+        self.assertEqual(self.page.eval_on_selector_all(".job", "els => els.length"), cards)
+        self.assertFalse(self.page.is_visible("#undo"))
+        self.page.fill("#seed", "")
+        self.page.click(f"{card} .seedv")
+        self.page.drag_and_drop(f"{card} .seedv", "#seed")                  # the selected number dragged into the form
+        self.assertEqual(self.page.input_value("#seed"), "2034940401")
+
+    def test_after_a_click_keyboard_focus_moves_on_as_from_text(self):
+        card = self.finished()
+        self.page.click(f"{card} .seedv")
+        self.page.keyboard.press("Shift+Tab")                               # not back onto the clicked seed
+        self.assertFalse(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
+        self.assertEqual(self.page.get_attribute(f"{card} .seedv", "tabindex"), "0")   # a Tab stop again
+        self.page.click(f"{card} .seedv")
+        self.page.click(f"{card} .when")                                    # a press elsewhere, then Tab
+        self.page.keyboard.press("Tab")
+        self.assertTrue(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
+        self.wait_selected("2034940401")
+
+    def test_a_touch_tap_neither_focuses_the_seed_nor_drops_a_selection(self):
+        # Chromium (touch through CDP): a tap's mouse events come when the finger lifts, here 80 ms later
+        try:
+            browser = self.pw.chromium.launch()
+        except Exception:
+            self.skipTest("needs Playwright's Chromium")
+        try:
+            card = self.finished(prompt="a red fox runs through snow")
+            ctx = browser.new_context(has_touch=True, viewport={"width": 1280, "height": 900})
+            page = ctx.new_page()
+            page.goto(self.studio.url + "/")
+            page.wait_for_selector(f"{card} video")
+            box = page.locator(f"{card} .seedv").bounding_box()
+            point = {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
+            whole = page.evaluate(f"""() => {{ const c = document.querySelector('{card}'), r = document.createRange();
+                r.setStart(c.querySelector('.p').firstChild, 0); r.setEnd(c.querySelector('.seedv').firstChild, 10);
+                getSelection().removeAllRanges(); getSelection().addRange(r); return getSelection().toString(); }}""")
+            cdp = ctx.new_cdp_session(page)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [point]})
+            page.wait_for_timeout(80)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+            page.wait_for_timeout(300)
+            self.assertFalse(page.evaluate("document.activeElement.classList.contains('seedv')"))
+            self.assertEqual(page.evaluate("getSelection().toString()"), whole)
+        finally:
+            browser.close()
+
+    def test_the_seed_is_readable(self):
+        card = self.finished()
+        for scheme in ("light", "dark"):
+            self.page.emulate_media(color_scheme=scheme)
+            # both colours through a canvas (any CSS colour format; the text blended over the card), then WCAG contrast
+            ratio = self.page.evaluate(f"""() => {{
+                const x = document.createElement('canvas').getContext('2d', {{willReadFrequently: true}});
+                const lum = () => {{ const [r, g, b] = [...x.getImageData(0, 0, 1, 1).data].slice(0, 3).map(v => {{
+                    v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }});
+                    return 0.2126 * r + 0.7152 * g + 0.0722 * b; }};
+                const paint = c => {{ x.fillStyle = c; x.fillRect(0, 0, 1, 1); }};
+                paint(getComputedStyle(document.querySelector('{card}')).backgroundColor); const bg = lum();
+                paint(getComputedStyle(document.querySelector('{card} .seedv')).color); const fg = lum();
+                return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05); }}""")
+            self.assertGreaterEqual(ratio, 4.5, f"seed contrast in {scheme} mode")
+
 if __name__ == "__main__":
     unittest.main()
