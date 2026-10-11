@@ -510,6 +510,135 @@ class TrashPurge(Delete):
     test_old_layout_clip_moves_just_its_files = test_refused_request_leaves_no_input_directory = None
 
 
+class LoadSelected(StudioTest):
+    """#3: POST /api/load warms up chosen settings on request: it replaces what is loaded or warming up, never runs
+    while clips are queued or running, and needs an earlier clip of the mode for fl2va/ref2va."""
+    load_s, clip_s, preload = 2, 1, True
+
+    def seed(self):
+        self.write_state([finished_job()])
+
+    def load(self, task="t2va", orientation="portrait", seconds=10):
+        return self.studio.post("/api/load", json_body={"task": task, "orientation": orientation, "seconds": seconds})
+
+    def ready(self, key):
+        return self.studio.wait_for(lambda st: st["session"]["key"] == key and st["session"]["state"] == "ready")
+
+    def test_switch_loaded_settings(self):
+        self.ready(["t2va", "landscape", 5])                                 # the start-up warm-up
+        self.assertEqual(self.load(), (200, {"ok": True}))
+        st = self.ready(["t2va", "portrait", 10])
+        self.assertEqual(st["jobs"][0]["id"], "0" * 32)                      # no job was created for it
+        log = self.studio.log.read_text()
+        self.assertIn("closing session ('t2va', 'landscape', 5)", log)
+        self.assertIn("preloading ('t2va', 'portrait', 10)", log)
+        self.assertEqual(self.load()[1].get("already"), True)               # same settings again: nothing to do
+        jid = self.generate(orientation="portrait", seconds=10)
+        self.assertFalse(self.studio.wait([jid])[0].get("includes_model_load"))   # it used the loaded models
+
+    def test_replaces_a_warm_up_for_other_settings(self):
+        self.studio.wait_for(lambda st: st["session"].get("preloading"))
+        self.assertEqual(self.load()[0], 200)
+        self.ready(["t2va", "portrait", 10])
+        self.assertIn("aborting preload", self.studio.log.read_text())
+
+    def test_refused_while_busy_and_for_modes_without_a_clip(self):
+        self.ready(["t2va", "landscape", 5])
+        st = self.studio.state()
+        self.assertEqual(st["warmable"], ["t2va"])
+        code, body = self.load(task="fl2va")
+        self.assertEqual(code, 409)
+        self.assertIn("no earlier fl2va clip", body["error"])
+        self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va"})[0], 400)
+        jid = self.generate(task="fl2va", seconds=8, files={"first_frame": [("f.png", png())]})
+        self.studio.wait_for(lambda st: any(j["id"] == jid and j["status"] != "queued" for j in st["jobs"]))
+        self.assertEqual(self.load()[0], 409)                                # a clip is running
+        self.studio.wait([jid])
+        self.assertIn("fl2va", self.studio.state()["warmable"])
+        self.assertEqual(self.load(task="fl2va", orientation="landscape", seconds=5)[0], 200)
+        self.ready(["fl2va", "landscape", 5])
+
+
+class LoadDuringClose(StudioTest):
+    """#3, from review: while the old models close for a requested load (~40 s for real, 3 s here), a clip, an
+    Unload or a newer request takes precedence, and no pipeline is ever left open."""
+    load_s, clip_s, preload = 2, 1, True
+
+    def seed(self):
+        self.studio.env["STUB_CLOSE_S"] = "3"
+        self.write_state([finished_job()])
+
+    def load(self, orientation="portrait", seconds=10):
+        return self.studio.post("/api/load", json_body={"task": "t2va", "orientation": orientation, "seconds": seconds})
+
+    def closing(self):
+        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 5]
+                             and st["session"]["state"] == "ready", timeout=30)
+        self.assertEqual(self.load()[0], 200)
+        st = self.studio.wait_for(lambda st: st["session"]["state"] == "unloading")
+        self.assertEqual(st["session"]["switching_to"], ["t2va", "portrait", 10])
+
+    def open_pipelines(self):
+        roots = (self.studio.runtime / "outputs" / "webui").iterdir()
+        return [r.name for r in roots if (r / "STARTED").exists() and not (r / "CLOSED").exists()]
+
+    def no_warm_up_for_the_request(self):
+        self.assertNotIn("preloading ('t2va', 'portrait', 10)", self.studio.log.read_text())
+
+    def test_same_settings_clip_loads_its_own(self):
+        self.closing()
+        job = self.studio.wait([self.generate(orientation="portrait", seconds=10)], timeout=60)[0]
+        self.assertTrue(job["includes_model_load"])
+        self.no_warm_up_for_the_request()
+        self.assertEqual(len(self.open_pipelines()), 1)                     # the clip's own session
+
+    def test_other_settings_clip_cancels_the_request(self):
+        self.closing()
+        job = self.studio.wait([self.generate(seconds=3)], timeout=60)[0]
+        self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
+        self.no_warm_up_for_the_request()
+        self.assertEqual(self.studio.state()["session"]["key"], ["t2va", "landscape", 3])
+
+    def test_unload_cancels_the_request(self):
+        self.closing()
+        self.assertEqual(self.studio.post("/api/unload")[0], 200)            # waits for the close in progress
+        time.sleep(1)
+        st = self.studio.state()["session"]
+        self.assertEqual((st["state"], st["key"], st["switching_to"]), ("idle", None, None))
+        self.no_warm_up_for_the_request()
+        self.assertEqual(self.open_pipelines(), [])
+
+    def test_newer_request_wins(self):
+        self.closing()
+        self.assertEqual(self.load(orientation="landscape", seconds=3)[0], 200)
+        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 3]
+                             and st["session"]["state"] == "ready", timeout=30)
+        self.no_warm_up_for_the_request()
+        self.assertEqual(len(self.open_pipelines()), 1)
+
+    def test_back_to_the_settings_being_closed(self):
+        self.closing()
+        self.assertEqual(self.load(orientation="landscape", seconds=5), (200, {"ok": True}))
+        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 5]
+                             and st["session"]["state"] == "ready", timeout=30)
+        self.assertEqual(len(self.open_pipelines()), 1)
+
+    def test_refusals(self):
+        self.studio.wait_for(lambda st: st["session"]["state"] == "ready", timeout=30)
+        bad = self.studio.post("/api/load", json_body=None, fields=None)
+        self.assertEqual(bad[0], 400)
+        req = self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "portrait", "seconds": 1e999})
+        self.assertEqual(req[0], 400)
+        (self.studio.root / "paths-ref2va.json").unlink()
+        code, body = self.studio.post("/api/load", json_body={"task": "ref2va", "orientation": "portrait", "seconds": 5})
+        self.assertEqual(code, 400)
+        self.assertIn("manifest", body["error"])
+        a = self.generate(seconds=8)
+        b = self.generate(seconds=8, seed=2)                                  # queued behind a
+        self.studio.wait_for(lambda st: [j["status"] for j in st["jobs"] if j["id"] in (a, b)].count("queued") == 1)
+        self.assertEqual(self.load()[0], 409)
+
+
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
     takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it."""

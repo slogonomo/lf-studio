@@ -101,6 +101,7 @@ for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
     d.mkdir(parents=True, exist_ok=True)
 
 lock = threading.Lock()          # guards jobs / session
+close_lock = threading.Lock()    # one pipeline close at a time (close_session)
 wake = threading.Event()
 jobs = []                        # every job, oldest first (also in jobs.db)
 PAGE = 24                        # clips per gallery page (/api/state carries the newest page, /api/jobs older ones)
@@ -342,17 +343,28 @@ def new_pipeline(key, root):
                     orientation=orientation, seconds=None if seconds == 5 else seconds)   # 5 s = frozen route
 
 
-def close_session(reason):
-    p = session["pipeline"]
-    if p is not None:
-        log("closing session", session["key"], "-", reason)
-        session["state"] = "unloading"
-        try:
-            p.close()
-        except Exception:
-            traceback.print_exc()
-    session.update(pipeline=None, key=None, state="idle", since=time.time(), loading_key=None, preloading=False,
-                   takeover_until=None, load_eta=None, warm_s=None)
+def close_session(reason, p=None):
+    """Close the session's pipeline, or `p` (a pipeline of this thread's that may no longer be the session's).
+    One close at a time: a second caller waits for the first, then finds nothing left to close. The session is reset
+    only if it still holds the closed pipeline (or none), never a newer one. Call it without holding `lock`."""
+    with close_lock:
+        with lock:
+            target = p or session["pipeline"]
+            mine = target is not None and target is session["pipeline"]
+            if mine:
+                session["state"] = "unloading"
+                session["since"] = time.time()
+            key = session["key"] if mine else None
+        if target is not None:
+            log("closing session", key or "", "-", reason)
+            try:
+                target.close()
+            except Exception:
+                traceback.print_exc()
+        with lock:
+            if session["pipeline"] is None or session["pipeline"] is target:
+                session.update(pipeline=None, key=None, state="idle", since=time.time(), loading_key=None,
+                               preloading=False, takeover_until=None, load_eta=None, warm_s=None)
 
 
 def run_job(job):
@@ -430,27 +442,48 @@ def clip_file(job):
     return None
 
 
-preload = {"pending": None}      # (key, case) to warm up when the app starts and nothing is queued
+preload = {"pending": None}      # (key, case) to warm up when nothing is queued: at start, or "Load selected now"
 
 
-def preload_candidate():
-    """The last finished clip's settings, as a warm-up case (its prompt and inputs, seed 999).
-    None when there is no such clip, its manifest is gone or its uploaded inputs are gone."""
-    last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")), None)
-    if last is None or not PATHS.get(last["task"], Path("/nonexistent")).is_file():
+def warmup_case(job):
+    """A finished clip as a warm-up case: its prompt and inputs, seed 999. None when its manifest or inputs are gone."""
+    if not PATHS.get(job["task"], Path("/nonexistent")).is_file():
         return None
-    case = {"case_id": "preload", "prompt": last["prompt"], "seed": 999, "task": last["task"]}
+    case = {"case_id": "preload", "prompt": job["prompt"], "seed": 999, "task": job["task"]}
     for k in ("first_frame", "last_frame", "references"):
-        if last.get(k):
-            case[k] = last[k]
+        if job.get(k):
+            case[k] = job[k]
     media = [case.get("first_frame"), case.get("last_frame")] + [r.get("path") for r in case.get("references", [])]
     if any(m and not Path(m).is_file() for m in media):
         return None
     try:
-        case = normalize_case(case)
+        return normalize_case(case)
     except Exception:
         return None
-    return (last["task"], last["orientation"], last.get("seconds", 5)), case
+
+
+def preload_candidate():
+    """The last finished clip's settings and warm-up case, or None (see warmup_case)."""
+    last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")), None)
+    case = warmup_case(last) if last else None
+    return ((last["task"], last["orientation"], last.get("seconds", 5)), case) if case else None
+
+
+WARMUP_PROMPT = ("integrated_multimodal_description: A quiet lake at sunrise, mist over the water, one continuous wide "
+                 "shot.\noverall_soundscape: Soft wind and water.\nnon_diegetic_music: None.")
+
+
+def mode_warmup_case(task):
+    """A warm-up case for a mode ("Load selected now"): the newest of its last few finished clips whose inputs still
+    exist; for t2va without one, a built-in prompt. fl2va and ref2va need real inputs, so without such a clip: None."""
+    recent = [j for j in reversed(jobs) if j["task"] == task and j.get("status") == "done" and not j.get("deleted")]
+    for j in recent[:5]:
+        case = warmup_case(j)
+        if case:
+            return case
+    if task == "t2va" and PATHS["t2va"].is_file():
+        return normalize_case({"case_id": "preload", "prompt": WARMUP_PROMPT, "seed": 999, "task": "t2va"})
+    return None
 
 
 def run_preload(key, case):
@@ -461,6 +494,9 @@ def run_preload(key, case):
         p = new_pipeline(key, root)
     except Exception as e:
         log("preload skipped:", f"{type(e).__name__}: {e}"[:200])
+        with lock:
+            session.update(preloading=False, loading_key=None, state="idle" if session["pipeline"] is None else
+                           session["state"])
         return
     # Until takeover_until, a job for these same settings stops the warm-up and loads the models itself: its loading
     # pass renders it. Started t s into a warm-up that takes L, it is done at about t + L (plus ~5 s to stop the
@@ -469,15 +505,21 @@ def run_preload(key, case):
     # W ~65 s).
     # load_eta and warm_s let the page say when a clip submitted now would be ready (both ways)
     warm, eta = warm_time(key), load_eta(key)
-    session.update(pipeline=p, state="loading", since=time.time(), loading_key=key, preloading=True,
-                   takeover_until=time.time() + (warm - 5 if warm else eta / 2), load_eta=eta, warm_s=warm)
+    with lock:                             # the worker set preloading when it took the request; a Generate or an
+        stopped = not session.get("preloading")    # Unload since then has cleared it
+        if not stopped:
+            session.update(pipeline=p, state="loading", since=time.time(), loading_key=key,
+                           takeover_until=time.time() + (warm - 5 if warm else eta / 2), load_eta=eta, warm_s=warm)
+    if stopped:
+        close_session("warm-up no longer wanted", p)
+        return
     t0 = time.time()
     try:
         p.start(case)
     except BaseException as e:
         log("preload stopped:", f"{type(e).__name__}: {e}"[:200])
         session["preloading"] = False
-        close_session("preload stopped")
+        close_session("preload stopped", p)
         return
     with lock:                             # atomic with abort_preload: either it is aborted or it is ready
         aborted = not session.get("preloading")
@@ -485,7 +527,7 @@ def run_preload(key, case):
             session.update(key=key, state="ready", since=time.time(), loading_key=None, preloading=False,
                            takeover_until=None, load_eta=None, warm_s=None)
     if aborted:                            # aborted just as it finished: its workers got SIGTERM
-        close_session("preload stopped")
+        close_session("preload stopped", p)
         return
     remember_load(key, round(time.time() - t0, 1))     # a warm-up pass is a cold start too (load + one clip)
     log(f"preload ready in {time.time() - t0:.0f} s")
@@ -525,9 +567,23 @@ def worker_loop():
         if time.time() - purged > 86400:
             purged = time.time()
             purge_trash()
-        pending, preload["pending"] = preload["pending"], None
-        if pending and session["pipeline"] is None and not any(j["status"] == "queued" for j in jobs):
-            run_preload(*pending)
+        # a requested warm-up (at start, or "Load selected now"): session["switching_to"] shows it until it starts.
+        # A clip submitted, an Unload or a newer request meanwhile cancels or replaces it (they clear or change
+        # switching_to), also while the old models are being closed for it, which takes ~40 s.
+        with lock:
+            pending, preload["pending"] = preload["pending"], None
+        if pending:
+            if session["pipeline"] is not None and session["key"] != pending[0]:
+                close_session(f"loading {pending[0]} as asked")
+            with lock:
+                go = (session.get("switching_to") == pending[0] and not preload["pending"]
+                      and session["pipeline"] is None and not any(j["status"] == "queued" for j in jobs))
+                if session.get("switching_to") == pending[0] and not preload["pending"]:
+                    session["switching_to"] = None
+                if go:
+                    session.update(preloading=True, loading_key=pending[0], state="loading", since=time.time())
+            if go:
+                run_preload(*pending)
         while True:
             with lock:
                 job = next((j for j in jobs if j["status"] == "queued"), None)
@@ -693,9 +749,11 @@ class H(BaseHTTPRequestHandler):
                 active = [j for j in jobs if j["status"] not in ("done", "failed")]
                 finished = [j for j in jobs if j["status"] in ("done", "failed") and not j.get("deleted")]
                 window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
-                state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS,
+                warmable = [t for t in ready if mode_warmup_case(t)]     # modes "Load selected now" can warm up
+                state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS, "warmable": warmable,
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
-                                                                 "takeover_until", "load_eta", "warm_s")},
+                                                                 "takeover_until", "load_eta", "warm_s",
+                                                                 "switching_to")},
                          "jobs": [dict(j) for j in window],
                          "done": sum(j["status"] == "done" for j in finished), "more": len(finished) > PAGE,
                          "deleted": [j["id"] for j in jobs if j.get("deleted")]}       # still in the trash
@@ -807,11 +865,44 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/unload":
             with lock:
                 busy = any(j["status"] not in ("done", "failed", "queued") for j in jobs)
+                if not busy:                       # a requested load ("Load selected now") is cancelled too
+                    preload["pending"] = None
+                    session["switching_to"] = None
             if busy:
                 return self.send(409, {"error": "a job is running"})
             if abort_preload("unload requested"):
                 return self.send(200, {"ok": True})
             close_session("unload requested")
+            return self.send(200, {"ok": True})
+        if self.path == "/api/load":       # "Load selected now": warm up these settings before the prompt is ready
+            try:
+                want = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+                key = (want["task"], want["orientation"], int(want["seconds"]))
+                if key[0] not in PATHS or key[1] not in ORIENTATIONS or key[2] not in DURATIONS:
+                    raise ValueError
+            except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
+                return self.send(400, {"error": "expected JSON {task, orientation, seconds}"})
+            if not PATHS[key[0]].is_file():
+                return self.send(400, {"error": f"no path manifest for {key[0]} (run install/70-manifests.sh)"})
+            with lock:
+                busy = any(j["status"] not in ("done", "failed") for j in jobs)
+                case = mode_warmup_case(key[0])
+                switching = session.get("switching_to")
+                already = (switching == key or not switching and (
+                    key == session.get("key") and session.get("state") in ("ready", "busy")
+                    or key == session.get("loading_key") and session.get("preloading")))
+                if not busy and not already and case:
+                    preload["pending"] = (key, case)      # replaces an earlier request that hasn't started
+                    session["switching_to"] = key
+            if busy:
+                return self.send(409, {"error": "a clip is queued or running; the models change for it anyway"})
+            if already:
+                return self.send(200, {"ok": True, "already": True})
+            if case is None:
+                return self.send(409, {"error": f"no earlier {key[0]} clip with its files to warm up with"})
+            abort_preload(f"loading {key} as asked")            # a warm-up for other settings
+            wake.set()
+            log("load requested:", key)
             return self.send(200, {"ok": True})
         if self.path in ("/api/delete", "/api/undelete"):
             try:
@@ -931,6 +1022,8 @@ class H(BaseHTTPRequestHandler):
             # that took longer (a reference video being normalized) can't be appended after a later one
             job["created"] = max(time.time(), jobs[-1]["created"] + 0.001 if jobs else 0)
             jobs.append(job)
+            preload["pending"] = None              # a clip decides what is loaded next: a requested warm-up that
+            session["switching_to"] = None         # hasn't started is dropped (the clip loads its own settings)
             # a job already queued for the warm-up's settings runs first, so it keeps the warm-up
             waited_for = any(j["status"] == "queued" and (j["task"], j["orientation"], j.get("seconds", 5))
                              == session.get("loading_key") for j in jobs)
@@ -981,6 +1074,7 @@ def main():
     if PRELOAD:
         preload["pending"] = preload_candidate()
         if preload["pending"]:
+            session["switching_to"] = preload["pending"][0]
             log("will preload", preload["pending"][0])
             wake.set()
     threading.Thread(target=worker_loop, daemon=True).start()
