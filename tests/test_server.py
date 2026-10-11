@@ -660,6 +660,21 @@ class BadTrashDays(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class BadStage2Audio(unittest.TestCase):
+    """SOL_H3_STAGE2_AUDIO (a patch setting) is checked at start, not when every clip fails."""
+
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        try:
+            with self.assertRaises(RuntimeError) as e:
+                StubStudio(d / "a", env={"SOL_H3_STAGE2_AUDIO": "noised"}).start()
+            self.assertIn("SOL_H3_STAGE2_AUDIO must be one of", str(e.exception))
+            studio = StubStudio(d / "b", env={"SOL_H3_STAGE2_AUDIO": "JOINT"}).start()
+            studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TrashPurge(Delete):
     env = {"SOLH3_TRASH_DAYS": "0.00001"}                                  # under a second
 

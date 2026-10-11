@@ -51,20 +51,21 @@ index be0076a..ef2447e 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/config.py b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
-index 03804f7..7883b08 100644
+index 03804f7..27a8051 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
-@@ -6,6 +6,9 @@ import os
+@@ -6,6 +6,10 @@ import os
  from pathlib import Path
  import re
  
-+# Modified by sol-h3-studio: portrait orientation, clip length and the persistent compile-cache location.
++# Modified by sol-h3-studio: portrait orientation, clip length, the persistent compile-cache location and the Stage-2
++# audio setting.
 +from .geometry import ORIENTATIONS, orient_recipe
 +
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +22,39 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,54 @@ REQUIRED_PATHS = (
  )
  
  
@@ -82,6 +83,21 @@ index 03804f7..7883b08 100644
 +    if runtime_root:
 +        return str(Path(runtime_root) / "cache" / "compile")
 +    return str(Path.home() / ".cache" / "sol-h3-studio" / "compile")
++
++
++# sol-h3-studio: Stage-2 audio policy (runtime/stage2.py). "frozen" (default): Stage 2 refines the video against the
++# H3 audio held clean and fixed; "joint": upstream, the audio is re-noised and regenerated with the video, then
++# discarded. Read here so a bad value fails when a Pipeline is made, before any worker loads (and again in Stage 2).
++STAGE2_AUDIO_MODES = ("frozen", "joint")
++
++
++def stage2_audio_mode():
++    """SOL_H3_STAGE2_AUDIO, default "frozen" (case-insensitive)."""
++    mode = os.environ.get("SOL_H3_STAGE2_AUDIO", "").strip().lower() or "frozen"
++    if mode not in STAGE2_AUDIO_MODES:
++        raise ValueError(f"SOL_H3_STAGE2_AUDIO must be one of {STAGE2_AUDIO_MODES}, "
++                         f"not {os.environ.get('SOL_H3_STAGE2_AUDIO')!r}")
++    return mode
 +
 +
 +def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None, orientation=None, seconds=None):
@@ -524,7 +540,7 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
-index 9aad551..7facb80 100644
+index 9aad551..adac677 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 @@ -6,8 +6,11 @@ from pathlib import Path
@@ -536,7 +552,7 @@ index 9aad551..7facb80 100644
 +from concurrent.futures import ThreadPoolExecutor
  
 -from .config import PACKAGE, load_recipe
-+from .config import PACKAGE, compile_cache_root, load_recipe
++from .config import PACKAGE, compile_cache_root, load_recipe, stage2_audio_mode
  from .worker import write_json
  
  
@@ -561,7 +577,7 @@ index 9aad551..7facb80 100644
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -120,15 +137,24 @@ class Pipeline:
+@@ -120,15 +137,25 @@ class Pipeline:
      """
  
      def __init__(self, paths, output_root, *, task="t2va", ref_image_match=None,
@@ -573,6 +589,7 @@ index 9aad551..7facb80 100644
 -                                  ref_stage1_attn=ref_stage1_attn)
 +                                  ref_stage1_attn=ref_stage1_attn, orientation=orientation,
 +                                  seconds=seconds)
++        stage2_audio_mode()     # sol-h3-studio: a bad SOL_H3_STAGE2_AUDIO fails here, before any worker loads
          self.root = Path(output_root).resolve()
          self.root.mkdir(parents=True, exist_ok=False)
          self.worker_factory = worker_factory
@@ -588,7 +605,7 @@ index 9aad551..7facb80 100644
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -138,32 +164,99 @@ class Pipeline:
+@@ -138,32 +165,99 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -706,7 +723,7 @@ index 9aad551..7facb80 100644
              raise RuntimeError("Call start() before generate()")
          if case.get("task", "t2va") != self.task:
              raise ValueError("Use a separate pipeline for a different task")
-@@ -175,13 +268,22 @@ class Pipeline:
+@@ -175,13 +269,22 @@ class Pipeline:
          started = time.monotonic_ns()
          row["request_start_monotonic_ns"] = started
          try:
@@ -732,7 +749,7 @@ index 9aad551..7facb80 100644
              self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -195,7 +297,8 @@ class Pipeline:
+@@ -195,7 +298,8 @@ class Pipeline:
                         qwen_s=conditioning["request_wall_s"], stage1_s=s1["request_wall_s"],
                         stage2_s=s2["stage2_request_s"],
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
@@ -742,7 +759,7 @@ index 9aad551..7facb80 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -213,6 +316,11 @@ class Pipeline:
+@@ -213,6 +317,11 @@ class Pipeline:
  
      def close(self):
          try:
@@ -1091,28 +1108,67 @@ index 7f691fa..6c775e5 100644
          before_order = before.get("bsa_index_order", {})
          match_order = order.get("match_triton_order", False)
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-index 8f1a36c..3441bf2 100644
+index 8f1a36c..4b0cbf5 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-@@ -14,6 +14,9 @@ import os
+@@ -3,17 +3,23 @@
+ The module imports GPU frameworks only when Session is constructed. A request
+ consumes one same-request normalized H3/PCM bundle and the exact offline generic
+ post-connector AV cache. Original PCM is muxed into the final MP4.
++
++sol-h3-studio: by default the refiner sees that PCM clean and fixed (SOL_H3_STAGE2_AUDIO, below) instead of a
++re-noised copy that it regenerates and then discards.
+ """
+ from __future__ import annotations
+ 
+ from contextlib import ExitStack
+ from copy import deepcopy
+-from dataclasses import asdict
++from dataclasses import asdict, fields, replace
+ import gc
+ import os
  from pathlib import Path
  import time
  
 +# Modified by sol-h3-studio: clip-length/orientation geometry, persistent compile cache, Inductor autotune-cache
-+# fix, O_DIRECT weight loading and load-timing prints (see "sol-h3-studio:" notes).
-+from .config import compile_cache_root
++# fix, O_DIRECT weight loading, load-timing prints and the Stage-2 audio policy (see "sol-h3-studio:" notes).
++from .config import STAGE2_AUDIO_MODES, compile_cache_root, stage2_audio_mode
  from .latent_transfer import (WIRE_METADATA, load_latent_capture, load_payload,
                                sha256, validate_request_id, write_new)
  from .prompt_cache import FIXED_PROMPT, load_cache
-@@ -22,6 +25,7 @@ from .stage2_ops.h3_upscale import (ADAPTER_OUTPUT, H3_INPUT, H3_UPSCALED,
+@@ -22,6 +28,31 @@ from .stage2_ops.h3_upscale import (ADAPTER_OUTPUT, H3_INPUT, H3_UPSCALED,
  from .stage2_ops.models import SIGMAS, TILES, construct, public_refiner_modules
  from .stage2_ops.conv_direct_nhwc import installed_direct_upsample_nhwc
  from .stage2_ops.writer_chunking import tracked_writer_chunks
 +from . import geometry as canvas
++
++# sol-h3-studio: Stage-2 audio policy. Upstream (super_acceleration/STAGE2_CONTRACT.md steps 4 and 7) noises the
++# encoded H3 audio to the first Stage-2 sigma like the video, denoises both together under the generic prompt, then
++# discards that audio and muxes the original PCM: the refined lips follow regenerated speech that is never heard
++# (same rhythm, different sounds, sometimes speech in pauses). "frozen" holds the H3 audio clean and fixed during the
++# refine, as LTX-2's own audio-to-video pipeline does (a2vid_two_stage: frozen=True, noise_scale=0.0), so the video is
++# refined against the audio in the MP4. "joint" is upstream's behaviour (older clips reproduce from their seed).
++# The setting: runtime/config.stage2_audio_mode (SOL_H3_STAGE2_AUDIO).
++
++
++def check_frozen_states(state_type):
++    """LTX-2 before frozen modalities has no LatentState.frozen: "frozen" cannot work there."""
++    if "frozen" not in {field.name for field in fields(state_type)}:
++        raise RuntimeError("this LTX-2 has no frozen latent states (LatentState.frozen); "
++                           "update LTX-2 or set SOL_H3_STAGE2_AUDIO=joint")
++
++
++def frozen_audio_state(state, torch_module):
++    """The audio state held clean and fixed: its clean latent, an all-zero denoise mask (no token is denoised) and
++    frozen=True (the transformer is told sigma 0 for the audio's AdaLN and cross-modal gates)."""
++    check_frozen_states(state)
++    return replace(state, latent=state.clean_latent.clone(),
++                   denoise_mask=torch_module.zeros_like(state.denoise_mask), frozen=True)
++
  
  REQUIRED_PATHS = ("transformer", "refiner_lora", "output_video_vae", "audio_vae",
                    "adapter_dir", "h3_upscaler_source", "h3_upscaler_checkpoint", "prompt_cache")
-@@ -33,7 +37,8 @@ def _refiner_class(base, compat, session):
+@@ -33,11 +64,21 @@ def _refiner_class(base, compat, session):
      class SparkRefiner(compat.OfficialCompatRefiner):
          def __init__(self):
              construct(self, session.paths, torch=torch, dist=session.dist,
@@ -1122,7 +1178,20 @@ index 8f1a36c..3441bf2 100644
  
          def first_frame_path(self, record):
              return None
-@@ -50,8 +55,14 @@ def _refiner_class(base, compat, session):
+ 
++        def prepare_multimodal_states(self, video_latent, audio_latent, conditionings, seed):
++            # sol-h3-studio: the upstream states first, so the random draws and the video noise are the same in both
++            # modes; then, unless "joint", the audio state becomes the clean, frozen H3 audio (see STAGE2_AUDIO_MODES)
++            video_state, audio_state, generator = super().prepare_multimodal_states(
++                video_latent, audio_latent, conditionings, seed)
++            if session.stage2_audio == "joint":
++                return video_state, audio_state, generator
++            return video_state, frozen_audio_state(audio_state, torch), generator
++
+         def encode_highres_first_frame(self, image_path):
+             if image_path is not None:
+                 raise ValueError("latent transfer has no RGB first-frame conditioning")
+@@ -50,8 +91,14 @@ def _refiner_class(base, compat, session):
              return session.prompt_cache.contexts(prompt, self.device)
  
          def prepare_input(self, source_path):
@@ -1138,7 +1207,7 @@ index 8f1a36c..3441bf2 100644
                  "preprocess": "normalized_h3_x2_then_adapter_crop_t16",
                  "latent_upsampler": False}
  
-@@ -63,17 +74,18 @@ def _refiner_class(base, compat, session):
+@@ -63,17 +110,18 @@ def _refiner_class(base, compat, session):
                      raise RuntimeError(f"H3 bridge shape/dtype/layout contract failed: {shape}")
                  return value
  
@@ -1164,7 +1233,7 @@ index 8f1a36c..3441bf2 100644
  
          def encode_source_audio(self, source_path):
              from ltx_core.model.audio_vae import encode_audio
-@@ -107,14 +119,17 @@ def _refiner_class(base, compat, session):
+@@ -107,14 +155,17 @@ def _refiner_class(base, compat, session):
              session.writer_chunk_receipt = {"chunk_frames": 16, "source_chunks": 0,
                  "emitted_chunks": 0, "frames": 0, "source_layouts": [], "complete": False}
              chunks = tracked_writer_chunks(chunks, session.writer_chunk_receipt,
@@ -1184,7 +1253,7 @@ index 8f1a36c..3441bf2 100644
                      crf=19, preset="veryfast", thread_count=8)
                  if not temporary.is_file() or temporary.stat().st_size == 0:
                      raise RuntimeError("video encoder produced no output")
-@@ -133,6 +148,47 @@ def _refiner_class(base, compat, session):
+@@ -133,6 +184,47 @@ def _refiner_class(base, compat, session):
      return SparkRefiner
  
  
@@ -1232,15 +1301,16 @@ index 8f1a36c..3441bf2 100644
  class Session:
      """Construct once, prepare/run sequential requests, then close the worker."""
  
-@@ -146,6 +202,7 @@ class Session:
+@@ -146,6 +238,8 @@ class Session:
          self.final_mp4_complete_monotonic_ns = None
          self.writer_chunk_receipt = None
          self.timings = {}
 +        self.geometry = canvas.from_recipe(config)
++        self.stage2_audio = stage2_audio_mode()     # sol-h3-studio: before this worker loads its models
          config = config.get("stage2", config)
          self.compile_enabled = config.get("compile", True)
          self.fixed_prompt = config.get("fixed_prompt", FIXED_PROMPT)
-@@ -159,11 +216,22 @@ class Session:
+@@ -159,11 +253,22 @@ class Session:
              if not path.is_file() or not path.stat().st_size:
                  raise FileNotFoundError(path)
          self.work_dir = Path(work_dir).resolve()
@@ -1264,7 +1334,7 @@ index 8f1a36c..3441bf2 100644
          try:
              self._construct()
          except BaseException:
-@@ -185,8 +253,10 @@ class Session:
+@@ -185,8 +290,13 @@ class Session:
              self._owns_dist = True
          if dist.get_world_size() != 1:
              raise RuntimeError("Spark requires one distributed rank")
@@ -1272,11 +1342,28 @@ index 8f1a36c..3441bf2 100644
          self.prompt_cache = load_cache(self.paths["prompt_cache"], prompt=self.fixed_prompt, torch_module=torch)
 -        base, compat = public_refiner_modules(self.ltx_root)
 +        base, compat = public_refiner_modules(self.ltx_root, self.geometry)
++        if self.stage2_audio == "frozen":     # sol-h3-studio: an LTX-2 without frozen states fails here, not mid-request
++            from ltx_core.types import LatentState
++            check_frozen_states(LatentState)
 +        print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')} refiner modules imported (+{(time.monotonic_ns() - self.started_ns) / 1e9:.1f}s)", flush=True)
          with torch.inference_mode():
              self.models = _refiner_class(base, compat, self)()
          self.conv_layout_receipt = self.stack.enter_context(installed_direct_upsample_nhwc(torch_module=torch))
-@@ -231,12 +301,13 @@ class Session:
+@@ -195,6 +305,7 @@ class Session:
+             "session_started_monotonic_ns": self.started_ns, "session_ready_monotonic_ns": self.ready_ns,
+             "session_initialization_s": (self.ready_ns - self.started_ns) / 1e9,
+             "refiner_recipe": {"sigmas": list(SIGMAS), "updates": 3, "lora_strength": 0.8,
++                               "stage2_audio": self.stage2_audio,
+                                "joint_audio_video": True, "expected_sol_backend": "triton"},
+             "spatial_route": self.models.h3_spatial_route, "conv_actual_tiling": asdict(self.models.tiling_config),
+             "actual_parameter_dtypes": self.models.parameter_dtypes,
+@@ -226,17 +337,19 @@ class Session:
+                 or self.prepared["request_id"] != request_id or self.prepared["output_root"] != str(root)):
+             raise RuntimeError("run requires the matching completed prepare identity and output root")
+         receipt = {"status": "RUNNING", "request_id": request_id, "stage2_started_monotonic_ns": started_ns,
++            "stage2_audio": self.stage2_audio,
+             "request_index": self.completed_requests, "preparation": dict(self.prepared),
+             "timing_boundary": "run_entry_after_prepare_to_atomic_final_muxed_MP4"}
          try:
              row = load_latent_capture(capture_dir, request_id=request_id)
              self.current_capture = row
@@ -1517,10 +1604,10 @@ index 0000000..087bed3
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..b359d3f 100644
+index 6c20301..4f6d4e2 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-@@ -3,13 +3,15 @@
+@@ -3,13 +3,16 @@
  import json
  import contextlib
  import io
@@ -1532,12 +1619,13 @@ index 6c20301..b359d3f 100644
  from unittest import mock
  
 -from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS
-+# Modified by sol-h3-studio: deliver-first, background Qwen, new Pipeline arguments and the compile-cache location.
++# Modified by sol-h3-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location and
++# the Stage-2 audio setting.
 +from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -84,6 +86,28 @@ class PipelineTests(unittest.TestCase):
+@@ -84,6 +87,42 @@ class PipelineTests(unittest.TestCase):
              finally:
                  pipeline.close()
  
@@ -1563,10 +1651,24 @@ index 6c20301..b359d3f 100644
 +            finally:
 +                pipeline.close()
 +
++    def test_bad_stage2_audio_setting_fails_before_any_worker(self):
++        made = []
++        def factory(*args, **kwargs):
++            made.append(args)
++            return FakeWorker(*args, **kwargs)
++        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
++            os.environ["SOL_H3_STAGE2_AUDIO"] = "noised"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_STAGE2_AUDIO"):
++                Pipeline({}, Path(directory) / "run", worker_factory=factory)
++            self.assertFalse((Path(directory) / "run").exists())
++            self.assertEqual(made, [])
++            os.environ["SOL_H3_STAGE2_AUDIO"] = "JOINT"
++            Pipeline({}, Path(directory) / "run", worker_factory=factory)
++
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +220,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +235,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -1575,7 +1677,7 @@ index 6c20301..b359d3f 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +249,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +264,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -1585,7 +1687,7 @@ index 6c20301..b359d3f 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +285,26 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +300,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -1664,6 +1766,96 @@ index 052502f..e4a87c4 100644
          self.assertEqual(validate_request(first, second)["request_counts"]["warmup_reference_calls"], 0)
          missing = copy.deepcopy(second)
          missing["layer_calls"][13] -= 1
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py b/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
+index e233052..b214849 100644
+--- a/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
+@@ -1,5 +1,8 @@
+ """CPU-only handoff, normalization and offline-conditioning behavior checks."""
++# Modified by sol-h3-studio: Stage-2 audio policy tests (Stage2AudioPolicyTests).
+ import copy
++from dataclasses import dataclass
++import os
+ import json
+ import math
+ from pathlib import Path
+@@ -146,5 +149,76 @@ class Stage2ContractTests(unittest.TestCase):
+         self.assertEqual(model.encode_highres_first_frame(None), [])
+ 
+ 
++# sol-h3-studio: Stage-2 audio policy (SOL_H3_STAGE2_AUDIO)
++@dataclass(frozen=True)
++class AudioState:
++    """The fields of ltx_core.types.LatentState that the policy reads or replaces."""
++    latent: object
++    denoise_mask: object
++    clean_latent: object
++    positions: object = "positions"
++    frozen: bool = False
++
++
++class Named:
++    def __init__(self, name):
++        self.name = name
++    def clone(self):
++        return Named(self.name + ".clone")
++
++
++ZEROS = SimpleNamespace(zeros_like=lambda value: Named(f"zeros_like({value.name})"))
++
++
++class Stage2AudioPolicyTests(unittest.TestCase):
++    def refiner(self, mode, calls):
++        class Upstream:
++            def prepare_multimodal_states(self, video_latent, audio_latent, conditionings, seed):
++                calls.append((video_latent, audio_latent, conditionings, seed))
++                return "video_state", AudioState(Named("noised"), Named("ones"), Named("clean")), "generator"
++        session = SimpleNamespace(torch=ZEROS, stage2_audio=mode)
++        cls = stage2._refiner_class(SimpleNamespace(), SimpleNamespace(OfficialCompatRefiner=Upstream), session)
++        return object.__new__(cls)
++
++    def test_frozen_audio_is_the_clean_h3_audio_and_the_video_is_untouched(self):
++        calls = []
++        video, audio, generator = self.refiner("frozen", calls).prepare_multimodal_states("v", "a", ["c"], 7)
++        self.assertEqual(calls, [("v", "a", ["c"], 7)])     # upstream ran once: same random draws, same video noise
++        self.assertEqual((video, generator), ("video_state", "generator"))
++        self.assertTrue(audio.frozen)
++        self.assertEqual(audio.latent.name, "clean.clone")
++        self.assertEqual(audio.denoise_mask.name, "zeros_like(ones)")
++        self.assertEqual((audio.clean_latent.name, audio.positions), ("clean", "positions"))
++
++    def test_joint_is_upstream(self):
++        calls = []
++        video, audio, generator = self.refiner("joint", calls).prepare_multimodal_states("v", "a", [], 7)
++        self.assertEqual(len(calls), 1)
++        self.assertEqual((video, generator, audio.latent.name, audio.frozen), ("video_state", "generator", "noised", False))
++
++    def test_setting(self):
++        with patch.dict(os.environ):
++            os.environ.pop("SOL_H3_STAGE2_AUDIO", None)
++            self.assertEqual(stage2.stage2_audio_mode(), "frozen")
++            for value, mode in (("", "frozen"), (" frozen ", "frozen"), ("joint", "joint"), ("JOINT", "joint")):
++                os.environ["SOL_H3_STAGE2_AUDIO"] = value
++                self.assertEqual(stage2.stage2_audio_mode(), mode)
++            os.environ["SOL_H3_STAGE2_AUDIO"] = "noised"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_STAGE2_AUDIO.*'noised'"):
++                stage2.stage2_audio_mode()
++
++    def test_fails_closed_without_frozen_states(self):
++        @dataclass
++        class OlderState:
++            latent: object
++            denoise_mask: object
++            clean_latent: object
++        with self.assertRaisesRegex(RuntimeError, "SOL_H3_STAGE2_AUDIO=joint"):
++            stage2.frozen_audio_state(OlderState(Named("l"), Named("m"), Named("c")), ZEROS)
++        with self.assertRaisesRegex(RuntimeError, "SOL_H3_STAGE2_AUDIO=joint"):
++            stage2.check_frozen_states(OlderState)          # what Stage 2 checks at start, on the LatentState type
++        stage2.check_frozen_states(AudioState)
++
++
+ if __name__ == "__main__":
+     unittest.main()
 diff --git a/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py b/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py
 index 74e22a9..fadd48c 100644
 --- a/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py

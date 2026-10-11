@@ -55,6 +55,7 @@ one DGX Spark; each "Before" is described in its row:
 | ref2va with a 5 s reference video, each clip | 400 s | 133 s | the same pipeline with NVIDIA's reference-video canvas (H3's native 768p) instead of this repo's draft canvas |
 | Formats | 16:9 | 16:9 and 9:16 | NVIDIA's Sol-H3-Spark |
 | Clip length | 5 s | 3-15 s | NVIDIA's Sol-H3-Spark |
+| Lip sync in dialogue: SyncNet confidence, man / woman, 8 clips (higher is better) | 4.4 / 3.5 | 7.8 / 5.2 | NVIDIA's Stage 2, which redraws the lips to a copy of the audio that it regenerates and then discards ([details](docs/PATCH.md#15-stage-2-audio-held-fixed-lip-sync)); H3's own draft scores 8.2 / 6.5 (4 of the clips) |
 
 The VAE fix alone, measured with this repo's loading changes already in on both sides: first clip fl2va (first +
 last frame, 5 s) 194 → 115 s, ref2va (image + video reference, 5 s) 254 → 178 s. No stock NVIDIA figure was
@@ -79,7 +80,9 @@ browser; see [AGENTS.md](AGENTS.md).
 NVIDIA validated the 5 s, 16:9 route. Portrait output is not quality-validated (the LoRAs, upscaler and adapter
 were trained on landscape). Lengths other than 5 s are not validated by NVIDIA, and 3 s is below the 4-15 s that
 MiniMax lists for H3. The first-request attention self-check covers 8 calls instead of 200. Portrait and length
-are derived after the frozen-recipe hash check. All of it can be switched back; see
+are derived after the frozen-recipe hash check. Stage 2 refines the video against the H3 audio held fixed instead of
+a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync. All of it can be
+switched back; see
 [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 
 ## Requirements
