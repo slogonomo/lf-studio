@@ -56,6 +56,9 @@ class Pipeline:
         (self.root / "STARTED").touch()
         started = time.time()
         self._work(float(os.environ.get("STUB_LOAD_S", "3")))
+        media = [case.get("first_frame"), case.get("last_frame")] + [r["path"] for r in case.get("references", [])]
+        for m in filter(None, media):                    # the real loading pass reads its inputs (Qwen, Stage1)
+            Path(m).read_bytes()
         self.started = True
         return self._row(case, self.root / (case["case_id"] if deliver else "warmup"), started)
 

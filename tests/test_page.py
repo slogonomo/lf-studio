@@ -318,5 +318,57 @@ class LoadSelectedNow(PageTest):
         self.assertFalse(self.page.is_visible("#loadnow"))
 
 
+class ReleaseReviewPage(PageTest):
+    """From the whole-release review: Undo vs a poll that still lists the clip as deleted, clips restored elsewhere
+    from an older page, and the keyboard."""
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(history(30)))
+
+    def test_undo_survives_an_older_deleted_list(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid])
+        card = f'article[data-id="{jid}"]'
+        self.page.wait_for_selector(card)
+        self.page.click(f"{card} .del")
+        self.page.wait_for_timeout(2500)                                     # a poll lists it as deleted
+        held = []
+        self.page.route("**/api/state", lambda route: held.append((route, route.fetch())))
+        self.page.wait_for_timeout(2200)                                     # one more, answered before the Undo
+        self.page.click("#undo button")
+        self.page.wait_for_selector(card)
+        for route, response in held:
+            route.fulfill(response=response)
+        self.page.unroute("**/api/state")
+        self.page.wait_for_timeout(2500)
+        self.assertIsNotNone(self.page.query_selector(card))
+
+    def test_restored_by_hand_from_an_older_page(self):
+        old = f"{3:032x}"
+        self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        self.page.wait_for_selector(f'article[data-id="{old}"]')
+        self.studio.post("/api/delete", json_body={"id": old})
+        self.page.wait_for_selector(f'article[data-id="{old}"]', state="detached")
+        self.studio.post("/api/undelete", json_body={"id": old})
+        self.page.wait_for_selector(f'article[data-id="{old}"]')
+
+    def test_keyboard(self):
+        chooser = []
+        self.page.on("filechooser", lambda fc: chooser.append(fc))
+        a = self.studio.generate(task="fl2va", files={"first_frame": [("f.png", png())]})[1]["id"]
+        self.studio.wait([a])
+        self.page.wait_for_selector(f'article[data-id="{a}"] .reuse-all')
+        self.page.click(f'article[data-id="{a}"] .reuse-all')
+        self.page.wait_for_selector("#fl .keptw .x")
+        self.page.focus("#fl .keptw .x")
+        self.page.keyboard.press("Enter")                                    # removes the file, no file picker
+        self.page.wait_for_timeout(500)
+        self.assertEqual((self.page.query_selector("#fl .keptw"), chooser), (None, []))
+        self.page.focus(f'article[data-id="{a}"] .del')
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_selector("#undo", state="visible")
+        self.assertEqual(self.page.evaluate("document.activeElement === document.querySelector('#undo button')"), True)
+
+
 if __name__ == "__main__":
     unittest.main()

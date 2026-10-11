@@ -104,8 +104,17 @@ closes the session and loads the models again; the Generate button says so befor
 
 **Where the clip history is.** `$SOLH3_STATE_DIR/jobs.db` (SQLite) holds every clip; the gallery shows the newest
 24 and loads older ones as you scroll. Before 0.2 the history was `jobs.json` (the newest 200 clips; the gallery
-showed 50). 0.2 imports it once, when `jobs.db` does not exist yet, and leaves it as it was, so going back to 0.1
-shows the history as of that import.
+showed 50). 0.2 imports it once and leaves it as it was, so going back to 0.1 shows the history as of that import.
+Clips made under 0.1 after that are not imported by themselves when you return to 0.2; to add them, stop the studio and
+mark the import as not done (entries `jobs.db` already has are kept):
+
+```bash
+python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute("PRAGMA user_version = 0"); c.commit()' \
+    "$SOLH3_STATE_DIR/jobs.db"
+```
+
+Clips from before per-clip session directories may have their only file in `SOLH3_PUBLISH_DIR`; Delete moves that
+file to the trash like any other (Undo puts it back).
 
 **Getting a deleted clip back after the Undo toast is gone.** Delete moves the clip's directory, its input files
 and its `SOLH3_PUBLISH_DIR` copy to `$SOL_H3_SPARK_RUNTIME_ROOT/trash/<clip id>/` and keeps it in the history,
