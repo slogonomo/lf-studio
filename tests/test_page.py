@@ -416,12 +416,13 @@ class RemixSeed(PageTest):
         a = self.remix(777)
         self.assertTrue(self.page.is_checked("#autoroll"))
         self.assertEqual(self.page.input_value("#seed"), "777")
-        self.page.reload()                                                  # remembered as ticked
-        self.page.wait_for_selector(f'article[data-id="{a}"]')
-        self.assertTrue(self.page.is_checked("#autoroll"))
-        new = self.generate_from_page(a)
+        new = self.generate_from_page(a)                                    # Remix, then Generate in the same tab
         self.assertNotEqual(int(new["seed"]), 777)
         self.assertEqual(new["prompt"], "the source clip")
+        other = self.ctx.new_page()                                         # remembered as ticked: a new tab
+        other.goto(self.studio.url + "/")                                   # (a reload here would cancel a poll)
+        self.assertTrue(other.is_checked("#autoroll"))
+        other.close()
 
     def test_unticked_uses_the_clips_seed(self):
         self.page.fill("#seed", "5")
