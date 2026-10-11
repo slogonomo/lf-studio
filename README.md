@@ -37,7 +37,9 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
   clip's settings, prompt, seed and input files back into the form (with "New random seed every run" ticked, the
   next clip still gets a new seed); the server reuses the files it kept (uploads are stored per clip under
   `$SOL_H3_SPARK_RUNTIME_ROOT/inputs/webui/`). The gallery keeps every clip and loads older ones as you scroll.
-  Delete moves a clip and its files to a trash folder for 7 days, with Undo.
+  Delete moves a clip and its files to a trash folder for 7 days, with Undo. Cancel takes a queued clip out of the
+  queue, or stops a running one (the models then load again for the next clip, about 1-2 min); its card stays as
+  Cancelled, with Remix and Delete.
 - The Generate button says when your settings need a model reload; the clip card shows how long the last load took.
   "Load selected now" under it starts loading other settings while you finish the prompt (nothing loads on a
   selection change alone).

@@ -196,6 +196,14 @@ with sync_playwright() as p:
     else:
         skip("player checks (no finished clips on this server yet)")
 
+    # card buttons: Delete on finished clips (done, failed, cancelled), Cancel only on queued or running ones
+    cards = pg.evaluate("[...document.querySelectorAll('.job')].map(c => [c.dataset.status, "
+                        "!c.querySelector('.cancel').hidden, !c.querySelector('.del').hidden])")
+    finished = ("done", "failed", "cancelled")
+    check(all(dl and not cancel for s, cancel, dl in cards if s in finished)
+          and not any(dl for s, cancel, dl in cards if s not in finished),
+          f"Cancel only on queued or running cards, Delete only on finished ones ({len(cards)} cards)")
+
     if RUN_JOB:
         if not n_done:
             skip("--job needs a finished clip to watch; generate one first")
@@ -220,7 +228,7 @@ with sync_playwright() as p:
                 if not st["alive"] or st["paused"] or not st["form"] or st["t"] <= last_t:
                     stalls += 1
                 last_t = st["t"]
-                if st["status"] in ("done", "failed"):
+                if st["status"] in finished:
                     break
             check(stalls == 0, "the playing video and the form survived the whole job")
             check(st.get("status") == "done", f"job finished: {st.get('status')}")

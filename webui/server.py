@@ -5,6 +5,10 @@
   (one Pipeline session). A different combination closes the session and loads the models again.
 - Tasks: t2va (text), fl2va (first and/or last frame), ref2va (reference images, videos, audio).
 - Output: 1344x768 (landscape) or 768x1344 (portrait), 24 fps, 3-15 s, with audio.
+- POST /api/cancel {"id": ...}: a queued clip leaves the queue at once; a running one is stopped (its pipeline
+  workers get SIGTERM, so the next clip loads the models again). Either way it stays in the history with the status
+  "cancelled" and its input files, for Remix and Delete. 409 for a clip that has finished (or is being saved).
+  A studio before 0.3 shows cancelled clips as failed ("server restarted") and keeps them so.
 
 Run it with cwd = the patched Sol-H3-Spark package (models/minimax_h3/Sol-H3-Spark in the patched Sana checkout):
 it imports runtime.config and runtime.pipeline from there. Standard library only; this process needs no torch.
@@ -119,7 +123,9 @@ wake = threading.Event()
 stopping = threading.Event()     # set when the server shuts down: the worker starts nothing new
 jobs = []                        # every job, oldest first (also in jobs.db)
 PAGE = 24                        # clips per gallery page (/api/state carries the newest page, /api/jobs older ones)
+FINISHED = ("done", "failed", "cancelled")       # a job's final statuses; any other is queued or running
 session = {"pipeline": None, "key": None, "state": "idle", "since": time.time()}
+work = {"job": None}             # the job whose pipeline call (start or generate) is running (pipeline_call)
 
 
 def log(*a):
@@ -196,6 +202,12 @@ def save_job(job, strict=False):
         traceback.print_exc()
         if strict:
             raise
+
+
+def warm_up_wanted():
+    """A queued job waits for the warm-up's settings, so the warm-up is kept for it. Call it holding `lock`."""
+    return any(j["status"] == "queued" and (j["task"], j["orientation"], j.get("seconds", 5)) == session.get("loading_key")
+               for j in jobs)
 
 
 def find_job(jid):
@@ -515,6 +527,16 @@ def remember_load(key, seconds, warm=False):
         traceback.print_exc()
 
 
+def session_root(key, kind=""):
+    """A new session directory: start time and settings, -2, -3, ... after it when another session started in the
+    same second (a clip cancelled right away, then the next one; the pipeline refuses an existing directory)."""
+    base = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}{key[0]}-{key[1]}-{key[2]}s"
+    root, n = SESSIONS / base, 2
+    while root.exists():
+        root, n = SESSIONS / f"{base}-{n}", n + 1
+    return root
+
+
 def new_pipeline(key, root):
     task, orientation, seconds = key
     return Pipeline(load_paths(PATHS[task], task=task), root, task=task,
@@ -545,6 +567,36 @@ def close_session(reason, p=None):
                                preloading=False, takeover_until=None, load_eta=None, warm_s=None)
 
 
+class Cancelled(Exception):
+    """The job was cancelled (POST /api/cancel) after it had started."""
+
+
+def pipeline_call(job, call, failure):
+    """Run `call`, the pipeline's start() or generate() for `job`, so that Cancel can stop it: while it runs,
+    work["job"] is the job, and stop_job SIGTERMs the workers of a cancelled one. If it fails, or Cancel came first,
+    the session is closed (its workers may have been signalled) and it raises; Cancelled when Cancel came first, even
+    if the clip finished just then: Cancel has answered that it is cancelled. Otherwise the result is the job's, and
+    from here on Cancel answers 409 (job["saving"]). `failure`: the reason logged when it failed by itself."""
+    with lock:
+        work["job"] = job
+    try:
+        row = call()
+        with lock:                         # atomic with Cancel: either it is cancelled or its clip is kept
+            cancelled = job.get("cancel_requested")
+            if not cancelled:
+                job["saving"] = True
+                work["job"] = None
+        if cancelled:
+            raise Cancelled("cancelled as it finished")
+        return row
+    except BaseException:
+        close_session("clip cancelled" if job.get("cancel_requested") else failure)   # stop_job still signals
+        raise                                                                        # workers started meanwhile
+    finally:
+        with lock:
+            work["job"] = None
+
+
 def run_job(job):
     key = (job["task"], job["orientation"], job.get("seconds", 5))
     case = {"case_id": job["case_id"], "prompt": job["prompt"], "seed": job["seed"], "task": job["task"]}
@@ -554,38 +606,39 @@ def run_job(job):
     case = normalize_case(case)
     if session["key"] != key:
         close_session(f"switching to {key}")
+        if job.get("cancel_requested"):    # cancelled while the old models were closed: nothing of its own ran
+            raise Cancelled("cancelled before it started")
         job["status"] = "loading models + generating"
         job["phase_since"] = time.time()
         job["load_eta"] = load_eta(key)
         session.update(state="loading", since=time.time(), loading_key=key)
-        root = SESSIONS / f"{time.strftime('%Y%m%d-%H%M%S')}-{key[0]}-{key[1]}-{key[2]}s"
-        with lock:
-            if stopping.is_set():
-                raise RuntimeError("the studio is shutting down")
-        p = new_pipeline(key, root)
+        try:
+            root = session_root(key)
+            with lock:
+                if stopping.is_set():
+                    raise RuntimeError("the studio is shutting down")
+            p = new_pipeline(key, root)
+        except BaseException:
+            close_session("could not start the pipeline")      # no pipeline: back to idle, not "loading"
+            raise
         session["pipeline"] = p
         job.setdefault("case_dirs", []).append(str(Path(p.root) / job["case_id"]))   # for Delete, even if it fails
         t0 = time.time()
-        try:
-            row = p.start(case, deliver=True)     # the loading pass renders this job (no throwaway warm-up)
-        except BaseException:
-            close_session("model load failed")
-            raise
+        # the loading pass renders this job (no throwaway warm-up)
+        row = pipeline_call(job, lambda: p.start(case, deliver=True), "model load failed")
         job["cold_start_s"] = round(time.time() - t0, 1)   # load + this clip
         job["includes_model_load"] = True
         remember_load(key, job["cold_start_s"])
         session.update(key=key, state="ready", since=time.time(), loading_key=None)
     else:
+        if job.get("cancel_requested"):    # nothing ran: the models stay loaded
+            raise Cancelled("cancelled before it started")
         job["status"] = "generating"
         job["phase_since"] = time.time()
         job.setdefault("case_dirs", []).append(str(Path(session["pipeline"].root) / job["case_id"]))
         session["state"] = "busy"
         t0 = time.time()
-        try:
-            row = session["pipeline"].generate(case)
-        except BaseException:
-            close_session("request failed (worker died)")
-            raise
+        row = pipeline_call(job, lambda: session["pipeline"].generate(case), "request failed (worker died)")
         session["state"] = "ready"
         remember_load(key, round(time.time() - t0, 1), warm=True)
     src = Path(row["output"])
@@ -692,7 +745,7 @@ def mode_warmup_case(task):
 def run_preload(key, case):
     """Load and compile the models for `key` before anyone asks (a normal warm-up pass, output discarded)."""
     log("preloading", key)
-    root = SESSIONS / f"{time.strftime('%Y%m%d-%H%M%S')}-preload-{key[0]}-{key[1]}-{key[2]}s"
+    root = session_root(key, "preload-")
     try:
         p = new_pipeline(key, root)
     except Exception as e:
@@ -736,6 +789,27 @@ def run_preload(key, case):
     log(f"preload ready in {time.time() - t0:.0f} s")
 
 
+def signal_workers(skip=()):
+    """SIGTERM the pipeline's worker process groups: children of this server that lead their own process group (the
+    runtime starts each worker with start_new_session; ffmpeg and ffprobe run in the server's group). Groups in
+    `skip` are left alone. Returns the groups signalled."""
+    me, sent = os.getpid(), []
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit() or int(d.name) in skip:
+            continue
+        try:
+            ppid, pgrp = map(int, (d / "stat").read_text().rsplit(")", 1)[1].split()[1:3])
+        except (OSError, ValueError, IndexError):
+            continue
+        if ppid == me and pgrp == int(d.name):
+            try:
+                os.killpg(pgrp, signal.SIGTERM)
+                sent.append(pgrp)
+            except OSError:
+                pass
+    return sent
+
+
 def abort_preload(reason):
     """Stop a warm-up that is no longer wanted: SIGTERM the worker process groups (children of this server).
     Call it without holding `lock`."""
@@ -744,22 +818,27 @@ def abort_preload(reason):
             return False
         session["preloading"] = False
     log("aborting preload:", reason)
-    me = os.getpid()
-    for d in Path("/proc").iterdir():
-        if not d.name.isdigit():
-            continue
-        try:
-            stat = (d / "stat").read_text()
-            ppid = int(stat.rsplit(")", 1)[1].split()[1])
-            comm = (d / "comm").read_text().strip()
-        except (OSError, ValueError, IndexError):
-            continue
-        if ppid == me and comm != "ffmpeg":
-            try:
-                os.killpg(int(d.name), signal.SIGTERM)
-            except OSError:
-                pass
+    signal_workers()
     return True
+
+
+def stop_job(job):
+    """Stop a running job that has been cancelled (its own thread, started by /api/cancel): while its pipeline call
+    runs (work["job"]), SIGTERM the worker process groups as abort_preload does, also those started after the first
+    signal (the loading pass starts Stage2 once Stage1 is loaded). Each group once: qwen_python.sh stops its
+    container in a TERM trap, which a second signal would cut short. The signal and the check are under `lock`, so
+    they never reach the next job's workers. Ends when the job has finished."""
+    sent = set()
+    while not stopping.is_set():
+        with lock:
+            if job["status"] in FINISHED:
+                return
+            if work["job"] is job:
+                new = signal_workers(sent)
+                if new:
+                    log(f"cancel: sent SIGTERM to the worker process group(s) {new} of", job["case_id"])
+                sent.update(new)
+        time.sleep(0.2)
 
 
 def worker_loop():
@@ -806,6 +885,8 @@ def worker_loop():
                 try:
                     run_job(job)
                 except Exception as e:   # worker died -> session was closed; rebuild it and retry this job once
+                    if job.get("cancel_requested"):            # cancelled: no retry (run_job closed the session)
+                        raise
                     traceback.print_exc()
                     job["first_error"] = f"{type(e).__name__}: {e}"[:600]
                     job["status"] = "retrying after a worker error"
@@ -813,9 +894,15 @@ def worker_loop():
                     run_job(job)
                 job["status"] = "done"
             except BaseException as e:
-                job["status"] = "failed"
-                job["error"] = f"{type(e).__name__}: {e}"[:600]
-                traceback.print_exc()
+                if job.get("cancel_requested"):
+                    job["status"] = "cancelled"
+                    log("cancelled job", job["id"], f"({type(e).__name__}: {e})"[:200])
+                else:
+                    job["status"] = "failed"
+                    job["error"] = f"{type(e).__name__}: {e}"[:600]
+                    traceback.print_exc()
+            for k in ("saving", "cancel_requested"):     # only while it runs; the status says the rest
+                job.pop(k, None)
             job["finished"] = time.time()
             job["wall_s"] = round(job["finished"] - job["started"], 1)
             save_job(job)
@@ -957,8 +1044,8 @@ class H(BaseHTTPRequestHandler):
             # page of finished ones; older clips come from /api/jobs
             ready = ready_tasks()
             with lock:
-                active = [j for j in jobs if j["status"] not in ("done", "failed")]
-                finished = [j for j in jobs if j["status"] in ("done", "failed") and not j.get("deleted")]
+                active = [j for j in jobs if j["status"] not in FINISHED]
+                finished = [j for j in jobs if j["status"] in FINISHED and not j.get("deleted")]
                 window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
                 warmable = [t for t in ready if mode_warmup_case(t)]     # modes "Load selected now" can warm up
                 state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS, "warmable": warmable,
@@ -1075,7 +1162,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(403, {"error": "cross-origin request refused"})
         if self.path == "/api/unload":
             with lock:
-                busy = any(j["status"] not in ("done", "failed", "queued") for j in jobs)
+                busy = any(j["status"] not in FINISHED + ("queued",) for j in jobs)
                 if not busy:                       # a requested load ("Load selected now") is cancelled too
                     preload["pending"] = None
                     session["switching_to"] = None
@@ -1096,7 +1183,7 @@ class H(BaseHTTPRequestHandler):
             if not PATHS[key[0]].is_file():
                 return self.send(400, {"error": f"no path manifest for {key[0]} (run install/70-manifests.sh)"})
             with lock:
-                busy = any(j["status"] not in ("done", "failed") for j in jobs)
+                busy = any(j["status"] not in FINISHED for j in jobs)
                 case = mode_warmup_case(key[0])
                 switching = session.get("switching_to")
                 already = (switching == key or not switching and (
@@ -1115,6 +1202,48 @@ class H(BaseHTTPRequestHandler):
             wake.set()
             log("load requested:", key)
             return self.send(200, {"ok": True})
+        if self.path == "/api/cancel":
+            try:
+                jid = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}").get("id")
+            except (ValueError, AttributeError):
+                return self.send(400, {"error": "expected JSON {\"id\": ...}"})
+            # Under the lock, atomic with the worker taking a queued job and with pipeline_call accepting a finished
+            # clip: a queued job is cancelled here and now; a running one is marked, and stop_job stops its workers.
+            # Its input files stay (Remix), like a failed clip's.
+            queued = stop = drop = False
+            with lock:
+                job = find_job(jid)
+                if job is None:
+                    reply = 404, {"error": "no such clip"}
+                elif job["status"] in FINISHED:
+                    reply = 409, {"error": {"done": "the clip has already finished",
+                                            "failed": "the clip has already failed",
+                                            "cancelled": "the clip is already cancelled"}[job["status"]]}
+                elif job.get("saving"):
+                    reply = 409, {"error": "the clip has just finished and is being saved"}
+                else:
+                    queued = job["status"] == "queued"
+                    if queued:
+                        job.update(status="cancelled", finished=time.time())
+                        # the warm-up may have been kept only for this clip (/api/generate): if another clip waits
+                        # now and none for the warm-up's settings, stop it as a clip for other settings would have
+                        drop = (session.get("preloading") and not warm_up_wanted()
+                                and any(j["status"] == "queued" for j in jobs))
+                    else:
+                        stop = not job.get("cancel_requested")      # a second Cancel: already being stopped
+                        job["cancel_requested"] = True
+                    reply = 200, {"ok": True, "job": dict(job)}
+            if reply[0] == 200:
+                save_job(job)        # a running one too: if the server dies before it stops, it stays cancelled
+                if queued:
+                    log("cancelled queued job", job["id"])
+                    if drop:
+                        abort_preload("the clip it was kept for was cancelled")
+                        wake.set()
+                elif stop:
+                    log("cancelling job", job["id"], "while", reply[1]["job"]["status"])
+                    threading.Thread(target=stop_job, args=(job,), daemon=True).start()
+            return self.send(*reply)
         if self.path in ("/api/delete", "/api/undelete"):
             try:
                 jid = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}").get("id")
@@ -1134,7 +1263,7 @@ class H(BaseHTTPRequestHandler):
                     reply = 409, {"error": "the clip is being moved; try again in a moment"}
                 elif self.path == "/api/undelete":
                     reply = None if job.get("deleted") else (200, {"ok": True, "job": dict(job)})
-                elif job["status"] not in ("done", "failed"):
+                elif job["status"] not in FINISHED:
                     reply = 409, {"error": "the clip is still queued or running"}
                 elif job.get("deleted"):
                     reply = 200, {"ok": True}
@@ -1251,8 +1380,7 @@ class H(BaseHTTPRequestHandler):
             preload["pending"] = None              # a clip decides what is loaded next: a requested warm-up that
             session["switching_to"] = None         # hasn't started is dropped (the clip loads its own settings)
             # a job already queued for the warm-up's settings runs first, so it keeps the warm-up
-            waited_for = any(j["status"] == "queued" and (j["task"], j["orientation"], j.get("seconds", 5))
-                             == session.get("loading_key") for j in jobs)
+            waited_for = warm_up_wanted()
         save_job(job)
         if session.get("preloading"):
             if session.get("loading_key") != (job["task"], job["orientation"], job["seconds"]):
@@ -1289,9 +1417,12 @@ def main():
     except sqlite3.Error as error:
         fail(f"cannot open {DB_FILE}: {error}")
     for j in jobs:
-        if j.get("status") not in ("done", "failed"):
-            j["status"] = "failed"
-            j["error"] = "server restarted"
+        if j.get("status") not in FINISHED:            # it was queued or running when the server stopped
+            if j.pop("cancel_requested", None):        # Cancel had answered: it stays cancelled
+                j["status"] = "cancelled"
+            else:
+                j["status"] = "failed"
+                j["error"] = "server restarted"
             save_job(j)
     recover_moves()
     purge_trash()

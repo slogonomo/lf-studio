@@ -131,13 +131,13 @@ class StubStudio:
         return jobs.get(jid) or self.all_jobs().get(jid)
 
     def wait(self, jids, timeout=60):
-        """Wait until every job in jids is done or failed; returns them in order."""
+        """Wait until every job in jids is done, failed or cancelled; returns them in order."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             jobs = {j["id"]: j for j in self.state()["jobs"]}
             if any(i not in jobs for i in jids):
                 jobs = self.all_jobs()               # older than the newest page
-            if all(jobs.get(i, {}).get("status") in ("done", "failed") for i in jids):
+            if all(jobs.get(i, {}).get("status") in ("done", "failed", "cancelled") for i in jids):
                 return [jobs[i] for i in jids]
             time.sleep(0.2)
         raise TimeoutError(f"jobs not finished after {timeout} s: {jids}")
