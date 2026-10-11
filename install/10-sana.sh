@@ -143,6 +143,6 @@ if [[ -x "$ENVS/stage1/bin/python" ]]; then
             die "CPU tests failed"
     fi
 else
-    say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the 69 CPU tests"
+    say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the 73 CPU tests"
 fi
 say "done. Next: install/20-weights.sh"

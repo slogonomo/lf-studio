@@ -256,14 +256,18 @@ clean latent, an all-zero denoise mask and `frozen=True`, so the transformer is 
 installed LTX-2 has no frozen states, it fails before the request. The Stage-2 receipts (`stage2_result.json`)
 record the mode as `stage2_audio`. Stage 2 takes the same time.
 
-Measured on 4 dialogue clips (two people, fl2va 10 s, 4 seeds). Stage 2 was replayed from each clip's saved Stage-1
-capture: the upstream replay reproduced the studio's output exactly, and the frozen replay changed only the audio
-handling. SyncNet confidence over each speaker's lines (LSE-C, higher is better):
+Measured on 8 dialogue clips: two people, fl2va 10 s, 8 seeds, one scene. Each clip's Stage 2 was run both ways
+from the same saved Stage-1 capture:
+- the upstream run reproduced the studio's output exactly;
+- the frozen run is what the patched studio renders, bit for bit when both are warm requests.
 
-| speaker | Stage-1 draft | upstream Stage 2 | frozen audio |
+SyncNet confidence over each speaker's lines (LSE-C, higher is better; the draft was decoded for the first 4 clips
+only):
+
+| speaker | Stage-1 draft (4 clips) | upstream Stage 2 | frozen audio |
 |---|---|---|---|
-| man, facing the camera | 8.2 | 4.2 | 7.6 |
-| woman, near profile | 6.5 | 4.1 | 5.6 |
+| man, facing the camera | 8.2 | 4.4 | 7.8 |
+| woman, near profile | 6.5 | 3.5 | 5.2 |
 
 Over 14 clips, the upstream finals' timing within a line wandered by 3-4 frames against about one in the drafts.
 The silent mouthing seen in one clip is gone with frozen audio. The frames differ by about 3/255 on average, faces
