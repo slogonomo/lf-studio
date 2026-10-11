@@ -314,6 +314,107 @@ class HistoryOrder(StudioTest):
         self.assertEqual(jobs[-1]["id"], slow["r"][1]["id"])                 # added last, so newest
 
 
+class Delete(StudioTest):
+    """#2: Delete moves a clip's files to the trash and hides it; undelete puts everything back; old trash is purged."""
+    env = {}
+
+    def setUp(self):
+        self.publish = Path(tempfile.mkdtemp(prefix="sol-h3-publish-"))
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        shutil.rmtree(self.publish, ignore_errors=True)
+
+    def seed(self):
+        self.studio.env.update(SOLH3_PUBLISH_DIR=str(self.publish), **self.env)
+
+    def delete(self, jid, path="/api/delete"):
+        return self.studio.post(path, json_body={"id": jid})
+
+    def test_delete_and_undelete_fl2va(self):
+        jid = self.generate(task="fl2va", files={"first_frame": [("first.png", png())]})
+        job = self.studio.wait([jid])[0]
+        clip_dir = Path(job["output"]).parent.parent
+        paths = [clip_dir, Path(job["first_frame"]).parent, Path(job["published"]),
+                 Path(job["published"]).with_suffix(".jpg")]
+        self.assertTrue(all(p.exists() for p in paths), paths)
+        self.assertEqual(self.delete(jid), (200, {"ok": True}))
+        self.assertTrue(not any(p.exists() for p in paths))
+        self.assertEqual(len(list((self.studio.runtime / "trash" / jid).iterdir())), 4)
+        st = self.studio.state()
+        self.assertEqual((st["jobs"], st["done"]), ([], 0))
+        self.assertEqual(json.loads(self.studio.get("/api/jobs")[2])["jobs"], [])
+        for url in (f"/video/{jid}", f"/poster/{jid}", f"/api/inputs/{jid}"):
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                self.studio.get(url)
+            self.assertEqual(e.exception.code, 404, url)
+        code, body = self.studio.generate(task="fl2va", remix_from=jid, keep="first_frame")
+        self.assertEqual(code, 400)
+        code, body = self.delete(jid, "/api/undelete")
+        self.assertEqual((code, body["job"]["id"], "deleted" in body["job"]), (200, jid, False))
+        self.assertTrue(all(p.exists() for p in paths))
+        self.assertFalse((self.studio.runtime / "trash" / jid).exists())
+        self.assertEqual(self.studio.get(f"/video/{jid}")[0], 200)
+        self.assertEqual(self.studio.state()["done"], 1)
+
+    def test_deleted_state_survives_restart(self):
+        jid = self.generate()
+        self.studio.wait([jid])
+        self.delete(jid)
+        self.studio.stop()
+        self.studio.start()
+        self.assertEqual(self.studio.state()["jobs"], [])
+        self.assertEqual(self.delete(jid, "/api/undelete")[0], 200)
+        self.assertEqual(self.studio.state()["done"], 1)
+
+    def test_refusals(self):
+        self.assertEqual(self.delete("f" * 32)[0], 404)
+        self.assertEqual(self.studio.post("/api/delete", json_body=None, fields={"id": "x"})[0], 400)
+        jid = self.generate(seconds=8)
+        self.studio.wait_for(lambda st: any(j["id"] == jid for j in st["jobs"]))
+        self.assertEqual(self.delete(jid)[0], 409)                         # queued or running
+        self.studio.wait([jid])
+        self.assertEqual(self.delete(jid)[0], 200)
+        self.assertEqual(self.delete(jid)[0], 200)                         # twice is fine
+
+    def test_old_layout_clip_moves_just_its_files(self):
+        old = self.publish / "20260923-113128_t2va_portrait_seed11_4f969b.mp4"
+        old.write_bytes(b"mp4")
+        old.with_suffix(".jpg").write_bytes(b"jpg")
+        self.studio.stop()
+        (self.studio.state_dir / "jobs.db").unlink()
+        self.write_state([finished_job("a" * 32, output=str(old))])
+        self.studio.start()
+        self.assertEqual(self.delete("a" * 32)[0], 200)
+        self.assertEqual(sorted(p.name for p in (self.studio.runtime / "trash" / ("a" * 32)).iterdir()),
+                         ["0-" + old.name, "1-" + old.with_suffix(".jpg").name])
+        self.assertTrue(self.publish.is_dir())                            # the folder itself stays
+
+    def test_refused_request_leaves_no_input_directory(self):
+        before = set((self.studio.runtime / "inputs" / "webui").iterdir())
+        self.assertEqual(self.studio.generate(task="fl2va", files={"first_frame": [("x.txt", b"no")]})[0], 400)
+        self.assertEqual(set((self.studio.runtime / "inputs" / "webui").iterdir()), before)
+
+
+class TrashPurge(Delete):
+    env = {"SOLH3_TRASH_DAYS": "0.00001"}                                  # under a second
+
+    def test_purged_at_start(self):
+        jid = self.generate()
+        self.studio.wait([jid])
+        self.delete(jid)
+        time.sleep(1.2)
+        self.studio.stop()
+        self.studio.start()
+        self.assertFalse((self.studio.runtime / "trash" / jid).exists())
+        self.assertEqual(self.delete(jid, "/api/undelete")[0], 404)        # gone from the history too
+        self.assertIn("emptied the trash", self.studio.log.read_text())
+
+    test_delete_and_undelete_fl2va = test_deleted_state_survives_restart = test_refusals = None
+    test_old_layout_clip_moves_just_its_files = test_refused_request_leaves_no_input_directory = None
+
+
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
     takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it."""
@@ -345,6 +446,18 @@ class WarmUp(StudioTest):
         self.assertEqual(job["status"], "done")
         self.assertTrue(job.get("includes_model_load"))
         self.assertIn("aborting preload", self.studio.log.read_text())
+
+
+class WarmUpSkipsDeleted(StudioTest):
+    preload = True
+
+    def seed(self):
+        self.write_state([finished_job("1" * 32, orientation="portrait", created=1),
+                          finished_job("2" * 32, created=2, deleted=3, trashed={})])
+
+    def test_warm_up_uses_the_newest_clip_not_deleted(self):
+        s = self.studio.wait_for(lambda s: s["session"].get("loading_key"))["session"]
+        self.assertEqual(s["loading_key"], ["t2va", "portrait", 5])
 
 
 class WarmUpWithWarmTime(WarmUp):

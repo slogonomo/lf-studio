@@ -186,6 +186,11 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translate(-50%,16px);background:var(--fg);color:var(--bg);padding:9px 15px;border-radius:11px;
   font-size:13px;opacity:0;transition:.2s;pointer-events:none;z-index:9;box-shadow:var(--shadow)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
+.toast.undo{display:flex;align-items:center;gap:12px;padding:7px 8px 7px 15px}
+.toast.undo.show{pointer-events:auto}
+.toast.undo button{border:0;border-radius:8px;padding:4px 11px;font-weight:700;font-size:13px;cursor:pointer;background:var(--acc);color:var(--accfg)}
+.act.del{margin-left:auto;color:var(--mut)}
+.act.del:hover{border-color:var(--bad);color:var(--bad)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 
@@ -290,6 +295,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 </div>
 </div>
 <div class="toast" id="toast" aria-live="polite"></div>
+<div class="toast undo" id="undo" aria-live="polite"><span></span><button type="button">Undo</button></div>
 
 <script>
 // Rules: polling only changes text/attributes of existing elements - never rebuilds the form, a card
@@ -436,7 +442,9 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   body.innerHTML=`<div class="tags"><span class="st"></span><span class="tag"></span><span class="tag"></span><span class="tag"></span></div>
    <div class="p" title="Click to expand"></div><div class="info"></div><div class="errtxt"></div>
    <div class="acts"><span class="tag">seed <span class="seedv"></span></span><button type="button" class="act reuse-seed" title="Put this seed in the form">Use seed</button>
-   <button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt, seed and input files">Remix</button><span class="dl"></span></div>`;
+   <button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt, seed and input files">Remix</button><span class="dl"></span>
+   <button type="button" class="act del" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button></div>`;
+
   const t=body.querySelectorAll('.tags .tag');t[0].textContent=TASK[j.task]||j.task;t[1].textContent=FMT[j.orientation]||j.orientation;t[2].textContent=`${j.seconds||5} s`;
   const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
   body.querySelector('.seedv').textContent=j.seed;
@@ -454,7 +462,19 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
       if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
       toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
+  body.querySelector('.del').onclick=()=>remove(j);
   d.append(media,body);return d;}
+// Delete moves the clip and its files to the server's trash; Undo (in the toast) moves them back
+const gone=new Set();
+function hideCard(id){gone.add(id);known.delete(id);if(els[id]){els[id].remove();delete els[id];}}
+async function remove(j){const r=await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:j.id})});
+  if(!r.ok){toast((await r.json()).error||'Could not delete');return;}
+  hideCard(j.id);const u=$('undo');u.querySelector('span').textContent='Clip deleted';u.classList.add('show');clearTimeout(u._t);
+  u.querySelector('button').onclick=async()=>{u.classList.remove('show');
+    const x=await (await fetch('/api/undelete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:j.id})})).json();
+    if(!x.job){toast(x.error||'Could not restore');return;}
+    gone.delete(j.id);known.set(j.id,x.job);update(els[j.id]||insert(x.job),x.job,[],state.session,now());toast('Clip restored');poll();};
+  u._t=setTimeout(()=>u.classList.remove('show'),10000);poll();}
 function setText(el,t){if(el.textContent!==t)el.textContent=t;}
 // every job the page has seen, by id: the poll carries the active ones and the newest page, older pages come from
 // /api/jobs as the gallery scrolls (finished clips don't change, so only polled ones are updated afterwards)
@@ -463,6 +483,8 @@ function insert(j){const box=$('jobs'),d=els[j.id]=card(j);d.dataset.created=j.c
   const next=[...box.querySelectorAll('.job')].find(x=>+x.dataset.created<j.created);
   if(next)box.insertBefore(d,next);else box.append(d);return d;}
 function update(d,j,queue,s,t){
+  const del=d.querySelector('.del');del.hidden=active(j);
+  del.title=`Move this clip and its input files to the trash (removed for good after ${state.trash_days??7} days)${j.published?', with its copy in the publish folder':''}`;
   if(d.dataset.status!==j.status)d.dataset.status=j.status;
   const loading=/load|retry|starting/.test(j.status),cls=j.status==='done'?'ok':j.status==='failed'?'bad':'wait',stEl=d.querySelector('.st');
   if(stEl.className!=='st '+cls)stEl.className='st '+cls;
@@ -489,6 +511,7 @@ function render(){const s=state.session,k=s.key,t=now();
   setText($('loaded'),sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));
   setText($('loadtimer'),sState==='loading'?clock(t-s.since):'');
   $('unload').hidden=!k&&sState==='idle';
+  state.jobs=state.jobs.filter(j=>!gone.has(j.id));    // a poll answered just before a delete
   const had=[...known.values()];                     // what the page had before this poll
   state.jobs.forEach(j=>known.set(j.id,j));
   if(known.size&&$('nojobs'))$('nojobs').remove();

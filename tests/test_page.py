@@ -217,5 +217,33 @@ class MissedPolls(PageTest):
         self.assertTrue(set(ids) <= shown, len(set(ids) - shown))
 
 
+class DeleteUndo(PageTest):
+    """#2: Delete removes the card at once; Undo in the toast brings it back with its video."""
+
+    def test_delete_then_undo(self):
+        a = self.studio.generate(prompt="to delete")[1]["id"]
+        self.studio.wait([a])
+        card = f'article[data-id="{a}"]'
+        self.page.wait_for_selector(f"{card} video")
+        self.assertIn("trash", self.page.get_attribute(f"{card} .del", "title"))
+        self.page.click(f"{card} .del")
+        self.page.wait_for_selector(card, state="detached")
+        self.assertTrue(self.page.is_visible("#undo"))
+        self.page.wait_for_timeout(2500)                                    # a poll must not bring it back
+        self.assertEqual(self.page.query_selector(card), None)
+        self.assertEqual(self.studio.state()["jobs"], [])
+        self.page.click("#undo button")
+        self.page.wait_for_selector(f"{card} video")
+        self.page.wait_for_function("document.getElementById('count').textContent === '1 clip'")
+        self.assertEqual(self.studio.get(f"/video/{a}")[0], 200)
+
+    def test_no_delete_while_running(self):
+        a = self.studio.generate(prompt="running", seconds=8)[1]["id"]
+        self.page.wait_for_selector(f'article[data-id="{a}"]')
+        self.assertFalse(self.page.is_visible(f'article[data-id="{a}"] .del'))
+        self.studio.wait([a])
+        self.page.wait_for_selector(f'article[data-id="{a}"] .del', state="visible")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -45,7 +45,7 @@ win over the file.
   sources/               pinned FastVideo, flash-attention, ComfyUI, LTX-2, H3 upscaler
   envs/{download,stage1,stage2}
   dependencies/{fa4,offline-context}
-  runtime/               SOL_H3_SPARK_RUNTIME_ROOT: uploads, outputs, compile cache
+  runtime/               SOL_H3_SPARK_RUNTIME_ROOT: uploads, outputs, compile cache, trash (deleted clips)
   paths-{t2va,fl2va,ref2va}.json, existing-paths.json, fixed-prompt.pt, logs/
   applied.patch          the patch install/10-sana.sh applied last (for updates)
 ```
