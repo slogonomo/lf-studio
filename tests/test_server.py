@@ -4,6 +4,7 @@ python3 -m unittest discover -s tests -v      (needs python3 >= 3.10 and ffmpeg;
 library only)
 """
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -395,6 +396,100 @@ class Delete(StudioTest):
         before = set((self.studio.runtime / "inputs" / "webui").iterdir())
         self.assertEqual(self.studio.generate(task="fl2va", files={"first_frame": [("x.txt", b"no")]})[0], 400)
         self.assertEqual(set((self.studio.runtime / "inputs" / "webui").iterdir()), before)
+
+
+class DeleteEdgeCases(Delete):
+    """#2, from review: failures half-way, a symlinked runtime root, failed runs, remix after delete."""
+    test_delete_and_undelete_fl2va = test_deleted_state_survives_restart = test_refusals = None
+    test_old_layout_clip_moves_just_its_files = test_refused_request_leaves_no_input_directory = None
+
+    def clip(self, **kw):
+        jid = self.generate(**kw)
+        return self.studio.wait([jid])[0]
+
+    def test_undelete_with_the_publish_folder_read_only(self):
+        job = self.clip()
+        self.delete(job["id"])
+        self.publish.chmod(0o555)
+        try:
+            code, body = self.delete(job["id"], "/api/undelete")
+        finally:
+            self.publish.chmod(0o755)
+        self.assertEqual(code, 200, body)
+        self.assertNotIn("published", body["job"])                         # restored without its share copy
+        self.assertEqual(self.studio.get(f"/video/{job['id']}")[0], 200)
+        self.assertEqual(len(list((self.studio.runtime / "trash" / job["id"]).iterdir())), 2)   # mp4 + jpg wait
+
+    def test_failed_delete_moves_everything_back(self):
+        job = self.clip()
+        self.publish.chmod(0o555)                                           # the share copy can't be moved
+        try:
+            code, body = self.delete(job["id"])
+        finally:
+            self.publish.chmod(0o755)
+        self.assertEqual(code, 500, body)
+        self.assertTrue(Path(job["output"]).exists() and Path(job["published"]).exists())
+        self.assertFalse((self.studio.runtime / "trash" / job["id"]).exists())
+        self.assertEqual(self.studio.state()["done"], 1)
+
+    def test_failed_run_directory_goes_too(self):
+        job = self.clip(prompt="STUB_FAIL")
+        self.assertEqual(job["status"], "failed")
+        dirs = [Path(d) for d in job["case_dirs"]]
+        self.assertTrue(dirs and all(d.is_dir() for d in dirs))
+        self.assertEqual(self.delete(job["id"])[0], 200)
+        self.assertFalse(any(d.exists() for d in dirs))
+
+    def test_remix_after_the_source_was_deleted(self):
+        job = self.clip(task="fl2va", files={"first_frame": [("first.png", png())]})
+        self.delete(job["id"])
+        jid = self.generate(task="fl2va", remix_from=job["id"], keep="first_frame:0")   # form still had its files
+        self.assertEqual(self.studio.wait([jid])[0]["status"], "done")
+        self.assertEqual(self.delete(job["id"], "/api/undelete")[0], 200)  # and the source can still come back
+
+    def test_leftovers_in_the_trash_are_swept(self):
+        old = self.studio.runtime / "trash" / "leftover"
+        old.mkdir(parents=True)
+        os.utime(old, (1, 1))
+        self.studio.stop()
+        self.studio.start()
+        self.assertFalse(old.exists())
+
+
+class SymlinkedRuntime(StudioTest):
+    def setUp(self):
+        self.real = Path(tempfile.mkdtemp(prefix="sol-h3-real-"))
+        link = Path(tempfile.mkdtemp(prefix="sol-h3-link-")) / "root"
+        link.symlink_to(self.real)
+        self.link = link
+        self.dir = link
+        self.studio = StubStudio(link, load_s=1, clip_s=0.2, preload=False)
+        self.studio.start()
+
+    def tearDown(self):
+        self.studio.stop()
+        shutil.rmtree(self.real, ignore_errors=True)
+        shutil.rmtree(self.link.parent, ignore_errors=True)
+
+    def test_clip_directory_moved(self):
+        jid = self.generate()
+        case = Path(self.studio.wait([jid])[0]["output"]).parent.parent
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": jid})[0], 200)
+        self.assertFalse(case.exists())
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": jid})[0], 200)
+        self.assertTrue(case.is_dir())
+
+
+class BadTrashDays(unittest.TestCase):
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        try:
+            studio = StubStudio(d, env={"SOLH3_TRASH_DAYS": "inf"})
+            with self.assertRaises(RuntimeError) as e:
+                studio.start()
+            self.assertIn("SOLH3_TRASH_DAYS", str(e.exception))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 class TrashPurge(Delete):

@@ -188,6 +188,8 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.undo{display:flex;align-items:center;gap:12px;padding:7px 8px 7px 15px}
 .toast.undo.show{pointer-events:auto}
+.toast.undo:not(.show){visibility:hidden;transition:opacity .2s,transform .2s,visibility 0s .2s}
+#undo.show~#toast{bottom:calc(72px + env(safe-area-inset-bottom))}
 .toast.undo button{border:0;border-radius:8px;padding:4px 11px;font-weight:700;font-size:13px;cursor:pointer;background:var(--acc);color:var(--accfg)}
 .act.del{margin-left:auto;color:var(--mut)}
 .act.del:hover{border-color:var(--bad);color:var(--bad)}
@@ -294,8 +296,8 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 </section>
 </div>
 </div>
-<div class="toast" id="toast" aria-live="polite"></div>
 <div class="toast undo" id="undo" aria-live="polite"><span></span><button type="button">Undo</button></div>
+<div class="toast" id="toast" aria-live="polite"></div>
 
 <script>
 // Rules: polling only changes text/attributes of existing elements - never rebuilds the form, a card
@@ -396,7 +398,7 @@ zones.forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs
     if(!dt.files.length){toast(`That zone takes ${want} files`);return;}inp.files=dt.files;show();});
   show();});
 
-let state={now:Date.now()/1000,session:{key:null,state:'idle',since:0},jobs:[]},skew=0;
+let state={now:Date.now()/1000,session:{key:null,state:'idle',since:0},jobs:[],seq:0},skew=0;
 const now=()=>Date.now()/1000+skew;                 // server clock (the timers compare with server timestamps)
 const active=j=>j.status!=='done'&&j.status!=='failed';
 // the mode/format/length that will be loaded once everything already queued has run
@@ -464,17 +466,26 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
   body.querySelector('.del').onclick=()=>remove(j);
   d.append(media,body);return d;}
-// Delete moves the clip and its files to the server's trash; Undo (in the toast) moves them back
-const gone=new Set();
-function hideCard(id){gone.add(id);known.delete(id);if(els[id]){els[id].remove();delete els[id];}}
-async function remove(j){const r=await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:j.id})});
-  if(!r.ok){toast((await r.json()).error||'Could not delete');return;}
-  hideCard(j.id);const u=$('undo');u.querySelector('span').textContent='Clip deleted';u.classList.add('show');clearTimeout(u._t);
-  u.querySelector('button').onclick=async()=>{u.classList.remove('show');
-    const x=await (await fetch('/api/undelete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:j.id})})).json();
-    if(!x.job){toast(x.error||'Could not restore');return;}
-    gone.delete(j.id);known.set(j.id,x.job);update(els[j.id]||insert(x.job),x.job,[],state.session,now());toast('Clip restored');poll();};
-  u._t=setTimeout(()=>u.classList.remove('show'),10000);poll();}
+// Delete moves the clip and its files to the server's trash; Undo (in the toast) moves back every clip deleted while
+// it showed. The server's state wins: /api/state lists deleted ids (other tabs remove those cards too), and a card
+// hidden here stays hidden only until a poll sent after the delete has answered (gone: id -> poll number).
+const gone=new Map();let pollSeq=0,undoIds=[];
+function hideCard(id){known.delete(id);if(els[id]){els[id].remove();delete els[id];}}
+const postJSON=(url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+async function remove(j){let r;
+  try{r=await postJSON('/api/delete',{id:j.id});}catch(e){toast('Could not reach the server');return;}
+  if(!r.ok){toast((await r.json().catch(()=>({}))).error||'Could not delete');return;}
+  gone.set(j.id,pollSeq);hideCard(j.id);
+  const u=$('undo');if(!u.classList.contains('show'))undoIds=[];undoIds.push(j.id);
+  u.querySelector('span').textContent=undoIds.length>1?`${undoIds.length} clips deleted`:'Clip deleted';
+  u.classList.add('show');clearTimeout(u._t);u._t=setTimeout(()=>u.classList.remove('show'),10000);render();}
+$('undo').querySelector('button').onclick=async()=>{const u=$('undo'),ids=undoIds;undoIds=[];u.classList.remove('show');
+  let back=0,err='';
+  for(const id of ids){try{const r=await postJSON('/api/undelete',{id}),x=await r.json();
+      if(!r.ok||!x.job){err=x.error||'Could not restore';continue;}
+      gone.delete(id);known.set(id,x.job);update(els[id]||insert(x.job),x.job,[],state.session,now());back++;}
+    catch(e){err='Could not reach the server';}}
+  toast(err?`${err}${back?` (${back} restored)`:''}`:back>1?`${back} clips restored`:'Clip restored');render();poll();};
 function setText(el,t){if(el.textContent!==t)el.textContent=t;}
 // every job the page has seen, by id: the poll carries the active ones and the newest page, older pages come from
 // /api/jobs as the gallery scrolls (finished clips don't change, so only polled ones are updated afterwards)
@@ -511,10 +522,12 @@ function render(){const s=state.session,k=s.key,t=now();
   setText($('loaded'),sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));
   setText($('loadtimer'),sState==='loading'?clock(t-s.since):'');
   $('unload').hidden=!k&&sState==='idle';
-  state.jobs=state.jobs.filter(j=>!gone.has(j.id));    // a poll answered just before a delete
+  for(const [id,seq] of gone)if(state.seq>seq)gone.delete(id);          // answered after the delete: server wins
+  (state.deleted||[]).forEach(hideCard);                                  // deleted here or in another tab
+  state.jobs=state.jobs.filter(j=>!gone.has(j.id));                       // a poll sent before a delete
   const had=[...known.values()];                     // what the page had before this poll
   state.jobs.forEach(j=>known.set(j.id,j));
-  if(known.size&&$('nojobs'))$('nojobs').remove();
+  $('nojobs').hidden=known.size>0;
   const done=state.done??state.jobs.filter(j=>j.status==='done').length,run=state.jobs.filter(active).length;
   setText($('count'),known.size?`${done} clip${done===1?'':'s'}${run?` · ${run} in progress`:''}`:'');
   const queue=state.jobs.filter(j=>j.status==='queued').sort((a,b)=>a.created-b.created);
@@ -548,6 +561,8 @@ async function loadMore(){const more=$('more');if(loadingMore||more.hidden)retur
   if(got&&!more.hidden&&more.getBoundingClientRect().top<innerHeight+600)setTimeout(loadMore,50);}
 $('more').onclick=loadMore;
 if('IntersectionObserver' in window)new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))loadMore();},{rootMargin:'600px'}).observe($('more'));
-async function poll(){try{const r=await fetch('/api/state',{cache:'no-store'});state=await r.json();if(state.now)skew=state.now-Date.now()/1000;render();}catch(e){}}
+async function poll(){const seq=++pollSeq;
+  try{const r=await fetch('/api/state',{cache:'no-store'}),x=await r.json();if(seq<state.seq)return;   // an older answer
+    state=x;state.seq=seq;if(state.now)skew=state.now-Date.now()/1000;render();}catch(e){}}
 poll();setInterval(poll,2000);setInterval(render,1000);
 </script>

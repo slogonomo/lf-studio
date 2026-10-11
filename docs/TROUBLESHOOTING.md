@@ -116,6 +116,10 @@ hidden, for `SOLH3_TRASH_DAYS` (default 7). Until then it can be restored with e
 curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "<clip id>"}' http://127.0.0.1:8190/api/undelete
 ```
 
+If the publish folder can't be written when a clip is restored (an unmounted share), the clip comes back without
+its publish copy, which stays in the trash until it is emptied. Anything else left in the trash (from a delete or
+restore that failed half-way) is removed after the same number of days.
+
 ## Stopping
 
 Ctrl-C, SIGTERM or SIGHUP: the server closes its pipeline (up to ~40 s; the launcher waits up to
