@@ -549,6 +549,81 @@ class ReleaseReview(StudioTest):
         self.assertNotIn("preload stopped", self.studio.log.read_text().split("load requested")[1])
 
 
+class FixReview(ReleaseReview):
+    """From the review of the release fixes: a pruned clip's only copy, shutdown and crashes during a move, and a copy
+    whose source can't be removed."""
+    test_import_skips_bad_entries_and_state_works = test_shared_file_stays_for_the_other_entry = None
+    test_only_copy_on_an_unmounted_share_waits_for_it = test_failed_copy_back_leaves_no_partial_file = None
+    test_delete_during_a_requested_warm_up = None
+
+    def clip(self):
+        jid = self.generate(seconds=3)
+        return self.studio.wait([jid])[0]
+
+    def test_pruned_clip_waits_for_its_publish_copy(self):
+        job = self.clip()
+        shutil.rmtree(Path(job["output"]).parent.parent.parent)               # session directories pruned
+        self.assertEqual(self.studio.get(f"/video/{job['id']}")[0], 200)     # plays from the publish copy
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": job["id"]})[0], 200)
+        off = self.share.with_name(self.share.name + ".off")
+        self.share.rename(off)
+        try:
+            self.assertEqual(self.studio.post("/api/undelete", json_body={"id": job["id"]})[0], 500)
+        finally:
+            off.rename(self.share)
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": job["id"]})[0], 200)
+        self.assertEqual(self.studio.get(f"/video/{job['id']}")[0], 200)
+
+    def big_publish_copy(self, job, size=1 << 30):
+        with open(job["published"], "r+b") as f:                              # a large clip, sparse
+            f.truncate(size)
+
+    def test_shutdown_waits_for_a_move(self):
+        job = self.clip()
+        self.big_publish_copy(job)
+        t = __import__("threading").Thread(target=lambda: self.studio.post("/api/delete", json_body={"id": job["id"]}))
+        t.start()
+        time.sleep(0.15)
+        self.studio.stop()                                                     # SIGTERM during the copy
+        t.join()
+        self.studio.start()
+        self.assertNotIn(job["id"], [j["id"] for j in self.studio.state()["jobs"]])   # the delete finished
+        self.assertFalse(Path(job["published"]).exists())
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": job["id"]})[0], 200)
+        self.assertEqual(Path(job["published"]).stat().st_size, 1 << 30)
+
+    def test_crash_during_a_delete_is_put_back(self):
+        job = self.clip()
+        self.big_publish_copy(job, 4 << 30)
+
+        def delete():
+            with __import__("contextlib").suppress(OSError):                  # the server dies under it
+                self.studio.post("/api/delete", json_body={"id": job["id"]})
+        t = __import__("threading").Thread(target=delete)
+        t.start()
+        time.sleep(0.3)
+        self.studio.proc.kill()                                                # no clean shutdown
+        self.studio.proc.wait()
+        t.join()
+        self.studio.start()
+        self.assertIn("put back the files of an unfinished delete", self.studio.log.read_text())
+        self.assertEqual(self.studio.get(f"/video/{job['id']}")[0], 200)
+        self.assertTrue(Path(job["output"]).exists() and Path(job["published"]).exists())
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": job["id"]})[0], 200)   # works again
+
+    def test_copy_whose_source_cant_be_removed_is_undone(self):
+        job = self.clip()
+        os.chmod(self.share, 0o555)                                            # copied out, but not removable
+        try:
+            code, body = self.studio.post("/api/delete", json_body={"id": job["id"]})
+        finally:
+            os.chmod(self.share, 0o755)
+        self.assertEqual(code, 500, body)
+        self.assertTrue(Path(job["output"]).exists() and Path(job["published"]).exists())
+        trash = self.studio.runtime / "trash" / job["id"]
+        self.assertFalse(trash.exists() and any(trash.rglob("*.mp4")))         # no second copy left behind
+
+
 class SymlinkedRuntime(StudioTest):
     def setUp(self):
         self.real = Path(tempfile.mkdtemp(prefix="sol-h3-real-"))

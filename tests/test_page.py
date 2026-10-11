@@ -352,6 +352,30 @@ class ReleaseReviewPage(PageTest):
         self.studio.post("/api/undelete", json_body={"id": old})
         self.page.wait_for_selector(f'article[data-id="{old}"]')
 
+    def test_deleted_here_then_restored_by_hand(self):
+        old = f"{3:032x}"
+        self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        self.page.wait_for_selector(f'article[data-id="{old}"]')
+        self.page.click(f'article[data-id="{old}"] .del')
+        self.page.wait_for_selector(f'article[data-id="{old}"]', state="detached")
+        self.page.wait_for_timeout(2500)
+        self.studio.post("/api/undelete", json_body={"id": old})
+        self.page.wait_for_selector(f'article[data-id="{old}"]')
+
+    def test_failed_undo_offers_retry(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid])
+        card = f'article[data-id="{jid}"]'
+        self.page.wait_for_selector(card)
+        self.page.click(f"{card} .del")
+        self.page.route("**/api/undelete", lambda route: route.fulfill(status=500, json={"error": "share not there"}))
+        self.page.click("#undo button")
+        self.page.wait_for_function("document.querySelector('#undo button').textContent === 'Retry'")
+        self.assertIn("share not there", self.page.inner_text("#undo"))
+        self.page.unroute("**/api/undelete")
+        self.page.click("#undo button")
+        self.page.wait_for_selector(card)
+
     def test_keyboard(self):
         chooser = []
         self.page.on("filechooser", lambda fc: chooser.append(fc))
@@ -368,6 +392,8 @@ class ReleaseReviewPage(PageTest):
         self.page.keyboard.press("Enter")
         self.page.wait_for_selector("#undo", state="visible")
         self.assertEqual(self.page.evaluate("document.activeElement === document.querySelector('#undo button')"), True)
+        self.page.wait_for_selector("#undo", state="hidden", timeout=15000)   # toast gone: focus back in the gallery
+        self.assertEqual(self.page.evaluate("!!document.activeElement.closest('article.job')"), True)
 
 
 if __name__ == "__main__":

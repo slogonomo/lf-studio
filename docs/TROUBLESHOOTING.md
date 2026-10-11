@@ -126,7 +126,11 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "<clip id>"}' htt
 ```
 
 If the publish folder can't be written when a clip is restored (an unmounted share), the clip comes back without
-its publish copy, which stays in the trash until it is emptied. Anything else left in the trash (from a delete or
+its publish copy, which stays in the trash until it is emptied; when that copy is the clip's only MP4 (an old clip,
+or one whose session directory was pruned), Undo answers with an error instead and can be tried again later. Files
+are copied to and from another filesystem under a temporary name, so a share never holds a partial MP4. Shutdown
+waits up to 60 s for a Delete or Undo that is moving files, and a delete cut short (the server killed) is put back
+at the next start. Anything else left in the trash (from a delete or
 restore that failed half-way) is removed after the same number of days.
 
 ## Stopping
