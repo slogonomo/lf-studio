@@ -5,6 +5,7 @@ library only)
 """
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -205,6 +206,9 @@ class Remix(StudioTest):
         code, body = self.studio.generate(task="fl2va", remix_from="a" * 32, keep="first_frame:0")
         self.assertEqual(code, 400)
         self.assertIn("no longer in the list", body["error"])
+
+
+PAGE = 24                                    # clips per gallery page (webui/server.py)
 
 
 def history(n, start=1_700_000_000):
@@ -881,6 +885,326 @@ class WarmUpWithWarmTime(WarmUp):
         self.assertEqual(job["status"], "done")
         self.assertFalse(job.get("includes_model_load"), "a late same-settings job should wait for the warm-up")
         self.assertNotIn("aborting preload", self.studio.log.read_text())
+
+
+def worker_groups(pid):
+    """The live processes `pid` started in a process group of their own: a stub studio's pipeline workers."""
+    found = []
+    for d in Path("/proc").iterdir():
+        if d.name.isdigit():
+            try:
+                state, ppid, pgrp = (d / "stat").read_text().rsplit(")", 1)[1].split()[:3]
+            except (OSError, ValueError):
+                continue
+            if int(ppid) == pid and int(pgrp) == int(d.name) and state != "Z":
+                found.append(int(d.name))
+    return found
+
+
+def idle_values():
+    """spark-switchboard's busy probe: the statuses it counts as idle (integrations/spark-switchboard/)."""
+    toml = (Path(__file__).resolve().parents[1] / "integrations/spark-switchboard/sol-h3-studio.toml").read_text()
+    return json.loads(re.search(r"^idle_values\s*=\s*(\[[^\]]*\])", toml, re.M).group(1))
+
+
+class CancelTest(StudioTest):
+    def cancel(self, jid):
+        return self.studio.post("/api/cancel", json_body={"id": jid})
+
+    def until(self, jid, predicate, timeout=30):
+        """Wait until the job with this id satisfies predicate; returns it."""
+        st = self.studio.wait_for(lambda st: any(j["id"] == jid and predicate(j) for j in st["jobs"]), timeout)
+        return next(j for j in st["jobs"] if j["id"] == jid)
+
+    def running(self, jid, status):
+        """Wait until the job is in this status with a worker running; returns the worker process groups."""
+        self.until(jid, lambda j: j["status"] == status)
+        deadline = time.time() + 10
+        while not (groups := worker_groups(self.studio.proc.pid)) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(groups, "a worker runs")
+        return groups
+
+    def open_pipelines(self):
+        roots = (self.studio.runtime / "outputs" / "webui").iterdir()
+        return [r.name for r in roots if (r / "STARTED").exists() and not (r / "CLOSED").exists()]
+
+    def stopped(self, jid, since, within=3, retries=0):
+        """The job ends cancelled soon after Cancel, without an error or another retry, its workers gone and the
+        session closed; returns it."""
+        job = self.studio.wait([jid], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled", job)
+        self.assertLess(time.time() - since, within, "stopped right away, not after the work")
+        for key in ("error", "output", "published", "cancel_requested", "saving"):
+            self.assertNotIn(key, job)
+        self.assertEqual(worker_groups(self.studio.proc.pid), [])
+        self.assertEqual(self.open_pipelines(), [])
+        log = self.studio.log.read_text()
+        self.assertIn("clip cancelled", log)
+        self.assertEqual(log.count(f"retrying job {jid}"), retries)
+        session = self.studio.state()["session"]
+        self.assertEqual((session["key"], session["state"]), (None, "idle"))
+        return job
+
+
+class Cancel(CancelTest):
+    """#20: Cancel takes a queued clip out of the queue, or stops a running one (its workers get SIGTERM, the next
+    clip loads the models again); either way the card stays as cancelled, for Remix and Delete."""
+    load_s, clip_s = 6, 5
+
+    def test_queued_never_runs_and_the_queue_carries_on(self):
+        a = self.generate()
+        b = self.generate(seed=2, task="fl2va", files={"first_frame": [("f.png", png())]})
+        c = self.generate(seed=3)
+        self.running(a, "loading models + generating")
+        code, body = self.cancel(b)
+        self.assertEqual((code, body["job"]["status"]), (200, "cancelled"))
+        self.assertEqual(self.cancel(b), (409, {"error": "the clip is already cancelled"}))
+        ja, jb, jc = self.studio.wait([a, b, c], timeout=60)
+        self.assertEqual([j["status"] for j in (ja, jb, jc)], ["done", "cancelled", "done"])
+        self.assertFalse(jc.get("includes_model_load"))                     # the session was left alone
+        self.assertNotIn("started", jb)
+        self.assertNotIn("case_dirs", jb)
+        self.assertTrue(Path(jb["first_frame"]).is_file())                  # its input stays, for Remix
+        self.assertNotIn("cancelling job", self.studio.log.read_text())     # nothing to stop
+
+    def test_while_loading(self):
+        self.studio.stop()
+        self.studio.env["STUB_LATE_S"] = "2"            # the loading pass starts a second worker 2 s in
+        self.studio.start()
+        a = self.generate(task="fl2va", files={"first_frame": [("f.png", png())]})
+        self.running(a, "loading models + generating")
+        t0 = time.time()
+        code, body = self.cancel(a)
+        self.assertEqual((code, body["job"]["cancel_requested"]), (200, True))
+        job = self.stopped(a, t0, within=4.5)            # the pass waits for the second worker (2 s in, 6 s if
+                                                         # it ran): it is stopped as well
+        self.assertEqual(self.studio.log.read_text().count("cancel: sent SIGTERM"), 2)
+        self.assertTrue(Path(job["first_frame"]).is_file())
+        b = self.studio.wait([self.generate(seed=2)], timeout=30)[0]
+        self.assertEqual((b["status"], b["includes_model_load"]), ("done", True))
+
+    def test_while_the_old_models_close(self):
+        self.studio.stop()
+        self.studio.env["STUB_CLOSE_S"] = "3"
+        self.studio.start()
+        self.studio.wait([self.generate()], timeout=30)
+        b = self.generate(orientation="portrait", seed=2)       # other settings: the loaded session closes first
+        self.studio.wait_for(lambda st: st["session"]["state"] == "unloading")
+        self.assertEqual(self.studio.job(b)["status"], "starting")
+        self.assertEqual(self.cancel(b)[0], 200)
+        job = self.studio.wait([b], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertNotIn("case_dirs", job)                       # nothing of its own ran: no session for it
+        sessions = (self.studio.runtime / "outputs" / "webui").iterdir()
+        self.assertEqual([d.name for d in sessions if "portrait" in d.name], [])
+        self.assertNotIn("cancel: sent SIGTERM", self.studio.log.read_text())
+        self.assertEqual(self.studio.state()["session"]["state"], "idle")
+
+    def test_next_clip_loads_in_the_same_second(self):
+        time.sleep(1 - time.time() % 1 + 0.05)          # early in a second: both sessions start within it
+        a = self.generate()
+        b = self.generate(seed=2)                        # same settings, queued
+        self.running(a, "loading models + generating")
+        self.assertEqual(self.cancel(a)[0], 200)
+        ja, jb = self.studio.wait([a, b], timeout=30)
+        self.assertEqual((ja["status"], jb["status"], jb.get("first_error")), ("cancelled", "done", None))
+        self.assertEqual(len(list((self.studio.runtime / "outputs" / "webui").iterdir())), 2)   # its own directory
+
+    def test_while_generating(self):
+        a = self.studio.wait([self.generate()], timeout=30)[0]
+        self.assertEqual(a["status"], "done")
+        b = self.generate(seed=2)
+        self.running(b, "generating")
+        t0 = time.time()
+        self.assertEqual(self.cancel(b)[0], 200)
+        self.assertEqual(self.cancel(b)[0], 200)                            # twice: it is being stopped already
+        job = self.stopped(b, t0)
+        self.assertNotIn("includes_model_load", job)
+        c = self.studio.wait([self.generate(seed=3)], timeout=30)[0]
+        self.assertEqual((c["status"], c["includes_model_load"]), ("done", True))   # the models load again
+        self.assertEqual(self.studio.get(f"/video/{a['id']}")[0], 200)
+
+    def test_during_the_retry_after_a_worker_error(self):
+        a = self.generate(prompt="STUB_FAIL_ONCE")
+        self.until(a, lambda j: j.get("first_error"), timeout=30)
+        self.running(a, "loading models + generating")
+        t0 = time.time()
+        self.assertEqual(self.cancel(a)[0], 200)
+        job = self.stopped(a, t0, retries=1)
+        self.assertIn("STUB_FAIL", job["first_error"])                      # the first error stays on record
+        b = self.studio.wait([self.generate(seed=2)], timeout=30)[0]
+        self.assertEqual(b["status"], "done")
+
+    def test_remix_of_cancelled_clips(self):
+        frames = {"first_frame": [("first.png", png())], "last_frame": [("last.png", png(40))]}
+        a = self.generate(task="fl2va", files=frames)                       # cancelled while loading
+        b = self.generate(task="fl2va", seed=2, files=frames)               # cancelled while queued
+        self.running(a, "loading models + generating")
+        self.assertEqual(self.cancel(b)[0], 200)
+        self.assertEqual(self.cancel(a)[0], 200)
+        self.studio.wait([a, b])
+        for src in (a, b):
+            listing = json.loads(self.studio.get(f"/api/inputs/{src}")[2])
+            self.assertEqual(listing["missing"], [])
+            self.assertEqual({z: [i["name"] for i in v] for z, v in listing["inputs"].items()},
+                             {"first_frame": ["first.png"], "last_frame": ["last.png"]})
+        old = self.studio.job(a)
+        jid = self.generate(task="fl2va", seconds=3, remix_from=a, keep="first_frame:0,last_frame:0")
+        job = self.studio.wait([jid], timeout=30)[0]
+        self.assertEqual(job["status"], "done", job.get("error"))
+        for key in ("first_frame", "last_frame"):
+            self.assertEqual(Path(job[key]).stat().st_ino, Path(old[key]).stat().st_ino)   # reused, not uploaded
+
+    def test_delete_and_undo(self):
+        self.studio.wait([self.generate()], timeout=30)
+        b = self.generate(task="fl2va", seed=2, files={"first_frame": [("f.png", png())]})
+        self.running(b, "loading models + generating")                      # another mode: a new session
+        self.assertEqual(self.cancel(b)[0], 200)
+        job = self.studio.wait([b])[0]
+        paths = [Path(d) for d in job["case_dirs"]] + [Path(job["first_frame"]).parent]
+        self.assertTrue(all(p.exists() for p in paths), paths)             # the run's directory and its inputs
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": b}), (200, {"ok": True}))
+        self.assertFalse(any(p.exists() for p in paths))
+        self.assertNotIn(b, [j["id"] for j in self.studio.state()["jobs"]])
+        self.assertEqual(self.cancel(b)[0], 404)                             # deleted
+        code, body = self.studio.post("/api/undelete", json_body={"id": b})
+        self.assertEqual((code, body["job"]["status"]), (200, "cancelled"))
+        self.assertTrue(all(p.exists() for p in paths))
+
+
+class CancelRefusals(CancelTest):
+    load_s, clip_s = 1, 0.5
+
+    def test_finished_unknown_and_bad_requests(self):
+        done = self.generate()
+        failed = self.generate(prompt="STUB_FAIL", seed=2)
+        self.studio.wait([done, failed], timeout=30)
+        self.assertEqual(self.cancel(done), (409, {"error": "the clip has already finished"}))
+        self.assertEqual(self.cancel(failed), (409, {"error": "the clip has already failed"}))
+        self.assertEqual(self.cancel("f" * 32)[0], 404)
+        self.assertEqual(self.studio.post("/api/cancel", fields={"id": done})[0], 400)
+        self.assertEqual(self.studio.post("/api/cancel", json_body=[done])[0], 400)
+        self.assertEqual(self.studio.job(done)["status"], "done")
+
+
+class CancelState(CancelTest):
+    """#20: a cancelled clip is finished everywhere: the poll's lists, the busy checks, switchboard's busy probe and
+    the start-up check (it stays cancelled after a restart, even one in the middle of stopping it)."""
+    load_s, clip_s = 4, 4
+
+    def seed(self):
+        self.write_state(history(PAGE))
+
+    def test_listed_as_finished_and_not_busy(self):
+        a = self.generate()
+        b = self.generate(seed=2)
+        self.running(a, "loading models + generating")
+        self.assertEqual(self.cancel(b)[0], 200)
+        st = self.studio.state()
+        self.assertEqual((len(st["jobs"]), st["more"]), (PAGE + 1, True))   # a + the newest page, b among them
+        self.assertIn(b, [j["id"] for j in st["jobs"]])
+        self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "portrait",
+                                                                  "seconds": 5})[0], 409)   # a still runs
+        self.assertEqual(self.cancel(a)[0], 200)
+        self.studio.wait([a, b])
+        st = self.studio.state()
+        self.assertEqual((len(st["jobs"]), st["done"]), (PAGE, PAGE))       # finished; not counted as made
+        self.assertTrue(all(j["status"] in idle_values() for j in st["jobs"]), "switchboard sees it idle")
+        self.assertIn(a, self.studio.all_jobs())
+        self.assertEqual(self.studio.post("/api/unload")[0], 200)
+        self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "portrait",
+                                                                  "seconds": 5})[0], 200)
+
+    def test_stays_cancelled_after_a_restart(self):
+        self.studio.stop()
+        self.studio.env["STUB_CLOSE_S"] = "20"                              # the stopped session closes slowly
+        self.studio.start()
+        a = self.generate()
+        b = self.generate(seed=2)
+        self.running(a, "loading models + generating")
+        self.assertEqual(self.cancel(b)[0], 200)
+        self.assertEqual(self.cancel(a)[0], 200)
+        self.studio.wait_for(lambda st: st["session"]["state"] == "unloading")   # a's session is closing
+        self.assertEqual(self.studio.job(a)["status"], "loading models + generating")
+        self.studio.proc.kill()                                             # no clean shutdown
+        self.studio.proc.wait()
+        self.studio.start()
+        for jid in (a, b):
+            job = self.studio.job(jid)
+            self.assertEqual(job["status"], "cancelled", job)
+            self.assertNotIn("error", job)
+            self.assertNotIn("cancel_requested", job)
+        self.studio.stop()                                                  # and again, cleanly
+        self.studio.start()
+        self.assertEqual([self.studio.job(j)["status"] for j in (a, b)], ["cancelled", "cancelled"])
+
+
+class CancelRace(CancelTest):
+    """#20: a clip that finishes just as Cancel arrives: one of the two wins, never both. Cancel first: the clip is
+    cancelled even though it was made (no output, session closed). The clip first: Cancel answers 409 while it is
+    saved (poster, publish copy), and it is done."""
+    load_s, clip_s = 1, 1
+
+    def setUp(self):
+        self.publish = Path(tempfile.mkdtemp(prefix="sol-h3-publish-"))
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        shutil.rmtree(self.publish, ignore_errors=True)
+
+    def seed(self):
+        # ffmpeg making a poster (after the clip is accepted) waits 2 s, with a marker file meanwhile
+        bindir = self.dir / "bin"
+        bindir.mkdir()
+        (bindir / "ffmpeg").write_text('#!/bin/sh\n'
+                                       'case " $* " in *" -frames:v "*) touch "$POSTER_MARK"; sleep 2;; esac\n'
+                                       f'exec {shutil.which("ffmpeg")} "$@"\n')
+        (bindir / "ffmpeg").chmod(0o755)
+        self.poster = self.dir / "poster-started"
+        self.studio.env.update(PATH=f"{bindir}:{os.environ['PATH']}", POSTER_MARK=str(self.poster),
+                               STUB_FINISH_S="2", SOLH3_PUBLISH_DIR=str(self.publish))
+
+    def finishing(self, jid):
+        """Wait until the stub's worker has ended and the clip is about to come back."""
+        case = self.studio.job(jid)["case_id"]
+        deadline = time.time() + 20
+        while not list((self.studio.runtime / "outputs" / "webui").glob(f"*/{case}/FINISHING")):
+            self.assertLess(time.time(), deadline, "the clip did not reach its end")
+            time.sleep(0.05)
+
+    def test_cancel_first(self):
+        a = self.generate()
+        self.finishing(a)
+        self.assertEqual(worker_groups(self.studio.proc.pid), [])           # nothing left to signal
+        t0 = time.time()
+        self.assertEqual(self.cancel(a)[0], 200)
+        job = self.stopped(a, t0, within=5)                                 # the clip's last 2 s ran out
+        self.assertTrue(list(Path(job["case_dirs"][0]).rglob("*.mp4")))    # it was made, but not kept
+        self.assertFalse(self.poster.exists() or any(self.publish.iterdir()))
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": a})[0], 200)
+        self.assertFalse(Path(job["case_dirs"][0]).exists())
+        b = self.studio.wait([self.generate(seed=2)], timeout=30)[0]
+        self.assertEqual((b["status"], b["includes_model_load"]), ("done", True))
+
+    def test_clip_first(self):
+        a = self.generate()
+        deadline = time.time() + 20
+        while not self.poster.exists():
+            self.assertLess(time.time(), deadline, "no poster made")
+            time.sleep(0.05)
+        self.assertEqual(self.cancel(a), (409, {"error": "the clip has just finished and is being saved"}))
+        job = self.studio.wait([a])[0]
+        self.assertEqual(job["status"], "done")
+        self.assertNotIn("saving", job)
+        self.assertTrue(Path(job["output"]).is_file() and Path(job["published"]).is_file())
+        self.assertEqual(self.studio.get(f"/video/{a}")[0], 200)
+        self.assertEqual(self.cancel(a)[0], 409)
+        self.assertNotIn("closing session", self.studio.log.read_text())    # the models stay loaded
+        self.poster.unlink()
+        b = self.studio.wait([self.generate(seed=2)], timeout=30)[0]
+        self.assertEqual((b["status"], b.get("includes_model_load")), ("done", None))
 
 
 if __name__ == "__main__":

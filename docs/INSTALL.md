@@ -141,6 +141,9 @@ nothing else, reverses it, checks out the new `patches/BASE_COMMIT` if that chan
 has other local changes it lists them and stops without changing anything; move them away, or move `$SOLH3_SANA`
 away and run the script again for a fresh clone. Restart the studio afterwards.
 
+If spark-switchboard runs the studio, copy `integrations/spark-switchboard/sol-h3-studio.toml` into its `services/`
+directory again when the file changes, and restart switchboard (0.3: its busy probe counts the new status "cancelled" as idle).
+
 A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a released version of the patch is
 found the same way. Any other patch: reverse it with the file you applied (`git -C "$SOLH3_SANA" apply -R <that
 patch>`), or re-clone as above.

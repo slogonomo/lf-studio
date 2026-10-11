@@ -165,6 +165,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 @keyframes shimmer{from{background-position:0 0,100% 0}to{background-position:0 0,-150% 0}}
 .job[data-status=queued] .ph2{animation:none}
 .job[data-status=failed] .ph2{background:linear-gradient(120deg,#1c1010,#251414);animation:none}
+.job[data-status=cancelled] .ph2{background:linear-gradient(120deg,#131210,#1c1a16);animation:none}
 .ph2 .big{font:600 24px var(--mono);letter-spacing:.02em;color:#f6ead7}
 .ph2 .small{font-size:12px;color:#aea291}
 .bar{width:64%;max-width:260px;height:4px;border-radius:99px;background:rgba(255,255,255,.12);overflow:hidden}
@@ -174,6 +175,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .tag{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--bg2);border:1px solid var(--line);color:var(--mut);font-variant-numeric:tabular-nums;white-space:nowrap}
 .st{font-weight:700;font-size:11.5px;padding:2px 9px;border-radius:999px}
 .st.ok{background:var(--okbg);color:var(--ok)}.st.wait{background:var(--warnbg);color:var(--warn)}.st.bad{background:var(--badbg);color:var(--bad)}
+.st.off{background:var(--bg2);color:var(--mut)}
 .p{font-size:12.5px;color:var(--mut);white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer;word-break:break-word}
 .p.open{-webkit-line-clamp:unset;display:block}
 .info{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
@@ -194,8 +196,8 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .toast.undo:not(.show){visibility:hidden;transition:opacity .2s,transform .2s,visibility 0s .2s}
 #undo.show~#toast{bottom:calc(72px + env(safe-area-inset-bottom))}
 .toast.undo button{border:0;border-radius:8px;padding:4px 11px;font-weight:700;font-size:13px;cursor:pointer;background:var(--acc);color:var(--accfg)}
-.act.del{margin-left:auto;color:var(--mut)}
-.act.del:hover{border-color:var(--bad);color:var(--bad)}
+.act.del,.act.cancel{margin-left:auto;color:var(--mut)}
+.act.del:hover,.act.cancel:hover{border-color:var(--bad);color:var(--bad)}
 @media(max-width:420px){.wrap{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}.create,.gallery{padding-left:12px;padding-right:12px}.body{padding-left:11px;padding-right:11px}.act{padding:4px 8px}}   /* phones: Remix, Download and Delete fit on one row of a 320 px screen */
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -405,10 +407,12 @@ zones.forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs
 
 let state={now:Date.now()/1000,session:{key:null,state:'idle',since:0},jobs:[],seq:0},skew=0,loadAsked=0;
 const now=()=>Date.now()/1000+skew;                 // server clock (the timers compare with server timestamps)
-const active=j=>j.status!=='done'&&j.status!=='failed';
-// the mode/format/length that will be loaded once everything already queued has run
-function effectiveKey(){const q=state.jobs.filter(active);
+const FINISHED=['done','failed','cancelled'],active=j=>!FINISHED.includes(j.status);
+// the mode/format/length that will be loaded once everything already queued has run (a clip being cancelled closes
+// its session)
+function effectiveKey(){const q=state.jobs.filter(j=>active(j)&&!j.cancel_requested);
   if(q.length){const last=q.reduce((a,b)=>a.created>b.created?a:b);return [last.task,last.orientation,last.seconds||5];}
+  if(state.jobs.some(active))return null;
   return state.session.switching_to||(state.session.preloading?state.session.loading_key:state.session.key);}
 function updateGo(){const k=effectiveKey(),want=[val('task'),val('orientation'),+val('seconds')],go=$('go');
   const same=!!k&&k[0]===want[0]&&k[1]===want[1]&&(k[2]||5)===want[2],eta=ETA[want[2]]||60;
@@ -466,6 +470,7 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   body.innerHTML=`<div class="tags"><span class="st"></span><span class="tag"></span><span class="tag"></span><span class="tag"></span></div>
    <div class="p" title="Click to expand"></div><div class="info"><span class="when"></span> <span class="seedt">· seed <span class="seedv" tabindex="0" title="Click (or Tab to it) to select, then copy"></span></span></div><div class="errtxt"></div>
    <div class="acts"><button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt, seed and input files">Remix</button><span class="dl"></span>
+   <button type="button" class="act cancel" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></svg>Cancel</button>
    <button type="button" class="act del" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button></div>`;
 
   const t=body.querySelectorAll('.tags .tag');t[0].textContent=TASK[j.task]||j.task;t[1].textContent=FMT[j.orientation]||j.orientation;t[2].textContent=`${j.seconds||5} s`;
@@ -487,6 +492,7 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
       toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
   body.querySelector('.del').onclick=e=>remove(j,e.detail===0);       // detail 0: Enter/Space, not a pointer
+  body.querySelector('.cancel').onclick=e=>cancel(j.id,e.currentTarget,e.detail===0);
   d.append(media,body);return d;}
 // The seed is text: a click selects the number (user-select: all), and so does Tab (it is one Tab stop). A pointer
 // press (mouse, touch, pen) takes its tabindex away until focus moves or something else is pressed, so a press never
@@ -524,6 +530,20 @@ async function remove(j,keyboard){const del=els[j.id]&&els[j.id].querySelector('
   if(!$('undo').classList.contains('show'))undoIds=[];undoIds.push(j.id);
   showUndo(undoIds.length>1?`${undoIds.length} clips deleted`:'Clip deleted','Undo');render();
   if(keyboard)$('undo').querySelector('button').focus();}  // the card and its focus are gone; Undo is next
+// Cancel takes a queued clip out of the queue at once; a running one is stopped (the server stops its pipeline's
+// workers, so the next clip loads the models again). The card stays as Cancelled, with Remix and Delete. The answer
+// updates the card at once, and a poll sent before it can't put it back (cancelAt: id -> poll number). The button
+// disappears, so keyboard focus goes to the card's Remix.
+const cancelAt=new Map();
+async function cancel(id,btn,keyboard){const back=keyboard||document.activeElement===btn;btn.disabled=true;let r,x;
+  try{r=await postJSON('/api/cancel',{id});x=await r.json().catch(()=>({}));}
+  catch(e){x={error:'Could not reach the server'};}
+  btn.disabled=false;
+  if(!r||!r.ok||!x.job){toast(x.error||'Could not cancel');if(back)btn.focus();poll();return;}
+  cancelAt.set(id,pollSeq);known.set(id,x.job);render();
+  if(back&&els[id])els[id].querySelector('.reuse-all').focus();
+  toast(x.job.status==='cancelled'?'Taken out of the queue':'Stopping the clip · the models load again for the next one');
+  poll();}
 $('undo').querySelector('button').onclick=async()=>{const u=$('undo'),ids=undoIds;undoIds=[];u.classList.remove('show');
   const failed=[];let back=0,err='',first=null;
   for(const id of ids){try{const r=await postJSON('/api/undelete',{id}),x=await r.json();
@@ -545,13 +565,19 @@ function insert(j){const box=$('jobs'),d=els[j.id]=card(j);d.dataset.created=j.c
 function update(d,j,queue,s,t){
   const del=d.querySelector('.del');del.hidden=active(j);
   del.title=`Move this clip and its input files to the trash (removed for good after ${state.trash_days??7} days)${j.published?', with its copy in the publish folder':''}`;
+  // Cancel: on queued and running clips until the server has the request (cancel_requested: it is being stopped)
+  const stop=d.querySelector('.cancel'),cancelling=active(j)&&!!j.cancel_requested;stop.hidden=!active(j)||cancelling;
+  stop.title=j.status==='queued'?'Take this clip out of the queue (the card stays, with Remix)'
+    :'Stop this clip. The models load again for the next clip (about 1-2 min).';
   if(d.dataset.status!==j.status)d.dataset.status=j.status;
-  const loading=/load|retry|starting/.test(j.status),cls=j.status==='done'?'ok':j.status==='failed'?'bad':'wait',stEl=d.querySelector('.st');
+  const loading=/load|retry|starting/.test(j.status),stEl=d.querySelector('.st');
+  const cls=j.status==='done'?'ok':j.status==='failed'?'bad':j.status==='cancelled'?'off':'wait';
   if(stEl.className!=='st '+cls)stEl.className='st '+cls;
-  setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='queued'?'Queued':loading?'Loading models':'Generating');
+  setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='cancelled'?'Cancelled':cancelling?'Cancelling'
+    :j.status==='queued'?'Queued':loading?'Loading models':'Generating');
   const when=stamp(j.created);
   setText(d.querySelector('.when'),j.e2e_s?`${when} · ${j.includes_model_load?`${fmtS(j.e2e_s)} incl. model load`:j.cold_start_s?`made in ${fmtS(j.e2e_s)} · +${fmtS(j.cold_start_s)} model load`:`made in ${fmtS(j.e2e_s)}`}`:when);
-  setText(d.querySelector('.errtxt'),j.error||(j.first_error?'Recovered after: '+j.first_error:''));
+  setText(d.querySelector('.errtxt'),j.status==='cancelled'?'':j.error||(j.first_error?'Recovered after: '+j.first_error:''));
   const media=d.querySelector('.media');
   if(j.status==='done'&&!media.dataset.done){media.dataset.done='1';            // the <video> is created exactly once
     media.textContent='';const v=document.createElement('video');v.controls=true;v.preload='none';v.playsInline=true;
@@ -560,6 +586,8 @@ function update(d,j,queue,s,t){
     d.querySelector('.dl').replaceWith(a);}
   else if(!media.dataset.done){const ph=media.querySelector('.ph2'),big=ph.querySelector('.big'),small=ph.querySelector('.small'),bar=ph.querySelector('.bar');
     if(j.status==='failed'){setText(big,'Failed');setText(small,'details below');bar.hidden=true;}
+    else if(j.status==='cancelled'){setText(big,'Cancelled');setText(small,j.started?'stopped before it was done':'taken out of the queue');bar.hidden=true;}
+    else if(cancelling){setText(big,'Cancelling');setText(small,'stopping the pipeline');bar.hidden=true;}
     else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading?'starts after the warm-up':'next up');bar.hidden=true;}
     else{bar.hidden=false;const t0=j.phase_since||j.started||j.created,el=t-t0,eta=loading?(j.load_eta||240):(ETA[j.seconds||5]||60);
       setText(big,clock(el));
@@ -578,6 +606,8 @@ function render(){const s=state.session,k=s.key,t=now();
   deleted.forEach(id=>{lastDeleted.set(id,listed[id]);hideCard(id);});         // deleted here or in another tab
   for(const [id,created] of lastDeleted)if(!deleted.has(id)&&state.seq>(gone.get(id)??-1)){lastDeleted.delete(id);bringBack(id,created);}
   state.jobs=state.jobs.filter(j=>!gone.has(j.id));                       // a poll sent before a delete
+  for(const [id,seq] of cancelAt)if(state.seq>seq)cancelAt.delete(id);   // answered after the Cancel: server wins
+  state.jobs=state.jobs.map(j=>cancelAt.has(j.id)&&active(j)&&!j.cancel_requested&&known.has(j.id)?known.get(j.id):j);
   const had=[...known.values()];                     // what the page had before this poll
   state.jobs.forEach(j=>known.set(j.id,j));
   $('nojobs').hidden=known.size>0;

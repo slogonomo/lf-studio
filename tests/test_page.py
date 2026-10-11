@@ -624,5 +624,113 @@ class PhoneWidth(PageTest):
         for el, scroll, client in widths:
             self.assertLessEqual(scroll, client, f"#{el} scrolls sideways: {widths}")
 
+
+class CancelCards(PageTest):
+    """#20: Cancel on queued and running cards only; the card stays as Cancelled (neutral, not an error), with Remix
+    and Delete, and Remix restores everything."""
+    load_s, clip_s = 6, 6
+
+    def seed(self):
+        self.studio.env["STUB_CLOSE_S"] = "3"                                 # a stopped clip shows "Cancelling" 3 s
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([
+            finished_job("1" * 32, created=1), finished_job("2" * 32, created=2, status="failed", error="boom")]))
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def status(self, jid, status):
+        self.page.wait_for_selector(f'{self.card(jid)}[data-status="{status}"]')
+
+    def visible(self, jid):
+        """The card's buttons on screen, by name."""
+        return self.page.eval_on_selector_all(f"{self.card(jid)} .acts > *",
+                                              "els => els.filter(e => e.offsetWidth).map(e => e.textContent.trim())")
+
+    def test_cancel_queued_and_running_cards(self):
+        a = self.studio.generate(prompt="running", seconds=8)[1]["id"]
+        b = self.studio.generate(prompt="queued", seed=2)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.status(b, "queued")
+        self.assertEqual(self.visible(a), ["Remix", "Cancel"])
+        self.assertEqual(self.visible(b), ["Remix", "Cancel"])
+        self.assertEqual(self.visible("1" * 32), ["Remix", "Download", "Delete"])   # finished cards: no Cancel
+        self.assertEqual(self.visible("2" * 32), ["Remix", "Delete"])
+        self.assertIn("models load again", self.page.get_attribute(f"{self.card(a)} .cancel", "title"))
+        self.assertIn("out of the queue", self.page.get_attribute(f"{self.card(b)} .cancel", "title"))
+        self.page.click(f"{self.card(b)} .cancel")                             # the mouse
+        self.status(b, "cancelled")
+        self.assertEqual(self.studio.job(b)["status"], "cancelled")
+        self.assertEqual(self.visible(b), ["Remix", "Delete"])
+        texts = [self.page.inner_text(f"{self.card(b)} {part}") for part in (".st", ".ph2 .big", ".errtxt")]
+        self.assertEqual(texts, ["Cancelled", "Cancelled", ""])
+        self.pick("seconds", "8")                                              # a's settings: no reload
+        self.assertNotIn("load", self.go_text())
+        self.page.focus(f"{self.card(a)} .cancel")                             # the keyboard
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_selector(f"{self.card(a)} .cancel", state="hidden")
+        self.assertTrue(self.page.evaluate(f"document.activeElement === document.querySelector("
+                                           f"'{self.card(a)} .reuse-all')"), "focus moves to the card's Remix")
+        self.assertEqual(self.page.inner_text(f"{self.card(a)} .st"), "Cancelling")   # while its session closes
+        self.assertIn("loads the models first", self.go_text())               # the next clip loads them again
+        self.status(a, "cancelled")
+        self.assertEqual(self.visible(a), ["Remix", "Delete"])
+        self.assertIsNone(self.page.query_selector(f"{self.card(a)} video"))   # nothing to play or download
+        self.page.wait_for_function("document.getElementById('count').textContent === '1 clip'")   # none running
+        # neutral, in both themes: the status in the muted colour of the other tags (not a failed clip's red or a
+        # running one's orange), the card bordered like a finished clip
+        for scheme in ("light", "dark"):
+            self.page.emulate_media(color_scheme=scheme)
+            look = self.page.evaluate(f"""() => {{ const c = s => getComputedStyle(document.querySelector(s));
+                return [c('{self.card(a)} .st').color, c('{self.card(a)} .tag').color,
+                        c('{self.card(a)}').borderColor, c('{self.card("1" * 32)}').borderColor]; }}""")
+            self.assertEqual(look[0], look[1], scheme)
+            self.assertEqual(look[2], look[3], scheme)
+
+    def test_an_older_poll_does_not_bring_the_button_back(self):
+        self.studio.generate(prompt="running", seconds=8)
+        b = self.studio.generate(prompt="queued", seed=2)[1]["id"]
+        self.status(b, "queued")
+        held = []
+        self.page.route("**/api/state", lambda route: held.append((route, route.fetch())))
+        self.page.wait_for_timeout(2500)                                       # polls answered before the Cancel
+        stale = list(held)
+        self.assertTrue(stale and all(b"queued" in r.body() for _, r in stale))
+        self.page.click(f"{self.card(b)} .cancel")
+        self.status(b, "cancelled")
+        for route, response in stale:
+            route.fulfill(response=response)
+        self.page.wait_for_timeout(500)
+        self.assertEqual(self.page.get_attribute(self.card(b), "data-status"), "cancelled")
+        self.assertEqual(self.visible(b), ["Remix", "Delete"])
+        for route, response in held[len(stale):]:
+            route.fulfill(response=response)
+        self.page.unroute("**/api/state")
+
+    def test_remix_restores_settings_and_files(self):
+        frames = {"first_frame": [("first.png", png())], "last_frame": [("last.png", png(40))]}
+        a = self.studio.generate(task="fl2va", orientation="portrait", seconds=8, prompt="the cancelled one", seed=1234,
+                                 files=frames)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.page.click(f"{self.card(a)} .cancel")
+        self.status(a, "cancelled")
+        self.pick("task", "t2va")
+        self.pick("orientation", "landscape")
+        self.pick("seconds", "5")
+        self.page.fill("#prompt", "something else")
+        self.page.click(f"{self.card(a)} .reuse-all")
+        self.page.wait_for_function("document.querySelectorAll('#fl .thumbs img.kept').length === 2")
+        form = self.page.evaluate("""() => ['task', 'orientation', 'seconds'].map(n =>
+            document.querySelector(`input[name=${n}]:checked`).value)""")
+        self.assertEqual(form, ["fl2va", "portrait", "8"])
+        self.assertEqual((self.page.input_value("#prompt"), self.page.input_value("#seed")),
+                         ("the cancelled one", "1234"))
+        self.assertEqual(self.page.inner_text("#err"), "")
+        self.page.click("#go")
+        new = self.studio.wait_for(lambda s: len([j for j in s["jobs"] if j["prompt"] == "the cancelled one"]) == 2)
+        job = next(j for j in new["jobs"] if j["prompt"] == "the cancelled one" and j["id"] != a)
+        self.assertEqual([Path(job[k]).name for k in ("first_frame", "last_frame")], ["first.png", "last.png"])
+        self.assertEqual((job["orientation"], job["seconds"], job["seed"]), ("portrait", 8, 1234))
+
+
 if __name__ == "__main__":
     unittest.main()
