@@ -80,7 +80,9 @@ browser; see [AGENTS.md](AGENTS.md).
 NVIDIA validated the 5 s, 16:9 route. Portrait output is not quality-validated (the LoRAs, upscaler and adapter
 were trained on landscape). Lengths other than 5 s are not validated by NVIDIA, and 3 s is below the 4-15 s that
 MiniMax lists for H3. The first-request attention self-check covers 8 calls instead of 200. Portrait and length
-are derived after the frozen-recipe hash check. All of it can be switched back; see
+are derived after the frozen-recipe hash check. Stage 2 refines the video against the H3 audio held fixed instead of
+a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync. All of it can be
+switched back; see
 [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 
 ## Requirements

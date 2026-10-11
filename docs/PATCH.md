@@ -4,7 +4,7 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 21 files, 18 modified and 3 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 73 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 74 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
 - 17 of the 18 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
@@ -23,7 +23,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 73 tests ... OK
+CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 74 tests ... OK
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -252,9 +252,10 @@ MP4 the lips then look close to the dialogue but approximated, and they sometime
 The patch holds the H3 audio clean and fixed during the refine, as LTX-2's own audio-to-video pipeline does
 (`a2vid_two_stage.py`: `frozen=True, noise_scale=0.0`). `SparkRefiner.prepare_multimodal_states` first builds the
 upstream states, so the random draws and the video noise are the same. It then replaces the audio state with its
-clean latent, an all-zero denoise mask and `frozen=True`, so the transformer is told sigma 0 for the audio. If the
-installed LTX-2 has no frozen states, it fails before the request. The Stage-2 receipts (`stage2_result.json`)
-record the mode as `stage2_audio`. Stage 2 takes the same time.
+clean latent, an all-zero denoise mask and `frozen=True`, so the transformer is told sigma 0 for the audio. A
+`SOL_H3_STAGE2_AUDIO` value other than `frozen` or `joint` (any case) fails when the pipeline is created, before any
+worker loads. An installed LTX-2 without frozen states fails when Stage 2 starts. The Stage-2 receipts
+(`stage2_result.json`) record the mode as `stage2_audio`. Stage 2 takes the same time.
 
 Measured on 8 dialogue clips: two people, fl2va 10 s, 8 seeds, one scene. Each clip's Stage 2 was run both ways
 from the same saved Stage-1 capture:
@@ -273,7 +274,8 @@ Over 14 clips, the upstream finals' timing within a line wandered by 3-4 frames 
 The silent mouthing seen in one clip is gone with frozen audio. The frames differ by about 3/255 on average, faces
 and identity are unchanged, and the image is 5-11% sharper.
 
-- **Files.** `runtime/stage2.py`, `tests/test_stage2_contract.py`.
+- **Files.** `runtime/stage2.py`, `runtime/config.py` (the setting), `runtime/pipeline.py` (checks it first),
+  `tests/test_stage2_contract.py`, `tests/test_pipeline.py`.
 - **Switch.** `SOL_H3_STAGE2_AUDIO=joint` restores upstream's behaviour (older clips then reproduce from their seed).
 
 ### 16. Tests
@@ -283,7 +285,7 @@ deliver-first, the background prompt encoder, the new `Pipeline` arguments and t
 also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
-older LTX-2). 73 tests in total (upstream: 65).
+older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 tests in total (upstream: 65).
 
 ## All switches
 
