@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
-from test_server import finished_job  # noqa: E402
+from test_server import finished_job, png  # noqa: E402
 
 try:
     from playwright.sync_api import sync_playwright
@@ -91,6 +91,55 @@ class WarmUpLabel(PageTest):
         self.assertIn("stops the warm-up, loads the models first", self.go_text())
         self.pick("orientation", "landscape")
         self.assertIn("after the warm-up", self.go_text())
+
+
+class RemixInputs(PageTest):
+    """#1: Remix puts the clip's files back into the form; Generate reuses them without uploading."""
+
+    def test_remix_fl2va_restores_frames(self):
+        a = self.studio.generate(task="fl2va", prompt="frames", seed=5,
+                                 files={"first_frame": [("first.png", png())], "last_frame": [("last.png", png())]})[1]["id"]
+        self.studio.wait([a])
+        self.page.wait_for_timeout(2500)                                    # the card appears with the next poll
+        self.page.click(f'article[data-id="{a}"] .reuse-all')
+        self.page.wait_for_function("document.querySelectorAll('#fl .thumbs img.kept').length === 2")
+        self.assertTrue(self.page.is_visible("#fl"))
+        self.assertEqual(self.page.inner_text("#err"), "")
+        srcs = self.page.eval_on_selector_all("#fl .thumbs img.kept", "els => els.map(e => e.naturalWidth)")
+        self.assertTrue(all(w > 0 for w in srcs), "thumbnails load from /input/")
+        self.page.click("#go")
+        self.page.wait_for_timeout(800)
+        jobs = self.studio.state()["jobs"]
+        new = next(j for j in jobs if j["id"] != a)
+        self.assertEqual([Path(new[k]).name for k in ("first_frame", "last_frame")], ["first.png", "last.png"])
+        self.assertEqual(Path(new["first_frame"]).parent.name, new["id"])
+        # x clears the zone: nothing kept, so the next Generate is refused as having no frame
+        self.page.click("#fl .drop:first-of-type .clear")
+        self.page.click("#fl .drops > .drop:last-of-type .clear")
+        self.page.click("#go")
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('first frame')")
+
+    def test_remix_reports_missing_files(self):
+        a = self.studio.generate(task="fl2va", prompt="frames", seed=5,
+                                 files={"first_frame": [("first.png", png())], "last_frame": [("last.png", png())]})[1]["id"]
+        job = self.studio.wait([a])[0]
+        Path(job["last_frame"]).unlink()
+        self.page.wait_for_timeout(2500)
+        self.page.click(f'article[data-id="{a}"] .reuse-all')
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('last.png')")
+        self.assertEqual(self.page.eval_on_selector_all("#fl .thumbs img.kept", "els => els.length"), 1)
+
+    def test_remix_t2va_clears_kept_files(self):
+        a = self.studio.generate(task="fl2va", files={"first_frame": [("first.png", png())]})[1]["id"]
+        b = self.studio.generate(task="t2va", seed=9)[1]["id"]
+        self.studio.wait([a, b])
+        self.page.wait_for_timeout(2500)
+        self.page.click(f'article[data-id="{a}"] .reuse-all')
+        self.page.wait_for_function("document.querySelectorAll('#fl .thumbs img.kept').length === 1")
+        self.page.click(f'article[data-id="{b}"] .reuse-all')
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.eval_on_selector_all(".thumbs .kept", "els => els.length"), 0)
+        self.assertEqual(self.page.evaluate("remixFrom"), None)
 
 
 if __name__ == "__main__":

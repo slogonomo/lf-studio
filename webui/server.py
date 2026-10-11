@@ -26,6 +26,7 @@ the server removes both from its environment at start; otherwise a 5 s job would
 import email.parser
 import email.policy
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -387,6 +388,36 @@ def save_upload(job_dir, fn, data, allowed):
     return str(p)
 
 
+# The form's file inputs ("zones") and where a job keeps their files
+ZONES = ("first_frame", "last_frame", "ref_images", "ref_videos", "ref_audio")
+REF_TYPE = {"ref_images": "image", "ref_videos": "video", "ref_audio": "audio"}
+
+
+def zone_files(job, zone):
+    """The input files of `job` for one form zone, in order (reference videos: the normalized copy the run used)."""
+    if zone in REF_TYPE:
+        return [r["path"] for r in job.get("references") or [] if r.get("type") == REF_TYPE[zone]]
+    return [job[zone]] if job.get(zone) else []
+
+
+def reuse_input(job_dir, path):
+    """Put an earlier job's input file into this job's directory: a hardlink (no extra space; deleting either job
+    later leaves the other's file alone), or a copy across filesystems."""
+    src = Path(path)
+    if not src.is_file():
+        raise ValueError(f"{src.name} from the remixed clip is gone; attach it again")
+    dst = job_dir / src.name
+    i = 1
+    while dst.exists():
+        dst = job_dir / f"{src.stem}_{i}{src.suffix}"
+        i += 1
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+    return str(dst)
+
+
 REF_VIDEO_AREA = 672 * 384   # the draft's pixel area (the patch also prepares reference videos at this canvas)
 
 
@@ -470,6 +501,27 @@ class H(BaseHTTPRequestHandler):
             if not poster or not poster.exists():
                 return self.send(404, {"error": "no poster"})
             return self.send(200, poster.read_bytes(), "image/jpeg", {"Cache-Control": "max-age=86400"})
+        m = re.fullmatch(r"/api/inputs/([0-9a-f]{32})", path)
+        if m:                      # a clip's input files, for Remix: what can be reused and what is gone
+            job = next((j for j in jobs if j["id"] == m.group(1)), None)
+            if job is None:
+                return self.send(404, {"error": "no such clip"})
+            out, missing = {}, []
+            for zone in ZONES:
+                for i, f in enumerate(zone_files(job, zone)):
+                    if Path(f).is_file():
+                        out.setdefault(zone, []).append({"name": Path(f).name, "url": f"/input/{job['id']}/{zone}/{i}"})
+                    else:
+                        missing.append(Path(f).name)
+            return self.send(200, {"task": job["task"], "inputs": out, "missing": missing})
+        m = re.fullmatch(r"/input/([0-9a-f]{32})/([a-z_]+)/(\d+)", path)
+        if m:
+            job = next((j for j in jobs if j["id"] == m.group(1)), None)
+            files = zone_files(job, m.group(2)) if job and m.group(2) in ZONES else []
+            f = Path(files[int(m.group(3))]) if int(m.group(3)) < len(files) else None
+            if not f or not f.is_file():
+                return self.send(404, {"error": "no such input"})
+            return self.send_file(f, mimetypes.guess_type(f.name)[0] or "application/octet-stream")
         m = re.fullmatch(r"/video/([0-9a-f]{32})", path)
         if m:
             mp4 = clip_file(next((j for j in jobs if j["id"] == m.group(1)), None))
@@ -478,7 +530,7 @@ class H(BaseHTTPRequestHandler):
             return self.send_file(mp4)
         self.send(404, {"error": "not found"})
 
-    def send_file(self, p):
+    def send_file(self, p, ctype="video/mp4"):
         size = p.stat().st_size
         rng = self.headers.get("Range")
         start, end = 0, size - 1
@@ -498,7 +550,7 @@ class H(BaseHTTPRequestHandler):
                 return
             code = 206
         self.send_response(code)
-        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Content-Disposition", f'inline; filename="{p.name}"')
@@ -562,9 +614,18 @@ class H(BaseHTTPRequestHandler):
             if seconds not in DURATIONS:
                 raise ValueError(f"duration must be one of {DURATIONS} seconds")
             seed = int(raw) if raw else int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF   # empty -> random
+            # Remix: zones listed in "keep" reuse the files of clip "remix_from" (unless new files came for them)
+            src = None
+            if fields.get("remix_from"):
+                src = next((j for j in jobs if j["id"] == fields["remix_from"]), None)
+                if src is None:
+                    raise ValueError("the clip to remix is no longer in the list; attach the files again")
+            keep = {z for z in (fields.get("keep") or "").split(",") if z in ZONES} if src else set()
             jid = uuid.uuid4().hex
             job_dir = INPUTS / jid
             job_dir.mkdir(parents=True)
+            kept = lambda zone: [reuse_input(job_dir, f) for f in zone_files(src, zone)] \
+                if zone in keep and not files.get(zone) else []
             job = {"id": jid, "case_id": f"web_{time.strftime('%H%M%S')}_{jid[:6]}", "task": task,
                    "orientation": orientation, "seconds": seconds, "prompt": prompt, "seed": seed, "status": "queued",
                    "created": time.time()}
@@ -573,14 +634,20 @@ class H(BaseHTTPRequestHandler):
                     if files.get(key):
                         fn, data = files[key][0]
                         job[key] = save_upload(job_dir, fn, data, IMG)
+                    elif kept_file := kept(key):
+                        job[key] = kept_file[0]
                 if not (job.get("first_frame") or job.get("last_frame")):
                     raise ValueError("fl2va needs a first frame, a last frame, or both")
             if task == "ref2va":
                 # order = prompt numbering: <Picture N> images, then <Video N> videos (a video's own soundtrack is
                 # added by Sol-H3 as an audio reference just before it), then standalone <Audio N> files
-                refs = [{"type": "image", "path": save_upload(job_dir, fn, d, IMG)} for fn, d in files.get("ref_images", [])]
+                # kept reference videos are the normalized copies already
+                refs = [{"type": "image", "path": p} for p in kept("ref_images")]
+                refs += [{"type": "image", "path": save_upload(job_dir, fn, d, IMG)} for fn, d in files.get("ref_images", [])]
+                refs += [{"type": "video", "path": p} for p in kept("ref_videos")]
                 refs += [{"type": "video", "path": prepare_reference_video(save_upload(job_dir, fn, d, VID))}
                          for fn, d in files.get("ref_videos", [])]
+                refs += [{"type": "audio", "path": p} for p in kept("ref_audio")]
                 refs += [{"type": "audio", "path": save_upload(job_dir, fn, d, AUD)} for fn, d in files.get("ref_audio", [])]
                 counts = {t: sum(r["type"] == t for r in refs) for t in ("image", "video", "audio")}
                 if not (counts["image"] or counts["video"]):
