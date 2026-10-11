@@ -32,11 +32,12 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
 - Prompt examples and section chips in H3's prompt formats (from MiniMax's
   [prompt-writing guides](https://huggingface.co/MiniMaxAI/MiniMax-H3/tree/main/docs)); seed roll; settings
   remembered per browser.
-- A queue. Clips appear as cards with a timer and progress, then a player, Remix, Use seed and Download. Remix
-  puts the clip's settings, prompt, seed and input files back into the form (with "New random seed every run"
-  ticked, the next clip still gets a new seed); the server reuses the files it kept (uploads are stored per
-  clip under `$SOL_H3_SPARK_RUNTIME_ROOT/inputs/webui/`). The gallery keeps every clip and loads older ones as
-  you scroll. Delete moves a clip and its files to a trash folder for 7 days, with Undo.
+- A queue. Clips appear as cards with a timer and progress, then a player with Remix, Download and Delete; the
+  seed is in the line with the time (a click or Tab selects it, to paste into the Seed box). Remix puts the
+  clip's settings, prompt, seed and input files back into the form (with "New random seed every run" ticked, the
+  next clip still gets a new seed); the server reuses the files it kept (uploads are stored per clip under
+  `$SOL_H3_SPARK_RUNTIME_ROOT/inputs/webui/`). The gallery keeps every clip and loads older ones as you scroll.
+  Delete moves a clip and its files to a trash folder for 7 days, with Undo.
 - The Generate button says when your settings need a model reload; the clip card shows how long the last load took.
   "Load selected now" under it starts loading other settings while you finish the prompt (nothing loads on a
   selection change alone).
