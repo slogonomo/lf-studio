@@ -204,6 +204,12 @@ def save_job(job, strict=False):
             raise
 
 
+def warm_up_wanted():
+    """A queued job waits for the warm-up's settings, so the warm-up is kept for it. Call it holding `lock`."""
+    return any(j["status"] == "queued" and (j["task"], j["orientation"], j.get("seconds", 5)) == session.get("loading_key")
+               for j in jobs)
+
+
 def find_job(jid):
     """The job with this id, unless it has been deleted."""
     return next((j for j in jobs if j["id"] == jid and not j.get("deleted")), None)
@@ -606,11 +612,15 @@ def run_job(job):
         job["phase_since"] = time.time()
         job["load_eta"] = load_eta(key)
         session.update(state="loading", since=time.time(), loading_key=key)
-        root = session_root(key)
-        with lock:
-            if stopping.is_set():
-                raise RuntimeError("the studio is shutting down")
-        p = new_pipeline(key, root)
+        try:
+            root = session_root(key)
+            with lock:
+                if stopping.is_set():
+                    raise RuntimeError("the studio is shutting down")
+            p = new_pipeline(key, root)
+        except BaseException:
+            close_session("could not start the pipeline")      # no pipeline: back to idle, not "loading"
+            raise
         session["pipeline"] = p
         job.setdefault("case_dirs", []).append(str(Path(p.root) / job["case_id"]))   # for Delete, even if it fails
         t0 = time.time()
@@ -1200,7 +1210,7 @@ class H(BaseHTTPRequestHandler):
             # Under the lock, atomic with the worker taking a queued job and with pipeline_call accepting a finished
             # clip: a queued job is cancelled here and now; a running one is marked, and stop_job stops its workers.
             # Its input files stay (Remix), like a failed clip's.
-            queued = stop = False
+            queued = stop = drop = False
             with lock:
                 job = find_job(jid)
                 if job is None:
@@ -1215,6 +1225,10 @@ class H(BaseHTTPRequestHandler):
                     queued = job["status"] == "queued"
                     if queued:
                         job.update(status="cancelled", finished=time.time())
+                        # the warm-up may have been kept only for this clip (/api/generate): if another clip waits
+                        # now and none for the warm-up's settings, stop it as a clip for other settings would have
+                        drop = (session.get("preloading") and not warm_up_wanted()
+                                and any(j["status"] == "queued" for j in jobs))
                     else:
                         stop = not job.get("cancel_requested")      # a second Cancel: already being stopped
                         job["cancel_requested"] = True
@@ -1223,6 +1237,9 @@ class H(BaseHTTPRequestHandler):
                 save_job(job)        # a running one too: if the server dies before it stops, it stays cancelled
                 if queued:
                     log("cancelled queued job", job["id"])
+                    if drop:
+                        abort_preload("the clip it was kept for was cancelled")
+                        wake.set()
                 elif stop:
                     log("cancelling job", job["id"], "while", reply[1]["job"]["status"])
                     threading.Thread(target=stop_job, args=(job,), daemon=True).start()
@@ -1363,8 +1380,7 @@ class H(BaseHTTPRequestHandler):
             preload["pending"] = None              # a clip decides what is loaded next: a requested warm-up that
             session["switching_to"] = None         # hasn't started is dropped (the clip loads its own settings)
             # a job already queued for the warm-up's settings runs first, so it keeps the warm-up
-            waited_for = any(j["status"] == "queued" and (j["task"], j["orientation"], j.get("seconds", 5))
-                             == session.get("loading_key") for j in jobs)
+            waited_for = warm_up_wanted()
         save_job(job)
         if session.get("preloading"):
             if session.get("loading_key") != (job["task"], job["orientation"], job["seconds"]):

@@ -111,8 +111,10 @@ again.
 
 **spark-switchboard never stops the studio for being idle after a Cancel.** Its busy probe must count "cancelled"
 as idle (`idle_values` in `integrations/spark-switchboard/sol-h3-studio.toml`, since 0.3). With a copy from before,
-switchboard sees the studio as busy while a cancelled clip is among the newest 24; copy the file into switchboard's
-`services/` directory again.
+switchboard sees the studio as busy while a cancelled clip is among the newest 24. That includes a config made from
+switchboard's own example (`examples/services/sol-h3-studio.toml` before spark-switchboard's matching change). Add
+`"cancelled"` to `idle_values` in switchboard's `services/` copy, or copy the file there again, and restart
+switchboard. Until then, deleting the cancelled clip ends the block at once.
 
 **Switching mode, format or length takes minutes.** Each combination is one loaded session. Changing any of them
 closes the session and loads the models again; the Generate button says so before you click.

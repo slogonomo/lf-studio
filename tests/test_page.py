@@ -646,6 +646,21 @@ class CancelCards(PageTest):
         return self.page.eval_on_selector_all(f"{self.card(jid)} .acts > *",
                                               "els => els.filter(e => e.offsetWidth).map(e => e.textContent.trim())")
 
+    def test_focus_stays_on_the_card_when_a_poll_hides_cancel(self):
+        """Cancel focused, then the clip finishes, or another tab cancels it: focus moves to Delete or Remix,
+        not to the page."""
+        a = self.studio.generate(prompt="finishes by itself", seconds=3)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.page.focus(f"{self.card(a)} .cancel")
+        self.status(a, "done")
+        self.assertEqual(self.page.evaluate("document.activeElement.textContent.trim()"), "Delete")
+        b = self.studio.generate(prompt="cancelled elsewhere", seed=3, seconds=3)[1]["id"]
+        self.status(b, "generating")
+        self.page.focus(f"{self.card(b)} .cancel")
+        self.assertEqual(self.studio.post("/api/cancel", json_body={"id": b})[0], 200)     # another tab
+        self.page.wait_for_function(f"document.querySelector('{self.card(b)} .cancel').hidden")
+        self.assertEqual(self.page.evaluate("document.activeElement.textContent.trim()"), "Remix")
+
     def test_cancel_queued_and_running_cards(self):
         a = self.studio.generate(prompt="running", seconds=8)[1]["id"]
         b = self.studio.generate(prompt="queued", seed=2)[1]["id"]

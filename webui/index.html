@@ -566,7 +566,9 @@ function update(d,j,queue,s,t){
   const del=d.querySelector('.del');del.hidden=active(j);
   del.title=`Move this clip and its input files to the trash (removed for good after ${state.trash_days??7} days)${j.published?', with its copy in the publish folder':''}`;
   // Cancel: on queued and running clips until the server has the request (cancel_requested: it is being stopped)
-  const stop=d.querySelector('.cancel'),cancelling=active(j)&&!!j.cancel_requested;stop.hidden=!active(j)||cancelling;
+  const stop=d.querySelector('.cancel'),cancelling=active(j)&&!!j.cancel_requested,hide=!active(j)||cancelling;
+  if(hide&&!stop.hidden&&document.activeElement===stop)d.querySelector(active(j)?'.reuse-all':'.del').focus();   // keep the keyboard on the card
+  stop.hidden=hide;
   stop.title=j.status==='queued'?'Take this clip out of the queue (the card stays, with Remix)'
     :'Stop this clip. The models load again for the next clip (about 1-2 min).';
   if(d.dataset.status!==j.status)d.dataset.status=j.status;

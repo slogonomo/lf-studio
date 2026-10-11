@@ -826,6 +826,23 @@ class LoadDuringClose(StudioTest):
         self.assertEqual(self.load()[0], 409)
 
 
+class PipelineNotMade(StudioTest):
+    def test_session_goes_back_to_idle(self):
+        """A pipeline that can't be created (here: its session directory) fails the clip; the session is idle again,
+        not "loading" forever."""
+        sessions = self.studio.runtime / "outputs" / "webui"
+        sessions.mkdir(parents=True, exist_ok=True)
+        sessions.chmod(0o500)
+        try:
+            job = self.studio.wait([self.generate()])[0]
+            self.assertEqual(job["status"], "failed")
+            s = self.studio.state()["session"]
+            self.assertEqual((s["state"], s.get("loading_key")), ("idle", None))
+        finally:
+            sessions.chmod(0o700)
+        self.assertEqual(self.studio.wait([self.generate()])[0]["status"], "done")
+
+
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
     takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it."""
@@ -885,6 +902,19 @@ class WarmUpWithWarmTime(WarmUp):
         self.assertEqual(job["status"], "done")
         self.assertFalse(job.get("includes_model_load"), "a late same-settings job should wait for the warm-up")
         self.assertNotIn("aborting preload", self.studio.log.read_text())
+
+    def test_cancelling_the_clip_the_warm_up_was_kept_for_stops_it(self):
+        s = self.warming()
+        time.sleep(max(0, s["takeover_until"] - s["since"]) + 0.5)
+        waiting = self.generate()                                  # same settings, late: waits for the warm-up
+        other = self.generate(orientation="portrait")              # other settings: the warm-up is kept for `waiting`
+        self.assertNotIn("aborting preload", self.studio.log.read_text())
+        code, body = self.studio.post("/api/cancel", json_body={"id": waiting})
+        self.assertEqual((code, body["job"]["status"]), (200, "cancelled"))
+        self.assertIn("aborting preload: the clip it was kept for was cancelled", self.studio.log.read_text())
+        job = self.studio.wait([other])[0]
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(job.get("includes_model_load"))
 
 
 def worker_groups(pid):
