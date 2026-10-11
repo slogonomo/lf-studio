@@ -609,5 +609,20 @@ class PhoneWidth(PageTest):
                 self.assertEqual([name for name, _ in row], buttons, width)
                 self.assertEqual(len({top for _, top in row}), 1, f"one row at {width} px: {row}")
 
+    def test_a_long_file_name_in_an_error_wraps(self):
+        """The form panel scrolls on its own, so check it too: an error naming a long upload must wrap."""
+        self.page.set_viewport_size({"width": 320, "height": 900})
+        self.pick("task", "ref2va")
+        self.page.fill("#prompt", "refs")
+        name = "PXL_20261011_145012345_short_clip_from_the_trip.mp4"           # nowhere to break the saved name
+        self.page.set_input_files('input[name="ref_videos"]', files=[{"name": name, "mimeType": "video/mp4",
+                                                                       "buffer": mp4(1)}])
+        self.page.click("#go")
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('at least 2 s')")
+        widths = self.page.evaluate("""() => [...document.querySelectorAll('#f, #err')].map(e => [e.id, e.scrollWidth,
+                                                                                          e.clientWidth])""")
+        for el, scroll, client in widths:
+            self.assertLessEqual(scroll, client, f"#{el} scrolls sideways: {widths}")
+
 if __name__ == "__main__":
     unittest.main()
