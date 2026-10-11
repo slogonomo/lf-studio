@@ -484,13 +484,23 @@ class SeedText(PageTest):
         self.assertTrue(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
         self.wait_selected("2034940401")
 
-    def test_a_selection_of_your_own_stays(self):
-        card = self.finished(prompt="a red fox runs through snow")
-        whole = self.page.evaluate(f"""() => {{ const c = document.querySelector('{card}'), r = document.createRange();
+    def select_prompt_to_seed(self, card):
+        return self.page.evaluate(f"""() => {{ const c = document.querySelector('{card}'), r = document.createRange();
             r.setStart(c.querySelector('.p').firstChild, 0); r.setEnd(c.querySelector('.seedv').firstChild, 10);
             getSelection().removeAllRanges(); getSelection().addRange(r); return getSelection().toString(); }}""")
+
+    def test_a_selection_of_your_own_stays(self):
+        card = self.finished(prompt="a red fox runs through snow")
+        whole = self.select_prompt_to_seed(card)
         self.assertTrue(whole.startswith("a red fox") and whole.endswith("seed 2034940401"), whole)
         self.page.click(f"{card} .seedv", button="right")                  # context menu: Copy copies all of it
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.selected(), whole)
+        self.page.focus(f"{card} .reuse-all")
+        self.page.keyboard.press("Shift+Tab")                               # the same with the seed focused
+        self.assertEqual(self.select_prompt_to_seed(card), whole)
+        self.page.click(f"{card} .seedv", button="right")
         self.page.keyboard.press("Escape")
         self.page.wait_for_timeout(300)
         self.assertEqual(self.selected(), whole)
@@ -499,10 +509,24 @@ class SeedText(PageTest):
             getSelection().removeAllRanges(); getSelection().addRange(r); }}""")
         self.page.click(f"{card} .seedv", modifiers=["Shift"])             # Shift+click extends to the seed
         self.wait_selected(whole)
-        self.page.evaluate("getSelection().removeAllRanges()")
-        self.page.click(f"{card} .seedv", button="right")                  # nothing selected: the seed, for Copy
-        self.page.keyboard.press("Escape")
-        self.wait_selected("2034940401")
+
+    def test_the_mouse_leaves_focus_and_dragging_to_the_browser(self):
+        card = self.finished()
+        other = self.studio.generate(prompt="another clip")[1]["id"]
+        self.studio.wait([other])
+        self.page.wait_for_selector(f'article[data-id="{other}"] video')
+        cards = self.page.eval_on_selector_all(".job", "els => els.length")
+        self.page.focus(f'article[data-id="{other}"] .del')
+        self.page.click(f"{card} .seedv")                                   # focus leaves Delete, as on any text
+        self.page.keyboard.press("Space")
+        self.page.wait_for_timeout(500)
+        self.assertEqual(self.page.eval_on_selector_all(".job", "els => els.length"), cards)
+        self.assertFalse(self.page.is_visible("#undo"))
+        self.assertEqual(self.page.get_attribute(f"{card} .seedv", "tabindex"), "0")   # still a Tab stop
+        self.page.fill("#seed", "")
+        self.page.click(f"{card} .seedv")
+        self.page.drag_and_drop(f"{card} .seedv", "#seed")                  # the selected number dragged into the form
+        self.assertEqual(self.page.input_value("#seed"), "2034940401")
 
     def test_the_seed_is_readable(self):
         card = self.finished()

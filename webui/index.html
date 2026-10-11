@@ -487,15 +487,11 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
   body.querySelector('.del').onclick=e=>remove(j,e.detail===0);       // detail 0: Enter/Space, not a pointer
   d.append(media,body);return d;}
-// The seed is text: a click or Tab selects the number, ready to copy. The mouse never focuses it (WebKit clears the
-// selection when focus moves), so a selection the user made stays: a right-click inside one keeps it for Copy, and
-// Shift+click extends it to the seed.
-function seedPick(sv){const pick=()=>getSelection().selectAllChildren(sv);sv.onfocus=pick;
-  sv.onmousedown=e=>{e.preventDefault();const g=getSelection();
-    if(e.button||e.ctrlKey){if(g.isCollapsed||!g.containsNode(sv,true))pick();return;}       // context menu
-    if(e.shiftKey&&g.rangeCount&&!sv.contains(g.anchorNode))
-      g.extend(sv,sv.compareDocumentPosition(g.anchorNode)&Node.DOCUMENT_POSITION_PRECEDING?sv.childNodes.length:0);
-    else pick();};}
+// The seed is text: a click selects the number (user-select: all), and so does Tab (it is one Tab stop). A pointer
+// press takes its tabindex away until the press is handled, so the mouse never focuses it: right-click, Shift+click,
+// dragging and focus stay the browser's own (WebKit would clear the user's selection when focus moved to it).
+function seedPick(sv){sv.onfocus=()=>getSelection().selectAllChildren(sv);
+  sv.onpointerdown=()=>{if(document.activeElement!==sv){sv.removeAttribute('tabindex');setTimeout(()=>sv.tabIndex=0);}};}
 // Delete moves the clip and its files to the server's trash; Undo (in the toast) moves back every clip deleted while
 // it showed. The server's state wins: /api/state lists deleted clips (other tabs remove those cards too), and a card
 // hidden here stays hidden only until a poll sent after the delete has answered (gone: id -> poll number). A clip
