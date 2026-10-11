@@ -29,6 +29,7 @@ the server removes both from its environment at start; otherwise a 5 s job would
 import contextlib
 import email.parser
 import email.policy
+import errno
 import json
 import math
 import mimetypes
@@ -103,6 +104,7 @@ for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
 lock = threading.Lock()          # guards jobs / session
 close_lock = threading.Lock()    # one pipeline close at a time (close_session)
 wake = threading.Event()
+stopping = threading.Event()     # set when the server shuts down: the worker starts nothing new
 jobs = []                        # every job, oldest first (also in jobs.db)
 PAGE = 24                        # clips per gallery page (/api/state carries the newest page, /api/jobs older ones)
 session = {"pipeline": None, "key": None, "state": "idle", "since": time.time()}
@@ -136,7 +138,11 @@ def open_db():
     if db.execute("PRAGMA user_version").fetchone()[0] == 0:
         try:
             old = json.loads(OLD_STATE_FILE.read_text()) if OLD_STATE_FILE.exists() else []
-            old = [j for j in old if isinstance(j, dict) and isinstance(j.get("id"), str)]
+            usable = [j for j in old if isinstance(j, dict) and re.fullmatch(r"[0-9a-f]{32}", str(j.get("id")))
+                      and j.get("task") in TASKS and isinstance(j.get("prompt"), str)]
+            if len(usable) < len(old):
+                log(f"{OLD_STATE_FILE}: skipping {len(old) - len(usable)} entries without a valid id, task or prompt")
+            old = usable
             for j in old:
                 j["created"] = as_time(j.get("created"))
             rows = [(j["id"], j["created"], json.dumps(j)) for j in old]
@@ -156,6 +162,7 @@ def open_db():
     loaded = [json.loads(row[0]) for row in db.execute("SELECT data FROM jobs ORDER BY created, rowid")]
     nudged, last = [], None
     for j in loaded:
+        j.pop("moving", None)
         j["created"] = as_time(j.get("created"))
         if last is not None and j["created"] <= last:      # equal or out-of-order times: 1 ms apart, in load order
             j["created"] = last + 0.001
@@ -166,14 +173,17 @@ def open_db():
     return loaded
 
 
-def save_job(job):
-    """Write one job to jobs.db (its current state)."""
+def save_job(job, strict=False):
+    """Write one job to jobs.db (its current state). strict: raise sqlite3.Error instead of only logging it."""
     try:
         with db_lock:
-            db.execute("INSERT OR REPLACE INTO jobs VALUES (?, ?, ?)",
-                       (job["id"], job["created"], json.dumps(dict(job))))   # dict(): a consistent copy
+            data = dict(job)                           # a consistent copy (the worker updates jobs without lock)
+            data.pop("moving", None)                   # only while this process moves its files
+            db.execute("INSERT OR REPLACE INTO jobs VALUES (?, ?, ?)", (job["id"], job["created"], json.dumps(data)))
     except sqlite3.Error:
         traceback.print_exc()
+        if strict:
+            raise
 
 
 def find_job(jid):
@@ -190,10 +200,19 @@ def in_sessions(case):
         return False
 
 
+def under(path, root):
+    """Whether `path` lies in `root` (both resolved)."""
+    try:
+        return Path(path).resolve().is_relative_to(Path(root).resolve())
+    except OSError:
+        return False
+
+
 def trash_paths(job):
     """What deleting a job moves to the trash: the clip's own directory in its session (MP4, poster, intermediate
     files; for clips made before per-clip directories, the MP4 and its poster), the directories of runs that did not
-    finish (case_dirs), its input directory, and its SOLH3_PUBLISH_DIR copy with poster."""
+    finish (case_dirs), its input directory, and its SOLH3_PUBLISH_DIR copy with poster. Nothing another clip still
+    uses (an old history can list the same file twice). Call with `lock` held."""
     found = [Path(d) for d in job.get("case_dirs") or [] if in_sessions(Path(d))]
     if job.get("output"):
         out = Path(job["output"])
@@ -202,39 +221,187 @@ def trash_paths(job):
     found.append(INPUTS / job["id"])
     if job.get("published"):
         found += [Path(job["published"]), Path(job["published"]).with_suffix(".jpg")]
+    others = [str(Path(j[k]).with_suffix(x)) for j in jobs if j is not job and not j.get("deleted")
+              for k in ("output", "published") if j.get(k) for x in (".mp4", ".jpg")]
     unique = []
     for f in found:
-        if f.exists() and f not in unique:
+        shared = any(o == str(f) or o.startswith(str(f) + "/") for o in others)
+        if f.exists() and f not in unique and not shared:
             unique.append(f)
     return unique
 
 
-def delete_job(job):
-    """Move a finished job's files to TRASH/<id>/ and hide it. Undone by restore_job until purge_trash. If a move
-    fails, what was moved goes back and the error is raised."""
-    dest, moved = TRASH / job["id"], {}
+def safe_move(src, dst):
+    """Move a file or directory without ever leaving a partial copy at `dst`: a rename on the same filesystem; across
+    filesystems (the publish folder can be a network share) a copy under a temporary name next to `dst`, renamed into
+    place, then the source removed. If a file's source can't be removed, the copy is removed again and the move
+    fails; for a directory removed only in part the move counts as done and it is logged. `dst` must not exist."""
+    src, dst = Path(src), Path(dst)
+    if dst.exists():
+        raise FileExistsError(f"{dst} is already there")
     try:
-        for i, src in enumerate(trash_paths(job)):
-            dest.mkdir(parents=True, exist_ok=True)
-            target = dest / f"{i}-{src.name}"
-            try:
-                shutil.move(str(src), str(target))
-            except OSError:
-                if src.exists() and target.exists():          # a copy across filesystems stopped part-way
-                    shutil.rmtree(target, ignore_errors=True) if target.is_dir() else target.unlink()
-                raise
-            moved[str(src)] = str(target)
+        os.rename(src, dst)
+        return
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+    tmp = dst.with_name(f".{dst.name}.part")
+    if tmp.exists():                                   # from a copy that was interrupted
+        shutil.rmtree(tmp, ignore_errors=True) if tmp.is_dir() else tmp.unlink(missing_ok=True)
+    try:
+        if src.is_dir() and not src.is_symlink():
+            shutil.copytree(src, tmp, symlinks=True)
+        else:
+            shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True) if tmp.is_dir() else tmp.unlink(missing_ok=True)
+        raise
+    if src.is_dir() and not src.is_symlink():
+        try:
+            shutil.rmtree(src)
+        except OSError as error:
+            log(f"moved {src} to {dst} but could not remove all of the original: {error}")
+        return
+    try:
+        src.unlink()
     except OSError:
+        dst.unlink(missing_ok=True)                    # not moved after all: one copy, where it was
+        raise
+
+
+moves_done = threading.Condition()    # Delete/Undo file moves in progress (moves_running); shutdown waits for them
+moves_running = 0
+
+
+class MoveError(OSError):
+    """A move to or from the trash failed; `left` maps originals to what is still in the trash after rolling back."""
+    def __init__(self, error, left):
+        super().__init__(str(error))
+        self.left = left
+
+
+def trash_targets(jid, paths):
+    """Where each of `paths` goes in TRASH/<jid>/: {original: target}, names not taken yet."""
+    dest, targets = TRASH / jid, {}
+    for i, src in enumerate(paths):
+        target = dest / f"{i}-{src.name}"
+        n = 1
+        while target.exists():                         # left over from an earlier failed attempt
+            target = dest / f"{i}-{n}-{src.name}"
+            n += 1
+        targets[str(src)] = str(target)
+    return targets
+
+
+def move_all(targets):
+    """Move every original to its target. If one fails, move back what was moved and raise MoveError with what
+    could not go back."""
+    moved = {}
+    try:
+        for src, target in targets.items():
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            safe_move(src, target)
+            moved[src] = target
+    except OSError as error:
+        left = {}
         for src, target in moved.items():
             try:
-                shutil.move(target, src)
+                safe_move(target, src)
             except OSError:
-                traceback.print_exc()                  # stays in the trash; purge_trash sweeps it later
+                traceback.print_exc()
+                left[src] = target
+        raise MoveError(error, left) from error
+
+
+def delete_clip(job, paths):
+    """Move a clip's files to the trash and mark it deleted. What is about to move is saved first (job['trashing']),
+    so a restart after a crash in the middle puts the files back (recover_moves). Returns the HTTP reply."""
+    jid, targets = job["id"], trash_targets(job["id"], paths)
+    with lock:
+        job["trashing"] = targets
+    try:
+        save_job(job, strict=True)
+    except sqlite3.Error as error:
+        with lock:
+            job.pop("trashing", None)
+        return 500, {"error": f"could not record the delete ({error}); nothing was moved"}
+    try:
+        move_all(targets)
+    except MoveError as error:
+        with lock:
+            job.pop("trashing", None)
+            if error.left:
+                job["trashing"] = error.left          # still in the trash: put back at the next start
+        save_job(job)
         with contextlib.suppress(OSError):
-            dest.rmdir()                               # only if empty
-        raise
-    job.update(deleted=time.time(), trashed=moved)
-    save_job(job)
+            (TRASH / jid).rmdir()
+        return 500, {"error": f"could not move the clip to the trash: {error}"}
+    with lock:
+        job.pop("trashing", None)
+        job.update(deleted=time.time(), trashed=targets)
+    try:
+        save_job(job, strict=True)
+    except sqlite3.Error as error:                     # not recorded: put it all back
+        left, _, _ = restore_files(targets, set(targets))
+        with lock:
+            job.pop("deleted", None)
+            job.pop("trashed", None)
+        return 500, {"error": f"could not record the delete ({error}); the clip is back"
+                     + (f", except {len(left)} file(s) in {TRASH / jid}" if left else "")}
+    log("deleted", job["case_id"], "to", TRASH / jid)
+    return 200, {"ok": True}
+
+
+def needed_files(job, trashed):
+    """The trashed originals a clip can't do without: everything in the runtime root, and its MP4, which is the
+    publish copy when the clip has no other (a clip from before per-clip directories, or one whose session
+    directory was pruned). The other publish copies are best effort."""
+    own = job.get("output")
+    needed = {k for k in trashed if under(k, RUNTIME)} | ({own} if own else set())
+    has_own = own and (own in trashed or any(own.startswith(k + "/") for k in trashed) or Path(own).is_file())
+    if not has_own and job.get("published"):
+        needed |= {job["published"]}
+    return needed
+
+
+def undelete_clip(job):
+    """Move a deleted clip's files back (restore_files) and unmark it. Returns the HTTP reply."""
+    trashed = dict(job.get("trashed") or {})
+    left, copy_lost, error = restore_files(trashed, needed_files(job, trashed))
+    with lock:
+        if error:
+            job["trashed"] = left                      # what is still there, for another try
+        else:
+            job.pop("deleted", None)
+            job.pop("trashed", None)
+            if copy_lost:
+                job.pop("published", None)
+    if not error:
+        with contextlib.suppress(OSError):
+            (TRASH / job["id"]).rmdir()                # empty unless a publish copy stayed
+    try:
+        save_job(job, strict=True)
+    except sqlite3.Error as db_error:
+        return 500, {"error": f"the files were moved back but the history could not be updated ({db_error}); "
+                              "it may show as deleted again after a restart"}
+    if error:
+        return 500, {"error": f"could not restore the clip: {error}"}
+    log("restored", job["case_id"])
+    return 200, {"ok": True, "job": dict(job)}
+
+
+def recover_moves():
+    """At start: put back the files of a delete that did not finish (job['trashing'], e.g. the server was killed)."""
+    for job in [j for j in jobs if j.get("trashing")]:
+        left, _, error = restore_files(job["trashing"], set(job["trashing"]))
+        if error:
+            log("could not put back the files of an unfinished delete:", error)
+            job["trashing"] = left
+        else:
+            job.pop("trashing", None)
+            log("put back the files of an unfinished delete of", job.get("case_id"))
+        save_job(job)
 
 
 def trashed_path(job, path):
@@ -245,34 +412,33 @@ def trashed_path(job, path):
     return path
 
 
-def restore_job(job):
-    """Undo delete_job: move the files back where they were. The clip's own files are renames within the runtime
-    root; a SOLH3_PUBLISH_DIR copy that can't go back (an unmounted share) stays in the trash and the clip is
-    restored without it. Anything else that fails raises OSError, with what is left still recorded for a retry."""
-    trashed = job.get("trashed") or {}
-    publish = {job.get("published"), str(Path(job["published"]).with_suffix(".jpg"))} if job.get("published") else set()
-    for src, target in list(trashed.items()):
-        if Path(target).exists() and not Path(src).exists():
-            try:
-                if src in publish:
-                    if not Path(src).parent.is_dir():  # never create the share's folders on the local disk
-                        raise OSError(f"{Path(src).parent} is not there")
-                else:
-                    Path(src).parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(target, src)
-            except OSError as error:
-                if src not in publish:
-                    save_job(job)
-                    raise
-                log("could not put the publish copy back, it stays in the trash:", error)
-                job.pop("published", None)
-                continue
-        del trashed[src]
-    with contextlib.suppress(OSError):
-        (TRASH / job["id"]).rmdir()                    # empty unless something stayed; purge_trash sweeps that
-    job.pop("deleted", None)
-    job.pop("trashed", None)
-    save_job(job)
+def restore_files(trashed, needed):
+    """Move trashed files back. `needed`: the originals the clip can't do without (its directory, inputs, and an old
+    clip's only MP4, even if that is in the publish folder); any other is a SOLH3_PUBLISH_DIR copy, best effort.
+    Folders are created again only inside the runtime root, never on a share that is not mounted. Returns (what is
+    still in the trash, whether a publish copy stayed there, the error that stopped a needed file or None). Runs
+    without `lock`."""
+    left, copy_lost = dict(trashed), False
+    for src, target in trashed.items():
+        if not Path(target).exists():                  # nothing to bring back
+            del left[src]
+            continue
+        try:
+            if Path(src).exists():
+                raise FileExistsError(f"{src} is already there")
+            if under(src, RUNTIME):
+                Path(src).parent.mkdir(parents=True, exist_ok=True)
+            elif not Path(src).parent.is_dir():
+                raise FileNotFoundError(f"{Path(src).parent} is not there (an unmounted share?)")
+            safe_move(target, src)
+            del left[src]
+        except OSError as error:
+            if src in needed:
+                return left, copy_lost, error
+            log("could not put the publish copy back, it stays in the trash:", error)
+            del left[src]                              # given up on; purge_trash sweeps it with the trash folder
+            copy_lost = True
+    return left, copy_lost, None
 
 
 def purge_trash():
@@ -280,10 +446,10 @@ def purge_trash():
     TRASH older than that (left over from a failed delete or restore)."""
     cutoff = time.time() - TRASH_DAYS * 86400
     with lock:
-        old = [j for j in jobs if j.get("deleted") and j["deleted"] < cutoff]
+        old = [j for j in jobs if j.get("deleted") and j["deleted"] < cutoff and not j.get("moving")]
         for j in old:
             jobs.remove(j)
-        keep = {j["id"] for j in jobs if j.get("deleted")}
+        keep = {j["id"] for j in jobs if j.get("deleted") or j.get("moving") or j.get("trashing")}
     for j in old:
         shutil.rmtree(TRASH / j["id"], ignore_errors=True)
         try:
@@ -381,6 +547,9 @@ def run_job(job):
         job["load_eta"] = load_eta(key)
         session.update(state="loading", since=time.time(), loading_key=key)
         root = SESSIONS / f"{time.strftime('%Y%m%d-%H%M%S')}-{key[0]}-{key[1]}-{key[2]}s"
+        with lock:
+            if stopping.is_set():
+                raise RuntimeError("the studio is shutting down")
         p = new_pipeline(key, root)
         session["pipeline"] = p
         job.setdefault("case_dirs", []).append(str(Path(p.root) / job["case_id"]))   # for Delete, even if it fails
@@ -447,7 +616,7 @@ preload = {"pending": None}      # (key, case) to warm up when nothing is queued
 
 def warmup_case(job):
     """A finished clip as a warm-up case: its prompt and inputs, seed 999. None when its manifest or inputs are gone."""
-    if not PATHS.get(job["task"], Path("/nonexistent")).is_file():
+    if not PATHS.get(job.get("task"), Path("/nonexistent")).is_file():
         return None
     case = {"case_id": "preload", "prompt": job["prompt"], "seed": 999, "task": job["task"]}
     for k in ("first_frame", "last_frame", "references"):
@@ -469,6 +638,27 @@ def preload_candidate():
     return ((last["task"], last["orientation"], last.get("seconds", 5)), case) if case else None
 
 
+WARMUP_INPUTS = INPUTS / "_warmup"   # the running warm-up's own links to its input files
+
+
+def own_inputs(case):
+    """The warm-up case with hardlinks of its input files in WARMUP_INPUTS (like Remix), so deleting the clip they
+    came from can't take them away while the models load. None if they are gone already."""
+    shutil.rmtree(WARMUP_INPUTS, ignore_errors=True)     # the previous warm-up's, no longer read
+    out = dict(case)
+    try:
+        WARMUP_INPUTS.mkdir(parents=True)
+        for k in ("first_frame", "last_frame"):
+            if case.get(k):
+                out[k] = reuse_input(WARMUP_INPUTS, case[k])
+        if case.get("references"):
+            out["references"] = [dict(r, path=reuse_input(WARMUP_INPUTS, r["path"])) for r in case["references"]]
+    except (OSError, ValueError) as error:
+        log("warm-up skipped, its input files are gone:", error)
+        return None
+    return out
+
+
 WARMUP_PROMPT = ("integrated_multimodal_description: A quiet lake at sunrise, mist over the water, one continuous wide "
                  "shot.\noverall_soundscape: Soft wind and water.\nnon_diegetic_music: None.")
 
@@ -476,7 +666,8 @@ WARMUP_PROMPT = ("integrated_multimodal_description: A quiet lake at sunrise, mi
 def mode_warmup_case(task):
     """A warm-up case for a mode ("Load selected now"): the newest of its last few finished clips whose inputs still
     exist; for t2va without one, a built-in prompt. fl2va and ref2va need real inputs, so without such a clip: None."""
-    recent = [j for j in reversed(jobs) if j["task"] == task and j.get("status") == "done" and not j.get("deleted")]
+    recent = [j for j in reversed(jobs) if j.get("task") == task and j.get("status") == "done"
+              and not j.get("deleted") and not j.get("moving")]
     for j in recent[:5]:
         case = warmup_case(j)
         if case:
@@ -506,7 +697,7 @@ def run_preload(key, case):
     # load_eta and warm_s let the page say when a clip submitted now would be ready (both ways)
     warm, eta = warm_time(key), load_eta(key)
     with lock:                             # the worker set preloading when it took the request; a Generate or an
-        stopped = not session.get("preloading")    # Unload since then has cleared it
+        stopped = not session.get("preloading") or stopping.is_set()    # Unload since then has cleared it
         if not stopped:
             session.update(pipeline=p, state="loading", since=time.time(), loading_key=key,
                            takeover_until=time.time() + (warm - 5 if warm else eta / 2), load_eta=eta, warm_s=warm)
@@ -561,9 +752,11 @@ def abort_preload(reason):
 
 def worker_loop():
     purged = time.time()                           # main() purged at start
-    while True:
+    while not stopping.is_set():
         wake.wait(5)
         wake.clear()
+        if stopping.is_set():
+            break
         if time.time() - purged > 86400:
             purged = time.time()
             purge_trash()
@@ -576,17 +769,23 @@ def worker_loop():
             if session["pipeline"] is not None and session["key"] != pending[0]:
                 close_session(f"loading {pending[0]} as asked")
             with lock:
-                go = (session.get("switching_to") == pending[0] and not preload["pending"]
+                go = (session.get("switching_to") == pending[0] and not preload["pending"] and not stopping.is_set()
                       and session["pipeline"] is None and not any(j["status"] == "queued" for j in jobs))
                 if session.get("switching_to") == pending[0] and not preload["pending"]:
                     session["switching_to"] = None
-                if go:
+                # the case is chosen again now (the clip it came from may have been deleted during the close), and
+                # the warm-up gets its own links to the input files
+                case = own_inputs(mode_warmup_case(pending[0][0]) or {}) if go else None
+                if go and case and case.get("prompt"):
                     session.update(preloading=True, loading_key=pending[0], state="loading", since=time.time())
+                else:
+                    go = False
             if go:
-                run_preload(*pending)
+                run_preload(pending[0], case)
+                shutil.rmtree(WARMUP_INPUTS, ignore_errors=True)   # read by the loading pass only
         while True:
             with lock:
-                job = next((j for j in jobs if j["status"] == "queued"), None)
+                job = None if stopping.is_set() else next((j for j in jobs if j["status"] == "queued"), None)
                 if job is None:
                     break
                 job["status"] = "starting"
@@ -756,7 +955,7 @@ class H(BaseHTTPRequestHandler):
                                                                  "switching_to")},
                          "jobs": [dict(j) for j in window],
                          "done": sum(j["status"] == "done" for j in finished), "more": len(finished) > PAGE,
-                         "deleted": [j["id"] for j in jobs if j.get("deleted")]}       # still in the trash
+                         "deleted": {j["id"]: j["created"] for j in jobs if j.get("deleted")}}   # in the trash
             return self.send(200, state)
         if path == "/api/jobs":            # older clips: ?before=<created>&limit=<n>, newest first
             q = parse_qs(urlsplit(self.path).query)
@@ -909,29 +1108,42 @@ class H(BaseHTTPRequestHandler):
                 jid = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}").get("id")
             except (ValueError, AttributeError):
                 return self.send(400, {"error": "expected JSON {\"id\": ...}"})
-            with lock:                     # file moves are renames within the runtime root (or a small copy)
+            # Under the lock: check and mark the clip as moving (Remix, warm-ups, the trash purge and another Delete
+            # or Undo leave it alone meanwhile). The files move without the lock: a copy to or from a share can take
+            # a while. Shutdown waits for moves in progress.
+            global moves_running
+            with lock:
                 job = next((j for j in jobs if j["id"] == jid), None)
                 if job is None:
                     reply = 404, {"error": "no such clip"}
+                elif stopping.is_set():
+                    reply = 503, {"error": "the studio is shutting down"}
+                elif job.get("moving"):
+                    reply = 409, {"error": "the clip is being moved; try again in a moment"}
                 elif self.path == "/api/undelete":
-                    try:
-                        if job.get("deleted"):
-                            restore_job(job)
-                            log("restored", job["case_id"])
-                        reply = 200, {"ok": True, "job": dict(job)}
-                    except OSError as error:
-                        reply = 500, {"error": f"could not restore the clip: {error}"}
+                    reply = None if job.get("deleted") else (200, {"ok": True, "job": dict(job)})
                 elif job["status"] not in ("done", "failed"):
                     reply = 409, {"error": "the clip is still queued or running"}
                 elif job.get("deleted"):
                     reply = 200, {"ok": True}
                 else:
-                    try:
-                        delete_job(job)
-                        log("deleted", job["case_id"], "to", TRASH / jid)
-                        reply = 200, {"ok": True}
-                    except OSError as error:
-                        reply = 500, {"error": f"could not move the clip to the trash: {error}"}
+                    reply, paths = None, trash_paths(job)
+                if reply is None:
+                    job["moving"] = True
+                    with moves_done:
+                        moves_running += 1
+            if reply is None:
+                try:
+                    reply = delete_clip(job, paths) if self.path == "/api/delete" else undelete_clip(job)
+                except Exception as error:                     # never leave the clip marked as moving
+                    traceback.print_exc()
+                    reply = 500, {"error": f"{type(error).__name__}: {error}"}
+                finally:
+                    with lock:
+                        job.pop("moving", None)
+                    with moves_done:
+                        moves_running -= 1
+                        moves_done.notify_all()
             return self.send(*reply)
         if self.path != "/api/generate":
             return self.send(404, {"error": "not found"})
@@ -962,6 +1174,8 @@ class H(BaseHTTPRequestHandler):
                                                                                         # are in the trash
                 if src is None:
                     raise ValueError("the clip to remix is no longer in the list; attach the files again")
+                if src.get("moving"):
+                    raise ValueError("the clip to remix is being deleted or restored right now; try again")
             keep = {}
             for item in (fields.get("keep") or "").split(","):
                 zone, _, index = item.partition(":")
@@ -1067,6 +1281,7 @@ def main():
             j["status"] = "failed"
             j["error"] = "server restarted"
             save_job(j)
+    recover_moves()
     purge_trash()
     missing = [t for t in TASKS if t not in ready_tasks()]
     if missing:
@@ -1083,6 +1298,8 @@ def main():
 
     def stop(*_):
         log("shutting down")
+        stopping.set()
+        wake.set()
         threading.Thread(target=srv.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, stop)
@@ -1095,6 +1312,10 @@ def main():
     try:
         srv.serve_forever()
     finally:
+        stopping.set()
+        with moves_done:                               # a Delete or Undo moving files finishes first (up to 60 s)
+            if not moves_done.wait_for(lambda: moves_running == 0, timeout=60):
+                log("a Delete or Undo is still moving files; the next start puts back an unfinished delete")
         close_session("server exit")
         log("bye")
 

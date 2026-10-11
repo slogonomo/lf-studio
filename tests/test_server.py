@@ -288,6 +288,21 @@ class HistoryImport(StudioTest):
         self.assertEqual(self.studio.state()["done"], 6)
 
 
+class HistoryReimport(StudioTest):
+    def seed(self):
+        self.write_state(history(3))
+
+    def test_documented_reimport(self):
+        self.assertEqual(self.studio.state()["done"], 3)
+        self.studio.stop()
+        self.write_state(history(5))                                          # 2 clips made under 0.1 meanwhile
+        subprocess.run([sys.executable, "-c", 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); '
+                        'c.execute("PRAGMA user_version = 0"); c.commit()', str(self.studio.state_dir / "jobs.db")],
+                       check=True)                                           # the command in TROUBLESHOOTING.md
+        self.studio.start()
+        self.assertEqual(self.studio.state()["done"], 5)
+
+
 class HistoryOrder(StudioTest):
     """#5: a request that takes longer (a reference video being normalized) is ordered by when it was added, so
     paging (cursor = 'created') reaches every clip."""
@@ -454,6 +469,159 @@ class DeleteEdgeCases(Delete):
         self.studio.stop()
         self.studio.start()
         self.assertFalse(old.exists())
+
+
+class ReleaseReview(StudioTest):
+    """From the whole-release review: features meeting each other, and the upgrade of real 0.1 data."""
+    load_s, clip_s, preload = 2, 0.5, True
+
+    def setUp(self):
+        self.share = Path(tempfile.mkdtemp(prefix="sol-h3-share-", dir="/dev/shm"))     # another filesystem
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        shutil.rmtree(self.share, ignore_errors=True)
+
+    def seed(self):
+        self.studio.env.update(STUB_CLOSE_S="2", SOLH3_PUBLISH_DIR=str(self.share))
+        self.old = self.share / "20260923-113128_t2va_portrait_seed11_4f969b.mp4"   # a 0.1 clip: its only copy
+        self.old.write_bytes(os.urandom(600_000))
+        self.old.with_suffix(".jpg").write_bytes(b"jpg")
+        self.write_state([finished_job("a" * 32, output=str(self.old), created=1),
+                          finished_job("b" * 32, output=str(self.old), created=2),       # listed twice
+                          finished_job("c" * 32, task=None, created=3), {"id": "../../x", "task": "t2va"},
+                          finished_job("d" * 32, created=4)])
+
+    def test_import_skips_bad_entries_and_state_works(self):
+        self.assertIn("skipping 2 entries", self.studio.log.read_text())
+        self.assertEqual(self.studio.state()["done"], 3)
+
+    def test_shared_file_stays_for_the_other_entry(self):
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": "a" * 32})[0], 200)
+        self.assertTrue(self.old.exists())                                    # b still uses it
+        self.assertEqual(self.studio.get(f"/video/{'b' * 32}")[0], 200)
+
+    def test_only_copy_on_an_unmounted_share_waits_for_it(self):
+        self.studio.post("/api/delete", json_body={"id": "b" * 32})          # b first: a still lists the file
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": "a" * 32})[0], 200)
+        self.assertFalse(self.old.exists())
+        hidden = self.share.with_name(self.share.name + ".off")
+        self.share.rename(hidden)                                             # the share is not mounted
+        try:
+            code, body = self.studio.post("/api/undelete", json_body={"id": "a" * 32})
+            self.assertEqual(code, 500, body)
+            self.assertFalse(self.share.exists())                             # not created on the local disk
+        finally:
+            hidden.rename(self.share)
+        code, body = self.studio.post("/api/undelete", json_body={"id": "a" * 32})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.old.stat().st_size, 600_000)
+
+    def test_failed_copy_back_leaves_no_partial_file(self):
+        for jid in ("b" * 32, "a" * 32):
+            self.studio.post("/api/delete", json_body={"id": jid})
+        subprocess.run(["prlimit", f"--pid={self.studio.proc.pid}", "--fsize=300000:unlimited"], check=True)
+        code, body = self.studio.post("/api/undelete", json_body={"id": "a" * 32})
+        self.assertEqual(code, 500, body)
+        self.assertFalse(self.old.exists())                                   # no truncated file in the share
+        self.assertEqual([p.name for p in self.share.iterdir() if p.name.startswith(".")], [])
+        subprocess.run(["prlimit", f"--pid={self.studio.proc.pid}", "--fsize=unlimited:unlimited"], check=True)
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": "a" * 32})[0], 200)
+        self.assertEqual(self.old.stat().st_size, 600_000)
+
+    def warm_up_source(self):
+        jid = self.generate(task="fl2va", seconds=3, files={"first_frame": [("f.png", png())]})
+        self.studio.wait([jid])
+        self.studio.wait_for(lambda st: st["session"]["state"] == "ready", timeout=30)
+        return jid
+
+    def test_delete_during_a_requested_warm_up(self):
+        src = self.warm_up_source()
+        self.studio.wait_for(lambda st: st["session"]["state"] == "ready", timeout=30)
+        self.studio.post("/api/load", json_body={"task": "fl2va", "orientation": "portrait", "seconds": 5})
+        self.studio.wait_for(lambda st: st["session"].get("preloading") and st["session"]["state"] == "loading"
+                             and st["session"].get("loading_key") == ["fl2va", "portrait", 5], timeout=20)
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": src})[0], 200)   # its inputs move away
+        st = self.studio.wait_for(lambda st: st["session"]["state"] in ("ready", "idle")
+                                  and not st["session"].get("switching_to"), timeout=30)
+        self.assertEqual(st["session"]["key"], ["fl2va", "portrait", 5])     # the warm-up had its own links
+        self.assertNotIn("preload stopped", self.studio.log.read_text().split("load requested")[1])
+
+
+class FixReview(ReleaseReview):
+    """From the review of the release fixes: a pruned clip's only copy, shutdown and crashes during a move, and a copy
+    whose source can't be removed."""
+    test_import_skips_bad_entries_and_state_works = test_shared_file_stays_for_the_other_entry = None
+    test_only_copy_on_an_unmounted_share_waits_for_it = test_failed_copy_back_leaves_no_partial_file = None
+    test_delete_during_a_requested_warm_up = None
+
+    def clip(self):
+        jid = self.generate(seconds=3)
+        return self.studio.wait([jid])[0]
+
+    def test_pruned_clip_waits_for_its_publish_copy(self):
+        job = self.clip()
+        shutil.rmtree(Path(job["output"]).parent.parent.parent)               # session directories pruned
+        self.assertEqual(self.studio.get(f"/video/{job['id']}")[0], 200)     # plays from the publish copy
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": job["id"]})[0], 200)
+        off = self.share.with_name(self.share.name + ".off")
+        self.share.rename(off)
+        try:
+            self.assertEqual(self.studio.post("/api/undelete", json_body={"id": job["id"]})[0], 500)
+        finally:
+            off.rename(self.share)
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": job["id"]})[0], 200)
+        self.assertEqual(self.studio.get(f"/video/{job['id']}")[0], 200)
+
+    def big_publish_copy(self, job, size=1 << 30):
+        with open(job["published"], "r+b") as f:                              # a large clip, sparse
+            f.truncate(size)
+
+    def test_shutdown_waits_for_a_move(self):
+        job = self.clip()
+        self.big_publish_copy(job)
+        t = __import__("threading").Thread(target=lambda: self.studio.post("/api/delete", json_body={"id": job["id"]}))
+        t.start()
+        time.sleep(0.15)
+        self.studio.stop()                                                     # SIGTERM during the copy
+        t.join()
+        self.studio.start()
+        self.assertNotIn(job["id"], [j["id"] for j in self.studio.state()["jobs"]])   # the delete finished
+        self.assertFalse(Path(job["published"]).exists())
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": job["id"]})[0], 200)
+        self.assertEqual(Path(job["published"]).stat().st_size, 1 << 30)
+
+    def test_crash_during_a_delete_is_put_back(self):
+        job = self.clip()
+        self.big_publish_copy(job, 4 << 30)
+
+        def delete():
+            with __import__("contextlib").suppress(OSError):                  # the server dies under it
+                self.studio.post("/api/delete", json_body={"id": job["id"]})
+        t = __import__("threading").Thread(target=delete)
+        t.start()
+        time.sleep(0.3)
+        self.studio.proc.kill()                                                # no clean shutdown
+        self.studio.proc.wait()
+        t.join()
+        self.studio.start()
+        self.assertIn("put back the files of an unfinished delete", self.studio.log.read_text())
+        self.assertEqual(self.studio.get(f"/video/{job['id']}")[0], 200)
+        self.assertTrue(Path(job["output"]).exists() and Path(job["published"]).exists())
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": job["id"]})[0], 200)   # works again
+
+    def test_copy_whose_source_cant_be_removed_is_undone(self):
+        job = self.clip()
+        os.chmod(self.share, 0o555)                                            # copied out, but not removable
+        try:
+            code, body = self.studio.post("/api/delete", json_body={"id": job["id"]})
+        finally:
+            os.chmod(self.share, 0o755)
+        self.assertEqual(code, 500, body)
+        self.assertTrue(Path(job["output"]).exists() and Path(job["published"]).exists())
+        trash = self.studio.runtime / "trash" / job["id"]
+        self.assertFalse(trash.exists() and any(trash.rglob("*.mp4")))         # no second copy left behind
 
 
 class SymlinkedRuntime(StudioTest):

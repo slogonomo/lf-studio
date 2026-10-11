@@ -104,8 +104,17 @@ closes the session and loads the models again; the Generate button says so befor
 
 **Where the clip history is.** `$SOLH3_STATE_DIR/jobs.db` (SQLite) holds every clip; the gallery shows the newest
 24 and loads older ones as you scroll. Before 0.2 the history was `jobs.json` (the newest 200 clips; the gallery
-showed 50). 0.2 imports it once, when `jobs.db` does not exist yet, and leaves it as it was, so going back to 0.1
-shows the history as of that import.
+showed 50). 0.2 imports it once and leaves it as it was, so going back to 0.1 shows the history as of that import.
+Clips made under 0.1 after that are not imported by themselves when you return to 0.2; to add them, stop the studio and
+mark the import as not done (entries `jobs.db` already has are kept):
+
+```bash
+python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute("PRAGMA user_version = 0"); c.commit()' \
+    "$SOLH3_STATE_DIR/jobs.db"
+```
+
+Clips from before per-clip session directories may have their only file in `SOLH3_PUBLISH_DIR`; Delete moves that
+file to the trash like any other (Undo puts it back).
 
 **Getting a deleted clip back after the Undo toast is gone.** Delete moves the clip's directory, its input files
 and its `SOLH3_PUBLISH_DIR` copy to `$SOL_H3_SPARK_RUNTIME_ROOT/trash/<clip id>/` and keeps it in the history,
@@ -117,7 +126,11 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "<clip id>"}' htt
 ```
 
 If the publish folder can't be written when a clip is restored (an unmounted share), the clip comes back without
-its publish copy, which stays in the trash until it is emptied. Anything else left in the trash (from a delete or
+its publish copy, which stays in the trash until it is emptied; when that copy is the clip's only MP4 (an old clip,
+or one whose session directory was pruned), Undo answers with an error instead and can be tried again later. Files
+are copied to and from another filesystem under a temporary name, so a share never holds a partial MP4. Shutdown
+waits up to 60 s for a Delete or Undo that is moving files, and a delete cut short (the server killed) is put back
+at the next start. Anything else left in the trash (from a delete or
 restore that failed half-way) is removed after the same number of days.
 
 ## Stopping

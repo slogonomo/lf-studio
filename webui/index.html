@@ -188,7 +188,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
   font-size:13px;opacity:0;transition:.2s;pointer-events:none;z-index:9;box-shadow:var(--shadow)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.undo{display:flex;align-items:center;gap:12px;padding:7px 8px 7px 15px}
-.toast.undo.show{pointer-events:auto}
+.toast.undo.show{pointer-events:auto;transition:opacity .2s,transform .2s,visibility 0s}
 .toast.undo:not(.show){visibility:hidden;transition:opacity .2s,transform .2s,visibility 0s .2s}
 #undo.show~#toast{bottom:calc(72px + env(safe-area-inset-bottom))}
 .toast.undo button{border:0;border-radius:8px;padding:4px 11px;font-weight:700;font-size:13px;cursor:pointer;background:var(--acc);color:var(--accfg)}
@@ -388,7 +388,8 @@ zones.forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs
     files.forEach(f=>{const kind=f.type.split('/')[0];if(kind!=='image'&&kind!=='video'){th.append(thumb('audio','',f.name));return;}
       const url=URL.createObjectURL(f),el=thumb(kind,url,f.name);el.dataset.url=url;th.append(el);});};
   z.addEventListener('click',e=>{if(!e.target.closest('.clear'))inp.click();});
-  z.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click();}});
+  z.addEventListener('keydown',e=>{if(e.target.closest('button'))return;            // a ×: it handles its own keys
+    if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click();}});
   z.querySelector('.clear').addEventListener('click',e=>{e.stopPropagation();inp.value='';z.kept=[];show();});
   inp.addEventListener('click',e=>e.stopPropagation());
   inp.addEventListener('change',show);
@@ -482,28 +483,46 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
       if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
       toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
-  body.querySelector('.del').onclick=()=>remove(j);
+  body.querySelector('.del').onclick=e=>remove(j,e.detail===0);       // detail 0: Enter/Space, not a pointer
   d.append(media,body);return d;}
 // Delete moves the clip and its files to the server's trash; Undo (in the toast) moves back every clip deleted while
-// it showed. The server's state wins: /api/state lists deleted ids (other tabs remove those cards too), and a card
-// hidden here stays hidden only until a poll sent after the delete has answered (gone: id -> poll number).
-const gone=new Map();let pollSeq=0,undoIds=[];
+// it showed. The server's state wins: /api/state lists deleted clips (other tabs remove those cards too), and a card
+// hidden here stays hidden only until a poll sent after the delete has answered (gone: id -> poll number). A clip
+// that leaves the deleted list (restored here, in another tab or by hand) comes back (lastDeleted: id -> created).
+const gone=new Map(),restored=new Map(),lastDeleted=new Map();let pollSeq=0,undoIds=[],undoFocus=null;
 function hideCard(id){known.delete(id);if(els[id]){els[id].remove();delete els[id];}}
+// a clip restored elsewhere: recent ones come with the poll; older ones are fetched, if the gallery has reached
+// their place (otherwise paging brings them, and fetching them early would break its cursor)
+async function bringBack(id,created){if(known.has(id))return;
+  const oldest=Math.min(...[...known.values()].map(j=>j.created));if(!(created>=oldest))return;
+  try{const x=await (await fetch(`/api/jobs?before=${created+0.0005}&limit=1`,{cache:'no-store'})).json();
+    const j=(x.jobs||[])[0];if(j&&j.id===id&&!known.has(id)){known.set(id,j);update(els[id]||insert(j),j,[],state.session,now());}}
+  catch(e){}}
 const postJSON=(url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-async function remove(j){let r;
-  try{r=await postJSON('/api/delete',{id:j.id});}catch(e){toast('Could not reach the server');return;}
-  if(!r.ok){toast((await r.json().catch(()=>({}))).error||'Could not delete');return;}
+function showUndo(text,label){const u=$('undo');u.querySelector('span').textContent=text;u.querySelector('button').textContent=label;
+  u.classList.add('show');clearTimeout(u._t);
+  u._t=setTimeout(()=>{if(document.activeElement===u.querySelector('button')&&undoFocus)undoFocus.focus();   // keyboard: back
+    u.classList.remove('show');},10000);}                                                          // to the gallery
+async function remove(j,keyboard){const del=els[j.id]&&els[j.id].querySelector('.del');if(del)del.disabled=true;let r;
+  try{r=await postJSON('/api/delete',{id:j.id});}catch(e){if(del)del.disabled=false;toast('Could not reach the server');return;}
+  if(!r.ok){if(del)del.disabled=false;toast((await r.json().catch(()=>({}))).error||'Could not delete');return;}
+  const card=els[j.id],near=card&&(card.nextElementSibling||card.previousElementSibling);   // where focus goes after
+  undoFocus=near&&near.classList.contains('job')?near.querySelector('.del,.reuse-all'):null;
   gone.set(j.id,pollSeq);hideCard(j.id);
-  const u=$('undo');if(!u.classList.contains('show'))undoIds=[];undoIds.push(j.id);
-  u.querySelector('span').textContent=undoIds.length>1?`${undoIds.length} clips deleted`:'Clip deleted';
-  u.classList.add('show');clearTimeout(u._t);u._t=setTimeout(()=>u.classList.remove('show'),10000);render();}
+  if(!$('undo').classList.contains('show'))undoIds=[];undoIds.push(j.id);
+  showUndo(undoIds.length>1?`${undoIds.length} clips deleted`:'Clip deleted','Undo');render();
+  if(keyboard)$('undo').querySelector('button').focus();}  // the card and its focus are gone; Undo is next
 $('undo').querySelector('button').onclick=async()=>{const u=$('undo'),ids=undoIds;undoIds=[];u.classList.remove('show');
-  let back=0,err='';
+  const failed=[];let back=0,err='',first=null;
   for(const id of ids){try{const r=await postJSON('/api/undelete',{id}),x=await r.json();
-      if(!r.ok||!x.job){err=x.error||'Could not restore';continue;}
-      gone.delete(id);known.set(id,x.job);update(els[id]||insert(x.job),x.job,[],state.session,now());back++;}
-    catch(e){err='Could not reach the server';}}
-  toast(err?`${err}${back?` (${back} restored)`:''}`:back>1?`${back} clips restored`:'Clip restored');render();poll();};
+      if(!r.ok||!x.job){err=x.error||'Could not restore';failed.push(id);continue;}
+      gone.delete(id);restored.set(id,pollSeq);if(state.deleted)delete state.deleted[id];
+      known.set(id,x.job);update(els[id]||insert(x.job),x.job,[],state.session,now());back++;first=first||els[id];}
+    catch(e){err='Could not reach the server';failed.push(id);}}
+  if(failed.length){undoIds=failed;showUndo(`${err}${back?` (${back} restored)`:''}`,'Retry');}   // the server keeps them
+  else toast(back>1?`${back} clips restored`:'Clip restored');
+  if(first&&document.activeElement===document.body)first.querySelector('.del').focus();
+  render();poll();};
 function setText(el,t){if(el.textContent!==t)el.textContent=t;}
 // every job the page has seen, by id: the poll carries the active ones and the newest page, older pages come from
 // /api/jobs as the gallery scrolls (finished clips don't change, so only polled ones are updated afterwards)
@@ -542,7 +561,10 @@ function render(){const s=state.session,k=s.key,t=now();
   setText($('loadtimer'),sState==='loading'||s.switching_to&&sState==='unloading'?clock(t-s.since):'');
   $('unload').hidden=!k&&sState==='idle';
   for(const [id,seq] of gone)if(state.seq>seq)gone.delete(id);          // answered after the delete: server wins
-  (state.deleted||[]).forEach(hideCard);                                  // deleted here or in another tab
+  for(const [id,seq] of restored)if(state.seq>seq)restored.delete(id);   // a poll sent before an Undo lists it
+  const listed=state.deleted||{},deleted=new Set(Object.keys(listed).filter(id=>!restored.has(id)));
+  deleted.forEach(id=>{lastDeleted.set(id,listed[id]);hideCard(id);});         // deleted here or in another tab
+  for(const [id,created] of lastDeleted)if(!deleted.has(id)&&state.seq>(gone.get(id)??-1)){lastDeleted.delete(id);bringBack(id,created);}
   state.jobs=state.jobs.filter(j=>!gone.has(j.id));                       // a poll sent before a delete
   const had=[...known.values()];                     // what the page had before this poll
   state.jobs.forEach(j=>known.set(j.id,j));
