@@ -533,6 +533,11 @@ class SeedText(PageTest):
         self.page.keyboard.press("Shift+Tab")                               # not back onto the clicked seed
         self.assertFalse(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
         self.assertEqual(self.page.get_attribute(f"{card} .seedv", "tabindex"), "0")   # a Tab stop again
+        self.page.click(f"{card} .seedv")
+        self.page.click(f"{card} .when")                                    # a press elsewhere, then Tab
+        self.page.keyboard.press("Tab")
+        self.assertTrue(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
+        self.wait_selected("2034940401")
 
     def test_a_touch_tap_neither_focuses_the_seed_nor_drops_a_selection(self):
         # Chromium (touch through CDP): a tap's mouse events come when the finger lifts, here 80 ms later
