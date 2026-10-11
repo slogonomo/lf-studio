@@ -79,14 +79,19 @@ with sync_playwright() as p:
         pg.wait_for_timeout(2500)
         pg.screenshot(path=str(SHOTS / f"ui_{scheme}.png"))
         ctx.close()
-    ctx = b.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", is_mobile=True,
-                        device_scale_factor=2)
-    pg = ctx.new_page()
-    pg.goto(URL)
-    pg.wait_for_timeout(2000)
-    check(pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"), "phone width: no horizontal scroll")
-    pg.screenshot(path=str(SHOTS / "ui_phone.png"), full_page=False)
-    ctx.close()
+    for width in (320, 390):                       # 320: the narrowest common phone (#19)
+        ctx = b.new_context(viewport={"width": width, "height": 844}, color_scheme="dark", is_mobile=True,
+                            device_scale_factor=2)
+        pg = ctx.new_page()
+        pg.goto(URL)
+        pg.wait_for_timeout(2000)
+        check(pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"),
+              f"phone width {width} px: no horizontal scroll")
+        rows = pg.evaluate("""() => [...document.querySelectorAll('.job')].map(c => new Set([...c.querySelectorAll('.acts > *')]
+                                .filter(e => e.offsetWidth).map(e => Math.round(e.getBoundingClientRect().top))).size)""")
+        check(all(n <= 1 for n in rows), f"phone width {width} px: card buttons on one row ({len(rows)} cards)")
+        pg.screenshot(path=str(SHOTS / f"ui_phone_{width}.png"), full_page=False)
+        ctx.close()
 
     ctx = b.new_context(viewport={"width": 1400, "height": 1000})
     pg = ctx.new_page()

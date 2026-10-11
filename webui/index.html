@@ -55,7 +55,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 
 /* layout */
 .layout{display:grid;grid-template-columns:minmax(0,440px) minmax(0,1fr);gap:22px;align-items:start}
-@media(max-width:920px){.layout{grid-template-columns:1fr}}
+@media(max-width:920px){.layout{grid-template-columns:minmax(0,1fr)}}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
 .create{padding:18px 18px 16px;position:sticky;top:14px;max-height:calc(100vh - 28px);overflow:auto;scrollbar-width:thin}
 @media(max-width:920px){.create{position:static;max-height:none}}
@@ -140,7 +140,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 #reloadnote{font-size:12.5px;color:var(--warn);margin-top:8px}
 #err:empty{display:none}
 .linkbtn{border:0;background:none;padding:0;color:var(--acc);font:inherit;font-weight:650;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
-#err{color:var(--bad);font-size:13px;margin-top:8px}
+#err{color:var(--bad);font-size:13px;margin-top:8px;overflow-wrap:anywhere}   /* long file names in errors wrap */
 .foot{font-size:12px;color:var(--faint);margin:14px 2px 0;line-height:1.6}
 .foot b{color:var(--mut);font-weight:600}
 
@@ -149,7 +149,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .ghead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:14px}
 .ghead h2{margin:0;font-size:16px;letter-spacing:-.01em}
 .ghead span{color:var(--mut);font-size:12.5px}
-#jobs{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;align-items:start}
+#jobs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(290px,100%),1fr));gap:14px;align-items:start}
 .empty{grid-column:1/-1;border:1.5px dashed var(--line2);border-radius:var(--r);padding:56px 20px;text-align:center;color:var(--mut)}
 #more{display:flex;margin:16px auto 0}
 .empty b{display:block;color:var(--fg);font-size:15px;margin-bottom:4px}
@@ -196,6 +196,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .toast.undo button{border:0;border-radius:8px;padding:4px 11px;font-weight:700;font-size:13px;cursor:pointer;background:var(--acc);color:var(--accfg)}
 .act.del{margin-left:auto;color:var(--mut)}
 .act.del:hover{border-color:var(--bad);color:var(--bad)}
+@media(max-width:420px){.wrap{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}.create,.gallery{padding-left:12px;padding-right:12px}.body{padding-left:11px;padding-right:11px}.act{padding:4px 8px}}   /* phones: Remix, Download and Delete fit on one row of a 320 px screen */
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 

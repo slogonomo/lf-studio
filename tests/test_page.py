@@ -441,7 +441,7 @@ class SeedText(PageTest):
         self.studio.wait([ok, bad])           # the page was open: the cards were built while queued, then updated
         self.page.wait_for_selector(f'article[data-id="{ok}"] video')
         self.page.wait_for_selector(f'article[data-id="{bad}"][data-status="failed"]')
-        for width in (1280, 390, 320):        # 320: the narrowest card (290 px)
+        for width in (1280, 390, 320):        # 320: the narrowest phone card (266 px, #19)
             self.page.set_viewport_size({"width": width, "height": 900})
             self.page.wait_for_timeout(300)
             for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", "Delete"]),
@@ -581,6 +581,48 @@ class SeedText(PageTest):
                 paint(getComputedStyle(document.querySelector('{card} .seedv')).color); const fg = lum();
                 return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05); }}""")
             self.assertGreaterEqual(ratio, 4.5, f"seed contrast in {scheme} mode")
+
+
+class PhoneWidth(PageTest):
+    """#19: no sideways scroll on a phone, and the card buttons still share one row."""
+
+    def test_no_sideways_scroll_and_one_row_of_buttons(self):
+        ok = self.studio.generate(prompt="a long prompt " * 30, seed=2034940401)[1]["id"]
+        bad = self.studio.generate(prompt="STUB_FAIL", seed=2147483646)[1]["id"]
+        self.studio.wait([ok, bad])
+        self.page.wait_for_selector(f'article[data-id="{ok}"] video')
+        self.page.wait_for_selector(f'article[data-id="{bad}"][data-status="failed"]')
+        for width in (300, 320, 340, 360, 375, 414, 600):
+            self.page.set_viewport_size({"width": width, "height": 900})
+            self.page.wait_for_timeout(300)
+            scroll, client, wide = self.page.evaluate("""() => {
+                const cw = document.documentElement.clientWidth;
+                const wide = [...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().right > cw + 0.5)
+                    .map(e => e.tagName + (e.id ? '#' + e.id : '') + '.' + e.className);
+                return [document.documentElement.scrollWidth, cw, wide]; }""")
+            self.assertLessEqual(scroll, client, f"sideways scroll at {width} px: {wide}")
+            self.assertEqual(wide, [], f"wider than the screen at {width} px")
+            for jid, buttons in ((ok, ["Remix", "Download", "Delete"]), (bad, ["Remix", "Delete"])):
+                row = self.page.eval_on_selector_all(
+                    f'article[data-id="{jid}"] .acts > *', "els => els.filter(e => e.offsetWidth).map(e => "
+                                                           "[e.textContent.trim(), Math.round(e.getBoundingClientRect().top)])")
+                self.assertEqual([name for name, _ in row], buttons, width)
+                self.assertEqual(len({top for _, top in row}), 1, f"one row at {width} px: {row}")
+
+    def test_a_long_file_name_in_an_error_wraps(self):
+        """The form panel scrolls on its own, so check it too: an error naming a long upload must wrap."""
+        self.page.set_viewport_size({"width": 320, "height": 900})
+        self.pick("task", "ref2va")
+        self.page.fill("#prompt", "refs")
+        name = "PXL_20261011_145012345_short_clip_from_the_trip.mp4"           # nowhere to break the saved name
+        self.page.set_input_files('input[name="ref_videos"]', files=[{"name": name, "mimeType": "video/mp4",
+                                                                       "buffer": mp4(1)}])
+        self.page.click("#go")
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('at least 2 s')")
+        widths = self.page.evaluate("""() => [...document.querySelectorAll('#f, #err')].map(e => [e.id, e.scrollWidth,
+                                                                                          e.clientWidth])""")
+        for el, scroll, client in widths:
+            self.assertLessEqual(scroll, client, f"#{el} scrolls sideways: {widths}")
 
 if __name__ == "__main__":
     unittest.main()
