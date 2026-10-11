@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
-from test_server import finished_job, mp4, png  # noqa: E402
+from test_server import finished_job, history, mp4, png  # noqa: E402
 
 try:
     from playwright.sync_api import sync_playwright
@@ -159,6 +159,31 @@ class RemixInputs(PageTest):
         self.page.wait_for_timeout(300)
         self.assertEqual(self.page.eval_on_selector_all(".thumbs .kept", "els => els.length"), 0)
         self.assertEqual(self.page.evaluate("remixFrom"), None)
+
+
+class Paging(PageTest):
+    """#5: the gallery shows the newest page and loads older clips as you scroll."""
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(history(60)))
+
+    def cards(self):
+        return self.page.eval_on_selector_all("#jobs .job", "els => els.length")
+
+    def test_scroll_loads_older_pages(self):
+        self.assertEqual(self.cards(), 24)
+        self.assertEqual(self.page.inner_text("#count"), "60 clips")
+        for want in (48, 60):
+            self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            self.page.wait_for_function(f"document.querySelectorAll('#jobs .job').length === {want}")
+        self.page.wait_for_function("document.getElementById('more').hidden")
+        created = self.page.eval_on_selector_all("#jobs .job", "els => els.map(e => +e.dataset.created)")
+        self.assertEqual(created, sorted(created, reverse=True))                 # newest first, no duplicates
+        self.assertEqual(len(set(created)), 60)
+        # a new clip goes on top, and nothing is lost or repeated
+        self.studio.wait([self.studio.generate()[1]["id"]])
+        self.page.wait_for_function("document.querySelectorAll('#jobs .job').length === 61")
+        self.page.wait_for_function("document.getElementById('count').textContent === '61 clips'")
 
 
 if __name__ == "__main__":

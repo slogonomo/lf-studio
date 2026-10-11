@@ -14,7 +14,8 @@ Environment:
   SOL_H3_SPARK_RUNTIME_ROOT  required. Uploads and session outputs go under it (the Qwen container sees only it).
   SOLH3_HOME                 default ~/sol-h3. Only used for the default manifest path.
   SOLH3_PATHS                manifest path with {task}; default $SOLH3_HOME/paths-{task}.json
-  SOLH3_STATE_DIR            jobs.json and load-times.json; default ~/.local/state/sol-h3-studio
+  SOLH3_STATE_DIR            jobs.db (every clip; jobs.json from before 0.2 is imported once) and
+                             load-times.json; default ~/.local/state/sol-h3-studio
   SOLH3_PUBLISH_DIR          optional: also copy each finished clip (and its poster) here
   SOLH3_HOST, SOLH3_PORT     default 127.0.0.1 and 8190. 0.0.0.0 serves the whole LAN; there is no login.
   SOLH3_PRELOAD              1 (default): at start, warm up the settings of the last finished clip. 0: off.
@@ -31,6 +32,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -39,7 +41,7 @@ import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 TASKS = ("t2va", "fl2va", "ref2va")
 
@@ -75,7 +77,8 @@ if "{task}" not in PATHS_TEMPLATE:
     fail(f"SOLH3_PATHS must contain {{task}}, e.g. {HOME}/paths-{{task}}.json (got {PATHS_TEMPLATE})")
 PATHS = {t: Path(PATHS_TEMPLATE.format(task=t)).expanduser() for t in TASKS}
 STATE_DIR = Path(os.environ.get("SOLH3_STATE_DIR") or Path.home() / ".local/state/sol-h3-studio").expanduser()
-STATE_FILE = STATE_DIR / "jobs.json"
+DB_FILE = STATE_DIR / "jobs.db"
+OLD_STATE_FILE = STATE_DIR / "jobs.json"         # before 0.2: the newest 200 jobs; imported once
 LOAD_TIMES = STATE_DIR / "load-times.json"
 PUBLISH = Path(os.environ["SOLH3_PUBLISH_DIR"]).expanduser() if os.environ.get("SOLH3_PUBLISH_DIR") else None
 HOST = os.environ.get("SOLH3_HOST") or "127.0.0.1"
@@ -89,7 +92,8 @@ for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
 
 lock = threading.Lock()          # guards jobs / session
 wake = threading.Event()
-jobs = []                        # newest last
+jobs = []                        # every job, oldest first (also in jobs.db)
+PAGE = 24                        # clips per gallery page (/api/state carries the newest page, /api/jobs older ones)
 session = {"pipeline": None, "key": None, "state": "idle", "since": time.time()}
 
 
@@ -97,12 +101,41 @@ def log(*a):
     print(time.strftime("[%H:%M:%S]"), *a, flush=True)
 
 
-def save_jobs():
+db = None                        # sqlite3 connection to DB_FILE (open_db); writes are serialized by db_lock
+db_lock = threading.Lock()
+
+
+def open_db():
+    """Open (or create) jobs.db and return every job, oldest first. The first time, import jobs.json from before
+    0.2, which stays as it was (no longer written)."""
+    global db
+    new = not DB_FILE.exists()
+    db = sqlite3.connect(DB_FILE, check_same_thread=False, isolation_level=None)    # autocommit
+    db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, created REAL NOT NULL, data TEXT NOT NULL)")
+    if new and OLD_STATE_FILE.exists():
+        try:
+            old = [j for j in json.loads(OLD_STATE_FILE.read_text()) if isinstance(j, dict) and j.get("id")]
+            with db_lock:
+                db.execute("BEGIN")
+                db.executemany("INSERT OR REPLACE INTO jobs VALUES (?, ?, ?)",
+                               [(j["id"], j.get("created") or 0, json.dumps(j)) for j in old])
+                db.execute("COMMIT")
+            log(f"imported {len(old)} jobs from {OLD_STATE_FILE} into {DB_FILE}")
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            log("could not import", OLD_STATE_FILE, error)
+    loaded = [json.loads(row[0]) for row in db.execute("SELECT data FROM jobs ORDER BY created, rowid")]
+    for j in loaded:
+        j.setdefault("created", 0)
+    return loaded
+
+
+def save_job(job):
+    """Write one job to jobs.db (its current state)."""
     try:
-        tmp = STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(jobs[-200:], indent=1))
-        tmp.replace(STATE_FILE)
-    except OSError:
+        with db_lock:
+            db.execute("INSERT OR REPLACE INTO jobs VALUES (?, ?, ?)",
+                       (job["id"], job["created"], json.dumps(dict(job))))   # dict(): a consistent copy
+    except sqlite3.Error:
         traceback.print_exc()
 
 
@@ -350,8 +383,7 @@ def worker_loop():
                 traceback.print_exc()
             job["finished"] = time.time()
             job["wall_s"] = round(job["finished"] - job["started"], 1)
-            with lock:
-                save_jobs()
+            save_job(job)
 
 
 # ------------------------------------------------------------------------------------------ HTTP
@@ -486,12 +518,30 @@ class H(BaseHTTPRequestHandler):
         if path == "/health":
             return self.send(200, {"ok": True})
         if path == "/api/state":
+            # the session, every queued or running job (spark-switchboard's busy probe reads these) and the newest
+            # page of finished ones; older clips come from /api/jobs
+            ready = ready_tasks()
             with lock:
-                return self.send(200, {"now": time.time(), "tasks_ready": ready_tasks(),
-                                       "session": {k: session.get(k) for k in
-                                                   ("key", "state", "since", "loading_key", "preloading",
-                                                    "takeover_until", "load_eta", "warm_s")},
-                                       "jobs": list(reversed(jobs[-50:]))})
+                active = [j for j in jobs if j["status"] not in ("done", "failed")]
+                finished = [j for j in jobs if j["status"] in ("done", "failed")]
+                window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
+                state = {"now": time.time(), "tasks_ready": ready,
+                         "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
+                                                                 "takeover_until", "load_eta", "warm_s")},
+                         "jobs": [dict(j) for j in window],
+                         "done": sum(j["status"] == "done" for j in finished), "more": len(finished) > PAGE}
+            return self.send(200, state)
+        if path == "/api/jobs":            # older clips: ?before=<created>&limit=<n>, newest first
+            q = parse_qs(urlsplit(self.path).query)
+            try:
+                before = float(q.get("before", ["inf"])[0])
+                limit = max(1, min(100, int(q.get("limit", [PAGE])[0])))
+            except ValueError:
+                return self.send(400, {"error": "before must be a number and limit an integer"})
+            with lock:
+                older = [j for j in jobs if j["created"] < before]
+                page = [dict(j) for j in older[::-1][:limit]]
+            return self.send(200, {"jobs": page, "more": len(older) > limit})
         m = re.fullmatch(r"/poster/([0-9a-f]{32})", path)
         if m:
             mp4 = clip_file(next((j for j in jobs if j["id"] == m.group(1)), None))
@@ -679,10 +729,10 @@ class H(BaseHTTPRequestHandler):
             return self.send(400, {"error": f"{type(e).__name__}: {e}"})
         with lock:
             jobs.append(job)
-            save_jobs()
             # a job already queued for the warm-up's settings runs first, so it keeps the warm-up
             waited_for = any(j["status"] == "queued" and (j["task"], j["orientation"], j.get("seconds", 5))
                              == session.get("loading_key") for j in jobs)
+        save_job(job)
         if session.get("preloading"):
             if session.get("loading_key") != (job["task"], job["orientation"], job["seconds"]):
                 if not waited_for:
@@ -713,16 +763,15 @@ def stop_with_launcher():
 
 
 def main():
-    if STATE_FILE.exists():
-        try:
-            old = json.loads(STATE_FILE.read_text())
-            for j in old:
-                if j["status"] not in ("done", "failed"):
-                    j["status"] = "failed"
-                    j["error"] = "server restarted"
-            jobs.extend(old)
-        except (OSError, ValueError, KeyError, TypeError):
-            log("ignoring an unreadable", STATE_FILE)
+    try:
+        jobs.extend(open_db())
+    except sqlite3.Error as error:
+        fail(f"cannot open {DB_FILE}: {error}")
+    for j in jobs:
+        if j.get("status") not in ("done", "failed"):
+            j["status"] = "failed"
+            j["error"] = "server restarted"
+            save_job(j)
     missing = [t for t in TASKS if t not in ready_tasks()]
     if missing:
         log("no path manifest for", ", ".join(missing), f"(looked for {PATHS_TEMPLATE})")

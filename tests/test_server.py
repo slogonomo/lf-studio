@@ -206,6 +206,58 @@ class Remix(StudioTest):
         self.assertIn("no longer in the list", body["error"])
 
 
+def history(n, start=1_700_000_000):
+    """n finished jobs, oldest first, one minute apart."""
+    return [finished_job(f"{i:032x}", created=start + 60 * i, seed=i) for i in range(n)]
+
+
+class History(StudioTest):
+    """#5: every job is kept (jobs.db); /api/state carries the active jobs and the newest page, /api/jobs the rest."""
+
+    def seed(self):
+        self.write_state(history(230))                 # more than the old 200-job cap
+
+    def test_import_and_pages(self):
+        self.assertTrue((self.studio.state_dir / "jobs.db").is_file())
+        self.assertEqual(len(json.loads((self.studio.state_dir / "jobs.json").read_text())), 230)   # left as it was
+        st = self.studio.state()
+        self.assertEqual((len(st["jobs"]), st["done"], st["more"]), (24, 230, True))
+        seen = [j["id"] for j in st["jobs"]]
+        self.assertEqual(seen[0], f"{229:032x}")        # newest first
+        before = min(j["created"] for j in st["jobs"])
+        while True:
+            page = json.loads(self.studio.get(f"/api/jobs?before={before}&limit=50")[2])
+            seen += [j["id"] for j in page["jobs"]]
+            if not page["more"]:
+                break
+            before = page["jobs"][-1]["created"]
+        self.assertEqual(seen, [f"{i:032x}" for i in reversed(range(230))])   # every job once, in order
+        for q in ("before=x", "limit=y"):
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                self.studio.get(f"/api/jobs?{q}")
+            self.assertEqual(e.exception.code, 400)
+
+    def test_active_jobs_always_in_state_and_kept_across_restarts(self):
+        jid = self.generate()
+        st = self.studio.wait_for(lambda st: any(j["id"] == jid and j["status"] != "queued" for j in st["jobs"]))
+        self.assertEqual(len(st["jobs"]), 25)           # the running job + the newest 24 finished
+        self.studio.wait([jid])
+        self.studio.stop()
+        self.studio.start()
+        st = self.studio.state()
+        self.assertEqual(st["jobs"][0]["id"], jid)
+        self.assertEqual((st["jobs"][0]["status"], st["done"]), ("done", 231))
+
+    def test_running_job_marked_failed_after_restart(self):
+        jid = self.generate(seconds=8)
+        self.studio.wait_for(lambda st: any(j["id"] == jid and j["status"] != "queued" for j in st["jobs"]))
+        self.studio.proc.kill()                         # no clean shutdown
+        self.studio.proc.wait()
+        self.studio.start()
+        job = self.studio.job(jid)
+        self.assertEqual((job["status"], job["error"]), ("failed", "server restarted"))
+
+
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
     takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it."""
