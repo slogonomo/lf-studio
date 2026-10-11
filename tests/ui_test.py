@@ -118,11 +118,14 @@ with sync_playwright() as p:
     if key:
         pick(pg, "task", key[0]); pick(pg, "orientation", key[1]); pick(pg, "seconds", str(key[2] or 5))
         go = pg.text_content("#go")
-        check("load" not in go.lower() and pg.text_content("#reloadnote") == "",
+        check("load" not in go.lower() and not pg.is_visible("#reloadnote"),
               "no reload warning when everything matches what's loaded")
         pick(pg, "orientation", "portrait" if key[1] == "landscape" else "landscape")
         go = pg.text_content("#go")
-        check("reloads" in go.lower() and pg.text_content("#reloadnote"), "Generate warns about a reload when the format differs")
+        check("reloads" in go.lower() and pg.is_visible("#reloadnote") and pg.text_content("#reloadtext"),
+              "Generate warns about a reload when the format differs")
+        busy = pg.evaluate("state.jobs.some(active)")
+        check(pg.is_visible("#loadnow") != busy, "'Load selected now' offered only while nothing is queued or running")
         pick(pg, "orientation", key[1])
     else:
         skip("reload-warning checks (no session loaded)")

@@ -32,10 +32,16 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
 - Prompt examples and section chips in H3's prompt formats (from MiniMax's
   [prompt-writing guides](https://huggingface.co/MiniMaxAI/MiniMax-H3/tree/main/docs)); seed roll; settings
   remembered per browser.
-- A queue. Clips appear as cards with a timer and progress, then a player, Remix, Use seed and Download.
+- A queue. Clips appear as cards with a timer and progress, then a player, Remix, Use seed and Download. Remix
+  puts the clip's settings, prompt, seed and input files back into the form; the server reuses the files it
+  kept (uploads are stored per clip under `$SOL_H3_SPARK_RUNTIME_ROOT/inputs/webui/`). The gallery keeps
+  every clip and loads older ones as you scroll. Delete moves a clip and its files to a trash folder for 7 days,
+  with Undo.
 - The Generate button says when your settings need a model reload; the clip card shows how long the last load took.
+  "Load selected now" under it starts loading other settings while you finish the prompt (nothing loads on a
+  selection change alone).
 - Warm-up at launch with the settings of your last clip; a clip with those settings submitted early in the warm-up
-  takes it over. Unload button. Dark and light themes, phone layout.
+  takes it over, and the Generate button says when it would be ready. Unload button. Dark and light themes, phone layout.
 - Uploaded reference videos are normalized (at most 672×384, 24 fps, 2-15 s).
 
 **A patch** to Sol-H3-Spark (`patches/sol-h3-studio.patch`, details in [docs/PATCH.md](docs/PATCH.md)). Measured on
@@ -64,6 +70,8 @@ the prompt cache with pinned versions, including fixes found on a DGX Spark (tor
 for ltx-kernels, a torchaudio stub for the Qwen image). **A launcher** (`bin/sol-h3-studio`) with memory checks
 and clean shutdown for a terminal, NVIDIA Sync, systemd or
 [spark-switchboard](https://github.com/slogonomo/spark-switchboard). **Bench scripts** (`bench/`).
+**Tests** (`tests/`): the server end to end against a GPU-free stub of the pipeline, and the page in a
+browser; see [AGENTS.md](AGENTS.md).
 
 ## Deviations from NVIDIA's validated recipe
 
