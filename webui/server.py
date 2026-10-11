@@ -510,7 +510,8 @@ class H(BaseHTTPRequestHandler):
             for zone in ZONES:
                 for i, f in enumerate(zone_files(job, zone)):
                     if Path(f).is_file():
-                        out.setdefault(zone, []).append({"name": Path(f).name, "url": f"/input/{job['id']}/{zone}/{i}"})
+                        out.setdefault(zone, []).append({"name": Path(f).name, "index": i,
+                                                         "url": f"/input/{job['id']}/{zone}/{i}"})
                     else:
                         missing.append(Path(f).name)
             return self.send(200, {"task": job["task"], "inputs": out, "missing": missing})
@@ -598,6 +599,7 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", "0"))
         if n > MAX_UPLOAD:
             return self.send(413, {"error": "upload too large (200 MB max)"})
+        job_dir = None
         try:
             fields, files = parse_multipart(self.headers.get("Content-Type", ""), self.rfile.read(n))
             task = fields.get("task", "t2va")
@@ -614,18 +616,27 @@ class H(BaseHTTPRequestHandler):
             if seconds not in DURATIONS:
                 raise ValueError(f"duration must be one of {DURATIONS} seconds")
             seed = int(raw) if raw else int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF   # empty -> random
-            # Remix: zones listed in "keep" reuse the files of clip "remix_from" (unless new files came for them)
+            # Remix: "keep" names files of clip "remix_from" to reuse, as zone:index in the order of /api/inputs
             src = None
             if fields.get("remix_from"):
                 src = next((j for j in jobs if j["id"] == fields["remix_from"]), None)
                 if src is None:
                     raise ValueError("the clip to remix is no longer in the list; attach the files again")
-            keep = {z for z in (fields.get("keep") or "").split(",") if z in ZONES} if src else set()
+            keep = {}
+            for item in (fields.get("keep") or "").split(","):
+                zone, _, index = item.partition(":")
+                if src and zone in ZONES and index.isdigit():
+                    keep.setdefault(zone, {})[int(index)] = None          # ordered, no duplicates
             jid = uuid.uuid4().hex
             job_dir = INPUTS / jid
             job_dir.mkdir(parents=True)
-            kept = lambda zone: [reuse_input(job_dir, f) for f in zone_files(src, zone)] \
-                if zone in keep and not files.get(zone) else []
+
+            def kept(zone):
+                """The kept files of this zone, put into the new job's directory, in the order the form sent."""
+                available = zone_files(src, zone) if src else []
+                if any(i >= len(available) for i in keep.get(zone, {})):
+                    raise ValueError("the remixed clip has fewer files than the form kept; attach them again")
+                return [reuse_input(job_dir, available[i]) for i in keep.get(zone, {})]
             job = {"id": jid, "case_id": f"web_{time.strftime('%H%M%S')}_{jid[:6]}", "task": task,
                    "orientation": orientation, "seconds": seconds, "prompt": prompt, "seed": seed, "status": "queued",
                    "created": time.time()}
@@ -634,14 +645,15 @@ class H(BaseHTTPRequestHandler):
                     if files.get(key):
                         fn, data = files[key][0]
                         job[key] = save_upload(job_dir, fn, data, IMG)
-                    elif kept_file := kept(key):
+                    elif kept_file := kept(key):         # one file per frame: a new upload replaces it
                         job[key] = kept_file[0]
                 if not (job.get("first_frame") or job.get("last_frame")):
                     raise ValueError("fl2va needs a first frame, a last frame, or both")
             if task == "ref2va":
                 # order = prompt numbering: <Picture N> images, then <Video N> videos (a video's own soundtrack is
                 # added by Sol-H3 as an audio reference just before it), then standalone <Audio N> files
-                # kept reference videos are the normalized copies already
+                # per kind: kept files first, then new uploads (the page shows them in that order); kept reference
+                # videos are the normalized copies already
                 refs = [{"type": "image", "path": p} for p in kept("ref_images")]
                 refs += [{"type": "image", "path": save_upload(job_dir, fn, d, IMG)} for fn, d in files.get("ref_images", [])]
                 refs += [{"type": "video", "path": p} for p in kept("ref_videos")]
@@ -662,6 +674,8 @@ class H(BaseHTTPRequestHandler):
                     probe[k] = job[k]
             normalize_case(probe)
         except Exception as e:
+            if job_dir is not None:
+                shutil.rmtree(job_dir, ignore_errors=True)     # a refused request leaves nothing behind
             return self.send(400, {"error": f"{type(e).__name__}: {e}"})
         with lock:
             jobs.append(job)
