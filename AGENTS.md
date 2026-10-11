@@ -23,7 +23,8 @@ python3 tests/ui_test.py http://127.0.0.1:18299/   # a general check of the page
 ```
 
 `tests/test_server.py` drives the server over HTTP; `tests/test_page.py` drives the page in WebKit and is skipped
-without Playwright (`pip install playwright && playwright install webkit`).
+without Playwright (`pip install playwright && playwright install webkit`). One touch test uses Chromium
+(`playwright install chromium`) and is skipped without it.
 
 `tests/stub/runtime/` stands in for the patched `runtime` package: loading and generating are `sleep` processes
 (`STUB_LOAD_S`, `STUB_CLIP_S`), each clip is a small ffmpeg test pattern in the requested format and length, and a

@@ -522,11 +522,44 @@ class SeedText(PageTest):
         self.page.wait_for_timeout(500)
         self.assertEqual(self.page.eval_on_selector_all(".job", "els => els.length"), cards)
         self.assertFalse(self.page.is_visible("#undo"))
-        self.assertEqual(self.page.get_attribute(f"{card} .seedv", "tabindex"), "0")   # still a Tab stop
         self.page.fill("#seed", "")
         self.page.click(f"{card} .seedv")
         self.page.drag_and_drop(f"{card} .seedv", "#seed")                  # the selected number dragged into the form
         self.assertEqual(self.page.input_value("#seed"), "2034940401")
+
+    def test_after_a_click_keyboard_focus_moves_on_as_from_text(self):
+        card = self.finished()
+        self.page.click(f"{card} .seedv")
+        self.page.keyboard.press("Shift+Tab")                               # not back onto the clicked seed
+        self.assertFalse(self.page.evaluate("document.activeElement.classList.contains('seedv')"))
+        self.assertEqual(self.page.get_attribute(f"{card} .seedv", "tabindex"), "0")   # a Tab stop again
+
+    def test_a_touch_tap_neither_focuses_the_seed_nor_drops_a_selection(self):
+        # Chromium (touch through CDP): a tap's mouse events come when the finger lifts, here 80 ms later
+        try:
+            browser = self.pw.chromium.launch()
+        except Exception:
+            self.skipTest("needs Playwright's Chromium")
+        try:
+            card = self.finished(prompt="a red fox runs through snow")
+            ctx = browser.new_context(has_touch=True, viewport={"width": 1280, "height": 900})
+            page = ctx.new_page()
+            page.goto(self.studio.url + "/")
+            page.wait_for_selector(f"{card} video")
+            box = page.locator(f"{card} .seedv").bounding_box()
+            point = {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
+            whole = page.evaluate(f"""() => {{ const c = document.querySelector('{card}'), r = document.createRange();
+                r.setStart(c.querySelector('.p').firstChild, 0); r.setEnd(c.querySelector('.seedv').firstChild, 10);
+                getSelection().removeAllRanges(); getSelection().addRange(r); return getSelection().toString(); }}""")
+            cdp = ctx.new_cdp_session(page)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [point]})
+            page.wait_for_timeout(80)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+            page.wait_for_timeout(300)
+            self.assertFalse(page.evaluate("document.activeElement.classList.contains('seedv')"))
+            self.assertEqual(page.evaluate("getSelection().toString()"), whole)
+        finally:
+            browser.close()
 
     def test_the_seed_is_readable(self):
         card = self.finished()
