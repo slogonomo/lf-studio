@@ -432,5 +432,36 @@ class RemixSeed(PageTest):
         self.assertEqual(int(self.generate_from_page(a)["seed"]), 777)
 
 
+class SeedText(PageTest):
+    """#15: the seed is plain text next to the time; Remix, Download and Delete share one row."""
+
+    def test_seed_in_the_info_line_and_one_row_of_buttons(self):
+        ok = self.studio.generate(prompt="a long prompt " * 30, seed=2034940401, seconds=10)[1]["id"]
+        bad = self.studio.generate(prompt="STUB_FAIL", seed=2147483646)[1]["id"]
+        self.studio.wait([ok, bad])           # the page was open: the cards were built while queued, then updated
+        self.page.wait_for_selector(f'article[data-id="{ok}"] video')
+        self.page.wait_for_selector(f'article[data-id="{bad}"][data-status="failed"]')
+        for width in (1280, 390, 320):        # 320: the narrowest card (290 px)
+            self.page.set_viewport_size({"width": width, "height": 900})
+            self.page.wait_for_timeout(300)
+            for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", "Delete"]),
+                                       (bad, "2147483646", ["Remix", "Delete"])):
+                card = f'article[data-id="{jid}"]'
+                self.assertRegex(self.page.inner_text(f"{card} .info"), rf"^\d.* · seed {seed}$")
+                self.assertIsNone(self.page.query_selector(f"{card} .reuse-seed"))
+                row = self.page.eval_on_selector_all(
+                    f"{card} .acts > *", "els => els.filter(e => e.offsetWidth).map(e => "
+                                         "[e.textContent.trim(), Math.round(e.getBoundingClientRect().top)])")
+                self.assertEqual([name for name, _ in row], buttons, width)
+                self.assertEqual(len({top for _, top in row}), 1, f"one row at {width} px: {row}")
+
+    def test_a_click_selects_the_seed(self):
+        a = self.studio.generate(seed=2034940401)[1]["id"]
+        self.studio.wait([a])
+        self.page.wait_for_selector(f'article[data-id="{a}"] video')
+        self.page.click(f'article[data-id="{a}"] .seedv')
+        self.assertEqual(self.page.evaluate("getSelection().toString()"), "2034940401")
+
+
 if __name__ == "__main__":
     unittest.main()
