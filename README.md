@@ -64,6 +64,8 @@ the prompt cache with pinned versions, including fixes found on a DGX Spark (tor
 for ltx-kernels, a torchaudio stub for the Qwen image). **A launcher** (`bin/sol-h3-studio`) with memory checks
 and clean shutdown for a terminal, NVIDIA Sync, systemd or
 [spark-switchboard](https://github.com/slogonomo/spark-switchboard). **Bench scripts** (`bench/`).
+**Tests** (`tests/`): the server end to end against a GPU-free stub of the pipeline, and the page in a
+browser; see [AGENTS.md](AGENTS.md).
 
 ## Deviations from NVIDIA's validated recipe
 
