@@ -156,7 +156,7 @@ def close_session(reason):
         except Exception:
             traceback.print_exc()
     session.update(pipeline=None, key=None, state="idle", since=time.time(), loading_key=None, preloading=False,
-                   takeover_until=None)
+                   takeover_until=None, load_eta=None, warm_s=None)
 
 
 def run_job(job):
@@ -269,9 +269,10 @@ def run_preload(key, case):
     # warm-up); waiting is done at L + W, W being a clip with the models loaded. So taking over wins while t < W - 5.
     # Before a warm clip of this setting has been measured: half the expected load time (5 s 16:9 t2va: L ~105-113 s,
     # W ~65 s).
-    warm = warm_time(key)
+    # load_eta and warm_s let the page say when a clip submitted now would be ready (both ways)
+    warm, eta = warm_time(key), load_eta(key)
     session.update(pipeline=p, state="loading", since=time.time(), loading_key=key, preloading=True,
-                   takeover_until=time.time() + (warm - 5 if warm else load_eta(key) / 2))
+                   takeover_until=time.time() + (warm - 5 if warm else eta / 2), load_eta=eta, warm_s=warm)
     t0 = time.time()
     try:
         p.start(case)
@@ -284,7 +285,7 @@ def run_preload(key, case):
         aborted = not session.get("preloading")
         if not aborted:
             session.update(key=key, state="ready", since=time.time(), loading_key=None, preloading=False,
-                           takeover_until=None)
+                           takeover_until=None, load_eta=None, warm_s=None)
     if aborted:                            # aborted just as it finished: its workers got SIGTERM
         close_session("preload stopped")
         return
@@ -458,7 +459,7 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, {"now": time.time(), "tasks_ready": ready_tasks(),
                                        "session": {k: session.get(k) for k in
                                                    ("key", "state", "since", "loading_key", "preloading",
-                                                    "takeover_until")},
+                                                    "takeover_until", "load_eta", "warm_s")},
                                        "jobs": list(reversed(jobs[-50:]))})
         m = re.fullmatch(r"/poster/([0-9a-f]{32})", path)
         if m:
