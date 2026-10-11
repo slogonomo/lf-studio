@@ -96,6 +96,11 @@ button,input,select,textarea{font:inherit;color:inherit}
   font-size:15px;color:var(--mut);cursor:pointer;display:none;padding:0}
 .drop .clear:hover{color:var(--bad)}
 .drop.has .clear{display:block}
+.drop .thumbs .kept{outline:1.5px solid color-mix(in srgb,var(--acc) 55%,transparent);outline-offset:1px}
+.drop .keptw{position:relative;display:inline-flex}
+.drop .keptw .x{position:absolute;top:-6px;right:-6px;width:19px;height:19px;border-radius:50%;border:1px solid var(--line2);background:var(--panel);
+  color:var(--mut);font-size:13px;line-height:15px;padding:0;cursor:pointer}
+.drop .keptw .x:hover{color:var(--bad)}
 .drop .ph b{display:block;color:var(--fg);font-size:13px;margin-bottom:2px}
 .drop .ph svg{display:block;margin:0 auto 5px;color:var(--faint)}
 .drop.has .ph{display:none}
@@ -348,18 +353,32 @@ const rnd=()=>Math.floor(Math.random()*2147483647);
 $('roll').onclick=()=>{seed.value=rnd();store.set('seed',seed.value);};
 modeUI();resUI();
 
-// drop zones: previews for what's attached; drag-and-drop fills the native input, so the form posts it as before
-document.querySelectorAll('.drop').forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs');
-  const show=()=>{th.querySelectorAll('[data-url]').forEach(el=>URL.revokeObjectURL(el.dataset.url));th.textContent='';
-    const files=[...inp.files];z.classList.toggle('has',files.length>0);
-    files.forEach(f=>{let el;const url=URL.createObjectURL(f);
-      if(f.type.startsWith('image/')){el=document.createElement('img');el.src=url;el.alt=f.name;}
-      else if(f.type.startsWith('video/')){el=document.createElement('video');el.src=url;el.muted=true;el.playsInline=true;el.loop=true;el.autoplay=true;}
-      else{el=document.createElement('span');el.className='chipf';el.textContent='♪ '+f.name;URL.revokeObjectURL(url);th.append(el);return;}
-      el.dataset.url=url;el.title=f.name;th.append(el);});};
+// drop zones: previews for what's attached; drag-and-drop fills the native input, so the form posts it as before.
+// After Remix a zone also holds the remixed clip's files (z.kept, served by /input/...), shown first: they are sent
+// as remix_from + keep (zone:index), and the server reuses them. Each has its own ×; the zone's × clears all. In a
+// one-file zone (a keyframe) a new file replaces the kept one; in a reference zone new files come after them.
+let remixFrom=null,remixSeq=0;
+const zones=[...document.querySelectorAll('.drop')];
+zones.forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs');z.kept=[];
+  const thumb=(kind,src,name)=>{let el;
+    if(kind==='image'){el=document.createElement('img');el.src=src;el.alt=name;}
+    else if(kind==='video'){el=document.createElement('video');el.src=src;el.muted=true;el.playsInline=true;el.loop=true;el.autoplay=true;}
+    else{el=document.createElement('span');el.className='chipf';el.textContent='♪ '+name;}
+    el.title=name;return el;};
+  const show=z.show=()=>{th.querySelectorAll('[data-url]').forEach(el=>URL.revokeObjectURL(el.dataset.url));th.textContent='';
+    const files=[...inp.files];if(files.length&&!inp.multiple)z.kept=[];
+    z.classList.toggle('has',files.length>0||z.kept.length>0);
+    const kind=inp.accept.split('/')[0];
+    z.kept.forEach((k,i)=>{const w=document.createElement('span');w.className='keptw';
+      const el=thumb(kind,k.url,k.name);el.classList.add('kept');el.title=k.name+' (from the remixed clip)';
+      const x=document.createElement('button');x.type='button';x.className='x';x.textContent='×';x.title='Remove '+k.name;
+      x.addEventListener('click',e=>{e.stopPropagation();z.kept.splice(i,1);show();});
+      w.append(el,x);th.append(w);});
+    files.forEach(f=>{const kind=f.type.split('/')[0];if(kind!=='image'&&kind!=='video'){th.append(thumb('audio','',f.name));return;}
+      const url=URL.createObjectURL(f),el=thumb(kind,url,f.name);el.dataset.url=url;th.append(el);});};
   z.addEventListener('click',e=>{if(!e.target.closest('.clear'))inp.click();});
   z.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click();}});
-  z.querySelector('.clear').addEventListener('click',e=>{e.stopPropagation();inp.value='';show();});
+  z.querySelector('.clear').addEventListener('click',e=>{e.stopPropagation();inp.value='';z.kept=[];show();});
   inp.addEventListener('click',e=>e.stopPropagation());
   inp.addEventListener('change',show);
   ['dragenter','dragover'].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.add('over');}));
@@ -397,7 +416,9 @@ form.addEventListener('submit',async e=>{e.preventDefault();$('err').textContent
   if(!prompt.value.trim()){$('err').textContent='Write a prompt first (or press Example).';prompt.focus();return;}
   if(autoroll.checked){seed.value=rnd();store.set('seed',seed.value);}
   const go=$('go');go.disabled=true;
-  try{const r=await fetch('/api/generate',{method:'POST',body:new FormData(form)});const j=await r.json();
+  const fd=new FormData(form),keep=zones.flatMap(z=>z.kept.map(k=>`${z.querySelector('input').name}:${k.index}`));
+  if(remixFrom&&keep.length){fd.append('remix_from',remixFrom);fd.append('keep',keep.join(','));}
+  try{const r=await fetch('/api/generate',{method:'POST',body:fd});const j=await r.json();
     if(!r.ok)$('err').textContent=j.error||'failed';else toast(`Queued · seed ${seed.value}`);}
   catch(err){$('err').textContent='Could not reach the server: '+err;}
   go.disabled=false;poll();});
@@ -413,7 +434,7 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   body.innerHTML=`<div class="tags"><span class="st"></span><span class="tag"></span><span class="tag"></span><span class="tag"></span></div>
    <div class="p" title="Click to expand"></div><div class="info"></div><div class="errtxt"></div>
    <div class="acts"><span class="tag">seed <span class="seedv"></span></span><button type="button" class="act reuse-seed" title="Put this seed in the form">Use seed</button>
-   <button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt and seed">Remix</button><span class="dl"></span></div>`;
+   <button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt, seed and input files">Remix</button><span class="dl"></span></div>`;
   const t=body.querySelectorAll('.tags .tag');t[0].textContent=TASK[j.task]||j.task;t[1].textContent=FMT[j.orientation]||j.orientation;t[2].textContent=`${j.seconds||5} s`;
   const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
   body.querySelector('.seedv').textContent=j.seed;
@@ -421,8 +442,16 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   body.querySelector('.reuse-all').onclick=()=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
     prompt.value=j.prompt;seed.value=j.seed;autoroll.checked=false;
     [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed],['autoroll','0']].forEach(([k,v])=>store.set(k,v));
-    modeUI();updateGo();window.scrollTo({top:0,behavior:'smooth'});
-    $('err').textContent=j.task!=='t2va'?'Settings loaded - attach the image/video/audio files again.':'';toast('Settings loaded');};
+    modeUI();updateGo();window.scrollTo({top:0,behavior:'smooth'});$('err').textContent='';
+    zones.forEach(z=>{z.querySelector('input').value='';z.kept=[];z.show();});remixFrom=null;const my=++remixSeq;
+    if(j.task==='t2va'){toast('Settings loaded');return;}
+    // the clip's input files go back into the form (the server reuses them, nothing is uploaded again); a reply
+    // for an earlier Remix click is dropped
+    fetch('/api/inputs/'+j.id,{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(x=>{if(my!==remixSeq)return;remixFrom=j.id;
+      zones.forEach(z=>{z.kept=x.inputs[z.querySelector('input').name]||[];z.show();});
+      if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
+      toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
+    .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
   d.append(media,body);return d;}
 function setText(el,t){if(el.textContent!==t)el.textContent=t;}
 function render(){const s=state.session,k=s.key,t=now();

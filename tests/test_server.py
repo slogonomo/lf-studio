@@ -6,10 +6,12 @@ library only)
 import json
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 import zlib
 from pathlib import Path
 
@@ -106,6 +108,102 @@ class Basics(StudioTest):
         with self.assertRaises(urllib.error.HTTPError) as e:
             urllib.request.urlopen(req)
         self.assertEqual(e.exception.code, 403)
+
+
+def mp4(seconds=3):
+    """A small test video with sound (reference videos must be at least 2 s)."""
+    out = Path(tempfile.mkdtemp(prefix="sol-h3-mp4-")) / "ref.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s=320x180:r=24:d={seconds}", "-f",
+                    "lavfi", "-i", f"sine=duration={seconds}", "-shortest", "-pix_fmt", "yuv420p", str(out)], check=True)
+    data = out.read_bytes()
+    shutil.rmtree(out.parent)
+    return data
+
+
+class Remix(StudioTest):
+    """#1: Remix reuses the clip's input files (hardlinked into the new job's directory), in their order."""
+
+    def test_fl2va_inputs_reused(self):
+        a = self.generate(task="fl2va", files={"first_frame": [("first.png", png())], "last_frame": [("last.png", png(40))]})
+        src = self.studio.wait([a])[0]
+        code, body = self.studio.post("/api/generate", dict(task="fl2va", orientation="landscape", seconds=5,
+                                                              prompt="again", seed=3, remix_from=a,
+                                                              keep="first_frame:0,last_frame:0"))
+        self.assertEqual(code, 200, body)
+        job = self.studio.wait([body["id"]])[0]
+        self.assertEqual(job["status"], "done", job.get("error"))
+        for key in ("first_frame", "last_frame"):
+            new, old = Path(job[key]), Path(src[key])
+            self.assertEqual(new.parent.name, body["id"])                      # in the new job's own directory
+            self.assertEqual(new.read_bytes(), old.read_bytes())
+            self.assertEqual(new.stat().st_ino, old.stat().st_ino)             # a hardlink, not a copy
+
+    def test_ref2va_order_and_normalized_video_kept(self):
+        a = self.generate(task="ref2va", files={"ref_images": [("one.png", png()), ("two.png", png(48))],
+                                                 "ref_videos": [("clip.mp4", mp4())],
+                                                 "ref_audio": [("voice.wav", b"RIFF0000WAVEfmt ")]})
+        src = self.studio.wait([a])[0]
+        self.assertEqual(src["status"], "done", src.get("error"))
+        code, inputs = self.studio.post("/api/generate", dict(task="ref2va", prompt="again", seed=4, remix_from=a,
+                                                                keep="ref_images:0,ref_images:1,ref_videos:0,"
+                                                                     "ref_audio:0"))
+        self.assertEqual(code, 200, inputs)
+        job = self.studio.wait([inputs["id"]])[0]
+        names = [(r["type"], Path(r["path"]).name) for r in job["references"]]
+        self.assertEqual(names, [("image", "one.png"), ("image", "two.png"), ("video", "clip_ref.mp4"),
+                                 ("audio", "voice.wav")])                       # same order, video not re-normalized
+
+    def test_reference_zone_partly_missing_kept_one_by_one_and_new_files_after(self):
+        a = self.generate(task="ref2va", files={"ref_images": [("one.png", png()), ("two.png", png(48)),
+                                                                ("three.png", png(56))]})
+        src = self.studio.wait([a])[0]
+        Path(src["references"][1]["path"]).unlink()                            # two.png is gone
+        listing = json.loads(self.studio.get(f"/api/inputs/{a}")[2])
+        self.assertEqual([(i["name"], i["index"]) for i in listing["inputs"]["ref_images"]],
+                         [("one.png", 0), ("three.png", 2)])
+        self.assertEqual(listing["missing"], ["two.png"])
+        jid = self.generate(task="ref2va", remix_from=a, keep="ref_images:2,ref_images:0",
+                            files={"ref_images": [("new.png", png(20))]})
+        job = self.studio.wait([jid])[0]
+        self.assertEqual([Path(r["path"]).name for r in job["references"]], ["three.png", "one.png", "new.png"])
+        code, body = self.studio.generate(task="ref2va", remix_from=a, keep="ref_images:7")
+        self.assertEqual(code, 400)
+        self.assertIn("fewer files", body["error"])
+
+    def test_new_files_replace_a_kept_zone_and_unlisted_zones_are_dropped(self):
+        a = self.generate(task="fl2va", files={"first_frame": [("first.png", png())], "last_frame": [("last.png", png())]})
+        self.studio.wait([a])
+        jid = self.generate(task="fl2va", remix_from=a, keep="first_frame:0",
+                            files={"first_frame": [("new.png", png(20))]})
+        job = self.studio.wait([jid])[0]
+        self.assertEqual(Path(job["first_frame"]).name, "new.png")
+        self.assertNotIn("last_frame", job)                                     # not in keep: not reused
+
+    def test_inputs_listing_serving_and_missing(self):
+        a = self.generate(task="fl2va", files={"first_frame": [("first.png", png())], "last_frame": [("last.png", png())]})
+        src = self.studio.wait([a])[0]
+        listing = json.loads(self.studio.get(f"/api/inputs/{a}")[2])
+        self.assertEqual(listing["missing"], [])
+        self.assertEqual([i["name"] for i in listing["inputs"]["first_frame"]], ["first.png"])
+        code, headers, data = self.studio.get(listing["inputs"]["first_frame"][0]["url"])
+        self.assertEqual((code, headers["Content-Type"], data), (200, "image/png", Path(src["first_frame"]).read_bytes()))
+        Path(src["last_frame"]).unlink()
+        listing = json.loads(self.studio.get(f"/api/inputs/{a}")[2])
+        self.assertEqual((listing["missing"], "last_frame" in listing["inputs"]), (["last.png"], False))
+        code, body = self.studio.generate(task="fl2va", remix_from=a, keep="first_frame:0,last_frame:0")
+        self.assertEqual(code, 400)                                         # a listed file vanished since
+        self.assertIn("last.png", body["error"])
+        self.assertEqual(len(list((self.studio.runtime / "inputs" / "webui").iterdir())), 1)   # refused: no dir left
+        for path in (f"/input/{a}/last_frame/0", f"/input/{a}/first_frame/1", f"/input/{a}/nonsense/0",
+                     f"/api/inputs/{'f' * 32}"):
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                self.studio.get(path)
+            self.assertEqual(e.exception.code, 404, path)
+
+    def test_unknown_remix_source(self):
+        code, body = self.studio.generate(task="fl2va", remix_from="a" * 32, keep="first_frame:0")
+        self.assertEqual(code, 400)
+        self.assertIn("no longer in the list", body["error"])
 
 
 class WarmUp(StudioTest):
