@@ -168,4 +168,6 @@ choice. Either way nothing is lost by submitting early, and the Generate button 
 clip would be ready ("replaces the warm-up" or "after the warm-up", from the recorded load and clip times). A clip
 for other settings stops the warm-up too, unless a queued clip is waiting for it. "Load selected now" starts the
 same kind of warm-up for the selected settings on request (with the prompt and inputs of the newest clip of that
-mode, or a built-in prompt for Text), so the same rules apply to it.
+mode, or a built-in prompt for Text), so the same rules apply to it. If other models are loaded, they are closed
+first (~40 s; the status shows "switching to ..."); a clip or Unload in that time cancels the request, and the clip
+loads its own settings right after the close.

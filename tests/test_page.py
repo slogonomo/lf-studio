@@ -282,6 +282,7 @@ class LoadSelectedNow(PageTest):
     load_s, preload = 6, True
 
     def seed(self):
+        self.studio.env["STUB_CLOSE_S"] = "2"
         (self.studio.state_dir / "jobs.json").write_text(json.dumps([finished_job()]))
 
     def test_link_switches_the_warm_up(self):
@@ -290,11 +291,23 @@ class LoadSelectedNow(PageTest):
         self.assertFalse(self.page.is_visible("#reloadnote"))               # selection = what's warming up
         self.pick("orientation", "portrait")
         self.page.wait_for_selector("#loadnow", state="visible")
+        self.page.wait_for_timeout(2500)                                     # a selection change alone loads nothing
+        self.assertEqual(self.studio.state()["session"]["loading_key"], ["t2va", "landscape", 5])
+        self.assertNotIn("load requested", self.studio.log.read_text())
         self.assertIn("Warming up: Text · 16:9 · 5 s. Selected: Text · 9:16 · 5 s.", self.page.inner_text("#reloadnote"))
         self.page.click("#loadnow")
-        self.page.wait_for_function("document.getElementById('loaded').textContent.includes('9:16')")
+        self.page.wait_for_function("document.getElementById('loaded').textContent.includes('warming up Text · 9:16')")
         self.page.wait_for_selector("#reloadnote", state="hidden")
         self.assertIn("ready in", self.go_text())                            # the warm-up label (#4) applies
+
+    def test_switch_shows_in_the_status(self):
+        self.studio.wait_for(lambda s: s["session"]["state"] == "ready", timeout=30)
+        self.pick("seconds", "3")
+        self.page.click("#loadnow")
+        self.page.wait_for_function("document.getElementById('loaded').textContent.startsWith('switching to Text · 16:9 · 3 s')")
+        self.assertFalse(self.page.is_visible("#loadnow"))
+        self.assertIn("loads these models first", self.go_text())
+        self.page.wait_for_function("document.getElementById('loaded').textContent.includes('warming up')")
 
     def test_no_link_while_a_clip_runs(self):
         self.studio.wait_for(lambda s: s["session"]["state"] == "ready", timeout=30)

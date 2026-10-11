@@ -4,6 +4,9 @@ Loading and generating are `sleep` processes in their own sessions, like the rea
 them (a stopped warm-up). Each clip is a small ffmpeg test pattern with a tone, with the requested format and length.
   STUB_LOAD_S   seconds the loading pass waits before its clip (default 3)
   STUB_CLIP_S   seconds per clip once loaded (default 2)
+  STUB_CLOSE_S  seconds close() takes (default 0; the real pipeline needs ~40 s)
+  Each pipeline writes STARTED into its root when start() begins and CLOSED when close() ends, so a test can check
+  that no started pipeline was left open.
   A prompt containing STUB_FAIL makes the request fail as if a worker died.
 """
 import json
@@ -50,6 +53,7 @@ class Pipeline:
                 "stage1_s": 0.0, "stage2_s": 0.0}
 
     def start(self, case, deliver=False):
+        (self.root / "STARTED").touch()
         started = time.time()
         self._work(float(os.environ.get("STUB_LOAD_S", "3")))
         self.started = True
@@ -63,4 +67,6 @@ class Pipeline:
         return self._row(case, self.root / case["case_id"], started)
 
     def close(self):
+        time.sleep(float(os.environ.get("STUB_CLOSE_S", "0")))
         self.started = False
+        (self.root / "CLOSED").touch()

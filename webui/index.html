@@ -405,7 +405,7 @@ const active=j=>j.status!=='done'&&j.status!=='failed';
 // the mode/format/length that will be loaded once everything already queued has run
 function effectiveKey(){const q=state.jobs.filter(active);
   if(q.length){const last=q.reduce((a,b)=>a.created>b.created?a:b);return [last.task,last.orientation,last.seconds||5];}
-  return state.session.preloading?state.session.loading_key:state.session.key;}
+  return state.session.switching_to||(state.session.preloading?state.session.loading_key:state.session.key);}
 function updateGo(){const k=effectiveKey(),want=[val('task'),val('orientation'),+val('seconds')],go=$('go');
   const same=!!k&&k[0]===want[0]&&k[1]===want[1]&&(k[2]||5)===want[2],eta=ETA[want[2]]||60;
   go.classList.toggle('reload',!same);
@@ -416,21 +416,27 @@ function updateGo(){const k=effectiveKey(),want=[val('task'),val('orientation'),
   // unless a queued job waits for it.
   const s=state.session,L=s.load_eta||240,W=s.warm_s||eta,takeover=warm&&now()<(s.takeover_until||0);
   const ready=takeover?L+5:Math.max(0,s.since+L-now())+W;
-  const html=warm?`Generate <span class="eta">· ${takeover?'replaces the warm-up':'after the warm-up'} · ready in ~${fmtS(ready)}</span>`:same?`Generate <span class="eta">· ~${fmtS(eta)}</span>`:`Generate <span class="eta">· ${k?(state.session.preloading&&!state.jobs.some(active)?'stops the warm-up, loads':'reloads'):'loads'} the models first</span>`;
+  // while models are closed for a requested load (switching_to, ~40 s) a clip replaces that request and loads its
+  // own settings right after the close
+  const switching=!!s.switching_to&&!state.jobs.some(active);
+  const html=switching?`Generate <span class="eta">· ${same?'loads these models':'replaces the requested load, loads the models'} first</span>`
+    :warm?`Generate <span class="eta">· ${takeover?'replaces the warm-up':'after the warm-up'} · ready in ~${fmtS(ready)}</span>`:same?`Generate <span class="eta">· ~${fmtS(eta)}</span>`:`Generate <span class="eta">· ${k?(state.session.preloading&&!state.jobs.some(active)?'stops the warm-up, loads':'reloads'):'loads'} the models first</span>`;
   if(go.innerHTML!==html)go.innerHTML=html;
   setText($('lenout'),`~${fmtS(eta)} per clip`);
   const noManifest=Array.isArray(state.tasks_ready)&&!state.tasks_ready.includes(want[0]),busy=state.jobs.some(active);
   // "Load selected now" (#3): only on request, never on a selection change alone (clicking through the options
   // would start and stop loads); not while clips are queued or running, and only for modes the server can warm up
   const canLoad=!noManifest&&!same&&!busy&&(state.warmable||[]).includes(want[0])&&now()>loadAsked;
+  if(loadAsked&&s.switching_to)loadAsked=0;      // the server shows the request: the link follows the state again
   const note=noManifest?`The server has no path manifest for ${TASK[want[0]]} mode (run install/70-manifests.sh).`
     :same?'':!k?(canLoad?'Models not loaded.':'')
-    :`${state.session.preloading&&!busy?'Warming up':'Loaded'}${busy?' after the queue':''}: ${keyText(k)}. Selected: ${keyText(want)}.`;
+    :`${switching?'Switching to':state.session.preloading&&!busy?'Warming up':'Loaded'}${busy?' after the queue':''}: ${keyText(k)}. Selected: ${keyText(want)}.`;
   setText($('reloadtext'),note);$('loadnow').hidden=!canLoad||!note;$('reloadnote').hidden=!note;}
 $('loadnow').onclick=async()=>{const want={task:val('task'),orientation:val('orientation'),seconds:+val('seconds')};
-  loadAsked=now()+5;updateGo();          // hide the link until the server shows the new load
+  loadAsked=now()+20;updateGo();         // hide the link until the server shows the request (or 20 s pass)
   try{const r=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(want)}),x=await r.json();
-    if(!r.ok){$('err').textContent=x.error||'Could not load';loadAsked=0;}else toast(`Loading ${keyText([want.task,want.orientation,want.seconds])}`);}
+    if(!r.ok){$('err').textContent=x.error||'Could not load';loadAsked=0;}
+    else{$('err').textContent='';toast(`Loading ${keyText([want.task,want.orientation,want.seconds])}`);}}
   catch(e){$('err').textContent='Could not reach the server: '+e;loadAsked=0;}
   poll();};
 
@@ -531,8 +537,9 @@ function update(d,j,queue,s,t){
       const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}}
 function render(){const s=state.session,k=s.key,t=now();
   const sState=s.state||'idle',st=$('status');if(st.dataset.s!==sState)st.dataset.s=sState;
-  setText($('loaded'),sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));
-  setText($('loadtimer'),sState==='loading'?clock(t-s.since):'');
+  setText($('loaded'),s.switching_to&&sState!=='loading'?`switching to ${keyText(s.switching_to)}`
+    :sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));
+  setText($('loadtimer'),sState==='loading'||s.switching_to&&sState==='unloading'?clock(t-s.since):'');
   $('unload').hidden=!k&&sState==='idle';
   for(const [id,seq] of gone)if(state.seq>seq)gone.delete(id);          // answered after the delete: server wins
   (state.deleted||[]).forEach(hideCard);                                  // deleted here or in another tab
