@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
-from test_server import finished_job, mp4, png  # noqa: E402
+from test_server import finished_job, history, mp4, png  # noqa: E402
 
 try:
     from playwright.sync_api import sync_playwright
@@ -159,6 +159,62 @@ class RemixInputs(PageTest):
         self.page.wait_for_timeout(300)
         self.assertEqual(self.page.eval_on_selector_all(".thumbs .kept", "els => els.length"), 0)
         self.assertEqual(self.page.evaluate("remixFrom"), None)
+
+
+class Paging(PageTest):
+    """#5: the gallery shows the newest page and loads older clips as you scroll."""
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(history(60)))
+
+    def cards(self):
+        return self.page.eval_on_selector_all("#jobs .job", "els => els.length")
+
+    def test_scroll_loads_older_pages(self):
+        self.assertEqual(self.cards(), 24)
+        self.assertEqual(self.page.inner_text("#count"), "60 clips")
+        for want in (48, 60):
+            self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            self.page.wait_for_function(f"document.querySelectorAll('#jobs .job').length === {want}")
+        self.page.wait_for_function("document.getElementById('more').hidden")
+        created = self.page.eval_on_selector_all("#jobs .job", "els => els.map(e => +e.dataset.created)")
+        self.assertEqual(created, sorted(created, reverse=True))                 # newest first, no duplicates
+        self.assertEqual(len(set(created)), 60)
+        # a new clip goes on top, and nothing is lost or repeated
+        new = self.studio.generate()[1]["id"]
+        self.studio.wait([new])
+        self.page.wait_for_function("document.querySelectorAll('#jobs .job').length === 61")
+        self.page.wait_for_function("document.getElementById('count').textContent === '61 clips'")
+        ids = self.page.eval_on_selector_all("#jobs .job", "els => els.map(e => e.dataset.id)")
+        self.assertEqual((ids[0], len(set(ids))), (new, 61))
+
+    def test_failing_older_pages_are_not_retried_in_a_loop(self):
+        calls = []
+        self.page.route("**/api/jobs*", lambda route: (calls.append(1), route.abort()))
+        self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        self.page.wait_for_timeout(2000)
+        self.assertLessEqual(len(calls), 2)
+        self.assertTrue(self.page.is_visible("#more"))                         # still there to try again
+
+
+class MissedPolls(PageTest):
+    """#5: after a gap in polling, clips that finished meanwhile are updated and the ones in between appear."""
+    load_s, clip_s = 1, 0.1
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(history(30)))
+
+    def test_gap_is_filled(self):
+        first = self.studio.generate(seed=1)[1]["id"]
+        self.page.wait_for_selector(f'article[data-id="{first}"]')
+        self.page.route("**/api/state", lambda route: route.abort())          # the tab sleeps
+        ids = [first] + [self.studio.generate(seed=i)[1]["id"] for i in range(2, 32)]
+        self.studio.wait(ids, timeout=120)
+        self.page.unroute("**/api/state")
+        self.page.wait_for_function("document.querySelectorAll('#jobs .job').length >= 55")
+        self.page.wait_for_function(f"document.querySelector('article[data-id=\"{first}\"]').dataset.status === 'done'")
+        shown = set(self.page.eval_on_selector_all("#jobs .job", "els => els.map(e => e.dataset.id)"))
+        self.assertTrue(set(ids) <= shown, len(set(ids) - shown))
 
 
 if __name__ == "__main__":

@@ -102,6 +102,11 @@ closes the session and loads the models again; the Generate button says so befor
 `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/`. If you prune those, clips that also have a copy in
 `SOLH3_PUBLISH_DIR` keep playing from that copy; others show as missing.
 
+**Where the clip history is.** `$SOLH3_STATE_DIR/jobs.db` (SQLite) holds every clip; the gallery shows the newest
+24 and loads older ones as you scroll. Before 0.2 the history was `jobs.json` (the newest 200 clips; the gallery
+showed 50). 0.2 imports it once, when `jobs.db` does not exist yet, and leaves it as it was, so going back to 0.1
+shows the history as of that import.
+
 ## Stopping
 
 Ctrl-C, SIGTERM or SIGHUP: the server closes its pipeline (up to ~40 s; the launcher waits up to

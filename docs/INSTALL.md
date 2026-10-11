@@ -145,6 +145,10 @@ the patch file you applied (`git -C "$SOLH3_SANA" apply -R <that patch>`) before
 The compile cache is keyed on code and versions, so it stays valid; delete `$SOL_H3_SPARK_RUNTIME_ROOT/cache` to
 start clean.
 
+From 0.1 to 0.2: the first start imports the clip history (`jobs.json`) into `jobs.db` in the same directory
+(see "Where the clip history is" in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#while-it-runs)). Back up
+`$SOLH3_STATE_DIR` first if you want a copy.
+
 ## Uninstall
 
 Stop the studio, then remove `~/sol-h3` (or your `$SOLH3_HOME`), `~/.config/sol-h3-studio`,

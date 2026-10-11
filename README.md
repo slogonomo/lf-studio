@@ -34,7 +34,8 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
   remembered per browser.
 - A queue. Clips appear as cards with a timer and progress, then a player, Remix, Use seed and Download. Remix
   puts the clip's settings, prompt, seed and input files back into the form; the server reuses the files it
-  kept (uploads are stored per clip under `$SOL_H3_SPARK_RUNTIME_ROOT/inputs/webui/`).
+  kept (uploads are stored per clip under `$SOL_H3_SPARK_RUNTIME_ROOT/inputs/webui/`). The gallery keeps
+  every clip and loads older ones as you scroll.
 - The Generate button says when your settings need a model reload; the clip card shows how long the last load took.
 - Warm-up at launch with the settings of your last clip; a clip with those settings submitted early in the warm-up
   takes it over, and the Generate button says when it would be ready. Unload button. Dark and light themes, phone layout.

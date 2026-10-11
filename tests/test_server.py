@@ -206,6 +206,114 @@ class Remix(StudioTest):
         self.assertIn("no longer in the list", body["error"])
 
 
+def history(n, start=1_700_000_000):
+    """n finished jobs, oldest first, one minute apart."""
+    return [finished_job(f"{i:032x}", created=start + 60 * i, seed=i) for i in range(n)]
+
+
+class History(StudioTest):
+    """#5: every job is kept (jobs.db); /api/state carries the active jobs and the newest page, /api/jobs the rest."""
+
+    def seed(self):
+        self.write_state(history(230))                 # more than the old 200-job cap
+
+    def test_import_and_pages(self):
+        self.assertTrue((self.studio.state_dir / "jobs.db").is_file())
+        self.assertEqual(len(json.loads((self.studio.state_dir / "jobs.json").read_text())), 230)   # left as it was
+        st = self.studio.state()
+        self.assertEqual((len(st["jobs"]), st["done"], st["more"]), (24, 230, True))
+        seen = [j["id"] for j in st["jobs"]]
+        self.assertEqual(seen[0], f"{229:032x}")        # newest first
+        before = min(j["created"] for j in st["jobs"])
+        while True:
+            page = json.loads(self.studio.get(f"/api/jobs?before={before}&limit=50")[2])
+            seen += [j["id"] for j in page["jobs"]]
+            if not page["more"]:
+                break
+            before = page["jobs"][-1]["created"]
+        self.assertEqual(seen, [f"{i:032x}" for i in reversed(range(230))])   # every job once, in order
+        for q in ("before=x", "limit=y"):
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                self.studio.get(f"/api/jobs?{q}")
+            self.assertEqual(e.exception.code, 400)
+
+    def test_active_jobs_always_in_state_and_kept_across_restarts(self):
+        jid = self.generate()
+        st = self.studio.wait_for(lambda st: any(j["id"] == jid and j["status"] != "queued" for j in st["jobs"]))
+        self.assertEqual(len(st["jobs"]), 25)           # the running job + the newest 24 finished
+        self.studio.wait([jid])
+        self.studio.stop()
+        self.studio.start()
+        st = self.studio.state()
+        self.assertEqual(st["jobs"][0]["id"], jid)
+        self.assertEqual((st["jobs"][0]["status"], st["done"]), ("done", 231))
+
+    def test_running_job_marked_failed_after_restart(self):
+        jid = self.generate(seconds=8)
+        self.studio.wait_for(lambda st: any(j["id"] == jid and j["status"] != "queued" for j in st["jobs"]))
+        self.studio.proc.kill()                         # no clean shutdown
+        self.studio.proc.wait()
+        self.studio.start()
+        job = self.studio.job(jid)
+        self.assertEqual((job["status"], job["error"]), ("failed", "server restarted"))
+
+
+class HistoryImport(StudioTest):
+    """#5: the jobs.json import copes with odd entries, is retried after a failure and happens only once."""
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text("[{ not json")
+
+    def test_failed_import_retried_then_done_once(self):
+        self.assertIn("could not import", self.studio.log.read_text())
+        self.assertEqual(self.studio.state()["done"], 0)
+        jid = self.generate()                                                 # a clip made in this run is kept
+        self.studio.wait([jid])
+        self.studio.stop()
+        odd = [finished_job("1" * 32, created=50), finished_job("2" * 32, created="abc"),
+               finished_job("3" * 32, created=None), finished_job("4" * 32, created=50),
+               dict(finished_job("5" * 32), created=float("nan"))]
+        odd[-1].pop("created")
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(odd + [{"no": "id"}]))
+        self.studio.start()
+        self.assertIn("imported 5 jobs", self.studio.log.read_text())
+        jobs = sorted(self.studio.all_jobs().values(), key=lambda j: j["created"])
+        self.assertEqual(len(jobs), 6)
+        created = [j["created"] for j in jobs]
+        self.assertTrue(all(a < b for a, b in zip(created, created[1:])), created)   # strictly increasing
+        self.studio.stop()
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(history(3)))   # changed later: not imported
+        self.studio.start()
+        self.assertEqual(self.studio.state()["done"], 6)
+
+
+class HistoryOrder(StudioTest):
+    """#5: a request that takes longer (a reference video being normalized) is ordered by when it was added, so
+    paging (cursor = 'created') reaches every clip."""
+    load_s, clip_s = 1, 0.1
+
+    def test_slow_upload_does_not_hide_a_clip(self):
+        import threading
+        big = Path(tempfile.mkdtemp(prefix="sol-h3-big-")) / "big.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24:d=12",
+                        "-f", "lavfi", "-i", "sine=duration=12", "-shortest", "-pix_fmt", "yuv420p", str(big)],
+                       check=True)
+        slow = {}
+        t = threading.Thread(target=lambda: slow.update(r=self.studio.generate(
+            task="ref2va", files={"ref_videos": [("big.mp4", big.read_bytes())]})))
+        t.start()
+        time.sleep(0.4)
+        ids = [self.generate(seed=i) for i in range(24)]                     # posted while the video is normalized
+        t.join()
+        shutil.rmtree(big.parent)
+        self.assertEqual(slow["r"][0], 200, slow["r"])
+        ids.append(slow["r"][1]["id"])
+        self.studio.wait(ids, timeout=120)
+        self.assertEqual(set(self.studio.all_jobs()), set(ids))
+        jobs = sorted(self.studio.all_jobs().values(), key=lambda j: j["created"])
+        self.assertEqual(jobs[-1]["id"], slow["r"][1]["id"])                 # added last, so newest
+
+
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
     takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it."""

@@ -150,6 +150,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .ghead span{color:var(--mut);font-size:12.5px}
 #jobs{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;align-items:start}
 .empty{grid-column:1/-1;border:1.5px dashed var(--line2);border-radius:var(--r);padding:56px 20px;text-align:center;color:var(--mut)}
+#more{display:flex;margin:16px auto 0}
 .empty b{display:block;color:var(--fg);font-size:15px;margin-bottom:4px}
 .empty svg{color:var(--acc);margin-bottom:8px}
 .job{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;display:flex;flex-direction:column;animation:rise .3s ease-out}
@@ -284,6 +285,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
   <div class="ghead"><h2>Clips</h2><span id="count"></span></div>
   <div id="jobs"><div class="empty" id="nojobs"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="2.5" y="5" width="15" height="14" rx="2"/><path d="m17.5 10 4-2.5v9l-4-2.5"/></svg>
     <b>No clips yet</b>Write a prompt and press Generate. The first clip also loads the models.</div></div>
+  <button type="button" class="act" id="more" hidden>Show older clips</button>
 </section>
 </div>
 </div>
@@ -454,41 +456,75 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
   d.append(media,body);return d;}
 function setText(el,t){if(el.textContent!==t)el.textContent=t;}
+// every job the page has seen, by id: the poll carries the active ones and the newest page, older pages come from
+// /api/jobs as the gallery scrolls (finished clips don't change, so only polled ones are updated afterwards)
+const known=new Map();let olderMore=null,loadingMore=false,fillingGap=false;
+function insert(j){const box=$('jobs'),d=els[j.id]=card(j);d.dataset.created=j.created;
+  const next=[...box.querySelectorAll('.job')].find(x=>+x.dataset.created<j.created);
+  if(next)box.insertBefore(d,next);else box.append(d);return d;}
+function update(d,j,queue,s,t){
+  if(d.dataset.status!==j.status)d.dataset.status=j.status;
+  const loading=/load|retry|starting/.test(j.status),cls=j.status==='done'?'ok':j.status==='failed'?'bad':'wait',stEl=d.querySelector('.st');
+  if(stEl.className!=='st '+cls)stEl.className='st '+cls;
+  setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='queued'?'Queued':loading?'Loading models':'Generating');
+  const when=stamp(j.created);
+  setText(d.querySelector('.info'),j.e2e_s?`${when} · ${j.includes_model_load?`${fmtS(j.e2e_s)} incl. model load`:j.cold_start_s?`made in ${fmtS(j.e2e_s)} · +${fmtS(j.cold_start_s)} model load`:`made in ${fmtS(j.e2e_s)}`}`:when);
+  setText(d.querySelector('.errtxt'),j.error||(j.first_error?'Recovered after: '+j.first_error:''));
+  const media=d.querySelector('.media');
+  if(j.status==='done'&&!media.dataset.done){media.dataset.done='1';            // the <video> is created exactly once
+    media.textContent='';const v=document.createElement('video');v.controls=true;v.preload='none';v.playsInline=true;
+    v.poster='/poster/'+j.id;v.src='/video/'+j.id;media.append(v);
+    const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.download=`sol-h3_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;a.textContent='Download';
+    d.querySelector('.dl').replaceWith(a);}
+  else if(!media.dataset.done){const ph=media.querySelector('.ph2'),big=ph.querySelector('.big'),small=ph.querySelector('.small'),bar=ph.querySelector('.bar');
+    if(j.status==='failed'){setText(big,'Failed');setText(small,'details below');bar.hidden=true;}
+    else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading?'starts after the warm-up':'next up');bar.hidden=true;}
+    else{bar.hidden=false;const t0=j.phase_since||j.started||j.created,el=t-t0,eta=loading?(j.load_eta||240):(ETA[j.seconds||5]||60);
+      setText(big,clock(el));
+      setText(small,loading?(j.status.startsWith('retry')?'Worker error - reloading the models':`Loading models, then your clip · last time ${fmtS(eta)}`)
+                           :`Generating · usually ~${fmtS(eta)}`);
+      const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}}
 function render(){const s=state.session,k=s.key,t=now();
   const sState=s.state||'idle',st=$('status');if(st.dataset.s!==sState)st.dataset.s=sState;
   setText($('loaded'),sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));
   setText($('loadtimer'),sState==='loading'?clock(t-s.since):'');
   $('unload').hidden=!k&&sState==='idle';
-  const box=$('jobs');if(state.jobs.length&&$('nojobs'))$('nojobs').remove();
-  const done=state.jobs.filter(j=>j.status==='done').length,run=state.jobs.filter(active).length;
-  setText($('count'),state.jobs.length?`${done} clip${done===1?'':'s'}${run?` · ${run} in progress`:''}`:'');
-  const ordered=[...state.jobs].sort((a,b)=>b.created-a.created);
+  const had=[...known.values()];                     // what the page had before this poll
+  state.jobs.forEach(j=>known.set(j.id,j));
+  if(known.size&&$('nojobs'))$('nojobs').remove();
+  const done=state.done??state.jobs.filter(j=>j.status==='done').length,run=state.jobs.filter(active).length;
+  setText($('count'),known.size?`${done} clip${done===1?'':'s'}${run?` · ${run} in progress`:''}`:'');
   const queue=state.jobs.filter(j=>j.status==='queued').sort((a,b)=>a.created-b.created);
-  ordered.forEach((j,i)=>{let d=els[j.id];
-    if(!d){d=els[j.id]=card(j);const prev=ordered.slice(0,i).map(x=>els[x.id]).filter(Boolean).pop();if(prev)prev.after(d);else box.prepend(d);}
-    if(d.dataset.status!==j.status)d.dataset.status=j.status;
-    const loading=/load|retry|starting/.test(j.status),cls=j.status==='done'?'ok':j.status==='failed'?'bad':'wait',stEl=d.querySelector('.st');
-    if(stEl.className!=='st '+cls)stEl.className='st '+cls;
-    setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='queued'?'Queued':loading?'Loading models':'Generating');
-    const when=stamp(j.created);
-    setText(d.querySelector('.info'),j.e2e_s?`${when} · ${j.includes_model_load?`${fmtS(j.e2e_s)} incl. model load`:j.cold_start_s?`made in ${fmtS(j.e2e_s)} · +${fmtS(j.cold_start_s)} model load`:`made in ${fmtS(j.e2e_s)}`}`:when);
-    setText(d.querySelector('.errtxt'),j.error||(j.first_error?'Recovered after: '+j.first_error:''));
-    const media=d.querySelector('.media');
-    if(j.status==='done'&&!media.dataset.done){media.dataset.done='1';            // the <video> is created exactly once
-      media.textContent='';const v=document.createElement('video');v.controls=true;v.preload='none';v.playsInline=true;
-      v.poster='/poster/'+j.id;v.src='/video/'+j.id;media.append(v);
-      const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.download=`sol-h3_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;a.textContent='Download';
-      d.querySelector('.dl').replaceWith(a);}
-    else if(!media.dataset.done){const ph=media.querySelector('.ph2'),big=ph.querySelector('.big'),small=ph.querySelector('.small'),bar=ph.querySelector('.bar');
-      if(j.status==='failed'){setText(big,'Failed');setText(small,'details below');bar.hidden=true;}
-      else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading?'starts after the warm-up':'next up');bar.hidden=true;}
-      else{bar.hidden=false;const t0=j.phase_since||j.started||j.created,el=t-t0,eta=loading?(j.load_eta||240):(ETA[j.seconds||5]||60);
-        setText(big,clock(el));
-        setText(small,loading?(j.status.startsWith('retry')?'Worker error - reloading the models':`Loading models, then your clip · last time ${fmtS(eta)}`)
-                             :`Generating · usually ~${fmtS(eta)}`);
-        const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}
-  });
+  state.jobs.forEach(j=>update(els[j.id]||insert(j),j,queue,s,t));
+  $('more').hidden=!(olderMore??state.more);
+  // After missed polls (a sleeping laptop, a throttled background tab) clips that finished meanwhile can have left
+  // the poll window while the page still shows them running, and clips between the window and what the page had are
+  // missing: fetch that stretch.
+  const ids=new Set(state.jobs.map(j=>j.id)),stale=had.filter(j=>active(j)&&!ids.has(j.id));
+  const newestHad=Math.max(-Infinity,...had.filter(j=>!active(j)).map(j=>j.created));
+  const joined=!state.more||!had.length||state.jobs.some(j=>!active(j)&&j.created<=newestHad);
+  if(!fillingGap&&state.jobs.length&&(stale.length||!joined))fillGap(Math.min(newestHad,...stale.map(j=>j.created)));
   updateGo();}
+async function fillGap(target){fillingGap=true;
+  try{let before=Math.min(...state.jobs.map(j=>j.created));
+    for(let n=0;n<50;n++){const r=await fetch(`/api/jobs?before=${before}&limit=100`,{cache:'no-store'});if(!r.ok)break;
+      const x=await r.json();if(!Array.isArray(x.jobs)||!x.jobs.length)break;
+      x.jobs.forEach(j=>{known.set(j.id,j);update(els[j.id]||insert(j),j,[],state.session,now());});
+      before=x.jobs[x.jobs.length-1].created;if(!x.more||before<=target)break;}}
+  catch(e){}
+  fillingGap=false;}
+async function loadMore(){const more=$('more');if(loadingMore||more.hidden)return;loadingMore=true;let got=false;
+  try{const before=Math.min(...[...known.values()].map(j=>j.created));
+    const r=await fetch(`/api/jobs?before=${before}&limit=24`,{cache:'no-store'});if(!r.ok)throw r.status;
+    const x=await r.json();if(!Array.isArray(x.jobs))throw 0;
+    x.jobs.forEach(j=>{if(!known.has(j.id)){known.set(j.id,j);update(insert(j),j,[],state.session,now());}});
+    olderMore=x.more;more.hidden=!x.more;got=true;}
+  catch(e){}                                  // the button stays for another try
+  loadingMore=false;
+  // keep going while the end of the list is on screen (a tall window shows more than one page)
+  if(got&&!more.hidden&&more.getBoundingClientRect().top<innerHeight+600)setTimeout(loadMore,50);}
+$('more').onclick=loadMore;
+if('IntersectionObserver' in window)new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))loadMore();},{rootMargin:'600px'}).observe($('more'));
 async function poll(){try{const r=await fetch('/api/state',{cache:'no-store'});state=await r.json();if(state.now)skew=state.now-Date.now()/1000;render();}catch(e){}}
 poll();setInterval(poll,2000);setInterval(render,1000);
 </script>
