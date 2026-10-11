@@ -277,5 +277,33 @@ class DeleteUndo(PageTest):
         self.page.wait_for_selector(f'article[data-id="{a}"] .del', state="visible")
 
 
+class LoadSelectedNow(PageTest):
+    """#3: the link under Generate loads the selected settings on request."""
+    load_s, preload = 6, True
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([finished_job()]))
+
+    def test_link_switches_the_warm_up(self):
+        self.studio.wait_for(lambda s: s["session"].get("preloading"))
+        self.page.wait_for_timeout(1200)
+        self.assertFalse(self.page.is_visible("#reloadnote"))               # selection = what's warming up
+        self.pick("orientation", "portrait")
+        self.page.wait_for_selector("#loadnow", state="visible")
+        self.assertIn("Warming up: Text · 16:9 · 5 s. Selected: Text · 9:16 · 5 s.", self.page.inner_text("#reloadnote"))
+        self.page.click("#loadnow")
+        self.page.wait_for_function("document.getElementById('loaded').textContent.includes('9:16')")
+        self.page.wait_for_selector("#reloadnote", state="hidden")
+        self.assertIn("ready in", self.go_text())                            # the warm-up label (#4) applies
+
+    def test_no_link_while_a_clip_runs(self):
+        self.studio.wait_for(lambda s: s["session"]["state"] == "ready", timeout=30)
+        self.studio.generate(seconds=8)
+        self.pick("seconds", "10")
+        self.page.wait_for_timeout(2500)
+        self.assertIn("after the queue", self.page.inner_text("#reloadnote"))
+        self.assertFalse(self.page.is_visible("#loadnow"))
+
+
 if __name__ == "__main__":
     unittest.main()

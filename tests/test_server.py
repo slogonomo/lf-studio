@@ -510,6 +510,55 @@ class TrashPurge(Delete):
     test_old_layout_clip_moves_just_its_files = test_refused_request_leaves_no_input_directory = None
 
 
+class LoadSelected(StudioTest):
+    """#3: POST /api/load warms up chosen settings on request: it replaces what is loaded or warming up, never runs
+    while clips are queued or running, and needs an earlier clip of the mode for fl2va/ref2va."""
+    load_s, clip_s, preload = 2, 1, True
+
+    def seed(self):
+        self.write_state([finished_job()])
+
+    def load(self, task="t2va", orientation="portrait", seconds=10):
+        return self.studio.post("/api/load", json_body={"task": task, "orientation": orientation, "seconds": seconds})
+
+    def ready(self, key):
+        return self.studio.wait_for(lambda st: st["session"]["key"] == key and st["session"]["state"] == "ready")
+
+    def test_switch_loaded_settings(self):
+        self.ready(["t2va", "landscape", 5])                                 # the start-up warm-up
+        self.assertEqual(self.load(), (200, {"ok": True}))
+        st = self.ready(["t2va", "portrait", 10])
+        self.assertEqual(st["jobs"][0]["id"], "0" * 32)                      # no job was created for it
+        log = self.studio.log.read_text()
+        self.assertIn("closing session ('t2va', 'landscape', 5)", log)
+        self.assertIn("preloading ('t2va', 'portrait', 10)", log)
+        self.assertEqual(self.load()[1].get("already"), True)               # same settings again: nothing to do
+        jid = self.generate(orientation="portrait", seconds=10)
+        self.assertFalse(self.studio.wait([jid])[0].get("includes_model_load"))   # it used the loaded models
+
+    def test_replaces_a_warm_up_for_other_settings(self):
+        self.studio.wait_for(lambda st: st["session"].get("preloading"))
+        self.assertEqual(self.load()[0], 200)
+        self.ready(["t2va", "portrait", 10])
+        self.assertIn("aborting preload", self.studio.log.read_text())
+
+    def test_refused_while_busy_and_for_modes_without_a_clip(self):
+        self.ready(["t2va", "landscape", 5])
+        st = self.studio.state()
+        self.assertEqual(st["warmable"], ["t2va"])
+        code, body = self.load(task="fl2va")
+        self.assertEqual(code, 409)
+        self.assertIn("no earlier fl2va clip", body["error"])
+        self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va"})[0], 400)
+        jid = self.generate(task="fl2va", seconds=8, files={"first_frame": [("f.png", png())]})
+        self.studio.wait_for(lambda st: any(j["id"] == jid and j["status"] != "queued" for j in st["jobs"]))
+        self.assertEqual(self.load()[0], 409)                                # a clip is running
+        self.studio.wait([jid])
+        self.assertIn("fl2va", self.studio.state()["warmable"])
+        self.assertEqual(self.load(task="fl2va", orientation="landscape", seconds=5)[0], 200)
+        self.ready(["fl2va", "landscape", 5])
+
+
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
     takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it."""

@@ -430,27 +430,48 @@ def clip_file(job):
     return None
 
 
-preload = {"pending": None}      # (key, case) to warm up when the app starts and nothing is queued
+preload = {"pending": None}      # (key, case) to warm up when nothing is queued: at start, or "Load selected now"
 
 
-def preload_candidate():
-    """The last finished clip's settings, as a warm-up case (its prompt and inputs, seed 999).
-    None when there is no such clip, its manifest is gone or its uploaded inputs are gone."""
-    last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")), None)
-    if last is None or not PATHS.get(last["task"], Path("/nonexistent")).is_file():
+def warmup_case(job):
+    """A finished clip as a warm-up case: its prompt and inputs, seed 999. None when its manifest or inputs are gone."""
+    if not PATHS.get(job["task"], Path("/nonexistent")).is_file():
         return None
-    case = {"case_id": "preload", "prompt": last["prompt"], "seed": 999, "task": last["task"]}
+    case = {"case_id": "preload", "prompt": job["prompt"], "seed": 999, "task": job["task"]}
     for k in ("first_frame", "last_frame", "references"):
-        if last.get(k):
-            case[k] = last[k]
+        if job.get(k):
+            case[k] = job[k]
     media = [case.get("first_frame"), case.get("last_frame")] + [r.get("path") for r in case.get("references", [])]
     if any(m and not Path(m).is_file() for m in media):
         return None
     try:
-        case = normalize_case(case)
+        return normalize_case(case)
     except Exception:
         return None
-    return (last["task"], last["orientation"], last.get("seconds", 5)), case
+
+
+def preload_candidate():
+    """The last finished clip's settings and warm-up case, or None (see warmup_case)."""
+    last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")), None)
+    case = warmup_case(last) if last else None
+    return ((last["task"], last["orientation"], last.get("seconds", 5)), case) if case else None
+
+
+WARMUP_PROMPT = ("integrated_multimodal_description: A quiet lake at sunrise, mist over the water, one continuous wide "
+                 "shot.\noverall_soundscape: Soft wind and water.\nnon_diegetic_music: None.")
+
+
+def mode_warmup_case(task):
+    """A warm-up case for a mode ("Load selected now"): the newest of its last few finished clips whose inputs still
+    exist; for t2va without one, a built-in prompt. fl2va and ref2va need real inputs, so without such a clip: None."""
+    recent = [j for j in reversed(jobs) if j["task"] == task and j.get("status") == "done" and not j.get("deleted")]
+    for j in recent[:5]:
+        case = warmup_case(j)
+        if case:
+            return case
+    if task == "t2va" and PATHS["t2va"].is_file():
+        return normalize_case({"case_id": "preload", "prompt": WARMUP_PROMPT, "seed": 999, "task": "t2va"})
+    return None
 
 
 def run_preload(key, case):
@@ -526,8 +547,11 @@ def worker_loop():
             purged = time.time()
             purge_trash()
         pending, preload["pending"] = preload["pending"], None
-        if pending and session["pipeline"] is None and not any(j["status"] == "queued" for j in jobs):
-            run_preload(*pending)
+        if pending and not any(j["status"] == "queued" for j in jobs):
+            if session["pipeline"] is not None and session["key"] != pending[0]:
+                close_session(f"loading {pending[0]} as asked")
+            if session["pipeline"] is None:
+                run_preload(*pending)
         while True:
             with lock:
                 job = next((j for j in jobs if j["status"] == "queued"), None)
@@ -693,7 +717,8 @@ class H(BaseHTTPRequestHandler):
                 active = [j for j in jobs if j["status"] not in ("done", "failed")]
                 finished = [j for j in jobs if j["status"] in ("done", "failed") and not j.get("deleted")]
                 window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
-                state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS,
+                warmable = [t for t in ready if mode_warmup_case(t)]     # modes "Load selected now" can warm up
+                state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS, "warmable": warmable,
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
                                                                  "takeover_until", "load_eta", "warm_s")},
                          "jobs": [dict(j) for j in window],
@@ -812,6 +837,28 @@ class H(BaseHTTPRequestHandler):
             if abort_preload("unload requested"):
                 return self.send(200, {"ok": True})
             close_session("unload requested")
+            return self.send(200, {"ok": True})
+        if self.path == "/api/load":       # "Load selected now": warm up these settings before the prompt is ready
+            try:
+                want = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+                key = (want["task"], want["orientation"], int(want["seconds"]))
+                if key[0] not in PATHS or key[1] not in ORIENTATIONS or key[2] not in DURATIONS:
+                    raise ValueError
+            except (ValueError, KeyError, TypeError, AttributeError):
+                return self.send(400, {"error": "expected JSON {task, orientation, seconds}"})
+            with lock:
+                busy = any(j["status"] not in ("done", "failed") for j in jobs)
+                case = mode_warmup_case(key[0])
+            if busy:
+                return self.send(409, {"error": "a clip is queued or running; the models change for it anyway"})
+            if key in (session.get("key"), session.get("loading_key")):
+                return self.send(200, {"ok": True, "already": True})
+            if case is None:
+                return self.send(409, {"error": f"no earlier {key[0]} clip with its files to warm up with"})
+            preload["pending"] = (key, case)
+            abort_preload(f"loading {key} as asked")            # a warm-up for other settings
+            wake.set()
+            log("load requested:", key)
             return self.send(200, {"ok": True})
         if self.path in ("/api/delete", "/api/undelete"):
             try:

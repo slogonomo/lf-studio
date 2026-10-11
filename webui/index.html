@@ -138,7 +138,8 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 #go.reload{background:var(--panel2);color:var(--warn);box-shadow:0 0 0 1.5px color-mix(in srgb,var(--warn) 70%,transparent) inset}
 #go .eta{font-weight:500;opacity:.85;font-size:13px}
 #reloadnote{font-size:12.5px;color:var(--warn);margin-top:8px}
-#reloadnote:empty,#err:empty{display:none}
+#err:empty{display:none}
+.linkbtn{border:0;background:none;padding:0;color:var(--acc);font:inherit;font-weight:650;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
 #err{color:var(--bad);font-size:13px;margin-top:8px}
 .foot{font-size:12px;color:var(--faint);margin:14px 2px 0;line-height:1.6}
 .foot b{color:var(--mut);font-weight:600}
@@ -282,7 +283,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
   </div>
 
   <button type="submit" id="go">Generate</button>
-  <div id="reloadnote"></div>
+  <div id="reloadnote" hidden><span id="reloadtext"></span> <button type="button" class="linkbtn" id="loadnow" hidden title="Start loading these settings now, while you finish the prompt">Load selected now</button></div>
   <div id="err" role="alert"></div>
   <p class="foot">If mode, format and length match what's loaded, the clip starts right away. Changing any of them reloads the models first.
   Times shown are <b>measured on a DGX Spark</b> with nothing else running.</p>
@@ -398,7 +399,7 @@ zones.forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs
     if(!dt.files.length){toast(`That zone takes ${want} files`);return;}inp.files=dt.files;show();});
   show();});
 
-let state={now:Date.now()/1000,session:{key:null,state:'idle',since:0},jobs:[],seq:0},skew=0;
+let state={now:Date.now()/1000,session:{key:null,state:'idle',since:0},jobs:[],seq:0},skew=0,loadAsked=0;
 const now=()=>Date.now()/1000+skew;                 // server clock (the timers compare with server timestamps)
 const active=j=>j.status!=='done'&&j.status!=='failed';
 // the mode/format/length that will be loaded once everything already queued has run
@@ -418,9 +419,20 @@ function updateGo(){const k=effectiveKey(),want=[val('task'),val('orientation'),
   const html=warm?`Generate <span class="eta">· ${takeover?'replaces the warm-up':'after the warm-up'} · ready in ~${fmtS(ready)}</span>`:same?`Generate <span class="eta">· ~${fmtS(eta)}</span>`:`Generate <span class="eta">· ${k?(state.session.preloading&&!state.jobs.some(active)?'stops the warm-up, loads':'reloads'):'loads'} the models first</span>`;
   if(go.innerHTML!==html)go.innerHTML=html;
   setText($('lenout'),`~${fmtS(eta)} per clip`);
-  const noManifest=Array.isArray(state.tasks_ready)&&!state.tasks_ready.includes(want[0]);
-  setText($('reloadnote'),noManifest?`The server has no path manifest for ${TASK[want[0]]} mode (run install/70-manifests.sh).`
-    :same||!k?'':`${state.session.preloading&&!state.jobs.some(active)?'Warming up':'Loaded'}${state.jobs.some(active)?' after the queue':''}: ${keyText(k)}. Selected: ${keyText(want)}.`);}
+  const noManifest=Array.isArray(state.tasks_ready)&&!state.tasks_ready.includes(want[0]),busy=state.jobs.some(active);
+  // "Load selected now" (#3): only on request, never on a selection change alone (clicking through the options
+  // would start and stop loads); not while clips are queued or running, and only for modes the server can warm up
+  const canLoad=!noManifest&&!same&&!busy&&(state.warmable||[]).includes(want[0])&&now()>loadAsked;
+  const note=noManifest?`The server has no path manifest for ${TASK[want[0]]} mode (run install/70-manifests.sh).`
+    :same?'':!k?(canLoad?'Models not loaded.':'')
+    :`${state.session.preloading&&!busy?'Warming up':'Loaded'}${busy?' after the queue':''}: ${keyText(k)}. Selected: ${keyText(want)}.`;
+  setText($('reloadtext'),note);$('loadnow').hidden=!canLoad||!note;$('reloadnote').hidden=!note;}
+$('loadnow').onclick=async()=>{const want={task:val('task'),orientation:val('orientation'),seconds:+val('seconds')};
+  loadAsked=now()+5;updateGo();          // hide the link until the server shows the new load
+  try{const r=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(want)}),x=await r.json();
+    if(!r.ok){$('err').textContent=x.error||'Could not load';loadAsked=0;}else toast(`Loading ${keyText([want.task,want.orientation,want.seconds])}`);}
+  catch(e){$('err').textContent='Could not reach the server: '+e;loadAsked=0;}
+  poll();};
 
 form.addEventListener('submit',async e=>{e.preventDefault();$('err').textContent='';
   if(!prompt.value.trim()){$('err').textContent='Write a prompt first (or press Example).';prompt.focus();return;}

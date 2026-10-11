@@ -38,6 +38,8 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
   every clip and loads older ones as you scroll. Delete moves a clip and its files to a trash folder for 7 days,
   with Undo.
 - The Generate button says when your settings need a model reload; the clip card shows how long the last load took.
+  "Load selected now" under it starts loading other settings while you finish the prompt (nothing loads on a
+  selection change alone).
 - Warm-up at launch with the settings of your last clip; a clip with those settings submitted early in the warm-up
   takes it over, and the Generate button says when it would be ready. Unload button. Dark and light themes, phone layout.
 - Uploaded reference videos are normalized (at most 672×384, 24 fps, 2-15 s).
