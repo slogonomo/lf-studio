@@ -396,5 +396,41 @@ class ReleaseReviewPage(PageTest):
         self.assertEqual(self.page.evaluate("!!document.activeElement.closest('article.job')"), True)
 
 
+class RemixSeed(PageTest):
+    """#14: Remix loads the clip's seed and leaves "New random seed every run" as it is."""
+
+    def remix(self, seed):
+        a = self.studio.generate(prompt="the source clip", seed=seed)[1]["id"]
+        self.studio.wait([a])
+        self.page.wait_for_selector(f'article[data-id="{a}"] .reuse-all')
+        self.page.click(f'article[data-id="{a}"] .reuse-all')
+        return a
+
+    def generate_from_page(self, a):
+        self.page.click("#go")
+        jobs = self.studio.wait_for(lambda s: len(s["jobs"]) == 2)["jobs"]
+        return next(j for j in jobs if j["id"] != a)
+
+    def test_ticked_stays_ticked_and_draws_a_new_seed(self):
+        self.page.check("#autoroll")
+        a = self.remix(777)
+        self.assertTrue(self.page.is_checked("#autoroll"))
+        self.assertEqual(self.page.input_value("#seed"), "777")
+        new = self.generate_from_page(a)                                    # Remix, then Generate in the same tab
+        self.assertNotEqual(int(new["seed"]), 777)
+        self.assertEqual(new["prompt"], "the source clip")
+        other = self.ctx.new_page()                                         # remembered as ticked: a new tab
+        other.goto(self.studio.url + "/")                                   # (a reload here would cancel a poll)
+        self.assertTrue(other.is_checked("#autoroll"))
+        other.close()
+
+    def test_unticked_uses_the_clips_seed(self):
+        self.page.fill("#seed", "5")
+        a = self.remix(777)
+        self.assertFalse(self.page.is_checked("#autoroll"))
+        self.assertEqual(self.page.input_value("#seed"), "777")
+        self.assertEqual(int(self.generate_from_page(a)["seed"]), 777)
+
+
 if __name__ == "__main__":
     unittest.main()

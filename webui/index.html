@@ -470,9 +470,11 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
   body.querySelector('.seedv').textContent=j.seed;
   body.querySelector('.reuse-seed').onclick=()=>{seed.value=j.seed;store.set('seed',seed.value);autoroll.checked=false;store.set('autoroll','0');toast(`Seed ${j.seed}`);};
+  // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
+  // new seed (#14); unticked, it keeps the clip's seed
   body.querySelector('.reuse-all').onclick=()=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
-    prompt.value=j.prompt;seed.value=j.seed;autoroll.checked=false;
-    [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed],['autoroll','0']].forEach(([k,v])=>store.set(k,v));
+    prompt.value=j.prompt;seed.value=j.seed;
+    [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
     modeUI();updateGo();window.scrollTo({top:0,behavior:'smooth'});$('err').textContent='';
     zones.forEach(z=>{z.querySelector('input').value='';z.kept=[];z.show();});remixFrom=null;const my=++remixSeq;
     if(j.task==='t2va'){toast('Settings loaded');return;}
