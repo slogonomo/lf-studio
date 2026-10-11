@@ -254,7 +254,7 @@ The patch holds the H3 audio clean and fixed during the refine, as LTX-2's own a
 upstream states, so the random draws and the video noise are the same. It then replaces the audio state with its
 clean latent, an all-zero denoise mask and `frozen=True`, so the transformer is told sigma 0 for the audio. A
 `SOL_H3_STAGE2_AUDIO` value other than `frozen` or `joint` (any case) fails when the pipeline is created, before any
-worker loads. An installed LTX-2 without frozen states fails when Stage 2 starts. The Stage-2 receipts
+worker loads; the studio refuses to start with it. An installed LTX-2 without frozen states fails when Stage 2 starts. The Stage-2 receipts
 (`stage2_result.json`) record the mode as `stage2_audio`. Stage 2 takes the same time.
 
 Measured on 8 dialogue clips: two people, fl2va 10 s, 8 seeds, one scene. Each clip's Stage 2 was run both ways

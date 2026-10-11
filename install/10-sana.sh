@@ -14,17 +14,16 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 need_cmd git
 COMMIT=${SOLH3_SANA_COMMIT:-$BASE_COMMIT}
 LEGACY_APPLIED="$SOLH3_HOME/applied.patch"   # up to 0.2: one copy per SOLH3_HOME, shared by its checkouts
-HISTORY=$(mktemp -d)                          # earlier versions of the patch, written when needed
+HISTORY=$(mktemp -d) || die "cannot create a temporary directory (TMPDIR=${TMPDIR:-/tmp})"   # earlier patch versions
 trap 'rm -rf "$HISTORY"' EXIT
 
 sana() { git -C "$SOLH3_SANA" "$@"; }
 
-# fetch_and_checkout COMMIT: check out COMMIT, fetching it first if the clone does not have it
-fetch_and_checkout() {
-    if [[ "$DRY_RUN" == 1 ]] || ! sana cat-file -e "$1^{commit}" 2>/dev/null; then
-        run git -C "$SOLH3_SANA" fetch --filter=blob:none origin "$1"
-    fi
-    run git -C "$SOLH3_SANA" checkout --detach "$1"
+# have_commit COMMIT: make sure the clone has COMMIT, fetching it if needed (before anything in the checkout changes)
+have_commit() {
+    sana cat-file -e "$1^{commit}" 2>/dev/null && return 0
+    run git -C "$SOLH3_SANA" fetch --filter=blob:none origin "$1" || return 1
+    [[ "$DRY_RUN" == 1 ]] || sana cat-file -e "$1^{commit}" 2>/dev/null
 }
 
 # applied_copy: where this checkout keeps the patch as it was applied last time, for the next update
@@ -34,28 +33,53 @@ applied_copy() {
     echo "$dir/sol-h3-studio-applied.patch"
 }
 
-# keep_copy: remember the patch that is now applied
+# keep_copy: remember the patch that is now applied, and the commit it is applied at (<copy>.base)
 keep_copy() {
     local copy
     copy=$(applied_copy)
-    cmp -s "$PATCH" "$copy" 2>/dev/null && return 0
-    run cp "$PATCH" "$copy"
+    cmp -s "$PATCH" "$copy" 2>/dev/null || run cp "$PATCH" "$copy"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        echo "+ git -C $SOLH3_SANA rev-parse HEAD > $copy.base"
+    else
+        sana rev-parse HEAD > "$copy.base"
+    fi
 }
 
-# earlier_patch: the earlier patch this checkout carries (its copy, the 0.2 location, or a version from this repo's
-# history), if one reverse-applies; prints its file name
-earlier_patch() {
-    local f sha n=0
-    for f in "$(applied_copy)" "$LEGACY_APPLIED"; do
-        [[ -f "$f" ]] && sana apply --reverse --check "$f" 2>/dev/null && { echo "$f"; return 0; }
+# applied_base [PATCH]: the commit the earlier patch was applied at: the record next to the copy, else the base named
+# in the first line of the copy, of the 0.2 copy, or of PATCH (the earlier patch found)
+applied_base() {
+    local f copy
+    copy=$(applied_copy)
+    if [[ -s "$copy.base" ]]; then
+        tr -d '[:space:]' < "$copy.base"
+        return 0
+    fi
+    for f in "$copy" "$LEGACY_APPLIED" "${1:-}"; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        sed -n '1s/.*base commit \([0-9a-f]\{40\}\).*/\1/p' "$f"
+        return 0
     done
-    git -C "$SOLH3_REPO" rev-parse --git-dir >/dev/null 2>&1 || return 1
-    while read -r sha; do
-        n=$((n + 1))
-        f="$HISTORY/patch-$n-${sha:0:7}.patch"
-        git -C "$SOLH3_REPO" show "$sha:patches/sol-h3-studio.patch" > "$f" 2>/dev/null || continue
-        sana apply --reverse --check "$f" 2>/dev/null && { echo "$f"; return 0; }
-    done < <(git -C "$SOLH3_REPO" log --format=%H -- patches/sol-h3-studio.patch)
+}
+
+# earlier_patch: the earlier patch this checkout carries: its copy, the 0.2 location, or a version from this repo's
+# history. The first candidate that the checkout differs from HEAD by exactly wins; else the first that only
+# reverse-applies (the caller then lists the other local changes). Prints its file name.
+earlier_patch() {
+    local f sha n=0 first=
+    local -a candidates=("$(applied_copy)" "$LEGACY_APPLIED")
+    if git -C "$SOLH3_REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        while read -r sha; do
+            n=$((n + 1))
+            f="$HISTORY/patch-$n-${sha:0:7}.patch"
+            git -C "$SOLH3_REPO" show "$sha:patches/sol-h3-studio.patch" > "$f" 2>/dev/null && candidates+=("$f")
+        done < <(git -C "$SOLH3_REPO" log --format=%H -- patches/sol-h3-studio.patch)
+    fi
+    for f in "${candidates[@]}"; do
+        [[ -f "$f" ]] && sana apply --reverse --check "$f" 2>/dev/null || continue
+        only_changes_of "$f" 2>/dev/null && { echo "$f"; return 0; }
+        [[ -n "$first" ]] || first=$f
+    done
+    [[ -n "$first" ]] && { echo "$first"; return 0; }
     return 1
 }
 
@@ -118,11 +142,12 @@ else
     else
         current=$(earlier_patch) || current=
     fi
-    # the earlier patch was made for the commit named in its first line. If the checkout is still there and
+    # the earlier patch was applied at a known commit (applied_base). If the checkout is still there and
     # patches/BASE_COMMIT (or SOLH3_SANA_COMMIT) now names another commit, move to it.
     old_base=
-    [[ -n "$current" && "$current" != "$PATCH" ]] &&
-        old_base=$(sed -n '1s/.*base commit \([0-9a-f]\{40\}\).*/\1/p' "$current")
+    if [[ -n "$current" ]]; then
+        if [[ "$current" == "$PATCH" ]]; then old_base=$(applied_base); else old_base=$(applied_base "$current"); fi
+    fi
     move=0
     [[ -n "$current" && "$head" != "$COMMIT" && "$head" == "$old_base" ]] && move=1
     if [[ "$current" == "$PATCH" && "$move" == 0 ]]; then
@@ -140,12 +165,16 @@ else
             only_changes_of "$current" ||
                 die "$SOLH3_SANA has local changes besides the patch (listed above); nothing was changed.
 Move them away (or commit them elsewhere), or start from a fresh clone: move $SOLH3_SANA away and run this again."
+            if [[ "$move" == 1 ]]; then        # fetch before anything changes, so a failed fetch changes nothing
+                have_commit "$COMMIT" || die "cannot get $COMMIT from origin ($(sana remote get-url origin 2>/dev/null)); nothing was changed"
+            fi
             run git -C "$SOLH3_SANA" apply -R "$current"
             replaced=1
             if [[ "$move" == 1 ]]; then
                 say "moving the checkout from $head to $COMMIT"
-                fetch_and_checkout "$COMMIT"
-                head=$COMMIT
+                run git -C "$SOLH3_SANA" checkout --detach "$COMMIT" ||
+                    die "checkout of $COMMIT failed; the earlier patch is reversed. Put it back with: git -C $SOLH3_SANA apply $current"
+                [[ "$DRY_RUN" == 1 ]] && head=$COMMIT || head=$(sana rev-parse HEAD)
             fi
         fi
         [[ "$head" == "$COMMIT" ]] || warn "the checkout is at $head, not $COMMIT"

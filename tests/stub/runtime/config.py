@@ -4,6 +4,17 @@ import re
 from pathlib import Path
 
 TASKS = ("t2va", "fl2va", "ref2va")
+STAGE2_AUDIO_MODES = ("frozen", "joint")
+
+
+def stage2_audio_mode():
+    """The patch's SOL_H3_STAGE2_AUDIO check (runtime/config.py), same rules."""
+    import os
+    mode = os.environ.get("SOL_H3_STAGE2_AUDIO", "").strip().lower() or "frozen"
+    if mode not in STAGE2_AUDIO_MODES:
+        raise ValueError(f"SOL_H3_STAGE2_AUDIO must be one of {STAGE2_AUDIO_MODES}, "
+                         f"not {os.environ.get('SOL_H3_STAGE2_AUDIO')!r}")
+    return mode
 
 
 def load_paths(filename, *, task="t2va"):
