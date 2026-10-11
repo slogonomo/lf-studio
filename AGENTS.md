@@ -14,13 +14,16 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
 
 ## Tests
 
-No GPU needed for the first two:
+None of these needs the GPU:
 
 ```bash
-python3 -m unittest discover -s tests -v       # the server end to end against the stub runtime (~35 s; needs ffmpeg)
+python3 -m unittest discover -s tests -v       # server and page against the stub runtime (needs ffmpeg)
 python3 tests/stub/studio.py                   # a stub studio on http://127.0.0.1:18299/ to click through
-python3 tests/ui_test.py http://127.0.0.1:18299/   # the page in WebKit (pip install playwright; playwright install webkit)
+python3 tests/ui_test.py http://127.0.0.1:18299/   # a general check of the page against any studio
 ```
+
+`tests/test_server.py` drives the server over HTTP; `tests/test_page.py` drives the page in WebKit and is skipped
+without Playwright (`pip install playwright && playwright install webkit`).
 
 `tests/stub/runtime/` stands in for the patched `runtime` package: loading and generating are `sleep` processes
 (`STUB_LOAD_S`, `STUB_CLIP_S`), each clip is a small ffmpeg test pattern in the requested format and length, and a

@@ -164,4 +164,6 @@ compile cache. A clip with the same settings submitted while it runs used to wai
 and loads the models itself (112 s from submit to clip, measured 2026-10-10). It does so while the warm-up has run
 less than a warm clip of that setting takes, minus ~5 s for stopping it; the studio records warm clip times, and
 before one is recorded it uses half the expected load time. Later in the warm-up, waiting for it is the faster
-choice. A clip for other settings stops the warm-up too, unless a queued clip is waiting for it.
+choice. Either way nothing is lost by submitting early, and the Generate button shows which applies and when the
+clip would be ready ("replaces the warm-up" or "after the warm-up", from the recorded load and clip times). A clip
+for other settings stops the warm-up too, unless a queued clip is waiting for it.

@@ -127,6 +127,12 @@ class WarmUp(StudioTest):
         self.assertTrue(job.get("includes_model_load"), "early same-settings job should take over")
         self.assertIn("aborting preload", self.studio.log.read_text())
 
+    def test_session_shows_the_estimates_while_warming(self):
+        s = self.warming()
+        self.assertEqual((s["load_eta"], s["warm_s"]), (4, self.times.get("warm/t2va/landscape/5")))
+        s = self.studio.wait_for(lambda s: s["session"]["state"] == "ready", timeout=20)["session"]
+        self.assertEqual((s["load_eta"], s["warm_s"], s["takeover_until"]), (None, None, None))
+
     def test_other_settings_stop_the_warm_up(self):
         self.warming()
         job = self.studio.wait([self.generate(orientation="portrait")])[0]

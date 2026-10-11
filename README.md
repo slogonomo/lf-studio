@@ -35,7 +35,7 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
 - A queue. Clips appear as cards with a timer and progress, then a player, Remix, Use seed and Download.
 - The Generate button says when your settings need a model reload; the clip card shows how long the last load took.
 - Warm-up at launch with the settings of your last clip; a clip with those settings submitted early in the warm-up
-  takes it over. Unload button. Dark and light themes, phone layout.
+  takes it over, and the Generate button says when it would be ready. Unload button. Dark and light themes, phone layout.
 - Uploaded reference videos are normalized (at most 672×384, 24 fps, 2-15 s).
 
 **A patch** to Sol-H3-Spark (`patches/sol-h3-studio.patch`, details in [docs/PATCH.md](docs/PATCH.md)). Measured on
