@@ -13,6 +13,21 @@
   or the first frame of a reference video, as a JPEG at most 640 px wide (made on the first request, kept with the
   clip's input files; an image ffmpeg can't read goes out as it is). 404 for t2va.
 
+For agents and scripts (#29; docs/API.md):
+- POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
+  ({"name", "data"} or a data: URI); the studio never fetches URLs. Without a task, it follows from the files (also
+  for the form). Answer: {"id", "job"}, job being the API record (api_record). 411 without Content-Length (chunked),
+  413 over 200 MB, 415 for another Content-Type, 429 (Retry-After: 60) while SOLH3_MAX_QUEUED clips are waiting.
+  fl2va and ref2va records keep "labels": the <Picture N>, <Video N> or <Audio N> each file is in the prompt.
+- GET /api/jobs/<id>[?wait=S]: one clip as an API record: the stored record plus state (queued, running, done, failed,
+  cancelled), phase, ahead, elapsed_s and urls. With wait (seconds, at most 300) it answers when the clip has
+  finished (and is saved), or when S has passed. 404 "no such clip"; 503 with the record if the studio shuts down
+  meanwhile (after the restart the clip reads failed, "server restarted").
+- GET /api/jobs/<id>/video[?wait=S]: the same wait, then the MP4 as /video/<id> sends it; 202 with the record if the
+  clip is still queued or running when S has passed, 409 with it for a failed or cancelled clip.
+- /video/<id> downloads as sol-h3_<task>_<seconds>s_seed<seed>_<id6>.mp4.
+- The small JSON POSTs (/api/cancel, /api/delete, /api/undelete, /api/load, /api/unload) answer 413 above 64 KiB.
+
 Run it with cwd = the patched Sol-H3-Spark package (models/minimax_h3/Sol-H3-Spark in the patched Sana checkout):
 it imports runtime.config and runtime.pipeline from there. Standard library only; this process needs no torch.
 bin/sol-h3-studio does all of this for you.
@@ -33,6 +48,8 @@ Environment:
   SOLH3_PRELOAD              1 (default): at start, warm up the settings of the last finished clip. 0: off.
   SOLH3_TRASH_DAYS           days a deleted clip stays in $SOL_H3_SPARK_RUNTIME_ROOT/trash before it is removed
                              for good (default 7)
+  SOLH3_MAX_QUEUED           clips that may wait in the queue (default 20; the running one does not count). Another
+                             submit gets 429 until one has started.
   SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
 
 SOL_H3_STAGE2_AUDIO (a patch setting, frozen or joint; see docs/PATCH.md) is checked at start: another value stops
@@ -40,6 +57,8 @@ the server with a message.
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
+import base64
+import binascii
 import contextlib
 import email.parser
 import email.policy
@@ -151,6 +170,11 @@ try:
     assert math.isfinite(TRASH_DAYS) and TRASH_DAYS >= 0
 except (ValueError, AssertionError):
     fail(f"SOLH3_TRASH_DAYS must be a number of days, 0 or more (got {os.environ.get('SOLH3_TRASH_DAYS')!r})")
+try:
+    MAX_QUEUED = int(os.environ.get("SOLH3_MAX_QUEUED") or 20)
+    assert MAX_QUEUED >= 1
+except (ValueError, AssertionError):
+    fail(f"SOLH3_MAX_QUEUED must be a whole number, 1 or more (got {os.environ.get('SOLH3_MAX_QUEUED')!r})")
 for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -163,6 +187,10 @@ PAGE = 24                        # clips per gallery page (/api/state carries th
 FINISHED = ("done", "failed", "cancelled")       # a job's final statuses; any other is queued or running
 session = {"pipeline": None, "key": None, "state": "idle", "since": time.time()}
 work = {"job": None}             # the job whose pipeline call (start or generate) is running (pipeline_call)
+# Notified after every saved change of a job (save_job) and at shutdown: GET /api/jobs/<id>?wait= waits on it. Not
+# `lock`, which the worker does not hold while it changes a job. `waiting` (guarded by it): the requests waiting.
+changed = threading.Condition()
+waiting = 0
 
 
 def log(*a):
@@ -239,6 +267,9 @@ def save_job(job, strict=False):
         traceback.print_exc()
         if strict:
             raise
+    finally:
+        with changed:                                  # wakes GET /api/jobs/<id>?wait=, also after a failed write
+            changed.notify_all()
 
 
 def warm_up_wanted():
@@ -713,6 +744,46 @@ def clip_file(job):
     return None
 
 
+def clip_name(job):
+    """The file name a clip downloads as (/video/<id>): what it is, and its id's start."""
+    return f"sol-h3_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['id'][:6]}.mp4"
+
+
+def settled(job):
+    """Whether a job has its final status (done, failed or cancelled) and is saved with it."""
+    return job["status"] in FINISHED and not job.get("saving")
+
+
+PHASES = {"starting": "starting", "loading models + generating": "loading", "generating": "generating",
+          "retrying after a worker error": "retrying"}
+
+
+def api_record(job):
+    """A job as the API shows it (#29): the stored record plus
+      state      queued, running, done, failed or cancelled: stable codes for programs (status is for people);
+      phase      running only (else None): cancelling, saving, starting, loading (the models, with its clip),
+                 generating, retrying (after a worker error) or running;
+      ahead      queued only: the clips queued before it;
+      elapsed_s  running only: seconds since it started;
+      urls       done, with its MP4 still there: {"video", "poster"}, paths relative to the studio's address."""
+    with lock:
+        rec = dict(job)
+        ahead = sum(j["status"] == "queued" and j["created"] < job["created"] for j in jobs)
+    status = rec["status"]
+    rec["state"] = status if settled(rec) else "queued" if status == "queued" else "running"
+    rec["phase"] = None
+    if rec["state"] == "queued":
+        rec["ahead"] = ahead
+    elif rec["state"] == "running":
+        rec["phase"] = ("cancelling" if rec.get("cancel_requested") else "saving" if rec.get("saving")
+                        else PHASES.get(status, "running"))
+        if rec.get("started"):
+            rec["elapsed_s"] = round(time.time() - rec["started"], 1)
+    elif rec["state"] == "done" and clip_file(rec):
+        rec["urls"] = {"video": f"/video/{rec['id']}", "poster": f"/poster/{rec['id']}"}
+    return rec
+
+
 preload = {"pending": None}      # (key, case) to warm up when nothing is queued: at start, or "Load selected now"
 
 
@@ -929,20 +1000,21 @@ def worker_loop():
                     job["status"] = "retrying after a worker error"
                     log("retrying job", job["id"], "after:", job["first_error"][:200])
                     run_job(job)
-                job["status"] = "done"
+                final = "done"
             except BaseException as e:
                 if job.get("cancel_requested"):
-                    job["status"] = "cancelled"
+                    final = "cancelled"
                     log("cancelled job", job["id"], f"({type(e).__name__}: {e})"[:200])
                 else:
-                    job["status"] = "failed"
+                    final = "failed"
                     job["error"] = f"{type(e).__name__}: {e}"[:600]
                     traceback.print_exc()
-            for k in ("saving", "cancel_requested"):     # only while it runs; the status says the rest
-                job.pop(k, None)
             job["finished"] = time.time()
             job["wall_s"] = round(job["finished"] - job["started"], 1)
-            save_job(job)
+            job["status"] = final           # after finished and wall_s: whoever sees a final status sees them too
+            for k in ("saving", "cancel_requested"):     # only while it runs; after the status, so Cancel keeps
+                job.pop(k, None)                         # answering 409 meanwhile
+            save_job(job)                   # wakes GET /api/jobs/<id>?wait=
 
 
 # ------------------------------------------------------------------------------------------ HTTP
@@ -1082,11 +1154,338 @@ def prepare_reference_video(path):
     return str(out)
 
 
+def has_sound(path):
+    """Whether a video has a sound track (ffprobe; one that can't be read counts as silent)."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
+                            "-of", "csv=p=0", str(path)], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def job_labels(job):
+    """What each input file of an fl2va or ref2va job is called in its prompt (#29), in the pipeline's numbering:
+    [{"label", "zone", "index", "name", "sound_of"?}], zone and index as /api/inputs/<id> lists the file. fl2va: the
+    first frame is <Picture 1>, the last frame the next picture. ref2va, in the order of its references (images,
+    then videos, then audio): an image is the next <Picture N>; a video the next <Video N>, and if it has sound, its
+    sound track takes the next <Audio N> just before it (sound_of names the video); an audio file the next <Audio N>.
+    Reference videos are probed as stored (the normalized copy the pipeline reads). [] for t2va."""
+    labels, count, index = [], {"Picture": 0, "Video": 0, "Audio": 0}, {}
+
+    def add(kind, zone, path, **extra):
+        count[kind] += 1
+        labels.append(dict(label=f"<{kind} {count[kind]}>", zone=zone, index=index.get(zone, 0),
+                           name=Path(path).name, **extra))
+
+    if job["task"] == "fl2va":
+        for zone in ("first_frame", "last_frame"):
+            if job.get(zone):
+                add("Picture", zone, job[zone])
+    elif job["task"] == "ref2va":
+        zones = {kind: zone for zone, kind in REF_TYPE.items()}
+        for ref in job.get("references") or []:
+            zone = zones[ref["type"]]
+            if ref["type"] == "image":
+                add("Picture", zone, ref["path"])
+            elif ref["type"] == "video":
+                if has_sound(ref["path"]):
+                    add("Audio", zone, ref["path"], sound_of=f"<Video {count['Video'] + 1}>")
+                add("Video", zone, ref["path"])
+            else:
+                add("Audio", zone, ref["path"])
+            index[zone] = index.get(zone, 0) + 1
+    return labels
+
+
 IMG = {".png", ".jpg", ".jpeg", ".webp"}
 AUD = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 VID = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 DURATIONS = (3, 4, 5, 6, 7, 8, 10, 12, 15)   # seconds; 5 = NVIDIA's frozen route, others = sol-h3-studio extension
 MAX_UPLOAD = 200 * 1024 * 1024
+SMALL_BODY = 64 * 1024           # the JSON bodies of /api/cancel, /api/delete, /api/undelete, /api/load, /api/unload
+PROMPT_MAX = 32768               # characters
+REF_MAX = {"image": 9, "video": 3, "audio": 3}    # H3's limits for ref2va
+REF_TOTAL = 12
+WAIT_MAX_S = 300                 # the longest wait of GET /api/jobs/<id>?wait=
+# a JSON data: URI's type -> the file extension that decides how it is used, as a form upload's name does
+MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp",
+            "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm", "video/x-matroska": ".mkv",
+            "video/x-m4v": ".m4v", "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav",
+            "audio/vnd.wave": ".wav", "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/flac": ".flac",
+            "audio/x-flac": ".flac", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/ogg": ".ogg"}
+FRAMES = ("first_frame", "last_frame")
+REFS = ("ref_images", "ref_videos", "ref_audio")
+
+
+def check_fields(fields):
+    """The checks of a submit's plain fields, the same for the form and JSON: task and orientation, the task's path
+    manifest, the prompt, the length and the seed. Returns (task, orientation, prompt, seconds, seed), seed None
+    for a random one. Raises ValueError with what the client is told."""
+    task = fields.get("task", "t2va")
+    orientation = fields.get("orientation", "landscape")
+    if task not in PATHS or orientation not in ORIENTATIONS:
+        raise ValueError("bad task/orientation")
+    if not PATHS[task].is_file():
+        raise ValueError(f"no path manifest for {task} at {PATHS[task]} (run install/70-manifests.sh)")
+    prompt = fields.get("prompt", "").strip()
+    if not prompt:
+        raise ValueError("prompt is empty")
+    if len(prompt) > PROMPT_MAX:
+        raise ValueError(f"prompt is too long ({len(prompt)} characters; at most {PROMPT_MAX})")
+    raw = (fields.get("seed") or "").strip()
+    seconds = int(fields.get("seconds") or 5)
+    if seconds not in DURATIONS:
+        raise ValueError(f"duration must be one of {DURATIONS} seconds")
+    seed = int(raw) if raw else None
+    if seed is not None and not 0 <= seed < 2**63:
+        raise ValueError("seed must be a nonnegative 63-bit integer")
+    return task, orientation, prompt, seconds, seed
+
+
+def check_counts(images, videos, audio):
+    """H3's limits on ref2va references (the counts of one request)."""
+    if (images > REF_MAX["image"] or videos > REF_MAX["video"] or audio > REF_MAX["audio"]
+            or images + videos + audio > REF_TOTAL):
+        raise ValueError(f"H3 limits: up to {REF_MAX['image']} images, {REF_MAX['video']} videos, "
+                         f"{REF_MAX['audio']} audio files, {REF_TOTAL} references in total")
+
+
+def infer_task(zones):
+    """The task a request without one asks for, from the zones it has files in (new or kept): frames make fl2va,
+    references ref2va, none t2va. Frames and references together are refused."""
+    frames, refs = [z for z in FRAMES if z in zones], [z for z in REFS if z in zones]
+    if frames and refs:
+        raise ValueError(f"{frames[0]} and {refs[0]} can't go together: fl2va takes frames, ref2va references")
+    return "fl2va" if frames else "ref2va" if refs else "t2va"
+
+
+def kept_zones(fields):
+    """The zones a form's "keep" names files in (only with remix_from, as submit reads it)."""
+    if not fields.get("remix_from"):
+        return set()
+    return {item.partition(":")[0] for item in (fields.get("keep") or "").split(",")} & set(ZONES)
+
+
+JSON_KEYS = ("prompt", "task", "orientation", "seconds", "seed", "remix_from", "keep") + ZONES
+NO_URLS = "the studio does not fetch URLs; send the file as base64, or use bin/sol-h3, which downloads URLs itself"
+DATA_URI = re.compile(r"data:([^;,]*)((?:;[^;,]*)*);base64,", re.I)
+SPACES = str.maketrans("", "", " \t\n\r\f\v")
+
+
+def json_file(label, value, stem):
+    """One file of a JSON submit, checked but not decoded yet: (name, base64 text). `stem` names a data: URI's
+    file."""
+    form = 'a file is {"name": "frame.png", "data": "<base64>"} or a "data:<type>;base64,<base64>" URI'
+    if isinstance(value, dict):
+        if "url" in value:
+            raise ValueError(f"{label}: {NO_URLS}")
+        for key in value:
+            if key not in ("name", "data"):
+                raise ValueError(f'{label}: unknown key "{key}" ({form})')
+        if not isinstance(value.get("name"), str) or not value["name"].strip():
+            raise ValueError(f"{label}: name must be a file name, such as frame.png ({form})")
+        if not isinstance(value.get("data"), str):
+            raise ValueError(f"{label}: data must be a base64 string ({form})")
+        return value["name"].strip(), value["data"]
+    if isinstance(value, str):
+        if re.match(r"\s*https?://", value, re.I):
+            raise ValueError(f"{label}: {NO_URLS}")
+        m = DATA_URI.match(value[:300])
+        if m:
+            mime = m.group(1).strip().lower()
+            ext = MIME_EXT.get(mime) or mimetypes.guess_extension(mime) or ""
+            if not ext:
+                raise ValueError(f"{label}: unsupported file type {mime or '(none)'} in the data: URI")
+            return stem + ext, value[m.end():]
+    raise ValueError(f"{label}: {form}")
+
+
+def b64_file(label, text):
+    """Decode a JSON file's base64 (ASCII whitespace ignored, so wrapped base64 works)."""
+    try:
+        data = base64.b64decode(text.translate(SPACES), validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError(f"{label}: the data is not valid base64") from None
+    if not data:
+        raise ValueError(f"{label} is empty")
+    return data
+
+
+def json_form(raw):
+    """POST /api/generate with a JSON body (#29) as the form's (fields, files), for submit(). Keys: prompt, task,
+    orientation, seconds, seed (an integer, or null for a random one), first_frame and last_frame (one file each),
+    ref_images, ref_videos and ref_audio (lists of files), remix_from and keep (a list of "zone:index"). null is the
+    same as leaving a key out. Stricter than the form: an unknown key, a wrong type, a malformed file, files the task
+    doesn't use, frames together with references, and keep without remix_from are refused (ValueError), all before
+    any file is decoded."""
+    try:
+        body = json.loads(raw, strict=False)    # strict=False: wrapped base64 (raw line breaks in a string) is fine
+    except ValueError as error:                 # also bytes that are not UTF-8
+        raise ValueError(f"the body is not valid JSON ({error})") from None
+    if not isinstance(body, dict):
+        raise ValueError("the body must be a JSON object")
+    for key in body:
+        if key not in JSON_KEYS:
+            raise ValueError(f'unknown key "{key}" (known: {", ".join(JSON_KEYS)})')
+    body = {k: v for k, v in body.items() if v is not None}
+    fields = {}
+    for key in ("prompt", "task", "orientation", "remix_from"):
+        if key in body:
+            if not isinstance(body[key], str):
+                raise ValueError(f"{key} must be a string")
+            fields[key] = body[key]
+    if "seconds" in body:
+        if type(body["seconds"]) is not int:
+            raise ValueError("seconds must be an integer")
+        fields["seconds"] = str(body["seconds"])
+    if "seed" in body:
+        if type(body["seed"]) is not int:
+            raise ValueError("seed must be an integer or null")
+        fields["seed"] = str(body["seed"])
+    if "keep" in body:
+        keep = body["keep"]
+        if not isinstance(keep, list) or not all(isinstance(k, str) and re.fullmatch(
+                rf"({'|'.join(ZONES)}):\d+", k) for k in keep):
+            raise ValueError('keep must be a list of "zone:index" strings')
+        if keep and "remix_from" not in body:
+            raise ValueError("keep needs remix_from (the clip whose files it keeps)")
+        fields["keep"] = ",".join(keep)
+    pending = {}                                # zone -> [(label, name, base64 text)]
+    stems = {"first_frame": "first_frame", "last_frame": "last_frame", "ref_images": "image",
+             "ref_videos": "video", "ref_audio": "audio"}
+    for zone in ZONES:
+        if zone not in body:
+            continue
+        if zone in FRAMES:
+            if isinstance(body[zone], list):
+                raise ValueError(f"{zone} must be one file")
+            items = [(zone, body[zone])]
+        else:
+            if not isinstance(body[zone], list):
+                raise ValueError(f"{zone} must be a list")
+            items = [(f"{zone}[{i}]", v) for i, v in enumerate(body[zone])]
+        if items:
+            pending[zone] = [(label, *json_file(label, v, stems[zone])) for label, v in items]
+    zones = set(pending) | kept_zones(fields)
+    fields["task"] = fields.get("task") or infer_task(zones)
+    task = check_fields(fields)[0]
+    for zone in ZONES:                          # in the form's order, so the first one named is the first sent
+        if zone in zones:
+            if task == "t2va":
+                raise ValueError("t2va takes no files")
+            if (task == "fl2va") != (zone in FRAMES):
+                raise ValueError(f"{zone} is used only by {'fl2va' if zone in FRAMES else 'ref2va'}")
+    check_counts(*(len(pending.get(z, [])) for z in REFS))
+    files = {zone: [(name, b64_file(label, text)) for label, name, text in items] for zone, items in pending.items()}
+    return fields, files
+
+
+def queue_full():
+    """The 429 reply while SOLH3_MAX_QUEUED clips are waiting, else None. Call it holding `lock`."""
+    if sum(j["status"] == "queued" for j in jobs) < MAX_QUEUED:
+        return None
+    return (429, {"error": f"the queue is full ({MAX_QUEUED} clips waiting); try again when one has finished"},
+            "application/json", {"Retry-After": "60"})
+
+
+def submit(fields, files):
+    """Queue a clip: the form's fields and its files ({zone: [(name, bytes), ...]}), from the page's multipart form
+    or from JSON (json_form). Checks everything first and saves the files; a refused request leaves nothing behind.
+    Returns the reply: 200 {"id", "job"} (job: api_record), 400 {"error": "<ExcType>: <message>"}, or 429."""
+    job_dir = None
+    try:
+        task, orientation, prompt, seconds, seed = check_fields(fields)
+        if seed is None:
+            seed = int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF        # empty -> random
+        # Remix: "keep" names files of clip "remix_from" to reuse, as zone:index in the order of /api/inputs
+        src = None
+        if fields.get("remix_from"):
+            src = next((j for j in jobs if j["id"] == fields["remix_from"]), None)   # deleted too: its files
+                                                                                    # are in the trash
+            if src is None:
+                raise ValueError("the clip to remix is no longer in the list; attach the files again")
+            if src.get("moving"):
+                raise ValueError("the clip to remix is being deleted or restored right now; try again")
+        keep = {}
+        for item in (fields.get("keep") or "").split(","):
+            zone, _, index = item.partition(":")
+            if src and zone in ZONES and index.isdigit():
+                keep.setdefault(zone, {})[int(index)] = None          # ordered, no duplicates
+        jid = uuid.uuid4().hex
+        job_dir = INPUTS / jid
+        job_dir.mkdir(parents=True)
+
+        def kept(zone):
+            """The kept files of this zone, put into the new job's directory, in the order the form sent."""
+            available = [trashed_path(src, f) for f in zone_files(src, zone)] if src else []
+            if any(i >= len(available) for i in keep.get(zone, {})):
+                raise ValueError("the remixed clip has fewer files than the form kept; attach them again")
+            return [reuse_input(job_dir, available[i]) for i in keep.get(zone, {})]
+        job = {"id": jid, "case_id": f"web_{time.strftime('%H%M%S')}_{jid[:6]}", "task": task,
+               "orientation": orientation, "seconds": seconds, "prompt": prompt, "seed": seed, "status": "queued",
+               "created": time.time()}
+        if task == "fl2va":
+            for key in FRAMES:
+                if files.get(key):
+                    fn, data = files[key][0]
+                    job[key] = save_upload(job_dir, fn, data, IMG)
+                elif kept_file := kept(key):         # one file per frame: a new upload replaces it
+                    job[key] = kept_file[0]
+            if not (job.get("first_frame") or job.get("last_frame")):
+                raise ValueError("fl2va needs a first frame, a last frame, or both")
+        if task == "ref2va":
+            # order = prompt numbering: <Picture N> images, then <Video N> videos (a video's own soundtrack is
+            # added by Sol-H3 as an audio reference just before it), then standalone <Audio N> files
+            # per kind: kept files first, then new uploads (the page shows them in that order); kept reference
+            # videos are the normalized copies already
+            refs = [{"type": "image", "path": p} for p in kept("ref_images")]
+            refs += [{"type": "image", "path": save_upload(job_dir, fn, d, IMG)} for fn, d in files.get("ref_images", [])]
+            refs += [{"type": "video", "path": p} for p in kept("ref_videos")]
+            refs += [{"type": "video", "path": prepare_reference_video(save_upload(job_dir, fn, d, VID))}
+                     for fn, d in files.get("ref_videos", [])]
+            refs += [{"type": "audio", "path": p} for p in kept("ref_audio")]
+            refs += [{"type": "audio", "path": save_upload(job_dir, fn, d, AUD)} for fn, d in files.get("ref_audio", [])]
+            counts = {t: sum(r["type"] == t for r in refs) for t in ("image", "video", "audio")}
+            if not (counts["image"] or counts["video"]):
+                raise ValueError("ref2va needs at least one reference image or video")
+            check_counts(counts["image"], counts["video"], counts["audio"])
+            job["references"] = refs
+        # validate now so errors come back immediately
+        probe = {k: job[k] for k in ("case_id", "prompt", "seed", "task")}
+        for k in ("first_frame", "last_frame", "references"):
+            if k in job:
+                probe[k] = job[k]
+        normalize_case(probe)
+        if task != "t2va":
+            job["labels"] = job_labels(job)        # never part of the case: run_job builds it from fixed keys
+    except Exception as e:
+        if job_dir is not None:
+            shutil.rmtree(job_dir, ignore_errors=True)     # a refused request leaves nothing behind
+        return 400, {"error": f"{type(e).__name__}: {e}"}
+    with lock:
+        full = queue_full()             # checked again: other requests may have filled the queue meanwhile
+        if not full:
+            # 'created' orders the history and is the paging cursor: set it here, strictly increasing, so a request
+            # that took longer (a reference video being normalized) can't be appended after a later one
+            job["created"] = max(time.time(), jobs[-1]["created"] + 0.001 if jobs else 0)
+            jobs.append(job)
+            preload["pending"] = None              # a clip decides what is loaded next: a requested warm-up that
+            session["switching_to"] = None         # hasn't started is dropped (the clip loads its own settings)
+            # a job already queued for the warm-up's settings runs first, so it keeps the warm-up
+            waited_for = warm_up_wanted()
+    if full:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return full
+    save_job(job)
+    if session.get("preloading"):
+        if session.get("loading_key") != (job["task"], job["orientation"], job["seconds"]):
+            if not waited_for:
+                abort_preload("a job for another mode/format/length arrived")
+        elif time.time() < (session.get("takeover_until") or 0):
+            abort_preload("a job for the same settings arrived early in the warm-up; it loads the models itself")
+    wake.set()
+    return 200, {"id": jid, "job": api_record(job)}
 
 
 class H(BaseHTTPRequestHandler):
@@ -1122,7 +1521,7 @@ class H(BaseHTTPRequestHandler):
                 for name in map(host_name, value.split(",")):        # X-Forwarded-Host: one per proxy
                     if not known_host(name):
                         n = self.headers.get("Content-Length", "")
-                        if n.isdigit() and int(n) <= 1 << 16:     # a small body is read, so the answer arrives
+                        if n.isdigit() and int(n) <= SMALL_BODY:  # a small body is read, so the answer arrives
                             self.rfile.read(int(n))
                         self.send(421, {"error": f"unknown host name {name[:200]}; add it to SOLH3_ALLOWED_HOSTS"})
                         return True
@@ -1207,13 +1606,58 @@ class H(BaseHTTPRequestHandler):
                                   {"Cache-Control": PICTURE_CACHE})
         m = re.fullmatch(r"/video/([0-9a-f]{32})", path)
         if m:
-            mp4 = clip_file(find_job(m.group(1)))
+            job = find_job(m.group(1))
+            mp4 = clip_file(job)
             if not mp4:
                 return self.send(404, {"error": "no such video"})
-            return self.send_file(mp4)
+            return self.send_file(mp4, name=clip_name(job))
+        m = re.fullmatch(r"/api/jobs/([0-9a-f]{32})(/video)?", path)
+        if m:
+            return self.job_reply(m.group(1), video=bool(m.group(2)))
         self.send(404, {"error": "not found"})
 
-    def send_file(self, p, ctype="video/mp4", extra=None):
+    def job_reply(self, jid, video):
+        """GET /api/jobs/<id>[?wait=S] and /api/jobs/<id>/video[?wait=S] (#29): wait up to S seconds (at most
+        WAIT_MAX_S; none by default) for the clip to be settled, then answer its API record, or for /video the MP4
+        once it is done (202 with the record while it is still queued or running, 409 with it if it failed or was
+        cancelled). 503 with the record when the studio shuts down first."""
+        global waiting
+        q = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+        try:
+            wait = float(q.get("wait", ["0"])[0])
+            if not (math.isfinite(wait) and wait >= 0):
+                raise ValueError
+        except ValueError:
+            return self.send(400, {"error": "wait must be a number of seconds, 0 or more"})
+        with lock:
+            job = find_job(jid)
+        if job is None:
+            return self.send(404, {"error": "no such clip"})
+        with changed:
+            waiting += 1
+        try:
+            with changed:
+                changed.wait_for(lambda: settled(job) or stopping.is_set(), timeout=min(wait, WAIT_MAX_S))
+            rec = api_record(job)
+            if stopping.is_set() and not settled(rec):
+                return self.send(503, {"error": "the studio is shutting down; ask again once it is back", "job": rec})
+            if not video:
+                return self.send(200, rec)
+            if rec["state"] in ("failed", "cancelled"):
+                why = f"the clip failed: {rec.get('error')}" if rec["state"] == "failed" else "the clip was cancelled"
+                return self.send(409, {"error": why, "job": rec})
+            if rec["state"] != "done":
+                return self.send(202, rec)
+        finally:
+            with changed:
+                waiting -= 1
+                changed.notify_all()                   # shutdown waits for these answers (main)
+        mp4 = clip_file(job)
+        if not mp4:
+            return self.send(404, {"error": "no such video", "job": rec})
+        return self.send_file(mp4, name=clip_name(job))
+
+    def send_file(self, p, ctype="video/mp4", extra=None, name=None):
         size = p.stat().st_size
         rng = self.headers.get("Range")
         start, end = 0, size - 1
@@ -1236,7 +1680,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
-        self.send_header("Content-Disposition", f'inline; filename="{p.name}"')
+        self.send_header("Content-Disposition", f'inline; filename="{name or p.name}"')
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         if code == 206:
@@ -1266,11 +1710,35 @@ class H(BaseHTTPRequestHandler):
         allowed = {self.headers.get("Host"), self.headers.get("X-Forwarded-Host")}
         return urlsplit(origin).netloc in allowed
 
+    def body_length(self, limit, too_large, required=False):
+        """The request's Content-Length, checked before any of the body is read. None after answering 411 (none
+        given, when `required`: a chunked upload arrives empty), 400 (not a number) or 413 (over `limit`; the body
+        is not read, so a client still sending it may see the connection close instead). A missing one counts as
+        0 when not required."""
+        value = self.headers.get("Content-Length")
+        if value is None:
+            if not required:
+                return 0
+            self.send(411, {"error": "Content-Length required (chunked uploads are not supported)"})
+            return None
+        if not re.fullmatch(r"[0-9]+", value.strip()):
+            self.send(400, {"error": "bad Content-Length"})
+            return None
+        if int(value) > limit:
+            self.send(413, {"error": too_large})
+            return None
+        return int(value)
+
     def do_POST(self):
         if self.unknown_host():
             return
         if not self.same_origin():
             return self.send(403, {"error": "cross-origin request refused"})
+        if self.path in ("/api/unload", "/api/load", "/api/cancel", "/api/delete", "/api/undelete"):
+            n = self.body_length(SMALL_BODY, f"request body too large ({SMALL_BODY // 1024} KiB max)")
+            if n is None:
+                return
+            small = self.rfile.read(n)                 # JSON, {"id": ...} or {task, orientation, seconds}
         if self.path == "/api/unload":
             with lock:
                 busy = any(j["status"] not in FINISHED + ("queued",) for j in jobs)
@@ -1285,7 +1753,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"ok": True})
         if self.path == "/api/load":       # "Load selected now": warm up these settings before the prompt is ready
             try:
-                want = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+                want = json.loads(small or b"{}")
                 key = (want["task"], want["orientation"], int(want["seconds"]))
                 if key[0] not in PATHS or key[1] not in ORIENTATIONS or key[2] not in DURATIONS:
                     raise ValueError
@@ -1315,7 +1783,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"ok": True})
         if self.path == "/api/cancel":
             try:
-                jid = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}").get("id")
+                jid = json.loads(small or b"{}").get("id")
             except (ValueError, AttributeError):
                 return self.send(400, {"error": "expected JSON {\"id\": ...}"})
             # Under the lock, atomic with the worker taking a queued job and with pipeline_call accepting a finished
@@ -1357,7 +1825,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(*reply)
         if self.path in ("/api/delete", "/api/undelete"):
             try:
-                jid = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}").get("id")
+                jid = json.loads(small or b"{}").get("id")
             except (ValueError, AttributeError):
                 return self.send(400, {"error": "expected JSON {\"id\": ...}"})
             # Under the lock: check and mark the clip as moving (Remix, warm-ups, the trash purge and another Delete
@@ -1399,108 +1867,29 @@ class H(BaseHTTPRequestHandler):
             return self.send(*reply)
         if self.path != "/api/generate":
             return self.send(404, {"error": "not found"})
-        n = int(self.headers.get("Content-Length", "0"))
-        if n > MAX_UPLOAD:
-            return self.send(413, {"error": "upload too large (200 MB max)"})
-        job_dir = None
-        try:
-            fields, files = parse_multipart(self.headers.get("Content-Type", ""), self.rfile.read(n))
-            task = fields.get("task", "t2va")
-            orientation = fields.get("orientation", "landscape")
-            if task not in PATHS or orientation not in ORIENTATIONS:
-                raise ValueError("bad task/orientation")
-            if not PATHS[task].is_file():
-                raise ValueError(f"no path manifest for {task} at {PATHS[task]} (run install/70-manifests.sh)")
-            prompt = fields.get("prompt", "").strip()
-            if not prompt:
-                raise ValueError("prompt is empty")
-            raw = (fields.get("seed") or "").strip()
-            seconds = int(fields.get("seconds") or 5)
-            if seconds not in DURATIONS:
-                raise ValueError(f"duration must be one of {DURATIONS} seconds")
-            seed = int(raw) if raw else int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF   # empty -> random
-            # Remix: "keep" names files of clip "remix_from" to reuse, as zone:index in the order of /api/inputs
-            src = None
-            if fields.get("remix_from"):
-                src = next((j for j in jobs if j["id"] == fields["remix_from"]), None)   # deleted too: its files
-                                                                                        # are in the trash
-                if src is None:
-                    raise ValueError("the clip to remix is no longer in the list; attach the files again")
-                if src.get("moving"):
-                    raise ValueError("the clip to remix is being deleted or restored right now; try again")
-            keep = {}
-            for item in (fields.get("keep") or "").split(","):
-                zone, _, index = item.partition(":")
-                if src and zone in ZONES and index.isdigit():
-                    keep.setdefault(zone, {})[int(index)] = None          # ordered, no duplicates
-            jid = uuid.uuid4().hex
-            job_dir = INPUTS / jid
-            job_dir.mkdir(parents=True)
-
-            def kept(zone):
-                """The kept files of this zone, put into the new job's directory, in the order the form sent."""
-                available = [trashed_path(src, f) for f in zone_files(src, zone)] if src else []
-                if any(i >= len(available) for i in keep.get(zone, {})):
-                    raise ValueError("the remixed clip has fewer files than the form kept; attach them again")
-                return [reuse_input(job_dir, available[i]) for i in keep.get(zone, {})]
-            job = {"id": jid, "case_id": f"web_{time.strftime('%H%M%S')}_{jid[:6]}", "task": task,
-                   "orientation": orientation, "seconds": seconds, "prompt": prompt, "seed": seed, "status": "queued",
-                   "created": time.time()}
-            if task == "fl2va":
-                for key in ("first_frame", "last_frame"):
-                    if files.get(key):
-                        fn, data = files[key][0]
-                        job[key] = save_upload(job_dir, fn, data, IMG)
-                    elif kept_file := kept(key):         # one file per frame: a new upload replaces it
-                        job[key] = kept_file[0]
-                if not (job.get("first_frame") or job.get("last_frame")):
-                    raise ValueError("fl2va needs a first frame, a last frame, or both")
-            if task == "ref2va":
-                # order = prompt numbering: <Picture N> images, then <Video N> videos (a video's own soundtrack is
-                # added by Sol-H3 as an audio reference just before it), then standalone <Audio N> files
-                # per kind: kept files first, then new uploads (the page shows them in that order); kept reference
-                # videos are the normalized copies already
-                refs = [{"type": "image", "path": p} for p in kept("ref_images")]
-                refs += [{"type": "image", "path": save_upload(job_dir, fn, d, IMG)} for fn, d in files.get("ref_images", [])]
-                refs += [{"type": "video", "path": p} for p in kept("ref_videos")]
-                refs += [{"type": "video", "path": prepare_reference_video(save_upload(job_dir, fn, d, VID))}
-                         for fn, d in files.get("ref_videos", [])]
-                refs += [{"type": "audio", "path": p} for p in kept("ref_audio")]
-                refs += [{"type": "audio", "path": save_upload(job_dir, fn, d, AUD)} for fn, d in files.get("ref_audio", [])]
-                counts = {t: sum(r["type"] == t for r in refs) for t in ("image", "video", "audio")}
-                if not (counts["image"] or counts["video"]):
-                    raise ValueError("ref2va needs at least one reference image or video")
-                if counts["image"] > 9 or counts["video"] > 3 or counts["audio"] > 3 or len(refs) > 12:
-                    raise ValueError("H3 limits: up to 9 images, 3 videos, 3 audio files, 12 references in total")
-                job["references"] = refs
-            # validate now so errors come back immediately
-            probe = {k: job[k] for k in ("case_id", "prompt", "seed", "task")}
-            for k in ("first_frame", "last_frame", "references"):
-                if k in job:
-                    probe[k] = job[k]
-            normalize_case(probe)
-        except Exception as e:
-            if job_dir is not None:
-                shutil.rmtree(job_dir, ignore_errors=True)     # a refused request leaves nothing behind
-            return self.send(400, {"error": f"{type(e).__name__}: {e}"})
+        n = self.body_length(MAX_UPLOAD, "upload too large (200 MB max)", required=True)
+        if n is None:
+            return
+        ctype = self.headers.get("Content-Type", "")
+        kind = ctype.split(";", 1)[0].strip().lower()
+        raw = self.rfile.read(n)                       # read first, so the client gets the answer below
+        if kind not in ("multipart/form-data", "application/json"):
+            return self.send(415, {"error": "send multipart/form-data or application/json"})
         with lock:
-            # 'created' orders the history and is the paging cursor: set it here, strictly increasing, so a request
-            # that took longer (a reference video being normalized) can't be appended after a later one
-            job["created"] = max(time.time(), jobs[-1]["created"] + 0.001 if jobs else 0)
-            jobs.append(job)
-            preload["pending"] = None              # a clip decides what is loaded next: a requested warm-up that
-            session["switching_to"] = None         # hasn't started is dropped (the clip loads its own settings)
-            # a job already queued for the warm-up's settings runs first, so it keeps the warm-up
-            waited_for = warm_up_wanted()
-        save_job(job)
-        if session.get("preloading"):
-            if session.get("loading_key") != (job["task"], job["orientation"], job["seconds"]):
-                if not waited_for:
-                    abort_preload("a job for another mode/format/length arrived")
-            elif time.time() < (session.get("takeover_until") or 0):
-                abort_preload("a job for the same settings arrived early in the warm-up; it loads the models itself")
-        wake.set()
-        self.send(200, {"id": jid})
+            full = queue_full()
+        if full:
+            return self.send(*full)
+        try:
+            if kind == "application/json":
+                fields, files = json_form(raw)
+            else:
+                fields, files = parse_multipart(ctype, raw)
+                if not fields.get("task"):             # the page always sends one; a script may not
+                    fields["task"] = infer_task({z for z in ZONES if files.get(z)} | kept_zones(fields))
+        except Exception as e:
+            return self.send(400, {"error": f"{type(e).__name__}: {e}"})
+        del raw
+        self.send(*submit(fields, files))
 
 
 def stop_with_launcher():
@@ -1557,7 +1946,12 @@ def main():
         log("shutting down")
         stopping.set()
         wake.set()
-        threading.Thread(target=srv.shutdown, daemon=True).start()
+
+        def wake_waiters_and_stop():                   # not in the signal handler itself (it may hold `changed`)
+            with changed:                              # GET /api/jobs/<id>?wait= answers 503 now
+                changed.notify_all()
+            srv.shutdown()
+        threading.Thread(target=wake_waiters_and_stop, daemon=True).start()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -1573,6 +1967,9 @@ def main():
         with moves_done:                               # a Delete or Undo moving files finishes first (up to 60 s)
             if not moves_done.wait_for(lambda: moves_running == 0, timeout=60):
                 log("a Delete or Undo is still moving files; the next start puts back an unfinished delete")
+        with changed:                                  # the waiting requests' 503s go out before the process ends
+            changed.notify_all()
+            changed.wait_for(lambda: waiting == 0, timeout=5)
         close_session("server exit")
         log("bye")
 

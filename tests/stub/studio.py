@@ -57,8 +57,10 @@ class StubStudio:
         self.env = dict(os.environ, SOL_H3_SPARK_RUNTIME_ROOT=str(self.runtime),
                         SOLH3_PATHS=str(self.root / "paths-{task}.json"), SOLH3_STATE_DIR=str(self.state_dir),
                         SOLH3_HOST="127.0.0.1", SOLH3_PORT=str(self.port), SOLH3_PRELOAD="1" if preload else "0",
-                        STUB_LOAD_S=str(load_s), STUB_CLIP_S=str(clip_s), PYTHONDONTWRITEBYTECODE="1")
+                        STUB_LOAD_S=str(load_s), STUB_CLIP_S=str(clip_s), PYTHONDONTWRITEBYTECODE="1",
+                        SOLH3_MAX_QUEUED="100")      # some tests queue more clips at once than the default 20
         self.env.pop("SOLH3_PUBLISH_DIR", None)
+        self.env.pop("SOLH3_ALLOWED_HOSTS", None)
         self.env.update(env or {})
         self.proc = None
         self.stdin = None                    # the server's stdin: None for this process's
