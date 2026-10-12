@@ -965,12 +965,14 @@ class CancelCards(PageTest):
 
 class DoubleClicks(PageTest):
     """A double-click whose first click changes what is under the pointer: the second one (detail 2) must not reach
-    the Remix, Cancel or Delete that is there now. The running clip loads for 30 s, so the others stay queued."""
+    the Remix, Cancel or Delete that is there now, nor, after Undo, anything else. The running clip loads for 30 s, so
+    the others stay queued."""
     load_s, clip_s = 30, 6
 
     def seed(self):
         (self.studio.state_dir / "jobs.json").write_text(json.dumps([
-            finished_job("1" * 32, created=1), finished_job("2" * 32, created=2, status="failed", error="boom")]))
+            finished_job("1" * 32, created=1), finished_job("2" * 32, created=2, status="failed", error="boom"),
+            finished_job("3" * 32, created=3)]))
 
     def card(self, jid):
         return f'article[data-id="{jid}"]'
@@ -1083,6 +1085,49 @@ class DoubleClicks(PageTest):
         self.second_click()
         self.page.wait_for_timeout(300)
         self.assertEqual(self.page.input_value("#prompt"), "my draft")
+
+    def test_a_double_click_on_undo_does_not_reach_the_form(self):
+        """In one column the form is above the gallery, and Undo shows for 10 s: scrolled up while it shows, Generate,
+        the "New random seed every run" toggle or a prompt chip can be under it, or the video of a card above the
+        deleted one. The rest of the double-click on Undo must not queue the draft, flip the toggle, add to the prompt
+        or play the clip (WebKit plays a video on a click). At 390 px the cards are in one column too."""
+        self.page.set_viewport_size({"width": 390, "height": 664})
+        self.page.fill("#prompt", "my draft")
+        form = ("[prompt.value, seed.value, autoroll.checked, "
+                "[...document.querySelectorAll('video')].filter(v => !v.paused).length]")
+        undo = None
+        for target in ("#go", ".toggle", "#chips button", f"{self.card('3' * 32)} video"):
+            with self.subTest(target=target):
+                jobs = {j["id"] for j in self.studio.state()["jobs"]}
+                self.page.click(f"{self.card('1' * 32)} .del")
+                self.page.wait_for_selector("#undo.show")
+                self.page.wait_for_timeout(300)                                 # its transition
+                undo = undo or self.page.locator("#undo button").bounding_box()
+                # scroll the target (the first one that shares columns with the Undo button) under the Undo button
+                box = self.page.evaluate("""([sel, l, r]) => {
+                    document.querySelectorAll('[data-target]').forEach(e => e.removeAttribute('data-target'));
+                    const e = [...document.querySelectorAll(sel)].find(e => {
+                        const b = e.getBoundingClientRect(); return b.left < r && b.right > l; });
+                    e.setAttribute('data-target', ''); const b = e.getBoundingClientRect();
+                    return {x: b.x, y: b.y, width: b.width, height: b.height}; }""",
+                    [target, undo["x"], undo["x"] + undo["width"]])
+                x = (max(undo["x"], box["x"]) + min(undo["x"] + undo["width"], box["x"] + box["width"])) / 2
+                y = undo["y"] + undo["height"] / 2
+                self.page.evaluate(f"scrollBy(0, {box['y'] + box['height'] / 2 - y})")
+                self.page.wait_for_timeout(300)
+                before = self.page.evaluate(form)
+                self.page.evaluate("document.getElementById('toast').textContent = ''")
+                self.page.mouse.move(x, y)
+                self.page.mouse.down(); self.page.mouse.up()                   # the clip comes back below
+                self.assertTrue(self.page.evaluate(f"!!document.elementFromPoint({x}, {y}).closest('[data-target]')"),
+                                f"{target} is under the pointer once Undo hides")
+                self.second_click()
+                self.page.wait_for_selector(self.card("1" * 32))
+                self.page.wait_for_timeout(600)
+                self.assertEqual({j["id"] for j in self.studio.state()["jobs"]}, jobs,
+                                 "the clip is back, and the second click queued nothing")
+                self.assertEqual(self.page.evaluate(form), before, "the second click changed the form or played a clip")
+                self.assertEqual(self.page.inner_text("#toast"), "Clip restored")
 
 
 def picture(color, size="64x36"):

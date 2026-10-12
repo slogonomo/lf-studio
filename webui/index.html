@@ -533,8 +533,8 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
   // detail 0: Enter/Space, not a pointer. Remix, Cancel and Delete ignore detail 2+, the rest of a double-click whose
   // first click changed what is under the pointer: Cancel of a queued clip shows Delete where Cancel was; Delete of a
-  // card moves the next card's Delete or Cancel into its place; Undo hides at once, so the next click reaches the card
-  // under the toast
+  // card moves the next card's Delete or Cancel into its place. Undo hides at once and drops the rest of its
+  // double-click wherever it lands (dropDouble)
   body.querySelector('.del').onclick=e=>{if(e.detail>1)return;remove(j,e.detail===0);};
   body.querySelector('.cancel').onclick=e=>{if(e.detail>1)return;cancel(j.id,e.currentTarget,e.detail===0);};
   d.append(media,body);return d;}
@@ -588,7 +588,15 @@ async function cancel(id,btn,keyboard){const back=keyboard||document.activeEleme
   if(back&&els[id])els[id].querySelector('.reuse-all').focus();
   toast(x.job.status==='cancelled'?'Taken out of the queue':'Stopping the clip · the models load again for the next one');
   poll();}
-$('undo').querySelector('button').onclick=async()=>{const u=$('undo'),ids=undoIds;undoIds=[];u.classList.remove('show');
+// Undo hides at once, so the rest of a double-click on it reaches what is under the toast: a card, or, with the page
+// scrolled up to the form while Undo showed, Generate (it would queue the draft), the seed toggle or a prompt chip.
+// dropDouble drops it, wherever it lands: presses, clicks and dblclicks of detail 2+ for the next 600 ms (longer than
+// the usual double-click time). Its preventDefault also stops a form submit, a label's checkbox and a link.
+function dropDouble(){const ts=['mousedown','click','dblclick'],eat=e=>{if(e.detail>1){e.stopPropagation();e.preventDefault();}};
+  for(const t of ts)document.addEventListener(t,eat,true);
+  setTimeout(()=>{for(const t of ts)document.removeEventListener(t,eat,true);},600);}
+$('undo').querySelector('button').onclick=async e=>{const u=$('undo'),ids=undoIds;undoIds=[];u.classList.remove('show');
+  if(e.detail)dropDouble();
   const failed=[];let back=0,err='',first=null;
   for(const id of ids){try{const r=await postJSON('/api/undelete',{id}),x=await r.json();
       if(!r.ok||!x.job){err=x.error||'Could not restore';failed.push(id);continue;}
