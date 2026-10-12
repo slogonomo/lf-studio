@@ -524,13 +524,28 @@ class Guide(unittest.TestCase):
         self.assertEqual(p.stdout.decode("utf-8"), cli.GUIDE)
         self.assertIn("**4. fl2va: the keyframe line comes first**", cli.GUIDE)
         self.assertIn("stretched or cropped to fit", cli.GUIDE)                  # DECISIONS 19
-        api = REPO / "docs" / "API.md"
-        if not api.exists():
-            self.skipTest("docs/API.md is not there yet")
-        text = api.read_text()
+        text = (REPO / "docs" / "API.md").read_text()
         m = re.search(r"<!-- prompt-guide:start -->(.*)<!-- prompt-guide:end -->", text, re.S)
         self.assertIsNotNone(m, "docs/API.md has no prompt-guide markers")
         self.assertEqual(m.group(1).strip(), cli.GUIDE.strip())
+
+
+class SwitchboardIntegration(unittest.TestCase):
+    def test_passive_paths(self):
+        """The integration file's passive_paths (switchboard matches them with fnmatch on the path): the reads the
+        client polls never start a stopped studio (DECISIONS 10), downloads and POSTs still do."""
+        import fnmatch
+        text = (REPO / "integrations" / "spark-switchboard" / "sol-h3-studio.toml").read_text()
+        m = re.search(r"^passive_paths = (\[.*\])", text, re.M)
+        self.assertIsNotNone(m)
+        patterns = json.loads(m.group(1))
+        jid = "0123456789abcdef0123456789abcdef"
+        for path in ("/health", "/api/state", "/api/jobs", f"/api/jobs/{jid}", f"/api/jobs/{jid}/video",
+                     f"/poster/{jid}"):
+            self.assertTrue(any(fnmatch.fnmatch(path, p) for p in patterns), path)
+        for path in (f"/video/{jid}", f"/input/{jid}/first_frame/0", f"/api/inputs/{jid}", f"/still/{jid}",
+                     "/api/generate", "/api/cancel", "/"):
+            self.assertFalse(any(fnmatch.fnmatch(path, p) for p in patterns), path)
 
 
 class PassThrough(CliTest):
