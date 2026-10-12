@@ -95,6 +95,27 @@ t2va 16:9 15 s 357 s). Later cold starts reuse the cache. If you suspect a broke
 **A clip shows "Recovered after: ...".** A worker died during the job; the server closed the session, reloaded
 the models and ran the job again once. If it happens again, the card shows "Failed" with the error.
 
+**What Cancel does.** On a queued clip it takes the clip out of the queue; nothing has run. On a running clip
+("Loading models", "Generating", also during the retry after a worker error) the server sends SIGTERM to the
+pipeline's workers, as when it stops an unwanted warm-up, and closes the session: the runtime can't stop between its
+steps and keep the models, so the next clip loads them first, like the first clip of a mode (a 5 s t2va clip then
+takes 104-113 s instead of 54-66 s with the models loaded; see [INSTALL.md](INSTALL.md#start) and
+[PERFORMANCE.md](PERFORMANCE.md)). The card shows "Cancelling" until the workers are gone, then "Cancelled", with the
+clip's input files kept for Remix, and Delete. A clip that finishes just as you press Cancel is either kept (Cancel
+then says it has just finished) or cancelled, never both. A clip whose Cancel was answered stays cancelled even if
+the studio stops before the clip has stopped.
+
+**Cancelled clips after going back to a studio before 0.3.** An older studio doesn't know the status "cancelled": at
+start it marks those clips as failed with "server restarted" and saves that, so they stay failed after updating
+again.
+
+**spark-switchboard never stops the studio for being idle after a Cancel.** Its busy probe must count "cancelled"
+as idle (`idle_values` in `integrations/spark-switchboard/sol-h3-studio.toml`, since 0.3). With a copy from before,
+switchboard sees the studio as busy while a cancelled clip is among the newest 24. That includes a config made from
+switchboard's own example (`examples/services/sol-h3-studio.toml` before spark-switchboard's matching change). Add
+`"cancelled"` to `idle_values` in switchboard's `services/` copy, or copy the file there again, and restart
+switchboard. Until then, deleting the cancelled clip ends the block at once.
+
 **Switching mode, format or length takes minutes.** Each combination is one loaded session. Changing any of them
 closes the session and loads the models again; the Generate button says so before you click.
 

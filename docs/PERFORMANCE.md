@@ -49,7 +49,10 @@ route; 9:16 and 3-15 s are this repo's extensions ([PATCH.md](PATCH.md)).
 - MemAvailable sampled every 0.25 s; a guard (`bench/memguard-run.sh`) stops the run below 5 GiB.
 - Repeat runs of one configuration differed by up to ~7 s, so changes under ~5 s are noise.
 - Stage 1 output is bit-identical to upstream (audio MD5 equal in every run). Stage 2 is not deterministic run
-  to run, even upstream: PSNR 43.3-43.6 dB upstream vs upstream, 42.2-43.4 dB upstream vs this repo.
+  to run, even upstream: PSNR 43.3-43.6 dB upstream vs upstream, 42.2-43.4 dB upstream vs this repo (measured
+  before 0.3, with Stage 2 as upstream, today's `SOL_H3_STAGE2_AUDIO=joint`). With the default frozen audio, Stage 2
+  differs from upstream by design: about 35 dB, 3/255 on average
+  ([PATCH.md](PATCH.md#15-stage-2-audio-held-fixed-lip-sync)). The timings here don't change with it.
 - All 4,349 LTX transformer and 3,320 LoRA tensors read by the new loader were compared bit for bit with
   safetensors (earlier, also 856 adapter tensors). The H3 shards and the VAEs were not compared tensor by tensor.
 - The numbers were measured with a different prompt of similar length. `bench/prompts/bench.jsonl` ships NVIDIA's

@@ -28,11 +28,12 @@ without Playwright (`pip install playwright && playwright install webkit`). One 
 
 `tests/stub/runtime/` stands in for the patched `runtime` package: loading and generating are `sleep` processes
 (`STUB_LOAD_S`, `STUB_CLIP_S`), each clip is a small ffmpeg test pattern in the requested format and length, and a
-prompt containing `STUB_FAIL` fails like a dead worker. `tests/stub/studio.py` gives each run its own runtime root,
-state directory and port under a temp directory; the tests use its `StubStudio` class. Add a test there for every
-server change.
+prompt containing `STUB_FAIL` fails like a dead worker. Its docstring lists the other hooks (a slow close, a clip
+finishing as it is cancelled, a worker that starts late, a failure only on the first run). `tests/stub/studio.py`
+gives each run its own runtime root, state directory and port under a temp directory; the tests use its
+`StubStudio` class. Add a test there for every server change.
 
-The patch has its own 69 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
+The patch has its own 74 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A
 second studio next to an installed one needs its own env file (`SOLH3_ENV=<file> bin/sol-h3-studio`) with its own

@@ -47,7 +47,7 @@ win over the file.
   dependencies/{fa4,offline-context}
   runtime/               SOL_H3_SPARK_RUNTIME_ROOT: uploads, outputs, compile cache, trash (deleted clips)
   paths-{t2va,fl2va,ref2va}.json, existing-paths.json, fixed-prompt.pt, logs/
-  applied.patch          the patch install/10-sana.sh applied last (for updates)
+  applied.patch          up to 0.2: the patch install/10-sana.sh applied last (now kept in the checkout's git directory)
 ```
 
 Every script is idempotent (it skips work that is done; `FORCE=1` redoes it) and accepts `--dry-run`, which
@@ -79,7 +79,7 @@ for a mode whose weights were not downloaded.
 | Step | What it does | Time / size measured |
 |---|---|---|
 | `install/00-check.sh` | Checks aarch64, GB10, driver, CUDA 13, python3.12, git, curl, ffmpeg, docker, disk, HF access to LTX-2.5. Changes nothing. | - |
-| `install/10-sana.sh` | Clones NVlabs/Sana `sol-engine` at `patches/BASE_COMMIT`, applies the patch (and keeps a copy for [updates](#updating)), runs the 69 CPU tests once the Stage1 env exists. | - |
+| `install/10-sana.sh` | Clones NVlabs/Sana `sol-engine` at `patches/BASE_COMMIT`, applies the patch (and keeps a copy for [updates](#updating)), runs the 74 CPU tests once the Stage1 env exists. | - |
 | `install/20-weights.sh` | Downloads the pinned weights for t2va, fl2va and ref2va with NVIDIA's `download_checkpoints.py --include-offline --verify-sha256`. `SOLH3_TASKS` limits it (see above). Resumable. | ~48 min at ~80 MB/s, ~224 GB |
 | `install/30-sources.sh` | Fetches the pinned source trees with `prepare.py --fetch-sources`. It ends with "Missing required inputs", which is expected; the script checks the revisions itself. | ~12 s, ~0.5-0.8 GB |
 | `install/40-stage1.sh` | Stage1 venv (torch 2.12+cu130, FastVideo, fastvideo-kernel built for SM121, cuDNN 9.20) and the isolated FA4 target. | 5-22 min (5.5 min on a fast connection, 22 min in the first install), ~7.6 GB with FA4 |
@@ -133,14 +133,21 @@ cd ~/src/sol-h3-studio && git pull
 install/10-sana.sh
 ```
 
-`install/10-sana.sh` keeps a copy of the patch it applied in `$SOLH3_HOME/applied.patch`. When the repo brings a
-new patch, it checks that the checkout holds the earlier patch and nothing else, reverses the earlier patch with
-that copy, checks out the new `patches/BASE_COMMIT` if that changed, and applies the new patch. If the checkout
+`install/10-sana.sh` keeps a copy of the patch it applied with the checkout (`sol-h3-studio-applied.patch` in its
+git directory, so each clone and git worktree has its own; versions up to 0.2 kept one in `$SOLH3_HOME/applied.patch`).
+When the repo brings a new patch, it finds the earlier patch the checkout carries (that copy, the 0.2 location, or
+an earlier version of `patches/sol-h3-studio.patch` from this repo's history), checks that the checkout holds it and
+nothing else, reverses it, checks out the new `patches/BASE_COMMIT` if that changed, and applies the new patch. If the checkout
 has other local changes it lists them and stops without changing anything; move them away, or move `$SOLH3_SANA`
 away and run the script again for a fresh clone. Restart the studio afterwards.
 
-A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) has no copy to reverse: reverse it with
-the patch file you applied (`git -C "$SOLH3_SANA" apply -R <that patch>`) before you pull, or re-clone as above.
+If spark-switchboard runs the studio, copy `integrations/spark-switchboard/sol-h3-studio.toml` into its `services/`
+directory again when the file changes, and restart switchboard (0.3: its busy probe counts the new status
+"cancelled" as idle).
+
+A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a released version of the patch is
+found the same way. Any other patch: reverse it with the file you applied (`git -C "$SOLH3_SANA" apply -R <that
+patch>`), or re-clone as above.
 
 The compile cache is keyed on code and versions, so it stays valid; delete `$SOL_H3_SPARK_RUNTIME_ROOT/cache` to
 start clean.

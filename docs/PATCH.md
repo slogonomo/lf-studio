@@ -2,12 +2,12 @@
 
 `patches/sol-h3-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
-branch `sol-engine`. It is a plain `git diff`: 20 files, 17 modified and 3 new.
+branch `sol-engine`. It is a plain `git diff`: 21 files, 18 modified and 3 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 69 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 74 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
-  69 CPU tests pass. The 17 upstream files the patch touches are identical in both commits.
-- 16 of the 17 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
+  69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
+- 17 of the 18 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
   tagged `sol-h3-studio:`. The 3 new files say they are part of sol-h3-studio.
@@ -23,7 +23,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 69 tests ... OK
+CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 74 tests ... OK
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -49,6 +49,7 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Orientation and clip length are applied after the frozen-recipe hash check. `configs/default.json` is still checked against `FROZEN_RECIPE_SHA256` first, then portrait and length are derived from it, the same way upstream derives its Ref2VA options. `results.json` records the derived recipe. | off | landscape, 5 s |
 | Model loading overlaps (see below), so stages load at the same time instead of one after another. | on | no switch; `git apply -R` |
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
+| Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
 
@@ -238,13 +239,53 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 The Stage2 worker prints `[sol-h3-studio] HH:MM:SS ...` lines while it builds its models (upscaler, transformer,
 audio encoder, decoder). They go to that worker's `worker.log`. No switch.
 
-### 15. Tests
+### 15. Stage-2 audio held fixed (lip sync)
+
+NVIDIA's Stage 2 encodes the H3 audio with the LTX-2.5 audio VAE and noises it to the first Stage-2 sigma (0.909),
+like the video. It denoises audio and video together for three updates under the generic Stage-2 prompt. Then it
+discards that audio and muxes the original H3 PCM (its `STAGE2_CONTRACT.md`, steps 4 and 7). The video attends to the
+audio while it is refined, so the mouths are redrawn to the regenerated speech. About 9% of the H3 signal survives
+the noising. The regenerated speech keeps the rhythm but not the sounds: Whisper hears it as English-sounding babble,
+with a phoneme error rate at chance level against the heard track. It sometimes also adds speech in pauses. In the
+MP4 the lips then look close to the dialogue but approximated, and they sometimes move while nobody speaks.
+
+The patch holds the H3 audio clean and fixed during the refine, as LTX-2's own audio-to-video pipeline does
+(`a2vid_two_stage.py`: `frozen=True, noise_scale=0.0`). `SparkRefiner.prepare_multimodal_states` first builds the
+upstream states, so the random draws and the video noise are the same. It then replaces the audio state with its
+clean latent, an all-zero denoise mask and `frozen=True`, so the transformer is told sigma 0 for the audio. A
+`SOL_H3_STAGE2_AUDIO` value other than `frozen` or `joint` (any case) fails when the pipeline is created, before any
+worker loads; the studio refuses to start with it. An installed LTX-2 without frozen states fails when Stage 2 starts. The Stage-2 receipts
+(`stage2_result.json`) record the mode as `stage2_audio`. Stage 2 takes the same time.
+
+Measured on 8 dialogue clips: two people, fl2va 10 s, 8 seeds, one scene. Each clip's Stage 2 was run both ways
+from the same saved Stage-1 capture:
+- the upstream run reproduced the studio's output exactly;
+- the frozen run is what the patched studio renders, bit for bit when both are warm requests.
+
+SyncNet confidence over each speaker's lines (LSE-C, higher is better; the draft was decoded for the first 4 clips
+only):
+
+| speaker | Stage-1 draft (4 clips) | upstream Stage 2 | frozen audio |
+|---|---|---|---|
+| man, facing the camera | 8.2 | 4.4 | 7.8 |
+| woman, near profile | 6.5 | 3.5 | 5.2 |
+
+Over 14 clips, the upstream finals' timing within a line wandered by 3-4 frames against about one in the drafts.
+The silent mouthing seen in one clip is gone with frozen audio. The frames differ by about 3/255 on average, faces
+and identity are unchanged, and the image is 5-11% sharper.
+
+- **Files.** `runtime/stage2.py`, `runtime/config.py` (the setting), `runtime/pipeline.py` (checks it first),
+  `tests/test_stage2_contract.py`, `tests/test_pipeline.py`.
+- **Switch.** `SOL_H3_STAGE2_AUDIO=joint` restores upstream's behaviour (older clips then reproduce from their seed).
+
+### 16. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
 deliver-first, the background prompt encoder, the new `Pipeline` arguments and the compile-cache location (it
 also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
-BSA check. 69 tests in total (upstream: 65).
+BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
+older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 tests in total (upstream: 65).
 
 ## All switches
 
@@ -262,6 +303,7 @@ BSA check. 69 tests in total (upstream: 65).
 | `SPARK_DEBUG_AUTOTUNE` | 0 | 1 = print autotune-cache fallback hits |
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
+| `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.

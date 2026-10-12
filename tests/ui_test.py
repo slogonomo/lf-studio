@@ -79,14 +79,19 @@ with sync_playwright() as p:
         pg.wait_for_timeout(2500)
         pg.screenshot(path=str(SHOTS / f"ui_{scheme}.png"))
         ctx.close()
-    ctx = b.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", is_mobile=True,
-                        device_scale_factor=2)
-    pg = ctx.new_page()
-    pg.goto(URL)
-    pg.wait_for_timeout(2000)
-    check(pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"), "phone width: no horizontal scroll")
-    pg.screenshot(path=str(SHOTS / "ui_phone.png"), full_page=False)
-    ctx.close()
+    for width in (320, 390):                       # 320: the narrowest common phone (#19)
+        ctx = b.new_context(viewport={"width": width, "height": 844}, color_scheme="dark", is_mobile=True,
+                            device_scale_factor=2)
+        pg = ctx.new_page()
+        pg.goto(URL)
+        pg.wait_for_timeout(2000)
+        check(pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"),
+              f"phone width {width} px: no horizontal scroll")
+        rows = pg.evaluate("""() => [...document.querySelectorAll('.job')].map(c => new Set([...c.querySelectorAll('.acts > *')]
+                                .filter(e => e.offsetWidth).map(e => Math.round(e.getBoundingClientRect().top))).size)""")
+        check(all(n <= 1 for n in rows), f"phone width {width} px: card buttons on one row ({len(rows)} cards)")
+        pg.screenshot(path=str(SHOTS / f"ui_phone_{width}.png"), full_page=False)
+        ctx.close()
 
     ctx = b.new_context(viewport={"width": 1400, "height": 1000})
     pg = ctx.new_page()
@@ -191,6 +196,14 @@ with sync_playwright() as p:
     else:
         skip("player checks (no finished clips on this server yet)")
 
+    # card buttons: Delete on finished clips (done, failed, cancelled), Cancel only on queued or running ones
+    cards = pg.evaluate("[...document.querySelectorAll('.job')].map(c => [c.dataset.status, "
+                        "!c.querySelector('.cancel').hidden, !c.querySelector('.del').hidden])")
+    finished = ("done", "failed", "cancelled")
+    check(all(dl and not cancel for s, cancel, dl in cards if s in finished)
+          and not any(dl for s, cancel, dl in cards if s not in finished),
+          f"Cancel only on queued or running cards, Delete only on finished ones ({len(cards)} cards)")
+
     if RUN_JOB:
         if not n_done:
             skip("--job needs a finished clip to watch; generate one first")
@@ -215,7 +228,7 @@ with sync_playwright() as p:
                 if not st["alive"] or st["paused"] or not st["form"] or st["t"] <= last_t:
                     stalls += 1
                 last_t = st["t"]
-                if st["status"] in ("done", "failed"):
+                if st["status"] in finished:
                     break
             check(stalls == 0, "the playing video and the form survived the whole job")
             check(st.get("status") == "done", f"job finished: {st.get('status')}")

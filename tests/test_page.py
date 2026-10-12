@@ -441,7 +441,7 @@ class SeedText(PageTest):
         self.studio.wait([ok, bad])           # the page was open: the cards were built while queued, then updated
         self.page.wait_for_selector(f'article[data-id="{ok}"] video')
         self.page.wait_for_selector(f'article[data-id="{bad}"][data-status="failed"]')
-        for width in (1280, 390, 320):        # 320: the narrowest card (290 px)
+        for width in (1280, 390, 320):        # 320: the narrowest phone card (266 px, #19)
             self.page.set_viewport_size({"width": width, "height": 900})
             self.page.wait_for_timeout(300)
             for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", "Delete"]),
@@ -581,6 +581,171 @@ class SeedText(PageTest):
                 paint(getComputedStyle(document.querySelector('{card} .seedv')).color); const fg = lum();
                 return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05); }}""")
             self.assertGreaterEqual(ratio, 4.5, f"seed contrast in {scheme} mode")
+
+
+class PhoneWidth(PageTest):
+    """#19: no sideways scroll on a phone, and the card buttons still share one row."""
+
+    def test_no_sideways_scroll_and_one_row_of_buttons(self):
+        ok = self.studio.generate(prompt="a long prompt " * 30, seed=2034940401)[1]["id"]
+        bad = self.studio.generate(prompt="STUB_FAIL", seed=2147483646)[1]["id"]
+        self.studio.wait([ok, bad])
+        self.page.wait_for_selector(f'article[data-id="{ok}"] video')
+        self.page.wait_for_selector(f'article[data-id="{bad}"][data-status="failed"]')
+        for width in (300, 320, 340, 360, 375, 414, 600):
+            self.page.set_viewport_size({"width": width, "height": 900})
+            self.page.wait_for_timeout(300)
+            scroll, client, wide = self.page.evaluate("""() => {
+                const cw = document.documentElement.clientWidth;
+                const wide = [...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().right > cw + 0.5)
+                    .map(e => e.tagName + (e.id ? '#' + e.id : '') + '.' + e.className);
+                return [document.documentElement.scrollWidth, cw, wide]; }""")
+            self.assertLessEqual(scroll, client, f"sideways scroll at {width} px: {wide}")
+            self.assertEqual(wide, [], f"wider than the screen at {width} px")
+            for jid, buttons in ((ok, ["Remix", "Download", "Delete"]), (bad, ["Remix", "Delete"])):
+                row = self.page.eval_on_selector_all(
+                    f'article[data-id="{jid}"] .acts > *', "els => els.filter(e => e.offsetWidth).map(e => "
+                                                           "[e.textContent.trim(), Math.round(e.getBoundingClientRect().top)])")
+                self.assertEqual([name for name, _ in row], buttons, width)
+                self.assertEqual(len({top for _, top in row}), 1, f"one row at {width} px: {row}")
+
+    def test_a_long_file_name_in_an_error_wraps(self):
+        """The form panel scrolls on its own, so check it too: an error naming a long upload must wrap."""
+        self.page.set_viewport_size({"width": 320, "height": 900})
+        self.pick("task", "ref2va")
+        self.page.fill("#prompt", "refs")
+        name = "PXL_20261011_145012345_short_clip_from_the_trip.mp4"           # nowhere to break the saved name
+        self.page.set_input_files('input[name="ref_videos"]', files=[{"name": name, "mimeType": "video/mp4",
+                                                                       "buffer": mp4(1)}])
+        self.page.click("#go")
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('at least 2 s')")
+        widths = self.page.evaluate("""() => [...document.querySelectorAll('#f, #err')].map(e => [e.id, e.scrollWidth,
+                                                                                          e.clientWidth])""")
+        for el, scroll, client in widths:
+            self.assertLessEqual(scroll, client, f"#{el} scrolls sideways: {widths}")
+
+
+class CancelCards(PageTest):
+    """#20: Cancel on queued and running cards only; the card stays as Cancelled (neutral, not an error), with Remix
+    and Delete, and Remix restores everything."""
+    load_s, clip_s = 6, 6
+
+    def seed(self):
+        self.studio.env["STUB_CLOSE_S"] = "3"                                 # a stopped clip shows "Cancelling" 3 s
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([
+            finished_job("1" * 32, created=1), finished_job("2" * 32, created=2, status="failed", error="boom")]))
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def status(self, jid, status):
+        self.page.wait_for_selector(f'{self.card(jid)}[data-status="{status}"]')
+
+    def visible(self, jid):
+        """The card's buttons on screen, by name."""
+        return self.page.eval_on_selector_all(f"{self.card(jid)} .acts > *",
+                                              "els => els.filter(e => e.offsetWidth).map(e => e.textContent.trim())")
+
+    def test_focus_stays_on_the_card_when_a_poll_hides_cancel(self):
+        """Cancel focused, then the clip finishes, or another tab cancels it: focus moves to Delete or Remix,
+        not to the page."""
+        a = self.studio.generate(prompt="finishes by itself", seconds=3)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.page.focus(f"{self.card(a)} .cancel")
+        self.status(a, "done")
+        self.assertEqual(self.page.evaluate("document.activeElement.textContent.trim()"), "Delete")
+        b = self.studio.generate(prompt="cancelled elsewhere", seed=3, seconds=3)[1]["id"]
+        self.status(b, "generating")
+        self.page.focus(f"{self.card(b)} .cancel")
+        self.assertEqual(self.studio.post("/api/cancel", json_body={"id": b})[0], 200)     # another tab
+        self.page.wait_for_function(f"document.querySelector('{self.card(b)} .cancel').hidden")
+        self.assertEqual(self.page.evaluate("document.activeElement.textContent.trim()"), "Remix")
+
+    def test_cancel_queued_and_running_cards(self):
+        a = self.studio.generate(prompt="running", seconds=8)[1]["id"]
+        b = self.studio.generate(prompt="queued", seed=2)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.status(b, "queued")
+        self.assertEqual(self.visible(a), ["Remix", "Cancel"])
+        self.assertEqual(self.visible(b), ["Remix", "Cancel"])
+        self.assertEqual(self.visible("1" * 32), ["Remix", "Download", "Delete"])   # finished cards: no Cancel
+        self.assertEqual(self.visible("2" * 32), ["Remix", "Delete"])
+        self.assertIn("models load again", self.page.get_attribute(f"{self.card(a)} .cancel", "title"))
+        self.assertIn("out of the queue", self.page.get_attribute(f"{self.card(b)} .cancel", "title"))
+        self.page.click(f"{self.card(b)} .cancel")                             # the mouse
+        self.status(b, "cancelled")
+        self.assertEqual(self.studio.job(b)["status"], "cancelled")
+        self.assertEqual(self.visible(b), ["Remix", "Delete"])
+        texts = [self.page.inner_text(f"{self.card(b)} {part}") for part in (".st", ".ph2 .big", ".errtxt")]
+        self.assertEqual(texts, ["Cancelled", "Cancelled", ""])
+        self.pick("seconds", "8")                                              # a's settings: no reload
+        self.assertNotIn("load", self.go_text())
+        self.page.focus(f"{self.card(a)} .cancel")                             # the keyboard
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_selector(f"{self.card(a)} .cancel", state="hidden")
+        self.assertTrue(self.page.evaluate(f"document.activeElement === document.querySelector("
+                                           f"'{self.card(a)} .reuse-all')"), "focus moves to the card's Remix")
+        self.assertEqual(self.page.inner_text(f"{self.card(a)} .st"), "Cancelling")   # while its session closes
+        self.assertIn("loads the models first", self.go_text())               # the next clip loads them again
+        self.status(a, "cancelled")
+        self.assertEqual(self.visible(a), ["Remix", "Delete"])
+        self.assertIsNone(self.page.query_selector(f"{self.card(a)} video"))   # nothing to play or download
+        self.page.wait_for_function("document.getElementById('count').textContent === '1 clip'")   # none running
+        # neutral, in both themes: the status in the muted colour of the other tags (not a failed clip's red or a
+        # running one's orange), the card bordered like a finished clip
+        for scheme in ("light", "dark"):
+            self.page.emulate_media(color_scheme=scheme)
+            look = self.page.evaluate(f"""() => {{ const c = s => getComputedStyle(document.querySelector(s));
+                return [c('{self.card(a)} .st').color, c('{self.card(a)} .tag').color,
+                        c('{self.card(a)}').borderColor, c('{self.card("1" * 32)}').borderColor]; }}""")
+            self.assertEqual(look[0], look[1], scheme)
+            self.assertEqual(look[2], look[3], scheme)
+
+    def test_an_older_poll_does_not_bring_the_button_back(self):
+        self.studio.generate(prompt="running", seconds=8)
+        b = self.studio.generate(prompt="queued", seed=2)[1]["id"]
+        self.status(b, "queued")
+        held = []
+        self.page.route("**/api/state", lambda route: held.append((route, route.fetch())))
+        self.page.wait_for_timeout(2500)                                       # polls answered before the Cancel
+        stale = list(held)
+        self.assertTrue(stale and all(b"queued" in r.body() for _, r in stale))
+        self.page.click(f"{self.card(b)} .cancel")
+        self.status(b, "cancelled")
+        for route, response in stale:
+            route.fulfill(response=response)
+        self.page.wait_for_timeout(500)
+        self.assertEqual(self.page.get_attribute(self.card(b), "data-status"), "cancelled")
+        self.assertEqual(self.visible(b), ["Remix", "Delete"])
+        for route, response in held[len(stale):]:
+            route.fulfill(response=response)
+        self.page.unroute("**/api/state")
+
+    def test_remix_restores_settings_and_files(self):
+        frames = {"first_frame": [("first.png", png())], "last_frame": [("last.png", png(40))]}
+        a = self.studio.generate(task="fl2va", orientation="portrait", seconds=8, prompt="the cancelled one", seed=1234,
+                                 files=frames)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.page.click(f"{self.card(a)} .cancel")
+        self.status(a, "cancelled")
+        self.pick("task", "t2va")
+        self.pick("orientation", "landscape")
+        self.pick("seconds", "5")
+        self.page.fill("#prompt", "something else")
+        self.page.click(f"{self.card(a)} .reuse-all")
+        self.page.wait_for_function("document.querySelectorAll('#fl .thumbs img.kept').length === 2")
+        form = self.page.evaluate("""() => ['task', 'orientation', 'seconds'].map(n =>
+            document.querySelector(`input[name=${n}]:checked`).value)""")
+        self.assertEqual(form, ["fl2va", "portrait", "8"])
+        self.assertEqual((self.page.input_value("#prompt"), self.page.input_value("#seed")),
+                         ("the cancelled one", "1234"))
+        self.assertEqual(self.page.inner_text("#err"), "")
+        self.page.click("#go")
+        new = self.studio.wait_for(lambda s: len([j for j in s["jobs"] if j["prompt"] == "the cancelled one"]) == 2)
+        job = next(j for j in new["jobs"] if j["prompt"] == "the cancelled one" and j["id"] != a)
+        self.assertEqual([Path(job[k]).name for k in ("first_frame", "last_frame")], ["first.png", "last.png"])
+        self.assertEqual((job["orientation"], job["seconds"], job["seed"]), ("portrait", 8, 1234))
+
 
 if __name__ == "__main__":
     unittest.main()
