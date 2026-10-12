@@ -559,10 +559,12 @@ From the MCP process's environment (the host's server config):
 
 **Results.** A done clip gives a text block (`Clip <id> is done: saved <absolute path> (3.2 MB, 5 s fl2va
 landscape, seed 1234).`, the labels, and the record as JSON), a `resource_link` to `<studio>/video/<id>`, and the
-poster as an image (unless `poster: false`); `structuredContent` is the record plus `path`, `url`, `poster_url`,
-`bytes` and `poster_path`. The poster is also saved next to the MP4 as `.jpg`. A clip still running is not an error:
-`Clip <id> is generating, 1:10 since it started. Call wait with id "<id>" to keep waiting.` A failed clip, a
-refusal and an unreachable studio are `isError` results with the message. A cancelled clip is not an error.
+poster as an image (unless `poster: false`). The `resource_link` goes only to clients on protocol 2025-06-18 or
+later: the official Python SDK 1.8.1 and 1.9.4 (which agree on 2024-11-05 and 2025-03-26) reject a result holding
+one. The URL is in the JSON as well. `structuredContent` is the record plus `path`, `url`, `poster_url`, `bytes`
+and `poster_path`. The poster is also saved next to the MP4 as `.jpg`. A clip still running is not an error: `Clip
+<id> is generating, 1:10 since it started. Call wait with id "<id>" to keep waiting.` A failed clip, a refusal and
+an unreachable studio are `isError` results with the message. A cancelled clip is not an error.
 
 **How it behaves:**
 

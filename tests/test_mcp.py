@@ -268,6 +268,25 @@ class Tools(McpTest):
         self.assertEqual(r["content"][2]["mimeType"], "image/jpeg")
         self.assertEqual(json.loads(text(r).split("\n\n", 1)[1]), rec)          # the JSON is in the text as well
 
+    def test_older_protocol_versions_get_no_resource_link(self):
+        """resource_link content exists from 2025-06-18 on: a client that agreed on 2025-03-26 or 2024-11-05 (the
+        official SDK before 1.10) rejects a result holding one, so it gets the text (with the studio URL in the JSON)
+        and the poster only."""
+        m = self.mcp()
+        hello = {"capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}
+        m.request("initialize", dict(hello, protocolVersion="2025-03-26"))
+        r = m.call("generate", {"prompt": "x", "seconds": 3, "wait_s": 30})
+        self.assertFalse(r["isError"], text(r))
+        self.assertEqual([c["type"] for c in r["content"]], ["text", "image"])
+        jid, url = r["structuredContent"]["id"], r["structuredContent"]["url"]
+        self.assertEqual(json.loads(text(r).split("\n\n", 1)[1])["url"], url)
+        m.request("initialize", dict(hello, protocolVersion="2024-11-05"))
+        self.assertEqual([c["type"] for c in m.call("fetch", {"id": jid})["content"]], ["text", "image"])
+        r = m.call("fetch", {"id": jid}, meta=MODERN_META)                       # a 2026-07-28 request
+        self.assertEqual([c["type"] for c in r["content"]], ["text", "resource_link", "image"])
+        m.request("initialize", dict(hello, protocolVersion="2025-06-18"))
+        self.assertEqual([c["type"] for c in m.call("fetch", {"id": jid})["content"]], ["text", "resource_link", "image"])
+
     def test_short_waits(self):
         """9.3 #6: wait_s 0 returns the id at once; a short wait says it is still running (not an error); wait."""
         m = self.mcp()

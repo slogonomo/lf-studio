@@ -1228,6 +1228,7 @@ LEGACY = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 META_VERSION = "io.modelcontextprotocol/protocolVersion"
 META_CAPS = "io.modelcontextprotocol/clientCapabilities"
 META_SERVER = "io.modelcontextprotocol/serverInfo"
+LINKS_FROM = "2025-06-18"   # the first protocol version with resource_link content; older SDK clients reject it
 SERVER_INFO = {"name": "sol-h3", "title": "Sol-H3 Studio", "version": VERSION}
 PROGRESS_S = 10          # a notifications/progress this often while a call with a progressToken runs
 REPEAT_S = 1800          # an identical generate this soon returns the earlier clip
@@ -1433,6 +1434,7 @@ class McpServer:
         sys.stdout = sys.stderr                       # nothing else may write to the protocol stream
         self.write_lock, self.calls_lock, self.clips_lock = threading.Lock(), threading.Lock(), threading.Lock()
         self.calls = {}                               # request id -> Call
+        self.version = None                           # the protocol version agreed at initialize (legacy era)
         self.clips = []                               # Submission, oldest first
         self.handlers = {"generate": self.t_generate, "wait": self.t_wait, "status": self.t_status,
                          "cancel": self.t_cancel, "fetch": self.t_fetch, "prompt_guide": self.t_guide}
@@ -1520,6 +1522,7 @@ class McpServer:
                 result = {"protocolVersion": asked if asked in LEGACY else LEGACY[0],
                           "capabilities": {"tools": {"listChanged": False}}, "serverInfo": SERVER_INFO,
                           "instructions": INSTRUCTIONS}
+                self.version = result["protocolVersion"]
             elif method == "server/discover":
                 modern = True
                 result = {"supportedVersions": list(MODERN + LEGACY), "capabilities": {"tools": {"listChanged": False}},
@@ -1547,6 +1550,8 @@ class McpServer:
                     call.finish()
                 if call.cancelled.is_set():           # a cancelled request gets no response
                     return
+                if not modern and (self.version or LEGACY[0]) < LINKS_FROM:   # the studio URL stays in the JSON
+                    result["content"] = [c for c in result["content"] if c["type"] != "resource_link"]
             else:
                 return self.error(mid, -32601, f"Method not found: {method}")
             result = dict(result, resultType="complete")
