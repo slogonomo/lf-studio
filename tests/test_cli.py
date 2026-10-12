@@ -87,7 +87,8 @@ def duration(path):
 
 class Fake:
     """A local HTTP server for the client to talk to: answer(method, path, headers, body) gives (status, headers,
-    body); each request is recorded as (method, path, headers, body)."""
+    body), or None to close the connection without an answer; each request is recorded as (method, path, headers,
+    body)."""
 
     def __init__(self, answer):
         self.answer, self.requests = answer, []
@@ -111,7 +112,11 @@ class Fake:
     def serve(self, h):
         body = h.rfile.read(int(h.headers.get("Content-Length") or 0))
         self.requests.append((h.command, h.path, dict(h.headers), body))
-        status, headers, data = self.answer(h.command, h.path, h.headers, body)
+        answer = self.answer(h.command, h.path, h.headers, body)
+        if answer is None:
+            h.close_connection = True
+            return
+        status, headers, data = answer
         if isinstance(data, (dict, list)):
             data = json.dumps(data).encode()
         h.send_response(status)

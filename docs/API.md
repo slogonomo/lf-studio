@@ -571,9 +571,12 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
 - **The submit** holds at switchboard for what is left of the call's budget after a margin for the upload (15 s,
   plus 1 s per 2 MB, plus 15 s per reference video), so `generate` still answers within `wait_s`. The upload runs
   on its own: a call that is cancelled or times out still submits the clip, and `status` without an id shows it.
-- **An identical `generate` within 30 minutes** (the same arguments and the same file contents) returns the earlier
-  clip instead of making another: "Already submitted as <id> ...". Change the seed, or pass `again: true`, for
-  another take. A clip that failed or was cancelled is made again.
+- **An identical `generate` to the same MCP server process within 30 minutes** (the same arguments and the same
+  file contents) returns the earlier clip instead of making another: "Already submitted as <id> ...". Change the
+  seed, or pass `again: true`, for another take. A clip that failed, was cancelled or was deleted is made again; a
+  studio that is starting, stopped or unreachable keeps the earlier clip. The server remembers these calls in
+  memory only: after a host restart or in a new host session, the same call makes a new clip, so look for the
+  earlier one first with `status` (no id: the newest clips) or its id.
 - **Cancelling a tool call** (Esc in the host, a host timeout) never cancels or removes a clip; only the `cancel`
   tool does.
 - **`out`** must be an existing directory or a name ending in `.mp4`, inside `SOLH3_OUT_DIR` or the working

@@ -1250,9 +1250,10 @@ TOOLS = [
          "orientation, the first keyframe's shape picks it. Write the prompt in H3's format (prompt_guide). "
          "References are numbered in the order given per kind: <Picture N>, <Video N>, <Audio N>; a reference video "
          "with sound also takes an <Audio N> just before its own <Video N>. The result's labels list shows the "
-         "numbering used. An identical call within 30 minutes returns the earlier clip instead of making a new one: "
-         "change the seed (or pass again: true) for another take. Cancelling this call never removes a clip that was "
-         "already submitted."),
+         "numbering used. An identical call to this server within 30 minutes returns the earlier clip instead of making "
+         "a new one: change the seed (or pass again: true) for another take. After a restart of the server (a new "
+         "session), status lists the newest clips. Cancelling this call never removes a clip that was already "
+         "submitted."),
      "inputSchema": {"type": "object", "required": ["prompt"], "additionalProperties": False, "properties": {
          "prompt": {"type": "string", "description": (
              "H3 structured prompt. t2va/fl2va: integrated_multimodal_description, overall_soundscape, "
@@ -1634,7 +1635,28 @@ class McpServer:
                                    "get it (that starts the studio, which takes about 110 GiB of the Spark's memory "
                                    "from other apps).", error=True)
             return text_result(prefix + error.message[0].upper() + error.message[1:] + ".", error.job, error=True)
+        except Fail as error:
+            if not prefix:
+                raise
+            return text_result(prefix + error.message, error=True)     # keeps "Already submitted as <id>"
         return self.outcome(jid, state, info, saver, prefix)
+
+    def earlier_record(self, jid):
+        """The record of the clip an identical generate made, read to decide whether to make it again: None only when
+        the studio answers that it has no such clip (deleted). A studio that is starting, stopped, unreachable or in
+        trouble keeps the earlier clip: {"state": "unknown"} (the wait that follows explains). X-Switchboard-Wait: 0
+        makes switchboard answer at once instead of holding the read while the studio starts."""
+        try:
+            status, headers, raw = self.studio.call("GET", f"/api/jobs/{jid}", None, {"X-Switchboard-Wait": "0"},
+                                                    SIDE_S)
+        except Unreachable:
+            return {"state": "unknown"}
+        obj = parse_json(raw)
+        if status == 200 and isinstance(obj, dict):
+            return obj
+        if status == 404 and not isinstance(refusal(status, headers, raw), Busy):
+            return None
+        return {"state": "unknown"}
 
     def recent(self, key):
         with self.clips_lock:
@@ -1688,12 +1710,7 @@ class McpServer:
                                f"{mmss(time.time() - earlier.time)} ago). Call status without an id in a minute to see "
                                "its id, or pass again: true to make another clip.", {"state": "submitting"})
         if earlier is not None and earlier.id:
-            try:
-                rec = self.studio.json("GET", f"/api/jobs/{earlier.id}", timeout=SIDE_S)
-            except Busy:
-                rec = {"state": "unknown"}           # the wait below explains (a stopped studio, ...)
-            except Fail:
-                rec = None                           # deleted, or the studio is gone: submit again
+            rec = self.earlier_record(earlier.id)
             if rec is not None and rec.get("state") not in ("failed", "cancelled"):
                 prefix += (f"Already submitted as {earlier.id} by an identical call {mmss(time.time() - earlier.time)} "
                            "ago (change the seed, or pass again: true, for another take). ")

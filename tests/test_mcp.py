@@ -555,6 +555,40 @@ class FakeStudio(McpTest):
         self.assertEqual([p for p in fake.paths() if p == "/api/generate"], ["/api/generate"])
         self.assertNotIn(json.dumps("g1"), m.responses)
 
+    def test_identical_generate_while_the_studio_is_unavailable(self):
+        """DECISIONS 14: only the studio's 404 for the earlier clip (deleted) makes an identical generate submit
+        again. While the studio can't say (it is starting, stopped, unreachable or in trouble), the earlier clip is
+        kept, and the record is read with X-Switchboard-Wait: 0, so switchboard doesn't hold it."""
+        record = {"id": self.JID, "state": "queued", "phase": None, "ahead": 0, "task": "t2va", "status": "queued",
+                  "orientation": "landscape", "seconds": 5, "seed": 1}
+        read = {"answer": None}
+
+        def answer(method, path, headers, body):
+            if path == "/api/generate":
+                return 200, JSON, {"id": self.JID, "job": record}
+            if path == f"/api/jobs/{self.JID}":
+                return read["answer"]
+            if path.startswith(f"/api/jobs/{self.JID}/video"):
+                return 202, JSON, record
+            return 404, JSON, {"error": "not found"}
+        fake = self.fake(answer)
+        m = self.mcp(url=fake.url)
+        args = {"prompt": "x", "seed": 1, "wait_s": 0}
+        self.assertFalse(m.call("generate", args)["isError"])
+        for trouble in (None,                                                   # no answer (a held read timing out)
+                        (500, JSON, {"error": "Internal error"}),
+                        switchboard_error("loading", "Sol-H3 Studio is starting")):
+            read["answer"] = trouble
+            r = m.call("generate", args)
+            self.assertIn(f"Already submitted as {self.JID}", text(r), trouble)
+        self.assertEqual(fake.paths().count("/api/generate"), 1)
+        reads = [h for _, p, h, _ in fake.requests if p == f"/api/jobs/{self.JID}"]
+        self.assertEqual([h.get("X-Switchboard-Wait") for h in reads], ["0"] * 3)
+        read["answer"] = (404, JSON, {"error": "no such clip"})                  # deleted: made again
+        r = m.call("generate", args)
+        self.assertNotIn("Already submitted", text(r))
+        self.assertEqual(fake.paths().count("/api/generate"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
