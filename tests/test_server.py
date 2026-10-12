@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -18,9 +19,10 @@ import unittest
 import urllib.error
 import zlib
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
-from studio import StubStudio  # noqa: E402
+from studio import StubStudio, free_port  # noqa: E402
 
 if not shutil.which("ffmpeg"):
     raise unittest.SkipTest("ffmpeg not installed")
@@ -69,6 +71,82 @@ class StudioTest(unittest.TestCase):
         code, body = self.studio.generate(**kw)
         self.assertEqual(code, 200, body)
         return body["id"]
+
+
+def children(pid):
+    """The processes `pid` started (Linux /proc)."""
+    found = []
+    for d in Path("/proc").iterdir():
+        if d.name.isdigit():
+            try:
+                if int((d / "stat").read_text().rsplit(")", 1)[1].split()[1]) == pid:
+                    found.append(int(d.name))
+            except (OSError, ValueError):
+                continue
+    return found
+
+
+class StubStart(unittest.TestCase):
+    """tests/stub/studio.py: a stub studio counts as started only once its own server serves the port. Another studio
+    on that port answers /health too, and everything the tests or a reviewer then sent went to it."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="sol-h3-stub-"))
+        self.first = StubStudio(self.dir / "first", preload=False).start()
+        self.others = []
+
+    def tearDown(self):
+        for s in self.others + [self.first]:
+            s.stop()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def other(self, name, port):
+        self.others.append(StubStudio(self.dir / name, port=port, preload=False))
+        return self.others[-1]
+
+    def test_a_port_in_use(self):
+        second = self.other("second", self.first.port)
+        t = time.time()
+        with self.assertRaisesRegex(RuntimeError, f"port {self.first.port} is in use"):
+            second.start()
+        self.assertLess(time.time() - t, 1, "fails at once")
+        self.assertIsNone(second.proc)                                           # no server was started
+        # taken between that check and the server's bind: the server exits, and the first studio's answers don't count
+        with mock.patch("studio.port_taken", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "Address already in use"):
+                second.start()
+            self.assertIsNotNone(second.proc.poll())
+            # a restart: the log still has the start line of the run before, which doesn't count either
+            self.first.stop()
+            third = self.other("third", self.first.port).start()
+            with self.assertRaisesRegex(RuntimeError, "Address already in use"):
+                self.first.start()
+        self.assertEqual(self.first.log.read_text().count("Sol-H3 Studio on"), 1)
+        self.assertEqual(third.state()["jobs"], [])                              # nothing went to the third studio
+
+    def command(self, port, name):
+        return subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "stub" / "studio.py"),
+                                 "--port", str(port), "--dir", str(self.dir / name), "--no-preload"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def test_the_command(self):
+        """`python3 tests/stub/studio.py --port P` exits non-zero at once if P is in use, and when its server stops
+        by itself; stopped (SIGTERM, Ctrl-C), it exits with 0."""
+        cmd = self.command(self.first.port, "taken")
+        out, err = cmd.communicate(timeout=20)
+        self.assertEqual((cmd.returncode, out), (1, ""))
+        self.assertIn(f"stub studio not started: port {self.first.port} is in use", err)
+        for stop, code in (("server", 1), ("command", 0)):
+            port = free_port()
+            cmd = self.command(port, f"run-{stop}")
+            self.assertIn(f"stub studio on http://127.0.0.1:{port}/", cmd.stdout.readline())
+            server, = children(cmd.pid)
+            os.kill(server if stop == "server" else cmd.pid, signal.SIGKILL if stop == "server" else signal.SIGTERM)
+            out, err = cmd.communicate(timeout=30)
+            self.assertEqual(cmd.returncode, code, err)
+            if stop == "server":
+                self.assertIn("the server stopped by itself (exit code -9)", err)
+            self.assertFalse(Path(f"/proc/{server}").exists(), "the server was waited for")
 
 
 class Basics(StudioTest):

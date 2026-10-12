@@ -31,7 +31,9 @@ without Playwright (`pip install playwright && playwright install webkit`). One 
 prompt containing `STUB_FAIL` fails like a dead worker. Its docstring lists the other hooks (a slow close, a clip
 finishing as it is cancelled, a worker that starts late, a failure only on the first run). `tests/stub/studio.py`
 gives each run its own runtime root, state directory and port under a temp directory; the tests use its
-`StubStudio` class. Add a test there for every server change.
+`StubStudio` class. It counts as started only once its own server serves the port, and stops with an error (a
+non-zero exit status) if the port is in use or its server stops by itself, so nothing goes to another studio on that
+port. Add a test there for every server change.
 
 The patch has its own 74 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 
