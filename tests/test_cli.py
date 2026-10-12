@@ -23,6 +23,7 @@ import threading
 import time
 import tokenize
 import unittest
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -673,13 +674,18 @@ class ImageSize(unittest.TestCase):
     def setUpClass(cls):
         cls.cli = load_cli()
 
+    @staticmethod
+    def tiff(orientation, order="II"):
+        """EXIF's TIFF data with a Make tag, then Orientation."""
+        e = "<" if order == "II" else ">"
+        tiff = order.encode() + struct.pack(e + "HI", 42, 8) + struct.pack(e + "H", 2)
+        tiff += struct.pack(e + "HHI", 0x010F, 2, 1) + b"\x00" * 4                     # Make, before Orientation
+        return tiff + struct.pack(e + "HHIH", 0x0112, 3, 1, orientation) + b"\x00\x00" + struct.pack(e + "I", 0)
+
     def jpeg(self, width, height, orientation=None, order="II", sof=0xC0):
         exif = b""
         if orientation:
-            e = "<" if order == "II" else ">"
-            tiff = order.encode() + struct.pack(e + "HI", 42, 8) + struct.pack(e + "H", 2)
-            tiff += struct.pack(e + "HHI", 0x010F, 2, 1) + b"\x00" * 4                 # Make, before Orientation
-            tiff += struct.pack(e + "HHIH", 0x0112, 3, 1, orientation) + b"\x00\x00" + struct.pack(e + "I", 0)
+            tiff = self.tiff(orientation, order)
             exif = b"\xff\xe1" + struct.pack(">H", len(tiff) + 8) + b"Exif\x00\x00" + tiff
         jfif = b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
         frame = bytes([0xFF, sof]) + struct.pack(">HBHHB", 11, 8, height, width, 1) + b"\x01\x11\x00"
@@ -704,6 +710,33 @@ class ImageSize(unittest.TestCase):
         self.assertEqual(size(vp8x), (640, 360))
         for junk in (b"", b"GIF89a", b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"RIFF\x00\x00\x00\x00WEBPVP8 "):
             self.assertIsNone(size(junk))
+
+    def test_exif_in_png_and_webp(self):
+        """The pipeline applies EXIF rotation to every format (PIL's exif_transpose), so a PNG's eXIf chunk and an
+        extended WebP's EXIF chunk count too. libwebp reads that chunk only when the VP8X EXIF flag is set."""
+        size = self.cli.image_size
+
+        def png_chunk(name, payload):
+            return struct.pack(">I", len(payload)) + name + payload + struct.pack(">I", zlib.crc32(name + payload))
+        plain = png(1344, 768)
+        end = plain.rindex(b"IEND") - 4
+        for orientation, shown in ((1, (1344, 768)), (3, (1344, 768)), (6, (768, 1344)), (8, (768, 1344))):
+            for order in ("II", "MM"):
+                tagged = plain[:end] + png_chunk(b"eXIf", self.tiff(orientation, order)) + plain[end:]
+                self.assertEqual(size(tagged), shown, ("png", orientation, order))
+
+        def webp(orientation, flag=True, header=b""):
+            vp8x = b"VP8X" + struct.pack("<I", 10) + bytes([0x08 if flag else 0]) + b"\x00" * 3 + \
+                (1343).to_bytes(3, "little") + (767).to_bytes(3, "little")
+            payload = header + self.tiff(orientation)
+            exif = b"EXIF" + struct.pack("<I", len(payload)) + payload + b"\x00" * (len(payload) & 1)
+            vp8 = b"VP8 " + struct.pack("<I", 10) + b"\x10\x02\x00\x9d\x01\x2a" + struct.pack("<HH", 1344, 768)
+            body = b"WEBP" + vp8x + vp8 + exif
+            return b"RIFF" + struct.pack("<I", len(body)) + body
+        self.assertEqual(size(webp(6)), (768, 1344))
+        self.assertEqual(size(webp(8, header=b"Exif\x00\x00")), (768, 1344))
+        self.assertEqual(size(webp(3)), (1344, 768))
+        self.assertEqual(size(webp(6, flag=False)), (1344, 768))
 
     def test_files_from_ffmpeg(self):
         d = Path(tempfile.mkdtemp(prefix="sol-h3-img-"))

@@ -478,7 +478,8 @@ fl2va, `--ref` → ref2va, none → t2va), types, H3's counts, and a total of 19
 or audio by their extension, numbered in the order given per kind. A file may be a path or an http(s) URL; URLs are
 downloaded by the CLI (so tailnet addresses work), at most 120 s each, typed by the URL path's extension or else
 by `Content-Type`. Without `--orientation`, the first keyframe's shape picks it (stderr says so), and a keyframe
-more than 5% off the clip's aspect ratio gets a warning. The upload sends `X-Switchboard-Wait: <--hold>` (default
+more than 5% off the clip's aspect ratio gets a warning. The shape is the one shown: an EXIF rotation in a JPEG,
+PNG or WebP counts, as the pipeline applies it. The upload sends `X-Switchboard-Wait: <--hold>` (default
 900 s).
 
 - Without `--wait`, `--out` or `--poster`, it prints the clip's id and exits.

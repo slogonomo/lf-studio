@@ -642,15 +642,45 @@ def exif_orientation(tiff):
     return None
 
 
+def png_orientation(data):
+    """The EXIF Orientation in a PNG's eXIf chunk (TIFF data), or None."""
+    i = 8
+    while i + 8 <= len(data):
+        length, name = struct.unpack(">I4s", data[i:i + 8])
+        if name == b"eXIf":
+            return exif_orientation(data[i + 8:i + 8 + length])
+        if name == b"IEND":
+            return None
+        i += 12 + length                                 # length, type, data, CRC
+    return None
+
+
+def webp_orientation(data):
+    """The EXIF Orientation in an extended WebP's EXIF chunk (TIFF data, "Exif\\0\\0" before it allowed), or None.
+    libwebp reads that chunk only when the VP8X header's EXIF flag is set."""
+    if not data[20] & 0x08:
+        return None
+    i = 12
+    while i + 8 <= len(data):
+        name, length = struct.unpack("<4sI", data[i:i + 8])
+        if name == b"EXIF":
+            tiff = data[i + 8:i + 8 + length]
+            return exif_orientation(tiff[6:] if tiff[:6] == b"Exif\x00\x00" else tiff)
+        i += 8 + length + (length & 1)                   # a chunk is padded to an even size
+    return None
+
+
 def image_size(data):
-    """(width, height) of a PNG, JPEG or WebP as it is shown (a JPEG's EXIF rotation applied), from its header; None
-    if it can't be read."""
+    """(width, height) of a PNG, JPEG or WebP as it is shown, from its header: with its EXIF rotation applied (JPEG
+    APP1, PNG eXIf, WebP EXIF), as the pipeline's loader does. None if it can't be read."""
     try:
+        size, rotation = None, None
         if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR":
-            return struct.unpack(">II", data[16:24])
-        if data[:2] == b"\xff\xd8":
-            i, rotation = 2, None
-            while i + 4 <= len(data):
+            size = struct.unpack(">II", data[16:24])
+            rotation = png_orientation(data)
+        elif data[:2] == b"\xff\xd8":
+            i = 2
+            while i + 4 <= len(data) and size is None:
                 if data[i] != 0xFF:
                     return None
                 marker = data[i + 1]
@@ -668,21 +698,23 @@ def image_size(data):
                     rotation = exif_orientation(segment[6:])
                 if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
                     height, width = struct.unpack(">HH", segment[1:5])
-                    return (height, width) if rotation in (5, 6, 7, 8) else (width, height)
+                    size = (width, height)
                 i += 2 + length
-            return None
-        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
             kind = data[12:16]
             if kind == b"VP8 " and data[23:26] == b"\x9d\x01\x2a":
-                return (struct.unpack("<H", data[26:28])[0] & 0x3FFF, struct.unpack("<H", data[28:30])[0] & 0x3FFF)
-            if kind == b"VP8L" and data[20] == 0x2F:
+                size = (struct.unpack("<H", data[26:28])[0] & 0x3FFF, struct.unpack("<H", data[28:30])[0] & 0x3FFF)
+            elif kind == b"VP8L" and data[20] == 0x2F:
                 bits = struct.unpack("<I", data[21:25])[0]
-                return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
-            if kind == b"VP8X":
-                return (int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1)
+                size = ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+            elif kind == b"VP8X":
+                size = (int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1)
+                rotation = webp_orientation(data)
     except (struct.error, IndexError):
         return None
-    return None
+    if size is None:
+        return None
+    return (size[1], size[0]) if rotation in (5, 6, 7, 8) else tuple(size)
 
 
 def build_request(prompt, task=None, orientation=None, seconds=None, seed=None, first_frame=None, last_frame=None,
