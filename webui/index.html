@@ -188,7 +188,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .seedt{white-space:nowrap}
 .seedv{font-family:var(--mono);color:var(--mut);-webkit-user-select:all;user-select:all;cursor:text}
 .seedv:focus{outline:0}.seedv:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:3px}
-.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translate(-50%,16px);background:var(--fg);color:var(--bg);padding:9px 15px;border-radius:11px;
+.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translate(-50%,16px);width:max-content;max-width:calc(100vw - 32px);background:var(--fg);color:var(--bg);padding:9px 15px;border-radius:11px;
   font-size:13px;opacity:0;transition:.2s;pointer-events:none;z-index:9;box-shadow:var(--shadow)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.undo{display:flex;align-items:center;gap:12px;padding:7px 8px 7px 15px}
@@ -506,7 +506,9 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
       if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
       toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
-  body.querySelector('.del').onclick=e=>remove(j,e.detail===0);       // detail 0: Enter/Space, not a pointer
+  // detail 0: Enter/Space, not a pointer. detail 2+: the rest of a double-click whose first click was on Cancel of a
+  // queued clip; its answer shows Delete right where Cancel was
+  body.querySelector('.del').onclick=e=>{if(e.detail>1)return;remove(j,e.detail===0);};
   body.querySelector('.cancel').onclick=e=>cancel(j.id,e.currentTarget,e.detail===0);
   d.append(media,body);return d;}
 // The seed is text: a click selects the number (user-select: all), and so does Tab (it is one Tab stop). A pointer

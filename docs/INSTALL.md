@@ -7,12 +7,15 @@ Status: these steps were first run by hand on one DGX Spark (DGX OS = Ubuntu 24.
 CUDA 13.0); the scripts in `install/` automate them.
 
 <!-- validation-status -->
-Validation on a DGX Spark (2026-10-09/10), into an empty `SOLH3_HOME` with an empty pip cache: steps 00 to 90 ran
-end to end, and the 69 CPU tests pass with both freshly built Pythons, whose pinned packages match the environments
+Validation of the install scripts of 0.1-0.2.1 on a DGX Spark (2026-10-09/10), into an empty `SOLH3_HOME` with an
+empty pip cache: steps 00 to 90 ran end to end, and the 69 CPU tests of the patch of that date passed with both
+freshly built Pythons, whose pinned packages match the environments
 the measurements in [PERFORMANCE.md](PERFORMANCE.md) came from. Step 80 built a prompt cache bit-identical to the
 one the measurements used. On that install the first clip (t2va, 16:9, 5 s) took 213 s, including the one-time
 kernel compile; the next clip 65 s; after a restart, a cold start with the filled compile cache 104 s. That run
 reused weights already on the box (step 20 only verified them) and Docker's build cache for NVIDIA's base image.
+0.3 changed `install/10-sana.sh` and the patch (now 74 tests); its update path was checked in scratch clones, not by
+a fresh install on hardware.
 <!-- /validation-status -->
 
 NVIDIA notes that a clean installation of Sol-H3-Spark has not been validated upstream; the pins here are the
@@ -133,17 +136,22 @@ cd ~/src/sol-h3-studio && git pull
 install/10-sana.sh
 ```
 
+Then restart the studio right away and reload any open studio page (also on other devices). The server reads the
+page on every request, so between the pull and the restart a reloaded page and the running server don't match; and
+a page from before an update can show newer job states wrongly (a 0.2 page shows cancelled clips as still running).
+
 `install/10-sana.sh` keeps a copy of the patch it applied with the checkout (`sol-h3-studio-applied.patch` in its
 git directory, so each clone and git worktree has its own; versions up to 0.2 kept one in `$SOLH3_HOME/applied.patch`).
 When the repo brings a new patch, it finds the earlier patch the checkout carries (that copy, the 0.2 location, or
 an earlier version of `patches/sol-h3-studio.patch` from this repo's history), checks that the checkout holds it and
 nothing else, reverses it, checks out the new `patches/BASE_COMMIT` if that changed, and applies the new patch. If the checkout
 has other local changes it lists them and stops without changing anything; move them away, or move `$SOLH3_SANA`
-away and run the script again for a fresh clone. Restart the studio afterwards.
+away and run the script again for a fresh clone.
 
-If spark-switchboard runs the studio, copy `integrations/spark-switchboard/sol-h3-studio.toml` into its `services/`
-directory again when the file changes, and restart switchboard (0.3: its busy probe counts the new status
-"cancelled" as idle).
+If spark-switchboard runs the studio, bring your copy in switchboard's `services/` directory (whatever you named it)
+up to date when `integrations/spark-switchboard/sol-h3-studio.toml` changes: for 0.3, add `"cancelled"` to its
+`idle_values` (the busy probe must count the new status as idle), or replace its contents with the new file and
+keep its file name and your path edits. Then `spark-switchboard check`, and restart switchboard.
 
 A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a released version of the patch is
 found the same way. Any other patch: reverse it with the file you applied (`git -C "$SOLH3_SANA" apply -R <that

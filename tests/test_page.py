@@ -797,6 +797,33 @@ class CancelCards(PageTest):
         return self.page.eval_on_selector_all(f"{self.card(jid)} .acts > *",
                                               "els => els.filter(e => e.offsetWidth).map(e => e.textContent.trim())")
 
+    def test_a_double_click_on_cancel_of_a_queued_clip_does_not_delete_it(self):
+        """The answer shows Delete right where Cancel was; the double-click's second click must not delete."""
+        a = self.studio.generate(prompt="running", seconds=8)[1]["id"]
+        b = self.studio.generate(prompt="queued", seed=2)[1]["id"]
+        self.status(b, "queued")
+        box = self.page.locator(f"{self.card(b)} .cancel").bounding_box()
+        self.page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        self.page.mouse.down(); self.page.mouse.up()
+        self.page.wait_for_timeout(120)
+        self.page.mouse.down(click_count=2); self.page.mouse.up(click_count=2)
+        self.page.wait_for_timeout(600)
+        self.status(b, "cancelled")
+        self.assertNotIn(b, [j["id"] for j in self.studio.state()["jobs"] if j.get("deleted")])
+        self.assertEqual(self.studio.job(b)["status"], "cancelled")
+        self.assertFalse(self.page.eval_on_selector("#undo", "e => e.classList.contains('show')"))
+        self.assertTrue(a)
+
+    def test_the_cancel_toast_uses_the_width_of_a_phone(self):
+        self.page.set_viewport_size({"width": 320, "height": 800})
+        a = self.studio.generate(prompt="running", seconds=8)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.page.click(f"{self.card(a)} .cancel")
+        self.page.wait_for_function("document.getElementById('toast').textContent.includes('models load again')")
+        width = self.page.eval_on_selector("#toast", "e => e.getBoundingClientRect().width")
+        self.assertGreater(width, 0.75 * 320, "a long toast is not squeezed to half the screen")
+        self.assertLessEqual(width, 320 - 30)
+
     def test_focus_stays_on_the_card_when_a_poll_hides_cancel(self):
         """Cancel focused, then the clip finishes, or another tab cancels it: focus moves to Delete or Remix,
         not to the page."""

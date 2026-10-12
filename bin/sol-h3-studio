@@ -182,6 +182,17 @@ run_checks() {
     [[ -f "$SERVER" ]] || refuse "server not found: $SERVER"
     [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-Spark package at $PKG (SOLH3_SANA must be the patched Sana checkout; install/10-sana.sh)"
     [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio.patch"
+    # the patch's own settings check (0.3+: SOL_H3_STAGE2_AUDIO); an older patch has none
+    f=$(cd "$PKG" && "$SOLH3_PYTHON" -B -c 'import sys
+try:
+    from runtime.config import stage2_audio_mode
+except ImportError:
+    sys.exit(0)
+try:
+    stage2_audio_mode()
+except ValueError as error:
+    print(error)' 2>/dev/null) || f="could not import runtime.config from $PKG"
+    [[ -z "$f" ]] || refuse "$f (see bin/env.example)"
     [[ "$SOL_H3_SPARK_RUNTIME_ROOT" == /* ]] || refuse "SOL_H3_SPARK_RUNTIME_ROOT must be an absolute path"
     mkdir -p "$SOL_H3_SPARK_RUNTIME_ROOT" || refuse "cannot create SOL_H3_SPARK_RUNTIME_ROOT=$SOL_H3_SPARK_RUNTIME_ROOT"
     [[ "$SOLH3_PATHS" == *"{task}"* ]] || refuse "SOLH3_PATHS must contain {task}"
