@@ -3,9 +3,11 @@
 Needs Playwright with WebKit (pip install playwright && playwright install webkit) and ffmpeg; skipped otherwise.
 python3 -m unittest tests.test_page -v      (or with the rest: python3 -m unittest discover -s tests)
 """
+import base64
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -922,6 +924,127 @@ class CancelCards(PageTest):
         job = next(j for j in new["jobs"] if j["prompt"] == "the cancelled one" and j["id"] != a)
         self.assertEqual([Path(job[k]).name for k in ("first_frame", "last_frame")], ["first.png", "last.png"])
         self.assertEqual((job["orientation"], job["seconds"], job["seed"]), ("portrait", 8, 1234))
+
+
+def picture(color, size="64x36"):
+    """A PNG of one colour (ffmpeg)."""
+    return subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c={color}:s={size}", "-frames:v", "1",
+                           "-f", "image2pipe", "-c:v", "png", "-"], capture_output=True, check=True).stdout
+
+
+class QueuePicture(PageTest):
+    """#30: a queued or running card shows the clip's first picture behind its timer (clearer while queued, fainter
+    while it runs); the card is not rebuilt for it, and the picture goes when the clip is done, failed or cancelled."""
+    load_s, clip_s = 5, 5
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def status(self, jid, status):
+        self.page.wait_for_selector(f'{self.card(jid)}[data-status="{status}"]', timeout=30000)
+
+    def shown(self, jid):
+        """The card's picture, once loaded: [src, opacity, blur in px], or None if the card has none on screen."""
+        self.page.wait_for_function(f"""() => {{ const i = document.querySelector('{self.card(jid)} .qimg');
+            return !i || i.complete; }}""")
+        return self.page.evaluate(f"""() => {{ const i = document.querySelector('{self.card(jid)} .qimg');
+            if (!i || !i.offsetWidth || !i.naturalWidth) return null; const s = getComputedStyle(i);
+            return [new URL(i.src).pathname, +s.opacity, parseFloat(s.filter.match(/blur\\(([\\d.]+)px/)[1])]; }}""")
+
+    def test_queued_and_running_cards(self):
+        stills = []
+        self.page.on("request", lambda r: stills.append(r.url.rsplit("/", 1)[1]) if "/still/" in r.url else None)
+        a = self.studio.generate(task="fl2va", prompt="first frame", files={"first_frame": [("a.png", picture("red"))]})[1]["id"]
+        b = self.studio.generate(task="ref2va", prompt="a video only", seed=2, files={"ref_videos": [("v.mp4", mp4())]})[1]["id"]
+        c = self.studio.generate(prompt="text", seed=3)[1]["id"]
+        d = self.studio.generate(task="fl2va", prompt="last frame", seed=4,
+                                 files={"last_frame": [("d.png", picture("blue"))]})[1]["id"]
+        self.status(a, "loading models + generating")
+        self.status(b, "queued")
+        running, queued = self.shown(a), self.shown(b)
+        self.assertEqual((running[0], queued[0], self.shown(d)[0]), (f"/still/{a}", f"/still/{b}", f"/still/{d}"))
+        self.assertIsNone(self.shown(c))                                         # t2va: no picture
+        self.assertIsNone(self.page.query_selector(f"{self.card(c)} .qimg"))
+        self.assertLess(running[1], queued[1])                                   # fainter and more blurred while it runs
+        self.assertGreater(running[2], queued[2])
+        for width in (300, 320, 375, 420):                                       # phones: nothing wider than the screen
+            self.page.set_viewport_size({"width": width, "height": 900})
+            self.page.wait_for_timeout(200)
+            wide = self.page.evaluate("""() => [...document.querySelectorAll('body *')].filter(e =>
+                e.getBoundingClientRect().right > document.documentElement.clientWidth + 0.5).map(e => e.className)""")
+            self.assertEqual(wide, [], f"wider than the screen at {width} px")
+            self.assertLessEqual(self.page.evaluate("document.documentElement.scrollWidth"), width)
+        self.page.set_viewport_size({"width": 1280, "height": 900})
+        # polls change the card's attributes only: the same picture, now in the running style
+        self.page.evaluate(f"window.mark = document.querySelector('{self.card(b)} .qimg')")
+        self.page.wait_for_selector(f'{self.card(b)}[data-status="loading models + generating"]', timeout=30000)
+        self.page.wait_for_timeout(1000)                                         # its transition
+        self.assertEqual(self.shown(b)[1:], running[1:])
+        self.assertTrue(self.page.evaluate(f"window.mark === document.querySelector('{self.card(b)} .qimg')"))
+        self.status(b, "done")                                                   # done: the video with its poster
+        self.page.wait_for_selector(f"{self.card(b)} video")
+        self.assertIsNone(self.page.query_selector(f"{self.card(b)} .qimg"))
+        self.assertTrue(self.page.get_attribute(f"{self.card(b)} video", "poster").endswith(f"/poster/{b}"))
+        self.assertEqual(sorted(stills), sorted([a, b, d]))                      # each asked for once
+        self.studio.wait([a, b, c, d])
+        stills.clear()
+        self.page.reload()                                                       # finished cards ask for none
+        self.page.wait_for_selector(f"{self.card(d)} video")
+        self.page.wait_for_timeout(500)
+        self.assertEqual(stills, [])
+
+    def test_cancelled_and_failed_cards_drop_it(self):
+        a = self.studio.generate(task="fl2va", prompt="STUB_FAIL", files={"first_frame": [("a.png", picture("red"))]})[1]["id"]
+        b = self.studio.generate(task="fl2va", prompt="cancelled", seed=2,
+                                 files={"first_frame": [("b.png", picture("blue"))]})[1]["id"]
+        self.status(b, "queued")
+        self.assertIsNotNone(self.shown(b))
+        self.page.click(f"{self.card(b)} .cancel")
+        self.status(b, "cancelled")
+        self.assertIsNone(self.shown(b))
+        self.assertEqual(self.page.inner_text(f"{self.card(b)} .ph2 .big"), "Cancelled")
+        self.assertIsNotNone(self.shown(a))
+        self.studio.wait([a], timeout=60)
+        self.status(a, "failed")
+        self.assertIsNone(self.shown(a))
+
+    def contrast(self, jid, part):
+        """WCAG contrast of the card's placeholder text (.big or .small) against what is behind it, the worst pixel:
+        the text made transparent, a screenshot of its box decoded in the page."""
+        sel = f"{self.card(jid)} .ph2 {part}"
+        lum = """const lum = ([r, g, b]) => 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b),
+                       f = v => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;"""
+        text = self.page.evaluate(f"""() => {{ {lum} const x = document.createElement('canvas').getContext('2d');
+            x.fillStyle = getComputedStyle(document.querySelector('{sel}')).color; x.fillRect(0, 0, 1, 1);
+            return lum(x.getImageData(0, 0, 1, 1).data); }}""")
+        self.page.evaluate(f"""() => document.querySelectorAll('{self.card(jid)} .ph2 > div').forEach(e =>
+            e.style.cssText = 'color: transparent; text-shadow: none')""")
+        shot = base64.b64encode(self.page.locator(sel).screenshot()).decode()
+        self.page.evaluate(f"""() => document.querySelectorAll('{self.card(jid)} .ph2 > div').forEach(e =>
+            e.style.cssText = '')""")
+        back = self.page.evaluate(f"""async b64 => {{ {lum} const im = new Image(); im.src = 'data:image/png;base64,' + b64;
+            await im.decode(); const x = document.createElement('canvas').getContext('2d');
+            x.canvas.width = im.width; x.canvas.height = im.height; x.drawImage(im, 0, 0);
+            const d = x.getImageData(0, 0, im.width, im.height).data; let worst = 0;
+            for (let i = 0; i < d.length; i += 4) worst = Math.max(worst, lum([d[i], d[i + 1], d[i + 2]]));
+            return worst; }}""", shot)
+        return (max(text, back) + 0.05) / (min(text, back) + 0.05)
+
+    def test_text_readable_over_a_white_picture(self):
+        """The worst case for the light text: a white picture, in both themes, queued and running."""
+        self.page.emulate_media(reduced_motion="reduce")                         # no shimmer or transition: a still
+        white = {"first_frame": [("white.png", picture("white", "640x360"))]}
+        a = self.studio.generate(task="fl2va", prompt="running", files=white)[1]["id"]
+        b = self.studio.generate(task="fl2va", prompt="queued", seed=2, files=white)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.status(b, "queued")
+        self.assertIsNotNone(self.shown(a) and self.shown(b))
+        for scheme in ("light", "dark"):
+            self.page.emulate_media(color_scheme=scheme)
+            for jid in (a, b):
+                for part, least in ((".big", 4.5), (".small", 4.5)):
+                    ratio = self.contrast(jid, part)
+                    self.assertGreaterEqual(ratio, least, f"{part} on the {scheme} {jid == a and 'running' or 'queued'} card")
 
 
 if __name__ == "__main__":

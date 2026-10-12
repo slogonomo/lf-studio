@@ -168,6 +168,16 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .job[data-status=cancelled] .ph2{background:linear-gradient(120deg,#131210,#1c1a16);animation:none}
 .ph2 .big{font:600 24px var(--mono);letter-spacing:.02em;color:#f6ead7}
 .ph2 .small{font-size:12px;color:#aea291}
+/* a queued or running clip's first picture (/still/), between the placeholder's background and its text: clear enough
+   to tell the clips apart while queued, fainter and more blurred while it runs so the shimmer shows; gone once the clip
+   has failed or been cancelled (a finished clip's card shows its video) */
+.ph2.pic{isolation:isolate}
+.ph2 .qimg{position:absolute;inset:0;z-index:-1;width:100%;height:100%;object-fit:cover;pointer-events:none;
+  opacity:.3;filter:blur(12px) brightness(.6);transition:opacity .8s,filter .8s}
+.job[data-status=queued] .qimg{opacity:.65;filter:blur(3px) brightness(.45)}
+.job[data-status=failed] .qimg,.job[data-status=cancelled] .qimg{display:none}
+.ph2.pic .big,.ph2.pic .small{text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.ph2.pic .small{color:#ddd2c1}
 .bar{width:64%;max-width:260px;height:4px;border-radius:99px;background:rgba(255,255,255,.12);overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#e9a04f,#ffd49a);border-radius:99px;transition:width 1s linear}
 .body{padding:11px 13px 12px;display:flex;flex-direction:column;gap:7px;flex:1}
@@ -481,6 +491,11 @@ function showForm(keyboard){const f=$('f');if(getComputedStyle(f).position==='st
 function card(j){const d=document.createElement('article');d.className='job';d.dataset.id=j.id;
   const media=document.createElement('div');media.className='media';media.style.aspectRatio=j.orientation==='portrait'?'4 / 5':'16 / 9';   // portrait is pillarboxed so cards stay a sane height
   media.innerHTML='<div class="ph2"><div class="big">0:00</div><div class="bar"><i></i></div><div class="small"></div></div>';
+  // a queued or running clip with a keyframe, a reference image or a reference video shows its first one (#30); a
+  // card built for a finished clip asks for nothing
+  if(active(j)&&(j.first_frame||j.last_frame||(j.references||[]).some(r=>r.type==='image'||r.type==='video'))){
+    const ph=media.firstChild,im=document.createElement('img');im.className='qimg';im.alt='';im.decoding='async';
+    im.onerror=()=>{im.hidden=true;ph.classList.remove('pic');};im.src='/still/'+j.id;ph.classList.add('pic');ph.prepend(im);}
   const body=document.createElement('div');body.className='body';
   body.innerHTML=`<div class="tags"><span class="st"></span><span class="tag"></span><span class="tag"></span><span class="tag"></span></div>
    <div class="p" title="Click to expand"></div><div class="info"><span class="when"></span> <span class="seedt">· seed <span class="seedv" tabindex="0" title="Click (or Tab to it) to select, then copy"></span></span></div><div class="errtxt"></div>

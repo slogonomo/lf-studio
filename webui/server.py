@@ -9,6 +9,8 @@
   workers get SIGTERM, so the next clip loads the models again). Either way it stays in the history with the status
   "cancelled" and its input files, for Remix and Delete. 409 for a clip that has finished (or is being saved).
   A studio before 0.3 shows cancelled clips as failed ("server restarted") and keeps them so.
+- GET /still/<id>: the picture a queued or running clip's card shows behind its timer: a keyframe, a reference image,
+  or the first frame of a reference video (made on the first request, kept with the clip's input files). 404 for t2va.
 
 Run it with cwd = the patched Sol-H3-Spark package (models/minimax_h3/Sol-H3-Spark in the patched Sana checkout):
 it imports runtime.config and runtime.pipeline from there. Standard library only; this process needs no torch.
@@ -954,6 +956,42 @@ def zone_files(job, zone):
     return [job[zone]] if job.get(zone) else []
 
 
+STILL = "@still.jpg"     # a reference video's first frame, in the clip's input directory (uploads never have an @)
+
+
+def card_picture(job):
+    """The picture a queued or running clip's card shows behind its timer (#30): fl2va its first frame, else its last;
+    ref2va its first reference image, else the first frame of its first reference video, as a small JPEG made on the
+    first request and kept in the clip's input directory (INPUTS/<id>), so Delete, Undo and the trash purge move it
+    with the inputs. None for t2va, when the file is gone, or when the frame can't be read. Never writes elsewhere."""
+    src, video = None, False
+    if job.get("task") == "fl2va":
+        src = job.get("first_frame") or job.get("last_frame")
+    elif job.get("task") == "ref2va":
+        refs = job.get("references") or []
+        ref = next((r for kind in ("image", "video") for r in refs if r.get("type") == kind), None)
+        src, video = (ref["path"], ref["type"] == "video") if ref else (None, False)
+    if not src or not Path(src).is_file():
+        return None
+    if not video:
+        return Path(src)
+    still = INPUTS / job["id"] / STILL
+    if still.is_file():
+        return still
+    if not still.parent.is_dir():                      # no input directory of its own (an old history): no still
+        return None
+    tmp = still.with_name(f".{uuid.uuid4().hex}.part")    # two requests at once: each its own, the last one wins
+    try:
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-frames:v", "1", "-vf", "scale='min(640,iw)':-2",
+                        "-q:v", "4", "-f", "mjpeg", str(tmp)], capture_output=True, timeout=60, check=True)
+        os.replace(tmp, still)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        tmp.unlink(missing_ok=True)
+    return still
+
+
 def reuse_input(job_dir, path):
     """Put an earlier job's input file into this job's directory: a hardlink (no extra space; deleting either job
     later leaves the other's file alone), or a copy across filesystems."""
@@ -1097,6 +1135,15 @@ class H(BaseHTTPRequestHandler):
             f = Path(files[int(m.group(3))]) if int(m.group(3)) < len(files) else None
             if not f or not f.is_file():
                 return self.send(404, {"error": "no such input"})
+            return self.send_file(f, mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+        m = re.fullmatch(r"/still/([0-9a-f]{32})", path)
+        if m:                      # the picture behind a queued or running clip's timer (card_picture)
+            with lock:
+                job = find_job(m.group(1))
+                job = None if job is None or job.get("moving") else dict(job)    # not while Delete moves its files
+            f = card_picture(job) if job else None
+            if not f:
+                return self.send(404, {"error": "no picture"})
             return self.send_file(f, mimetypes.guess_type(f.name)[0] or "application/octet-stream")
         m = re.fullmatch(r"/video/([0-9a-f]{32})", path)
         if m:
