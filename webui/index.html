@@ -326,8 +326,11 @@ const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","n
 // prompt encoder each time
 const ETA={3:40,4:45,5:60,6:70,7:80,8:90,10:125,12:150,15:195};
 const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
-const fmtS=s=>s<90?`${Math.round(s)} s`:`${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')} min`;
-const clock=s=>{s=Math.max(0,s);return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;};
+// durations: whole seconds first (none, negative or not a number: 0), then minutes and seconds, so 119.6 s reads
+// 2:00 and never 1:60 (#26); fmtS rounds ("45 s", "2:05 min"), clock counts up like a stopwatch (floors)
+const whole=(s,f)=>Number.isFinite(s=f(+s))?Math.max(0,s):0, mmss=n=>`${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;
+const fmtS=s=>{s=whole(s,Math.round);return s<90?`${s} s`:`${mmss(s)} min`;};
+const clock=s=>mmss(whole(s,Math.floor));
 const store={get(k,d){try{const v=localStorage.getItem('solh3.'+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem('solh3.'+k,v)}catch(e){}}};
 const val=n=>{const el=form.querySelector(`input[name="${n}"]:checked`);return el?el.value:''};
 const setRadio=(n,v)=>{const el=form.querySelector(`input[name="${n}"][value="${v}"]`);if(el)el.checked=true;return !!el;};

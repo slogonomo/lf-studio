@@ -93,6 +93,42 @@ class WarmUpLabel(PageTest):
         self.assertIn("after the warm-up", self.go_text())
 
 
+class Durations(PageTest):
+    """#26: a duration is rounded to whole seconds before it is split into minutes and seconds: 2:00, never 1:60."""
+    load_s = 30
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([
+            finished_job("a" * 32, e2e_s=119.6), finished_job("b" * 32, e2e_s=179.5, includes_model_load=True),
+            finished_job("c" * 32, e2e_s=89.6, cold_start_s=239.7)]))
+        (self.studio.state_dir / "load-times.json").write_text('{"t2va/landscape/5": 119.6}')
+
+    def test_formatters_at_the_boundaries(self):
+        # fmtS (made in, model load, ETAs, ready in, last time) rounds; clock (running timers) counts up and floors
+        want = {0: ("0 s", "0:00"), 0.4: ("0 s", "0:00"), 0.5: ("1 s", "0:00"), 59.4: ("59 s", "0:59"),
+                59.5: ("60 s", "0:59"), 59.6: ("60 s", "0:59"), 89.4: ("89 s", "1:29"), 89.5: ("1:30 min", "1:29"),
+                119.4: ("1:59 min", "1:59"), 119.5: ("2:00 min", "1:59"), 119.6: ("2:00 min", "1:59"),
+                120: ("2:00 min", "2:00"), 3599.4: ("59:59 min", "59:59"), 3599.6: ("60:00 min", "59:59"),
+                -3: ("0 s", "0:00"), -0.4: ("0 s", "0:00")}
+        got = self.page.evaluate(f"{json.dumps(list(want))}.map(s => [fmtS(s), clock(s)])")
+        self.assertEqual(dict(zip(want, map(tuple, got))), want)
+        # none, not a number or endless: 0, not "NaN" or "Infinity"
+        odd = self.page.evaluate("[null, undefined, NaN, 'x', Infinity].map(s => [fmtS(s), clock(s)])")
+        self.assertEqual(odd, [["0 s", "0:00"]] * 5)
+
+    def test_cards(self):
+        when = lambda j: self.page.inner_text(f'article[data-id="{j * 32}"] .when').split(" · ", 1)[1]
+        self.page.wait_for_selector(f'article[data-id="{"c" * 32}"]')
+        self.assertEqual([when(j) for j in "abc"], ["made in 2:00 min", "3:00 min incl. model load",
+                                                    "made in 1:30 min · +4:00 min model load"])
+        jid = self.studio.generate(seed=3)[1]["id"]                          # loads 30 s; the last load took 119.6 s
+        card = f'article[data-id="{jid}"]'
+        self.page.wait_for_selector(f'{card}[data-status="loading models + generating"]')
+        self.page.wait_for_function(f"document.querySelector('{card} .ph2 .small').textContent.includes('last time')")
+        self.assertEqual(self.page.inner_text(f"{card} .ph2 .small"), "Loading models, then your clip · last time 2:00 min")
+        self.assertRegex(self.page.inner_text(f"{card} .ph2 .big"), r"^0:0\d$")
+
+
 class RemixInputs(PageTest):
     """#1: Remix puts the clip's files back into the form; Generate reuses them without uploading."""
 
