@@ -662,7 +662,7 @@ def run_job(job):
 def make_poster(mp4):
     """Poster frame (~1 s in) for the gallery; best effort."""
     try:
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "1", "-i", str(mp4), "-frames:v", "1",
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", "1", "-i", str(mp4), "-frames:v", "1",
                         "-vf", "scale=640:-2", "-q:v", "4", str(Path(mp4).with_suffix(".jpg"))],
                        timeout=60, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -957,13 +957,16 @@ def zone_files(job, zone):
 
 
 STILL = "@still.jpg"     # a reference video's first frame, in the clip's input directory (uploads never have an @)
+STILL_PART = ".still-*.part"   # one being made, in INPUTS itself; one left by a server stopped part-way goes at start
 
 
 def card_picture(job):
     """The picture a queued or running clip's card shows behind its timer (#30): fl2va its first frame, else its last;
     ref2va its first reference image, else the first frame of its first reference video, as a small JPEG made on the
     first request and kept in the clip's input directory (INPUTS/<id>), so Delete, Undo and the trash purge move it
-    with the inputs. None for t2va, when the file is gone, or when the frame can't be read. Never writes elsewhere."""
+    with the inputs. None for t2va, when the file is gone, or when the frame can't be read. While ffmpeg makes it, it
+    is a temporary file in INPUTS itself, not in the clip's directory, which a Delete can move meanwhile (the frame is
+    then not kept). Never writes elsewhere."""
     src, video = None, False
     if job.get("task") == "fl2va":
         src = job.get("first_frame") or job.get("last_frame")
@@ -980,11 +983,12 @@ def card_picture(job):
         return still
     if not still.parent.is_dir():                      # no input directory of its own (an old history): no still
         return None
-    tmp = still.with_name(f".{uuid.uuid4().hex}.part")    # two requests at once: each its own, the last one wins
-    try:
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-frames:v", "1", "-vf", "scale='min(640,iw)':-2",
-                        "-q:v", "4", "-f", "mjpeg", str(tmp)], capture_output=True, timeout=60, check=True)
-        os.replace(tmp, still)
+    tmp = INPUTS / STILL_PART.replace("*", uuid.uuid4().hex)    # two requests at once: each its own, the last wins
+    try:            # -nostdin: runs at once (a page asks for every card's picture) could leave a terminal without echo
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", src, "-frames:v", "1", "-vf",
+                        "scale='min(640,iw)':-2", "-q:v", "4", "-f", "mjpeg", str(tmp)],
+                       capture_output=True, timeout=60, check=True)
+        os.replace(tmp, still)                          # FileNotFoundError if Delete has moved the directory
     except (OSError, subprocess.SubprocessError):
         return None
     finally:
@@ -1031,8 +1035,9 @@ def prepare_reference_video(path):
     out = src.with_name(src.stem + "_ref.mp4")
     vf = (f"scale='trunc(iw*min(1,sqrt({REF_VIDEO_AREA}/(iw*ih)))/2)*2':"
           f"'trunc(ih*min(1,sqrt({REF_VIDEO_AREA}/(iw*ih)))/2)*2':flags=lanczos,fps=24")
-    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-t", "15", "-vf", vf, "-c:v", "libx264",
-                        "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", str(out)],
+    r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-t", "15", "-vf", vf,
+                        "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+                        str(out)],
                        capture_output=True, text=True, timeout=600)
     if r.returncode != 0 or not out.is_file():
         raise ValueError(f"{src.name}: could not read this video ({r.stderr.strip()[:200]})")
@@ -1473,6 +1478,9 @@ def main():
             save_job(j)
     recover_moves()
     purge_trash()
+    for part in INPUTS.glob(STILL_PART):              # a card picture being made when the server stopped
+        with contextlib.suppress(OSError):
+            part.unlink()
     missing = [t for t in TASKS if t not in ready_tasks()]
     if missing:
         log("no path manifest for", ", ".join(missing), f"(looked for {PATHS_TEMPLATE})")

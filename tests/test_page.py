@@ -967,6 +967,9 @@ class QueuePicture(PageTest):
         self.assertIsNone(self.page.query_selector(f"{self.card(c)} .qimg"))
         self.assertLess(running[1], queued[1])                                   # fainter and more blurred while it runs
         self.assertGreater(running[2], queued[2])
+        # a layer of its own: WebKit blurs it once, not again on every frame of the running card's shimmer
+        layer = f"getComputedStyle(document.querySelector('{self.card(a)} .qimg')).willChange"
+        self.assertEqual(self.page.evaluate(layer), "transform")
         for width in (300, 320, 375, 420):                                       # phones: nothing wider than the screen
             self.page.set_viewport_size({"width": width, "height": 900})
             self.page.wait_for_timeout(200)

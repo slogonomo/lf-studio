@@ -59,7 +59,8 @@ class Pipeline:
         w, h = self.size
         out = request / "stage2" / f"refined_{w}x{h}_{self.seconds * 24 + 1}f.mp4"
         out.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s={w}x{h}:r=24:d={self.seconds}",
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi",
+                        "-i", f"testsrc2=s={w}x{h}:r=24:d={self.seconds}",
                         "-f", "lavfi", "-i", f"sine=frequency=440:duration={self.seconds}", "-shortest",
                         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(out)],
                        check=True, timeout=120)

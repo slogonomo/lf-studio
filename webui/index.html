@@ -170,10 +170,12 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .ph2 .small{font-size:12px;color:#aea291}
 /* a queued or running clip's first picture (/still/), between the placeholder's background and its text: clear enough
    to tell the clips apart while queued, fainter and more blurred while it runs so the shimmer shows; gone once the clip
-   has failed or been cancelled (a finished clip's card shows its video) */
+   has failed or been cancelled (a finished clip's card shows its video). will-change gives it a layer of its own, so
+   WebKit blurs it once, not again on every frame of the shimmer behind it (without it, a page with one running card
+   took 1.7x the CPU at 390 px wide and 2.2x at 1280 px, in Playwright WebKit on Linux; it looks the same) */
 .ph2.pic{isolation:isolate}
 .ph2 .qimg{position:absolute;inset:0;z-index:-1;width:100%;height:100%;object-fit:cover;pointer-events:none;
-  opacity:.3;filter:blur(12px) brightness(.6);transition:opacity .8s,filter .8s}
+  opacity:.3;filter:blur(12px) brightness(.6);transition:opacity .8s,filter .8s;will-change:transform}
 .job[data-status=queued] .qimg{opacity:.65;filter:blur(3px) brightness(.45)}
 .job[data-status=failed] .qimg,.job[data-status=cancelled] .qimg{display:none}
 .ph2.pic .big,.ph2.pic .small{text-shadow:0 1px 3px rgba(0,0,0,.8)}

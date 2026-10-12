@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import unittest
 import urllib.error
@@ -307,6 +308,105 @@ class CardPictureOldClips(StudioTest):
             self.assertEqual(e.exception.code, 404, jid)
         self.assertEqual([p.name for p in self.outside.iterdir()], ["clip_ref.mp4"])
         self.assertFalse((self.studio.runtime / "inputs" / "webui" / ("a" * 32)).exists())
+
+
+class CardPictureDeleteRace(StudioTest):
+    """#30: a Delete while a reference video's frame is being made. The frame is written under a temporary name outside
+    the clip's input directory, so nothing of it goes to the trash with the inputs or comes back with Undo; one left by
+    a server stopped part-way is removed at the next start."""
+
+    def seed(self):
+        self.inputs = self.studio.runtime / "inputs" / "webui"
+        self.jid = "c" * 32
+        own = self.inputs / self.jid
+        own.mkdir(parents=True)
+        (own / "clip_ref.mp4").write_bytes(mp4())
+        (self.inputs / f".still-{'0' * 32}.part").write_bytes(b"\xff\xd8")     # from a server stopped part-way
+        self.write_state([finished_job(self.jid, task="ref2va",
+                                       references=[{"type": "video", "path": str(own / "clip_ref.mp4")}])])
+        # ffmpeg making the frame writes it, then waits until the test says go
+        self.hold = self.dir / "hold"
+        self.hold.mkdir()
+        bindir = self.dir / "bin"
+        bindir.mkdir()
+        (bindir / "ffmpeg").write_text('#!/bin/sh\n'
+                                       'case " $* " in *" mjpeg "*)\n'
+                                       f'  {shutil.which("ffmpeg")} "$@" || exit $?\n'
+                                       '  touch "$STILL_HOLD/written"; i=0\n'
+                                       '  while [ ! -e "$STILL_HOLD/go" ] && [ $i -lt 400 ]; do\n'
+                                       '    sleep 0.05; i=$((i+1))\n'
+                                       '  done\n'
+                                       '  exit 0;;\n'
+                                       'esac\n'
+                                       f'exec {shutil.which("ffmpeg")} "$@"\n')
+        (bindir / "ffmpeg").chmod(0o755)
+        self.studio.env.update(PATH=f"{bindir}:{os.environ['PATH']}", STILL_HOLD=str(self.hold))
+
+    def still(self):
+        try:
+            return self.studio.get(f"/still/{self.jid}")[0]
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def files(self, d):
+        return sorted(p.relative_to(d).name for p in d.rglob("*") if not p.is_dir())
+
+    def test_delete_while_the_frame_is_made(self):
+        self.assertEqual(list(self.inputs.glob(".still-*")), [])                # the stopped server's is gone
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            got = pool.submit(self.still)
+            deadline = time.time() + 20
+            while not (self.hold / "written").exists():
+                self.assertLess(time.time(), deadline, "ffmpeg did not write the frame")
+                time.sleep(0.05)
+            self.assertEqual(self.studio.post("/api/delete", json_body={"id": self.jid})[0], 200)
+            (self.hold / "go").touch()
+            self.assertEqual(got.result(timeout=20), 404)                        # deleted meanwhile: no picture
+        self.assertEqual(self.files(self.studio.runtime / "trash" / self.jid), ["clip_ref.mp4"])
+        self.assertEqual(list(self.inputs.glob(".still-*")), [])
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": self.jid})[0], 200)
+        self.assertEqual(self.files(self.inputs / self.jid), ["clip_ref.mp4"])
+        self.assertEqual(self.still(), 200)                                      # made now, as usual
+        self.assertEqual(self.files(self.inputs / self.jid), [STILL, "clip_ref.mp4"])
+        self.assertEqual(list(self.inputs.glob(".still-*")), [])
+
+
+class FfmpegAndTheTerminal(StudioTest):
+    """The server's ffmpeg runs leave a terminal on its stdin alone (python3 tests/stub/studio.py, or the tests, run in
+    one). ffmpeg puts its stdin terminal into raw mode, no echo, while it runs and restores it as it found it at exit,
+    so runs at once (a page asking for several cards' pictures) could leave the terminal raw."""
+
+    def seed(self):
+        self.master, self.tty = os.openpty()
+        self.studio.stdin = self.tty
+        self.calls = self.dir / "ffmpeg-calls"
+        bindir = self.dir / "bin"
+        bindir.mkdir()
+        (bindir / "ffmpeg").write_text('#!/bin/sh\n'
+                                       'if [ -t 0 ]; then echo "tty $*"; else echo "no-tty $*"; fi >>"$FFMPEG_CALLS"\n'
+                                       f'exec {shutil.which("ffmpeg")} "$@"\n')
+        (bindir / "ffmpeg").chmod(0o755)
+        self.studio.env.update(PATH=f"{bindir}:{os.environ['PATH']}", FFMPEG_CALLS=str(self.calls))
+
+    def tearDown(self):
+        super().tearDown()
+        os.close(self.master)
+        os.close(self.tty)
+
+    def test_terminal_left_alone(self):
+        ids = [self.generate(task="ref2va", seed=i, files={"ref_videos": [("clip.mp4", mp4())]}) for i in (1, 2)]
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:                  # each card's picture, several tabs
+            codes = list(pool.map(lambda jid: self.studio.get(f"/still/{jid}")[0], ids * 4))
+        self.assertEqual(codes, [200] * 8)
+        self.assertEqual([j["status"] for j in self.studio.wait(ids)], ["done"] * 2)
+        calls = self.calls.read_text().splitlines()
+        for made, by in (("reference video", "libx264 -crf"), ("card picture", "mjpeg"), ("clip", "testsrc2"),
+                         ("poster", "-ss 1")):
+            self.assertTrue(any(by in c for c in calls), f"no ffmpeg run for the {made}")
+        self.assertTrue(all(c.startswith("tty ") for c in calls))               # each one had the terminal
+        self.assertEqual([c for c in calls if "-nostdin" not in c.split()], [])  # and was told not to use it
+        lflag = termios.tcgetattr(self.tty)[3]
+        self.assertEqual(lflag & (termios.ECHO | termios.ICANON), termios.ECHO | termios.ICANON)
 
 
 PAGE = 24                                   # clips per gallery page (webui/server.py)
