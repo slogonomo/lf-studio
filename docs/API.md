@@ -604,7 +604,7 @@ can ask for more, up to `SOLH3_MCP_MAX_WAIT_S`. The limits as the hosts document
 
 | Host | Limit per tool call | `SOLH3_MCP_WAIT_S` |
 |---|---|---|
-| Claude Code (stdio) | none; a call is stopped after 30 min without a result or progress, and the server sends progress every 10 s. A call still running after 2 min moves to the background, and its result arrives later. | 600 |
+| Claude Code (stdio) | none; a call is stopped after 30 min without a result or progress, and the server sends progress every 10 s. A call still running after 2 min moves to the background, and its result arrives later. In `claude -p` (2.1.296) a 129 s `generate` stayed in the foreground and returned the clip as usual (measured 2026-10-12). | 600 |
 | Hermes | `timeout`, 300 s by default | 280, or 1700 with `timeout: 1800` when Hermes's model runs on the same Spark |
 | Codex CLI | `tool_timeout_sec`, 60 s by default | 50, or raise `tool_timeout_sec` |
 | Other hosts on the TypeScript SDK 1.x | 60 s | 50 (the default) |
