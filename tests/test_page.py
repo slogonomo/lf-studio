@@ -468,6 +468,121 @@ class RemixSeed(PageTest):
         self.assertEqual(int(self.generate_from_page(a)["seed"]), 777)
 
 
+class RemixScroll(PageTest):
+    """#25: beside the gallery (a sticky column) the form is in view, so Remix leaves the page where it is; in one
+    column (the form above the gallery) Remix brings the form's top into view, and a keyboard press moves focus there."""
+
+    def seed(self):
+        jobs = history(30)                  # cards are newest first: card n is jobs[29 - n]
+        jobs[21].update(task="fl2va", first_frame="gone/first.png", last_frame="gone/last.png")    # card 8
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(jobs))
+
+    def one_column(self):
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.evaluate("getComputedStyle(document.getElementById('f')).position"), "static")
+
+    def remix_button(self, n):
+        """Scroll the nth card to the middle of the screen; its Remix button and the clip's seed."""
+        self.page.evaluate(f"document.querySelectorAll('#jobs .job')[{n}].scrollIntoView({{block: 'center'}})")
+        self.page.wait_for_timeout(300)
+        card = self.page.locator("#jobs .job").nth(n)
+        return card.locator(".reuse-all"), card.locator(".seedv").inner_text()
+
+    def settle(self):
+        """scrollY once a (smooth) scroll has stopped."""
+        self.page.wait_for_timeout(300)
+        last = None
+        for _ in range(30):
+            y = self.page.evaluate("scrollY")
+            if y == last:
+                return y
+            last = y
+            self.page.wait_for_timeout(150)
+        return y
+
+    def focused(self, selector):
+        return self.page.evaluate(f"document.activeElement === document.querySelector('{selector}')")
+
+    def form_in_view(self):
+        """The form's top is at the top of the screen (14 px, as when sticky) and Generate is on screen."""
+        top, go, height = self.page.evaluate("""() => [document.getElementById('f').getBoundingClientRect().top,
+            document.getElementById('go').getBoundingClientRect().bottom, innerHeight]""")
+        self.assertAlmostEqual(top, 14, delta=2)
+        self.assertLessEqual(go, height, "Generate on screen")
+
+    def test_two_columns_the_page_stays(self):
+        self.assertEqual(self.page.evaluate("getComputedStyle(document.getElementById('f')).position"), "sticky")
+        button, seed = self.remix_button(12)
+        y = self.settle()
+        self.assertGreater(y, 1000)
+        button.click()
+        self.assertEqual(self.settle(), y, "Remix scrolled the page")
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        # keyboard: the page stays and focus stays on the card's Remix
+        button, seed = self.remix_button(16)
+        y = self.settle()
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.assertEqual(self.settle(), y, "Remix scrolled the page")
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.assertTrue(self.page.evaluate("document.activeElement.classList.contains('reuse-all')"))
+
+    def test_one_column_brings_the_form_into_view(self):
+        self.one_column()
+        button, seed = self.remix_button(6)
+        self.assertGreater(self.settle(), 1500)
+        button.click()
+        self.settle()
+        self.form_in_view()
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.assertFalse(self.focused("#prompt"), "a tap does not focus the prompt (no on-screen keyboard)")
+        # keyboard: focus goes to the prompt with the view, so the next Tab does not jump back to the gallery
+        button, seed = self.remix_button(9)
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.settle()
+        self.form_in_view()
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.assertTrue(self.focused("#prompt"))
+
+    def test_one_column_the_form_changes_height(self):
+        """Remix changes the form's height above the gallery: it clears an error, and a Keyframes card shows the drop
+        zones and then (its files are gone) an error. WebKit's scroll anchoring kept the card in place, which
+        cancelled the scroll (the form's top ended thousands of px above the screen)."""
+        self.one_column()
+        button, seed = self.remix_button(7)
+        self.page.evaluate("document.getElementById('err').textContent = 'Could not reach the server'")
+        self.assertGreater(self.settle(), 1500)
+        button.click()
+        self.settle()
+        self.form_in_view()
+        self.assertEqual((self.page.input_value("#seed"), self.page.inner_text("#err")), (seed, ""))
+        # keyboard, Keyframes card: the drop zones appear at once, the error when /api/inputs answers
+        button, seed = self.remix_button(8)
+        self.assertTrue(self.page.is_hidden("#fl"))
+        self.assertGreater(self.settle(), 1500)
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('Gone from the server')")
+        self.settle()
+        self.assertTrue(self.page.is_visible("#fl"))
+        top, ptop, pbottom, height = self.page.evaluate("""() => [document.getElementById('f').getBoundingClientRect().top,
+            ...['top', 'bottom'].map(k => document.getElementById('prompt').getBoundingClientRect()[k]), innerHeight]""")
+        self.assertAlmostEqual(top, 14, delta=2)
+        self.assertTrue(self.focused("#prompt"))
+        self.assertTrue(0 <= ptop and pbottom <= height, "the focused prompt is on screen")
+        self.assertEqual(self.page.input_value("#seed"), seed)
+
+    def test_one_column_reduced_motion_jumps(self):
+        self.page.emulate_media(reduced_motion="reduce")
+        self.one_column()
+        self.remix_button(6)
+        top = self.page.evaluate("""() => { document.querySelectorAll('#jobs .job')[6].querySelector('.reuse-all').click();
+            return document.getElementById('f').getBoundingClientRect().top; }""")     # at once, not smoothly
+        self.assertAlmostEqual(top, 14, delta=2)
+
+
 class SeedText(PageTest):
     """#15: the seed is plain text next to the time; Remix, Download and Delete share one row."""
 

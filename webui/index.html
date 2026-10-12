@@ -466,6 +466,18 @@ $('unload').onclick=async()=>{const r=await fetch('/api/unload',{method:'POST'})
 
 // ---- clips: one card per job, built once; afterwards only text/attributes change
 const els={};
+// After Remix (#25): beside the gallery the form is a sticky column, already in view, so the page stays where it is
+// and the user keeps their place. In one column the form is above the gallery: its top comes into view (on a phone
+// that shows Generate too; the page top would not). A keyboard press (Enter/Space) moves focus there with the view,
+// so the next Tab does not jump back down; a tap does not, so no on-screen keyboard covers the form.
+// Remix changes the form's height (reload note, drop zones and their thumbnails, #err cleared or set), and the form
+// is above the gallery: scroll anchoring (WebKit) would then move the page to keep the card in place, and that
+// cancels the smooth scroll. So anchoring is off for 1.5 s, until the scroll is over (in WebKit it took about 0.2 s
+// whatever the distance).
+function showForm(keyboard){const f=$('f');if(getComputedStyle(f).position==='sticky')return;
+  const h=document.documentElement.style;h.overflowAnchor='none';clearTimeout(showForm.t);showForm.t=setTimeout(()=>h.overflowAnchor='',1500);
+  window.scrollTo({top:scrollY+f.getBoundingClientRect().top-14,behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth'});   // 14: the sticky form's top
+  if(keyboard)prompt.focus({preventScroll:true});}
 function card(j){const d=document.createElement('article');d.className='job';d.dataset.id=j.id;
   const media=document.createElement('div');media.className='media';media.style.aspectRatio=j.orientation==='portrait'?'4 / 5':'16 / 9';   // portrait is pillarboxed so cards stay a sane height
   media.innerHTML='<div class="ph2"><div class="big">0:00</div><div class="bar"><i></i></div><div class="small"></div></div>';
@@ -481,10 +493,10 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
   // new seed (#14); unticked, it keeps the clip's seed
-  body.querySelector('.reuse-all').onclick=()=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
+  body.querySelector('.reuse-all').onclick=e=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
     prompt.value=j.prompt;seed.value=j.seed;
     [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
-    modeUI();updateGo();window.scrollTo({top:0,behavior:'smooth'});$('err').textContent='';
+    modeUI();updateGo();showForm(e.detail===0);$('err').textContent='';
     zones.forEach(z=>{z.querySelector('input').value='';z.kept=[];z.show();});remixFrom=null;const my=++remixSeq;
     if(j.task==='t2va'){toast('Settings loaded');return;}
     // the clip's input files go back into the form (the server reuses them, nothing is uploaded again); a reply
