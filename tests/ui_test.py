@@ -209,6 +209,9 @@ with sync_playwright() as p:
                         ".map(e => e.textContent)")
     bad = [t for t in times if re.search(r"\d:[6-9]\d\b", t)]
     check(not bad, f"no time on the page shows 60 seconds or more ({len(times)} labels) {bad[:2]}")
+    pics = pg.evaluate("[...document.querySelectorAll('.qimg')].filter(i => i.offsetWidth)"
+                       ".map(i => i.closest('.job').dataset.status)")
+    check(not any(s in finished for s in pics), f"a clip's picture only on queued or running cards ({len(pics)} shown)")
 
     if RUN_JOB:
         if not n_done:

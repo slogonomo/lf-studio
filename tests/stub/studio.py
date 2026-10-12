@@ -47,13 +47,14 @@ class StubStudio:
         self.env.pop("SOLH3_PUBLISH_DIR", None)
         self.env.update(env or {})
         self.proc = None
+        self.stdin = None                    # the server's stdin: None for this process's
         self.log = self.root / "server.log"
 
     def start(self, timeout=15):
         if getattr(self, "_logf", None):
             self._logf.close()
         self._logf = self.log.open("a")
-        self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=HERE, env=self.env,
+        self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=HERE, env=self.env, stdin=self.stdin,
                                      stdout=self._logf, stderr=subprocess.STDOUT)
         deadline = time.time() + timeout
         while time.time() < deadline:

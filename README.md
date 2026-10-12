@@ -32,7 +32,8 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
 - Prompt examples and section chips in H3's prompt formats (from MiniMax's
   [prompt-writing guides](https://huggingface.co/MiniMaxAI/MiniMax-H3/tree/main/docs)); seed roll; settings
   remembered per browser.
-- A queue. Clips appear as cards with a timer and progress, then a player with Remix, Download and Delete; the
+- A queue. Clips appear as cards with a timer and progress (over the clip's first keyframe, reference image or
+  reference video frame, faded, to tell queued clips apart), then a player with Remix, Download and Delete; the
   seed is in the line with the time (a click or Tab selects it, to paste into the Seed box). Remix puts the
   clip's settings, prompt, seed and input files back into the form (with "New random seed every run" ticked, the
   next clip still gets a new seed); the server reuses the files it kept (uploads are stored per clip under
