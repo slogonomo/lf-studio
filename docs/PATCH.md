@@ -322,11 +322,15 @@ and identity are unchanged, and the image is 5-11% sharper.
   `tests/test_prompt_tokens.py` (new), `tests/test_pipeline.py`, `tests/test_qwen_media.py`.
 - **Switch.** `SOL_H3_PROMPT_TOKENS=plain|minimax`, default `plain`. `Pipeline(..., prompt_tokens=...)` overrides it.
 - **Measured.** On the CPU only, in the `sol-h3-spark-qwen` image (transformers 5.17.0), with the pinned ComfyUI's own
-  `MiniMaxH3Tokenizer`: 40 prompts that contain `<d>`, `<cutoff>` or `<scenetrans>` (examples from MiniMax's two
-  prompt guides and the studio page) get the ids of MiniMax's released tokenizer for 40 of 40 with `minimax` and 10
-  of 40 with `plain` (the 10 without `<d>`). The 10 prompts without any of the 7 tokens get the same ids in both
-  modes. Not yet measured on clips. `minimax` becomes the default only if an A/B test of lip sync, speech and picture
-  on the same seeds holds up (issue #38).
+  `MiniMaxH3Tokenizer`, compared with the tokenizer files of MiniMax's H3 repository:
+  - 40 texts: prompt examples and instructions from MiniMax's two prompt guides, lines of notes about the guides,
+    and the studio page's 3 format hints. 30 contain one of the 7 tokens (29 of them `<d>`). They get MiniMax's ids
+    for 40 of 40 with `minimax` and for 10 of 40 with `plain`: the 10 without any of the 7 tokens, which get the same
+    ids in both modes.
+  - The 6 prompts of the A/B test planned for issue #38 (t2va, ref2va and the 10 s fl2va scene of #21): MiniMax's
+    ids for 6 of 6 with `minimax`, 1 of 6 with `plain` (the one without dialogue).
+  - Not yet measured on clips. `minimax` becomes the default only if an A/B test of lip sync, speech and picture on
+    the same seeds holds up (issue #38).
 - **Deviation.** With `minimax`, prompts reach H3 as MiniMax's tokenizer gives them, not as NVIDIA's route does (see
   the table).
 
