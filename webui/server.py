@@ -25,6 +25,11 @@ Environment:
                              load-times.json; default ~/.local/state/sol-h3-studio
   SOLH3_PUBLISH_DIR          optional: also copy each finished clip (and its poster) here
   SOLH3_HOST, SOLH3_PORT     default 127.0.0.1 and 8190. 0.0.0.0 serves the whole LAN; there is no login.
+  SOLH3_ALLOWED_HOSTS        more host names the studio answers to: a comma list (ports are ignored), * = any.
+                             Always answered: IP addresses, localhost, names without a dot (Tailscale MagicDNS) and
+                             names ending in .ts.net, .local, .lan, .home, .home.arpa or .internal. A request for any
+                             other name (Host, or X-Forwarded-Host when present) gets 421, so a web page can't reach
+                             the studio by DNS rebinding (a name of its own that resolves to the studio's address).
   SOLH3_PRELOAD              1 (default): at start, warm up the settings of the last finished clip. 0: off.
   SOLH3_TRASH_DAYS           days a deleted clip stays in $SOL_H3_SPARK_RUNTIME_ROOT/trash before it is removed
                              for good (default 7)
@@ -39,6 +44,7 @@ import contextlib
 import email.parser
 import email.policy
 import errno
+import ipaddress
 import json
 import math
 import mimetypes
@@ -108,6 +114,34 @@ PUBLISH = Path(os.environ["SOLH3_PUBLISH_DIR"]).expanduser() if os.environ.get("
 HOST = os.environ.get("SOLH3_HOST") or "127.0.0.1"
 PORT = int(os.environ.get("SOLH3_PORT") or "8190")
 PRELOAD = os.environ.get("SOLH3_PRELOAD", "1") == "1"
+
+
+def host_name(value):
+    """The host name in a Host header value: lower case, without the port or a final dot ([v6]:port -> v6)."""
+    value = value.strip().lower()
+    if value.startswith("["):
+        value = value[1:].split("]", 1)[0]
+    elif value.count(":") == 1:                        # name:port (a bare IPv6 address has more colons)
+        value = value.split(":", 1)[0]
+    return value.rstrip(".")
+
+
+ALLOWED_HOSTS = {host_name(h) for h in (os.environ.get("SOLH3_ALLOWED_HOSTS") or "").split(",") if h.strip()}
+LOCAL_SUFFIXES = (".ts.net", ".local", ".lan", ".home", ".home.arpa", ".internal")
+
+
+def known_host(name):
+    """Whether the studio answers to this host name (host_name): see SOLH3_ALLOWED_HOSTS in the docstring. A name
+    without a dot also covers a request without Host (HTTP/1.0), which no browser sends."""
+    if "*" in ALLOWED_HOSTS or name in ALLOWED_HOSTS or name == "localhost" or "." not in name:
+        return True
+    if name.endswith(LOCAL_SUFFIXES):
+        return True
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return False
 
 INPUTS = RUNTIME / "inputs" / "webui"
 SESSIONS = RUNTIME / "outputs" / "webui"
@@ -1080,7 +1114,23 @@ class H(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def unknown_host(self):
+        """Answer 421 when the request names a host the studio does not answer to (known_host), in Host or in
+        X-Forwarded-Host (spark-switchboard passes the public one there). Returns whether it answered."""
+        for header in ("Host", "X-Forwarded-Host"):
+            for value in self.headers.get_all(header) or []:
+                for name in map(host_name, value.split(",")):        # X-Forwarded-Host: one per proxy
+                    if not known_host(name):
+                        n = self.headers.get("Content-Length", "")
+                        if n.isdigit() and int(n) <= 1 << 16:     # a small body is read, so the answer arrives
+                            self.rfile.read(int(n))
+                        self.send(421, {"error": f"unknown host name {name[:200]}; add it to SOLH3_ALLOWED_HOSTS"})
+                        return True
+        return False
+
     def do_GET(self):
+        if self.unknown_host():
+            return
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             return self.send(200, PAGE_FILE.read_text(), "text/html; charset=utf-8")
@@ -1217,6 +1267,8 @@ class H(BaseHTTPRequestHandler):
         return urlsplit(origin).netloc in allowed
 
     def do_POST(self):
+        if self.unknown_host():
+            return
         if not self.same_origin():
             return self.send(403, {"error": "cross-origin request refused"})
         if self.path == "/api/unload":

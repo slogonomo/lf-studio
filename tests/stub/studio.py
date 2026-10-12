@@ -9,6 +9,7 @@ It stops at once, with a non-zero exit status, if the port is in use, and it exi
 by itself. The tests import StubStudio from here.
 """
 import argparse
+import http.client
 import json
 import os
 import signal
@@ -106,6 +107,17 @@ class StubStudio:
             self._logf.close()
 
     # ---- HTTP helpers
+    def request(self, method, path, body=None, headers=None, timeout=30):
+        """One request with exactly these headers (http.client adds Host, and Content-Length for a body or a
+        POST, only when they are not given). Any status comes back as is: (status, headers, body bytes)."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        try:
+            conn.request(method, path, body, headers or {})
+            r = conn.getresponse()
+            return r.status, dict(r.headers), r.read()
+        finally:
+            conn.close()
+
     def get(self, path, headers=None):
         with urllib.request.urlopen(urllib.request.Request(self.url + path, headers=headers or {}), timeout=10) as r:
             return r.status, dict(r.headers), r.read()
