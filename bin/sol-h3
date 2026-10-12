@@ -1331,9 +1331,9 @@ TOOLS = [
          "orientation, the first keyframe's shape picks it. Write the prompt in H3's format (prompt_guide). "
          "References are numbered in the order given per kind: <Picture N>, <Video N>, <Audio N>; a reference video "
          "with sound also takes an <Audio N> just before its own <Video N>. The result's labels list shows the "
-         "numbering used. An identical call to this server within 30 minutes returns the earlier clip instead of making "
-         "a new one: change the seed (or pass again: true) for another take. After a restart of the server (a new "
-         "session), status lists the newest clips. Cancelling this call never removes a clip that was already "
+         "numbering used. An identical call to this server within 30 minutes returns the earlier clip instead of "
+         "making a new one: change the seed (or pass again: true) for another take. After a restart of the server (a "
+         "new session), status lists the newest clips. Cancelling this call never removes a clip that was already "
          "submitted."),
      "inputSchema": {"type": "object", "required": ["prompt"], "additionalProperties": False, "properties": {
          "prompt": {"type": "string", "description": (
@@ -1660,9 +1660,9 @@ class McpServer:
             why = saver.unwritable()
             if why:
                 where = "SOLH3_OUT_DIR" if os.environ.get("SOLH3_OUT_DIR") else "the default; SOLH3_OUT_DIR is unset"
-                raise Fail(f"can't save clips in {self.out_dir} ({where}): {why}. Pass out with a directory this server "
-                           "can write to, or set SOLH3_OUT_DIR in its settings to one (its working directory is "
-                           f"{Path.cwd()}). Nothing was submitted.")
+                raise Fail(f"can't save clips in {self.out_dir} ({where}): {why}. Nothing was submitted or "
+                           "downloaded. Set SOLH3_OUT_DIR in this server's settings to a directory it can write to, "
+                           f"or pass out with a writable directory inside its working directory ({Path.cwd()}).")
             return saver
         p = Path(out).expanduser()
         p = Path(os.path.abspath(p if p.is_absolute() else Path.cwd() / p))
@@ -1679,7 +1679,7 @@ class McpServer:
                            "the MCP server's settings can allow other places (SOLH3_MCP_OUT_ANYWHERE=1)")
         why = saver.unwritable()
         if why:
-            raise Fail(f"can't save the clip at {p}: {why}. Nothing was submitted.")
+            raise Fail(f"can't save the clip at {p}: {why}. Nothing was submitted or downloaded.")
         return saver
 
     def done_result(self, jid, saved, saver, prefix=""):

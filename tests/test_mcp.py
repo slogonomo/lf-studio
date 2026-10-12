@@ -286,7 +286,8 @@ class Tools(McpTest):
         r = m.call("fetch", {"id": jid}, meta=MODERN_META)                       # a 2026-07-28 request
         self.assertEqual([c["type"] for c in r["content"]], ["text", "resource_link", "image"])
         m.request("initialize", dict(hello, protocolVersion="2025-06-18"))
-        self.assertEqual([c["type"] for c in m.call("fetch", {"id": jid})["content"]], ["text", "resource_link", "image"])
+        r = m.call("fetch", {"id": jid})
+        self.assertEqual([c["type"] for c in r["content"]], ["text", "resource_link", "image"])
 
     def test_short_waits(self):
         """9.3 #6: wait_s 0 returns the id at once; a short wait says it is still running (not an error); wait."""
@@ -415,13 +416,13 @@ class Tools(McpTest):
         r = m.call("generate", {"prompt": "x", "wait_s": 30})
         self.assertTrue(r["isError"])
         self.assertEqual(text(r), f"can't save clips in {ro}/sol-h3-clips (the default; SOLH3_OUT_DIR is unset): no "
-                                  f"permission to write to {ro}. Pass out with a directory this server can write to, "
-                                  f"or set SOLH3_OUT_DIR in its settings to one (its working directory is {ro}). "
-                                  "Nothing was submitted.")
+                                  f"permission to write to {ro}. Nothing was submitted or downloaded. Set "
+                                  "SOLH3_OUT_DIR in this server's settings to a directory it can write to, or pass out "
+                                  f"with a writable directory inside its working directory ({ro}).")
         for out in (str(ro), "new/c.mp4"):
             r = m.call("generate", {"prompt": "x", "wait_s": 30, "out": out})
             self.assertTrue(r["isError"], out)
-            self.assertIn(f"no permission to write to {ro}. Nothing was submitted.", text(r))
+            self.assertIn(f"no permission to write to {ro}. Nothing was submitted or downloaded.", text(r))
         self.assertEqual(self.studio.state()["jobs"], [])
         m = self.mcp(SOLH3_OUT_DIR=str(self.dir / "clips"))
         (self.work / "late").mkdir()
