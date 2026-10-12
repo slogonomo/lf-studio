@@ -561,6 +561,16 @@ class Guide(unittest.TestCase):
         self.assertIsNotNone(m, "docs/API.md has no prompt-guide markers")
         self.assertEqual(m.group(1).strip(), cli.GUIDE.strip())
 
+    def test_examples_follow_the_rules(self):
+        """The guide's examples keep its own rules, since agents copy them: the ref2va example's
+        detailed_description runs 350-500 words (MiniMax: a single shot does not justify a shorter one); the static
+        shots of the examples take no amplitude or speed, as the rule now says."""
+        guide = load_cli().GUIDE
+        ref2va = guide[guide.index("\nref2va, one portrait image"):]
+        words = len(ref2va[ref2va.index("detailed_description:"):ref2va.index("overall_soundscape:")].split()) - 1
+        self.assertTrue(350 <= words <= 500, words)
+        self.assertIn("A static shot takes neither", guide)
+
 
 class SwitchboardIntegration(unittest.TestCase):
     def test_passive_paths(self):

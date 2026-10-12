@@ -113,8 +113,9 @@ Write these three fields in this order, each as `name: text`, with a blank line 
     opening composition. Shot 1 has no timestamp.
   - Each later shot is `[Shot N] At MM:SS.mmm, the camera cuts to ...`, with cut times increasing and inside the
     clip.
-  - Camera moves (push in, pan right, tracking shot, static shot, ...) take an amplitude and a speed in plain
-    words: "the camera pushes in with small amplitude at slow speed".
+  - A moving camera (push in, pan right, truck left, tracking shot, ...) can take an amplitude and a speed in
+    plain words when they matter: "the camera pushes in with small amplitude at slow speed". Leave them out for a
+    medium amplitude and a normal speed. A static shot takes neither: "the camera holds a static shot as ...".
 - `overall_soundscape:` 1-4 sentences of ambience, physical and non-verbal sounds. No dialogue here. `N/A` only
   for total silence.
 - `non_diegetic_music:` 1-3 sentences on the score: instruments, tempo, dynamics, no mood words. `N/A` if there is
@@ -128,8 +129,15 @@ Write these three fields in this order, each as `name: text`, with a blank line 
 - **Inside `<d>...</d>`** goes only `[Language]` and the exact words, untranslated:
   `the fisherman with a low, gravelly voice (S1) says: <d>[English] The tide is turning.</d>`
 - **Voice-over:** `says in an off-screen voiceover: <d>[English] ...</d> while his lips remain completely closed`.
-- **Cuts and the clip's end:** speech that runs across a cut takes `<scenetrans>`; speech cut off by the end of
-  the clip takes `<cutoff>`.
+- **Cuts and the clip's end** (MiniMax's rule; its guides give no example with these tokens, nor say whether they
+  go inside `<d>`):
+  - A line of dialogue or lyrics that runs across a cut takes `<scenetrans>` at the connecting point in both
+    parts, and a sentence saying that the audio continues across the cut: "continues seamlessly across the cut",
+    "continues uninterrupted into the next shot", "carries over from the previous shot" or "remains audible across
+    the transition". MiniMax's t2va example has such a sentence: `[Shot 2] At 00:05.000, the camera cuts to a
+    close-up of steam rising from the sliced bread while the baker's final words carry over from the previous
+    shot.`
+  - Speech cut off by the end of the clip takes `<cutoff>`.
 - **Text visible in the picture** goes in double quotes, verbatim.
 - **Language:** write the sections in English. Dialogue and visible text stay in their own language.
 
@@ -235,8 +243,8 @@ retention_analysis:
 <Audio 1>: reference - her voice follows the timbre of <Audio 1> without copying the original signal.
 
 detailed_description:
-The target video is a live-action, cinematic night scene with warm streetlights and falling snow.
-[Shot 1] A static medium shot frames <Subject 1> (S1), the woman with short red hair, round glasses and a green wool coat, standing under a streetlight as snowflakes drift past. She smiles into the lens and says in the clear voice referenced from <Audio 1>, <d>[English] Welcome back. It has been a long winter.</d> She tucks her hands into her coat pockets as her breath clouds in the cold air.
+The target video is a live-action, cinematic night scene on a quiet city street in winter, lit by warm streetlights and the cool glow of shop windows, with a shallow depth of field and soft, slightly desaturated colors.
+[Shot 1] A static medium shot frames <Subject 1> (S1), the woman with short red hair, round glasses and a green wool coat, standing on a snow-covered sidewalk under a single streetlight, centered in the frame from the waist up. Behind her the street falls out of focus: a row of closed shops with lit windows, parked cars under a thin layer of snow, and the red tail lights of a car passing slowly from left to right. A thin wisp of steam rises from a street grate behind her and drifts across the lit windows. Large snowflakes drift down through the cone of warm light above her, catching the light as they fall, and a few settle on her red hair, on the rims of her glasses and on the shoulders of her coat. The coat is buttoned to the collar, its wool texture visible in the light, and fresh snow lies on the pavement around her boots. She stands still at first, her hands loose at her sides, then lifts her gaze from the ground to the lens, and her face softens into a warm, slightly tired smile. She takes a small breath that clouds in the cold air and says in the clear, warm voice referenced from <Audio 1>, <d>[English] Welcome back. It has been a long winter.</d> Her delivery is calm and close, with the smile audible in it. As she finishes speaking, she tucks her hands into her coat pockets, shifts her weight onto one foot and tilts her head slightly to the side, still looking into the lens. Her breath keeps rising in small white clouds that drift up through the falling snow and fade in the light. The lenses of her glasses catch a brief reflection of the streetlight as she moves her head. The camera stays still; only the snow, her breath and the distant traffic change across the shot, which ends on her steady, smiling gaze with the snow still falling around her.
 
 overall_soundscape:
 Soft wind and the hush of falling snow, with distant traffic on wet pavement.
