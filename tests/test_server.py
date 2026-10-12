@@ -210,12 +210,33 @@ class Remix(StudioTest):
         self.assertIn("no longer in the list", body["error"])
 
 
-STILL = "@still.jpg"                         # a reference video's frame in the clip's input directory (server.py)
+STILL = "@still.jpg"                         # a clip's card picture in its input directory (server.py)
+PICTURE_CACHE = "private, max-age=86400"     # /still and /poster
+
+
+def photo(size):
+    """A large PNG, like a phone photo (ffmpeg's test pattern: about 1.2 MB at 4032x3024)."""
+    return subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"testsrc2=s={size}", "-frames:v", "1",
+                           "-f", "image2pipe", "-c:v", "png", "-"], capture_output=True, check=True).stdout
+
+
+def jpeg_size(data):
+    """(width, height) from a JPEG's frame header."""
+    assert data[:2] == b"\xff\xd8", "not a JPEG"
+    i = 2
+    while i + 9 <= len(data):
+        marker, length = data[i + 1], struct.unpack(">H", data[i + 2:i + 4])[0]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            height, width = struct.unpack(">HH", data[i + 5:i + 9])
+            return width, height
+        i += 2 + length
+    raise ValueError("no frame header")
 
 
 class CardPicture(StudioTest):
     """#30: GET /still/<id>, the picture behind a queued or running clip's timer: its first frame (else its last), its
-    first reference image, else the first frame of its first reference video, kept with the clip's input files."""
+    first reference image, else the first frame of its first reference video, as a JPEG at most 640 px wide, kept
+    with the clip's input files."""
     load_s = 3
 
     def still(self, path):
@@ -225,21 +246,44 @@ class CardPicture(StudioTest):
         except urllib.error.HTTPError as e:
             return e.code, None, None
 
+    def picture(self, jid):
+        """/still/<id> as (status, type, JPEG size)."""
+        code, ctype, data = self.still(jid)
+        return code, ctype, jpeg_size(data)
+
     def test_keyframes_and_reference_images(self):
         first, last, one, video = png(), png(40), png(48), mp4()
         a = self.generate(task="fl2va", files={"first_frame": [("first.png", first)], "last_frame": [("last.png", last)]})
         b = self.generate(task="fl2va", seed=2, files={"last_frame": [("last.png", last)]})
         self.assertEqual(self.studio.job(b)["status"], "queued")
-        self.assertEqual(self.still(b), (200, "image/png", last))                # no first frame: the last
-        self.assertEqual(self.still(a), (200, "image/png", first))
+        self.assertEqual(self.picture(b), (200, "image/jpeg", (40, 24)))       # no first frame: the last
+        self.assertEqual(self.picture(a), (200, "image/jpeg", (32, 24)))       # small ones keep their size
         c = self.generate(task="ref2va", seed=3, files={"ref_images": [("one.png", one), ("two.png", png(56))],
                                                        "ref_videos": [("clip.mp4", video)]})
-        self.assertEqual(self.still(c), (200, "image/png", one))                 # an image before a video
+        self.assertEqual(self.picture(c), (200, "image/jpeg", (48, 24)))       # an image before a video
         t = self.generate(seed=4)
         self.assertEqual(self.still(t)[0], 404)                                  # t2va: no picture
+        data = self.still(a)[2]
         self.assertEqual([j["status"] for j in self.studio.wait([a, b, c, t])], ["done"] * 4)
-        self.assertEqual(self.still(a), (200, "image/png", first))               # and still once it is done
-        self.assertEqual(list((self.studio.runtime / "inputs" / "webui").glob(f"*/{STILL}")), [])   # files as they are
+        self.assertEqual(self.still(a), (200, "image/jpeg", data))               # and still once it is done
+        inputs = self.studio.runtime / "inputs" / "webui"
+        self.assertEqual(sorted(p.name for p in (inputs / a).iterdir()), [STILL, "first.png", "last.png"])
+        self.assertEqual(((inputs / a / "first.png").read_bytes(), (inputs / b / "last.png").read_bytes()),
+                         (first, last))                                          # the uploads as they were
+
+    def test_a_photo_goes_out_small_and_cached(self):
+        """An upload can be a phone photo of many MB, and the card shows it blurred: a JPEG at most 640 px wide, which
+        the browser keeps (a clip's pictures never change); the poster too."""
+        wide, tall = photo("4032x3024"), photo("3024x4032")
+        a = self.generate(task="fl2va", files={"first_frame": [("wide.png", wide)]})
+        b = self.generate(task="ref2va", seed=2, files={"ref_images": [("tall.png", tall)]})
+        for jid, size, upload in ((a, (640, 480), wide), (b, (640, 854), tall)):
+            code, headers, data = self.studio.get(f"/still/{jid}")
+            self.assertEqual((code, headers["Content-Type"], jpeg_size(data)), (200, "image/jpeg", size))
+            self.assertEqual(headers["Cache-Control"], PICTURE_CACHE)
+            self.assertLess(len(data), len(upload) / 10)
+        self.studio.wait([a, b])
+        self.assertEqual(self.studio.get(f"/poster/{a}")[1]["Cache-Control"], PICTURE_CACHE)
 
     def test_reference_video_frame_kept_with_the_inputs(self):
         a = self.generate(task="ref2va", files={"ref_videos": [("clip.mp4", mp4())],
@@ -282,13 +326,15 @@ class CardPicture(StudioTest):
 
 
 class CardPictureOldClips(StudioTest):
-    """#30: clips from the history. A reference video's frame goes into the clip's own input directory; a clip without
-    one (an old history) or whose file is gone has no picture, and nothing is written next to its files."""
+    """#30: clips from the history. The JPEG goes into the clip's own input directory. A clip without one (an old
+    history) has no reference video frame, and its image goes out as it is; one whose file is gone has no picture;
+    nothing is written next to their files."""
 
     def seed(self):
         self.outside = self.dir / "elsewhere"
         self.outside.mkdir()
         (self.outside / "clip_ref.mp4").write_bytes(mp4())
+        (self.outside / "first.png").write_bytes(png())
         own = self.studio.runtime / "inputs" / "webui" / ("c" * 32)
         own.mkdir(parents=True)
         (own / "clip_ref.mp4").write_bytes(mp4())
@@ -296,7 +342,8 @@ class CardPictureOldClips(StudioTest):
                                        references=[{"type": "video", "path": str(self.outside / "clip_ref.mp4")}]),
                           finished_job("b" * 32, created=2, task="fl2va", first_frame=str(self.outside / "gone.png")),
                           finished_job("c" * 32, created=3, task="ref2va",
-                                       references=[{"type": "video", "path": str(own / "clip_ref.mp4")}])])
+                                       references=[{"type": "video", "path": str(own / "clip_ref.mp4")}]),
+                          finished_job("e" * 32, created=4, task="fl2va", first_frame=str(self.outside / "first.png"))])
 
     def test_no_picture_and_nothing_written(self):
         code, headers, _ = self.studio.get(f"/still/{'c' * 32}")
@@ -306,25 +353,60 @@ class CardPictureOldClips(StudioTest):
             with self.assertRaises(urllib.error.HTTPError) as e:
                 self.studio.get(f"/still/{jid}")
             self.assertEqual(e.exception.code, 404, jid)
-        self.assertEqual([p.name for p in self.outside.iterdir()], ["clip_ref.mp4"])
-        self.assertFalse((self.studio.runtime / "inputs" / "webui" / ("a" * 32)).exists())
+        code, headers, data = self.studio.get(f"/still/{'e' * 32}")
+        self.assertEqual((code, headers["Content-Type"], data), (200, "image/png", png()))
+        self.assertEqual(sorted(p.name for p in self.outside.iterdir()), ["clip_ref.mp4", "first.png"])
+        for jid in ("a" * 32, "e" * 32):
+            self.assertFalse((self.studio.runtime / "inputs" / "webui" / jid).exists())
+
+
+class CardPictureWithoutJpeg(StudioTest):
+    """#30: when ffmpeg can't make the card picture, an image goes out as it is (a reference video has none), and
+    nothing is left behind."""
+
+    def seed(self):
+        bindir = self.dir / "bin"
+        bindir.mkdir()
+        (bindir / "ffmpeg").write_text('#!/bin/sh\n'
+                                       'case " $* " in *"min(640,iw)"*) echo "cannot read it" >&2; exit 1;; esac\n'
+                                       f'exec {shutil.which("ffmpeg")} "$@"\n')
+        (bindir / "ffmpeg").chmod(0o755)
+        self.studio.env.update(PATH=f"{bindir}:{os.environ['PATH']}")
+
+    def test_the_image_as_it_is(self):
+        first = png()
+        a = self.generate(task="fl2va", files={"first_frame": [("first.png", first)]})
+        b = self.generate(task="ref2va", seed=2, files={"ref_videos": [("clip.mp4", mp4())]})
+        for _ in range(2):                                                       # tried again, not remembered
+            code, headers, data = self.studio.get(f"/still/{a}")
+            self.assertEqual((code, headers["Content-Type"], data), (200, "image/png", first))
+            self.assertEqual(headers["Cache-Control"], PICTURE_CACHE)
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                self.studio.get(f"/still/{b}")
+            self.assertEqual(e.exception.code, 404)
+        inputs = self.studio.runtime / "inputs" / "webui"
+        self.assertEqual(list(inputs.glob(f"*/{STILL}")) + list(inputs.glob(".still-*")), [])
+        self.studio.wait([a, b])
 
 
 class CardPictureDeleteRace(StudioTest):
-    """#30: a Delete while a reference video's frame is being made. The frame is written under a temporary name outside
-    the clip's input directory, so nothing of it goes to the trash with the inputs or comes back with Undo; one left by
-    a server stopped part-way is removed at the next start."""
+    """#30: a Delete while a card picture is being made, from a reference video or an image. The JPEG is written under
+    a temporary name outside the clip's input directory, so nothing of it goes to the trash with the inputs or comes
+    back with Undo, and the image, now in the trash, is not served; one left by a server stopped part-way is removed
+    at the next start."""
 
     def seed(self):
         self.inputs = self.studio.runtime / "inputs" / "webui"
-        self.jid = "c" * 32
-        own = self.inputs / self.jid
-        own.mkdir(parents=True)
-        (own / "clip_ref.mp4").write_bytes(mp4())
+        self.clips = {"c" * 32: "clip_ref.mp4", "d" * 32: "first.png"}
+        for jid, name in self.clips.items():
+            (self.inputs / jid).mkdir(parents=True)
+            (self.inputs / jid / name).write_bytes(mp4() if name.endswith(".mp4") else png())
         (self.inputs / f".still-{'0' * 32}.part").write_bytes(b"\xff\xd8")     # from a server stopped part-way
-        self.write_state([finished_job(self.jid, task="ref2va",
-                                       references=[{"type": "video", "path": str(own / "clip_ref.mp4")}])])
-        # ffmpeg making the frame writes it, then waits until the test says go
+        self.write_state([finished_job("c" * 32, created=1, task="ref2va", references=[
+                              {"type": "video", "path": str(self.inputs / ("c" * 32) / "clip_ref.mp4")}]),
+                          finished_job("d" * 32, created=2, task="fl2va",
+                                       first_frame=str(self.inputs / ("d" * 32) / "first.png"))])
+        # ffmpeg making the picture writes it, then waits until the test says go
         self.hold = self.dir / "hold"
         self.hold.mkdir()
         bindir = self.dir / "bin"
@@ -342,33 +424,37 @@ class CardPictureDeleteRace(StudioTest):
         (bindir / "ffmpeg").chmod(0o755)
         self.studio.env.update(PATH=f"{bindir}:{os.environ['PATH']}", STILL_HOLD=str(self.hold))
 
-    def still(self):
+    def still(self, jid):
         try:
-            return self.studio.get(f"/still/{self.jid}")[0]
+            return self.studio.get(f"/still/{jid}")[0]
         except urllib.error.HTTPError as e:
             return e.code
 
     def files(self, d):
         return sorted(p.relative_to(d).name for p in d.rglob("*") if not p.is_dir())
 
-    def test_delete_while_the_frame_is_made(self):
+    def test_delete_while_the_picture_is_made(self):
         self.assertEqual(list(self.inputs.glob(".still-*")), [])                # the stopped server's is gone
-        with concurrent.futures.ThreadPoolExecutor(1) as pool:
-            got = pool.submit(self.still)
-            deadline = time.time() + 20
-            while not (self.hold / "written").exists():
-                self.assertLess(time.time(), deadline, "ffmpeg did not write the frame")
-                time.sleep(0.05)
-            self.assertEqual(self.studio.post("/api/delete", json_body={"id": self.jid})[0], 200)
-            (self.hold / "go").touch()
-            self.assertEqual(got.result(timeout=20), 404)                        # deleted meanwhile: no picture
-        self.assertEqual(self.files(self.studio.runtime / "trash" / self.jid), ["clip_ref.mp4"])
-        self.assertEqual(list(self.inputs.glob(".still-*")), [])
-        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": self.jid})[0], 200)
-        self.assertEqual(self.files(self.inputs / self.jid), ["clip_ref.mp4"])
-        self.assertEqual(self.still(), 200)                                      # made now, as usual
-        self.assertEqual(self.files(self.inputs / self.jid), [STILL, "clip_ref.mp4"])
-        self.assertEqual(list(self.inputs.glob(".still-*")), [])
+        for jid, name in self.clips.items():
+            with self.subTest(name):
+                for f in ("written", "go"):
+                    (self.hold / f).unlink(missing_ok=True)
+                with concurrent.futures.ThreadPoolExecutor(1) as pool:
+                    got = pool.submit(self.still, jid)
+                    deadline = time.time() + 20
+                    while not (self.hold / "written").exists():
+                        self.assertLess(time.time(), deadline, "ffmpeg did not write the picture")
+                        time.sleep(0.05)
+                    self.assertEqual(self.studio.post("/api/delete", json_body={"id": jid})[0], 200)
+                    (self.hold / "go").touch()
+                    self.assertEqual(got.result(timeout=20), 404)                # deleted meanwhile: no picture
+                self.assertEqual(self.files(self.studio.runtime / "trash" / jid), [name])
+                self.assertEqual(list(self.inputs.glob(".still-*")), [])
+                self.assertEqual(self.studio.post("/api/undelete", json_body={"id": jid})[0], 200)
+                self.assertEqual(self.files(self.inputs / jid), [name])
+                self.assertEqual(self.still(jid), 200)                          # made now, as usual
+                self.assertEqual(self.files(self.inputs / jid), [STILL, name])
+                self.assertEqual(list(self.inputs.glob(".still-*")), [])
 
 
 class FfmpegAndTheTerminal(StudioTest):
