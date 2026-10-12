@@ -4,7 +4,7 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 23 files, 18 modified and 5 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 86 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 87 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
   The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
@@ -27,7 +27,14 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 # prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
 cd models/minimax_h3/Sol-H3-Spark
 SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
-    -m unittest discover -s tests   # Ran 86 tests ... OK (skipped=1)
+    -m unittest discover -s tests   # Ran 87 tests ... OK (skipped=1)
+
+# the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
+# Qwen image, on the CPU (no --gpus)
+COMFY=~/sol-h3/sources/ComfyUI
+docker run --rm --network=none --user "$(id -u):$(id -g)" -e HOME=/tmp -e CUDA_VISIBLE_DEVICES= \
+    -e SOL_H3_SPARK_COMFY_ROOT="$COMFY" -v "$COMFY:$COMFY:ro" -v "$PWD:$PWD:ro" -w "$PWD" \
+    --entrypoint python3 sol-h3-spark-qwen -B -m unittest tests.test_prompt_tokens   # Ran 12 tests ... OK
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -331,12 +338,15 @@ also points the cache at a temp directory, so running the tests writes nothing u
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
 older LTX-2), `tests/test_pipeline.py` its check before any worker starts.
-`tests/test_prompt_tokens.py` (new) covers the prompt-token setting and its recipe entry, and the token checks with a
-stand-in tokenizer. With `SOL_H3_SPARK_COMFY_ROOT` set it also loads the pinned ComfyUI's Qwen tokenizer files: the
-7 ids, the 19 ids of the example above, and unchanged ids for prompts without the tokens. Its test of ComfyUI's own
-`MiniMaxH3Tokenizer` needs ComfyUI's packages: it is skipped in the Stage1 environment and runs in the Qwen image.
-`tests/test_pipeline.py` checks the setting before any worker starts, `tests/test_qwen_media.py` the receipt fields.
-86 tests in total (upstream: 65).
+`tests/test_prompt_tokens.py` (new) covers the prompt-token setting and its recipe entry, the token checks with a
+stand-in tokenizer, and the Qwen worker's session applying the recipe's mode to the CLIP's tokenizer (with stand-ins
+for ComfyUI, torch and the checkpoint). With `SOL_H3_SPARK_COMFY_ROOT` set it also loads the pinned ComfyUI's Qwen
+tokenizer files: the 7 ids, the 19 ids of the example above, and unchanged ids for prompts without the tokens. Its
+test of ComfyUI's own `MiniMaxH3Tokenizer` needs ComfyUI's packages: it is skipped in the Stage1 environment and runs
+in the Qwen image ([Apply, test, revert](#apply-test-revert)). `tests/test_pipeline.py` checks the setting before
+any worker starts and that the setting, or the `Pipeline` argument, reaches every worker; `tests/test_qwen_media.py`
+checks the receipt fields.
+87 tests in total (upstream: 65).
 
 ## All switches
 
