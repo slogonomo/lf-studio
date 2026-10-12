@@ -31,7 +31,8 @@ Environment:
   SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
 
 SOL_H3_STAGE2_AUDIO (frozen or joint) and SOL_H3_PROMPT_TOKENS (plain or minimax) are patch settings (see
-docs/PATCH.md), checked at start: another value stops the server with a message.
+docs/PATCH.md), checked at start: another value stops the server with a message. So does a value that the applied patch
+is too old to give (it lacks the setting): run install/10-sana.sh.
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
@@ -79,14 +80,18 @@ except ImportError as error:
          "working directory set to models/minimax_h3/Sol-H3-Spark inside the patched Sana checkout.")
 
 # the patch's settings (SOL_H3_STAGE2_AUDIO, patch 0.3+; SOL_H3_PROMPT_TOKENS, 0.4+): a bad value stops the studio here,
-# not every clip. An older patch lacks one or both.
+# not every clip. An older patch lacks one or both and does what the last value of each row asks; any other value stops
+# the studio too, since that patch would ignore it.
 import runtime.config  # noqa: E402
-for setting_check in (getattr(runtime.config, name, None) for name in ("stage2_audio_mode", "prompt_tokens_mode")):
-    if setting_check:
-        try:
-            setting_check()
-        except ValueError as error:
-            fail(str(error))
+for setting, name, older in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "joint"),
+                             ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "plain")):
+    setting_check, value = getattr(runtime.config, name, None), os.environ.get(setting, "")
+    if setting_check is None and value.strip().lower() not in ("", older):
+        fail(f"{setting}={value} needs a newer patch than the one applied in {PKG}; run install/10-sana.sh")
+    try:
+        setting_check and setting_check()
+    except ValueError as error:
+        fail(str(error))
 
 if not os.environ.get("SOL_H3_SPARK_RUNTIME_ROOT"):
     fail("SOL_H3_SPARK_RUNTIME_ROOT is not set. Point it at your runtime directory "

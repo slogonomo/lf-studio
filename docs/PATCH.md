@@ -310,7 +310,10 @@ and identity are unchanged, and the image is 5-11% sharper.
 - **How the setting reaches the worker.** The Qwen worker runs in Docker with a fixed environment (`qwen_python.sh`),
   so the host reads `SOL_H3_PROMPT_TOKENS` in `runtime/config.py` and passes the mode to the worker in the recipe, as
   `stage1.prompt_tokens`. A value other than `plain` or `minimax` (any case) fails when the pipeline is created,
-  before any worker loads; the studio and `bin/sol-h3-studio --check` refuse to start with it.
+  before any worker loads; the studio and `bin/sol-h3-studio --check` refuse to start with it. They also refuse
+  `minimax` when the Sana checkout still carries an older patch, which would ignore the setting and tokenize as
+  `plain`: run `install/10-sana.sh` after updating. (Likewise `SOL_H3_STAGE2_AUDIO=frozen` with a patch older than
+  0.3, which refines as `joint`.)
 - **Receipts.** `results.json` has the mode in its recipe. Each request's Qwen receipt (`qwen/conditioning.json`)
   records `prompt_tokens` (the mode), `text_tokens` (the text positions in the conditioning) and `minimax_tokens` (how
   many of them are the 7 tokens). The Qwen worker's log has a `[sol-h3-studio] prompt tokens:` line.
