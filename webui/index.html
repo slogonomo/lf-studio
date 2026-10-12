@@ -168,6 +168,18 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .job[data-status=cancelled] .ph2{background:linear-gradient(120deg,#131210,#1c1a16);animation:none}
 .ph2 .big{font:600 24px var(--mono);letter-spacing:.02em;color:#f6ead7}
 .ph2 .small{font-size:12px;color:#aea291}
+/* a queued or running clip's first picture (/still/), between the placeholder's background and its text: clear enough
+   to tell the clips apart while queued, fainter and more blurred while it runs so the shimmer shows; gone once the clip
+   has failed or been cancelled (a finished clip's card shows its video). will-change gives it a layer of its own, so
+   WebKit blurs it once, not again on every frame of the shimmer behind it (without it, a page with one running card
+   took 1.7x the CPU at 390 px wide and 2.2x at 1280 px, in Playwright WebKit on Linux; it looks the same) */
+.ph2.pic{isolation:isolate}
+.ph2 .qimg{position:absolute;inset:0;z-index:-1;width:100%;height:100%;object-fit:cover;pointer-events:none;
+  opacity:.3;filter:blur(12px) brightness(.6);transition:opacity .8s,filter .8s;will-change:transform}
+.job[data-status=queued] .qimg{opacity:.65;filter:blur(3px) brightness(.45)}
+.job[data-status=failed] .qimg,.job[data-status=cancelled] .qimg{display:none}
+.ph2.pic .big,.ph2.pic .small{text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.ph2.pic .small{color:#ddd2c1}
 .bar{width:64%;max-width:260px;height:4px;border-radius:99px;background:rgba(255,255,255,.12);overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#e9a04f,#ffd49a);border-radius:99px;transition:width 1s linear}
 .body{padding:11px 13px 12px;display:flex;flex-direction:column;gap:7px;flex:1}
@@ -188,7 +200,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .seedt{white-space:nowrap}
 .seedv{font-family:var(--mono);color:var(--mut);-webkit-user-select:all;user-select:all;cursor:text}
 .seedv:focus{outline:0}.seedv:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:3px}
-.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translate(-50%,16px);background:var(--fg);color:var(--bg);padding:9px 15px;border-radius:11px;
+.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translate(-50%,16px);width:max-content;max-width:calc(100vw - 32px);background:var(--fg);color:var(--bg);padding:9px 15px;border-radius:11px;
   font-size:13px;opacity:0;transition:.2s;pointer-events:none;z-index:9;box-shadow:var(--shadow)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.undo{display:flex;align-items:center;gap:12px;padding:7px 8px 7px 15px}
@@ -326,8 +338,11 @@ const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","n
 // prompt encoder each time
 const ETA={3:40,4:45,5:60,6:70,7:80,8:90,10:125,12:150,15:195};
 const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
-const fmtS=s=>s<90?`${Math.round(s)} s`:`${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')} min`;
-const clock=s=>{s=Math.max(0,s);return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;};
+// durations: whole seconds first (none, negative or not a number: 0), then minutes and seconds, so 119.6 s reads
+// 2:00 and never 1:60 (#26); fmtS rounds ("45 s", "2:05 min"), clock counts up like a stopwatch (floors)
+const whole=(s,f)=>Number.isFinite(s=f(+s))?Math.max(0,s):0, mmss=n=>`${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;
+const fmtS=s=>{s=whole(s,Math.round);return s<90?`${s} s`:`${mmss(s)} min`;};
+const clock=s=>mmss(whole(s,Math.floor));
 const store={get(k,d){try{const v=localStorage.getItem('solh3.'+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem('solh3.'+k,v)}catch(e){}}};
 const val=n=>{const el=form.querySelector(`input[name="${n}"]:checked`);return el?el.value:''};
 const setRadio=(n,v)=>{const el=form.querySelector(`input[name="${n}"][value="${v}"]`);if(el)el.checked=true;return !!el;};
@@ -463,9 +478,34 @@ $('unload').onclick=async()=>{const r=await fetch('/api/unload',{method:'POST'})
 
 // ---- clips: one card per job, built once; afterwards only text/attributes change
 const els={};
+// After Remix (#25): beside the gallery the form is a sticky column, already in view, so the page stays where it is
+// and the user keeps their place. In one column the form is above the gallery: a tap brings its top into view (the
+// page top would not; on a phone, for a Text clip, Generate is on screen too) and moves no focus, so no on-screen
+// keyboard covers the form. A keyboard press (Enter/Space) moves focus to the prompt, so the next Tab does not jump
+// back down, and the page scrolls on until the prompt is on screen: Keyframes and Reference show drop zones above it
+// (#ref pushes it ~350 px down). It is placed from the zones as Remix shows them, empty; the clip's files arrive
+// later, and pictures that wrap to a second row make a zone taller, so for 1.5 s a growing form scrolls again.
+// Remix changes the form's height (reload note, drop zones and their thumbnails, #err cleared or set), and the form
+// is above the gallery: scroll anchoring (WebKit) would then move the page to keep the card in place, and that
+// cancels the smooth scroll. So anchoring is off for 1.5 s, until the scroll is over (in WebKit it took about 0.2 s
+// whatever the distance).
+function showForm(keyboard){const f=$('f');if(getComputedStyle(f).position==='sticky')return;
+  const h=document.documentElement.style;h.overflowAnchor='none';clearTimeout(showForm.t);showForm.t=setTimeout(()=>h.overflowAnchor='',1500);
+  const go=()=>{const top=f.getBoundingClientRect().top-14,p=prompt.getBoundingClientRect();    // 14: the sticky form's top
+    window.scrollTo({top:scrollY+(keyboard?Math.max(top,Math.min(p.top-14,p.bottom+16-innerHeight)):top),
+                     behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth'});};
+  go();if(!keyboard)return;
+  prompt.focus({preventScroll:true});
+  if(window.ResizeObserver){const ro=new ResizeObserver(()=>{if(document.activeElement===prompt)go();});ro.observe(f);
+    setTimeout(()=>ro.disconnect(),1500);}}
 function card(j){const d=document.createElement('article');d.className='job';d.dataset.id=j.id;
   const media=document.createElement('div');media.className='media';media.style.aspectRatio=j.orientation==='portrait'?'4 / 5':'16 / 9';   // portrait is pillarboxed so cards stay a sane height
   media.innerHTML='<div class="ph2"><div class="big">0:00</div><div class="bar"><i></i></div><div class="small"></div></div>';
+  // a queued or running clip with a keyframe, a reference image or a reference video shows its first one (#30); a
+  // card built for a finished clip asks for nothing
+  if(active(j)&&(j.first_frame||j.last_frame||(j.references||[]).some(r=>r.type==='image'||r.type==='video'))){
+    const ph=media.firstChild,im=document.createElement('img');im.className='qimg';im.alt='';im.decoding='async';
+    im.onerror=()=>{im.hidden=true;ph.classList.remove('pic');};im.src='/still/'+j.id;ph.classList.add('pic');ph.prepend(im);}
   const body=document.createElement('div');body.className='body';
   body.innerHTML=`<div class="tags"><span class="st"></span><span class="tag"></span><span class="tag"></span><span class="tag"></span></div>
    <div class="p" title="Click to expand"></div><div class="info"><span class="when"></span> <span class="seedt">· seed <span class="seedv" tabindex="0" title="Click (or Tab to it) to select, then copy"></span></span></div><div class="errtxt"></div>
@@ -478,10 +518,10 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
   // new seed (#14); unticked, it keeps the clip's seed
-  body.querySelector('.reuse-all').onclick=()=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
+  body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
     prompt.value=j.prompt;seed.value=j.seed;
     [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
-    modeUI();updateGo();window.scrollTo({top:0,behavior:'smooth'});$('err').textContent='';
+    modeUI();updateGo();showForm(e.detail===0);$('err').textContent='';
     zones.forEach(z=>{z.querySelector('input').value='';z.kept=[];z.show();});remixFrom=null;const my=++remixSeq;
     if(j.task==='t2va'){toast('Settings loaded');return;}
     // the clip's input files go back into the form (the server reuses them, nothing is uploaded again); a reply
@@ -491,8 +531,12 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
       if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
       toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
-  body.querySelector('.del').onclick=e=>remove(j,e.detail===0);       // detail 0: Enter/Space, not a pointer
-  body.querySelector('.cancel').onclick=e=>cancel(j.id,e.currentTarget,e.detail===0);
+  // detail 0: Enter/Space, not a pointer. Remix, Cancel and Delete ignore detail 2+, the rest of a double-click whose
+  // first click changed what is under the pointer: Cancel of a queued clip shows Delete where Cancel was; Delete of a
+  // card moves the next card's Delete or Cancel into its place. Undo hides at once and drops the rest of its
+  // double-click wherever it lands (dropDouble)
+  body.querySelector('.del').onclick=e=>{if(e.detail>1)return;remove(j,e.detail===0);};
+  body.querySelector('.cancel').onclick=e=>{if(e.detail>1)return;cancel(j.id,e.currentTarget,e.detail===0);};
   d.append(media,body);return d;}
 // The seed is text: a click selects the number (user-select: all), and so does Tab (it is one Tab stop). A pointer
 // press (mouse, touch, pen) takes its tabindex away until focus moves or something else is pressed, so a press never
@@ -544,7 +588,15 @@ async function cancel(id,btn,keyboard){const back=keyboard||document.activeEleme
   if(back&&els[id])els[id].querySelector('.reuse-all').focus();
   toast(x.job.status==='cancelled'?'Taken out of the queue':'Stopping the clip · the models load again for the next one');
   poll();}
-$('undo').querySelector('button').onclick=async()=>{const u=$('undo'),ids=undoIds;undoIds=[];u.classList.remove('show');
+// Undo hides at once, so the rest of a double-click on it reaches what is under the toast: a card, or, with the page
+// scrolled up to the form while Undo showed, Generate (it would queue the draft), the seed toggle or a prompt chip.
+// dropDouble drops it, wherever it lands: presses, clicks and dblclicks of detail 2+ for the next 600 ms (longer than
+// the usual double-click time). Its preventDefault also stops a form submit, a label's checkbox and a link.
+function dropDouble(){const ts=['mousedown','click','dblclick'],eat=e=>{if(e.detail>1){e.stopPropagation();e.preventDefault();}};
+  for(const t of ts)document.addEventListener(t,eat,true);
+  setTimeout(()=>{for(const t of ts)document.removeEventListener(t,eat,true);},600);}
+$('undo').querySelector('button').onclick=async e=>{const u=$('undo'),ids=undoIds;undoIds=[];u.classList.remove('show');
+  if(e.detail)dropDouble();
   const failed=[];let back=0,err='',first=null;
   for(const id of ids){try{const r=await postJSON('/api/undelete',{id}),x=await r.json();
       if(!r.ok||!x.job){err=x.error||'Could not restore';failed.push(id);continue;}

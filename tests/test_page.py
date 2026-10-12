@@ -3,9 +3,11 @@
 Needs Playwright with WebKit (pip install playwright && playwright install webkit) and ffmpeg; skipped otherwise.
 python3 -m unittest tests.test_page -v      (or with the rest: python3 -m unittest discover -s tests)
 """
+import base64
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -91,6 +93,42 @@ class WarmUpLabel(PageTest):
         self.assertIn("stops the warm-up, loads the models first", self.go_text())
         self.pick("orientation", "landscape")
         self.assertIn("after the warm-up", self.go_text())
+
+
+class Durations(PageTest):
+    """#26: a duration is rounded to whole seconds before it is split into minutes and seconds: 2:00, never 1:60."""
+    load_s = 30
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([
+            finished_job("a" * 32, e2e_s=119.6), finished_job("b" * 32, e2e_s=179.5, includes_model_load=True),
+            finished_job("c" * 32, e2e_s=89.6, cold_start_s=239.7)]))
+        (self.studio.state_dir / "load-times.json").write_text('{"t2va/landscape/5": 119.6}')
+
+    def test_formatters_at_the_boundaries(self):
+        # fmtS (made in, model load, ETAs, ready in, last time) rounds; clock (running timers) counts up and floors
+        want = {0: ("0 s", "0:00"), 0.4: ("0 s", "0:00"), 0.5: ("1 s", "0:00"), 59.4: ("59 s", "0:59"),
+                59.5: ("60 s", "0:59"), 59.6: ("60 s", "0:59"), 89.4: ("89 s", "1:29"), 89.5: ("1:30 min", "1:29"),
+                119.4: ("1:59 min", "1:59"), 119.5: ("2:00 min", "1:59"), 119.6: ("2:00 min", "1:59"),
+                120: ("2:00 min", "2:00"), 3599.4: ("59:59 min", "59:59"), 3599.6: ("60:00 min", "59:59"),
+                -3: ("0 s", "0:00"), -0.4: ("0 s", "0:00")}
+        got = self.page.evaluate(f"{json.dumps(list(want))}.map(s => [fmtS(s), clock(s)])")
+        self.assertEqual(dict(zip(want, map(tuple, got))), want)
+        # none, not a number or endless: 0, not "NaN" or "Infinity"
+        odd = self.page.evaluate("[null, undefined, NaN, 'x', Infinity].map(s => [fmtS(s), clock(s)])")
+        self.assertEqual(odd, [["0 s", "0:00"]] * 5)
+
+    def test_cards(self):
+        when = lambda j: self.page.inner_text(f'article[data-id="{j * 32}"] .when').split(" · ", 1)[1]
+        self.page.wait_for_selector(f'article[data-id="{"c" * 32}"]')
+        self.assertEqual([when(j) for j in "abc"], ["made in 2:00 min", "3:00 min incl. model load",
+                                                    "made in 1:30 min · +4:00 min model load"])
+        jid = self.studio.generate(seed=3)[1]["id"]                          # loads 30 s; the last load took 119.6 s
+        card = f'article[data-id="{jid}"]'
+        self.page.wait_for_selector(f'{card}[data-status="loading models + generating"]')
+        self.page.wait_for_function(f"document.querySelector('{card} .ph2 .small').textContent.includes('last time')")
+        self.assertEqual(self.page.inner_text(f"{card} .ph2 .small"), "Loading models, then your clip · last time 2:00 min")
+        self.assertRegex(self.page.inner_text(f"{card} .ph2 .big"), r"^0:0\d$")
 
 
 class RemixInputs(PageTest):
@@ -432,6 +470,174 @@ class RemixSeed(PageTest):
         self.assertEqual(int(self.generate_from_page(a)["seed"]), 777)
 
 
+class RemixScroll(PageTest):
+    """#25: beside the gallery (a sticky column) the form is in view, so Remix leaves the page where it is; in one
+    column (the form above the gallery) Remix brings the form's top into view, and a keyboard press moves focus there."""
+
+    def seed(self):
+        jobs = history(30)                  # cards are newest first: card n is jobs[29 - n]
+        jobs[21].update(task="fl2va", first_frame="gone/first.png", last_frame="gone/last.png")    # card 8
+        # card 11: Reference, with its files; three wide pictures take two rows in the zone on a phone
+        inputs = self.studio.runtime / "inputs" / "webui" / jobs[18]["id"]
+        inputs.mkdir(parents=True)
+        files = [(f"{c}.png", picture(c, "320x180"), "image") for c in ("red", "green", "blue")]
+        files += [("clip.mp4", mp4(), "video"), ("voice.wav", b"RIFF0000WAVEfmt ", "audio")]
+        for name, data, _ in files:
+            (inputs / name).write_bytes(data)
+        jobs[18].update(task="ref2va", references=[{"type": kind, "path": str(inputs / name)} for name, _, kind in files])
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps(jobs))
+
+    def one_column(self):
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.evaluate("getComputedStyle(document.getElementById('f')).position"), "static")
+
+    def remix_button(self, n):
+        """Scroll the nth card to the middle of the screen; its Remix button and the clip's seed."""
+        self.page.evaluate(f"document.querySelectorAll('#jobs .job')[{n}].scrollIntoView({{block: 'center'}})")
+        self.page.wait_for_timeout(300)
+        card = self.page.locator("#jobs .job").nth(n)
+        return card.locator(".reuse-all"), card.locator(".seedv").inner_text()
+
+    def settle(self):
+        """scrollY once a (smooth) scroll has stopped."""
+        self.page.wait_for_timeout(300)
+        last = None
+        for _ in range(30):
+            y = self.page.evaluate("scrollY")
+            if y == last:
+                return y
+            last = y
+            self.page.wait_for_timeout(150)
+        return y
+
+    def focused(self, selector):
+        return self.page.evaluate(f"document.activeElement === document.querySelector('{selector}')")
+
+    def form_in_view(self):
+        """The form's top is at the top of the screen (14 px, as when sticky) and Generate is on screen."""
+        top, go, height = self.page.evaluate("""() => [document.getElementById('f').getBoundingClientRect().top,
+            document.getElementById('go').getBoundingClientRect().bottom, innerHeight]""")
+        self.assertAlmostEqual(top, 14, delta=2)
+        self.assertLessEqual(go, height, "Generate on screen")
+
+    def test_two_columns_the_page_stays(self):
+        self.assertEqual(self.page.evaluate("getComputedStyle(document.getElementById('f')).position"), "sticky")
+        button, seed = self.remix_button(12)
+        y = self.settle()
+        self.assertGreater(y, 1000)
+        button.click()
+        self.assertEqual(self.settle(), y, "Remix scrolled the page")
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        # keyboard: the page stays and focus stays on the card's Remix
+        button, seed = self.remix_button(16)
+        y = self.settle()
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.assertEqual(self.settle(), y, "Remix scrolled the page")
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.assertTrue(self.page.evaluate("document.activeElement.classList.contains('reuse-all')"))
+
+    def test_one_column_brings_the_form_into_view(self):
+        self.one_column()
+        button, seed = self.remix_button(6)
+        self.assertGreater(self.settle(), 1500)
+        button.click()
+        self.settle()
+        self.form_in_view()
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.assertFalse(self.focused("#prompt"), "a tap does not focus the prompt (no on-screen keyboard)")
+        # keyboard: focus goes to the prompt with the view, so the next Tab does not jump back to the gallery
+        button, seed = self.remix_button(9)
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.settle()
+        self.form_in_view()
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.assertTrue(self.focused("#prompt"))
+
+    def test_one_column_the_form_changes_height(self):
+        """Remix changes the form's height above the gallery: it clears an error, and a Keyframes card shows the drop
+        zones and then (its files are gone) an error. WebKit's scroll anchoring kept the card in place, which
+        cancelled the scroll (the form's top ended thousands of px above the screen)."""
+        self.one_column()
+        button, seed = self.remix_button(7)
+        self.page.evaluate("document.getElementById('err').textContent = 'Could not reach the server'")
+        self.assertGreater(self.settle(), 1500)
+        button.click()
+        self.settle()
+        self.form_in_view()
+        self.assertEqual((self.page.input_value("#seed"), self.page.inner_text("#err")), (seed, ""))
+        # keyboard, Keyframes card: the drop zones appear at once, the error when /api/inputs answers
+        button, seed = self.remix_button(8)
+        self.assertTrue(self.page.is_hidden("#fl"))
+        self.assertGreater(self.settle(), 1500)
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('Gone from the server')")
+        self.settle()
+        self.assertTrue(self.page.is_visible("#fl"))
+        top, ptop, pbottom, height = self.page.evaluate("""() => [document.getElementById('f').getBoundingClientRect().top,
+            ...['top', 'bottom'].map(k => document.getElementById('prompt').getBoundingClientRect()[k]), innerHeight]""")
+        self.assertAlmostEqual(top, 14, delta=2)
+        self.assertTrue(self.focused("#prompt"))
+        self.assertTrue(0 <= ptop and pbottom <= height, "the focused prompt is on screen")
+        self.assertEqual(self.page.input_value("#seed"), seed)
+
+    def prompt_on_screen(self):
+        """The prompt is focused and wholly on screen."""
+        ptop, pbottom, height = self.page.evaluate("""() => [...['top', 'bottom'].map(k =>
+            document.getElementById('prompt').getBoundingClientRect()[k]), innerHeight]""")
+        self.assertTrue(self.focused("#prompt"))
+        self.assertTrue(0 <= ptop and pbottom <= height, f"the focused prompt is on screen: {ptop}-{pbottom} of {height}")
+
+    def test_one_column_keyboard_scrolls_on_to_the_prompt(self):
+        """Keyframes and Reference show drop zones above the prompt (Reference pushes it ~350 px down): a keyboard Remix
+        scrolls on until the focused prompt is on screen, also when the clip's pictures then take a second row. A tap
+        still brings the form's top into view."""
+        self.one_column()
+        button, seed = self.remix_button(11)                                   # Reference, with its files
+        self.assertGreater(self.settle(), 1500)
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_function("""() => [...document.querySelectorAll('#ref .thumbs img.kept')].filter(i =>
+            i.complete && i.naturalWidth).length === 3""")
+        self.settle()
+        self.assertGreater(self.page.eval_on_selector("#ref .drop", "e => e.offsetHeight"), 140, "two rows of pictures")
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.prompt_on_screen()
+        top = self.page.evaluate("document.getElementById('f').getBoundingClientRect().top")
+        self.assertLess(top, -100, "scrolled past the form's top")
+        # a tap: the form's top, the prompt not focused
+        self.page.evaluate("document.activeElement.blur()")
+        button, seed = self.remix_button(11)
+        self.assertGreater(self.settle(), 1500)
+        button.click()
+        self.settle()
+        self.assertAlmostEqual(self.page.evaluate("document.getElementById('f').getBoundingClientRect().top"), 14, delta=2)
+        self.assertFalse(self.focused("#prompt"))
+        # Keyframes on a shorter screen (about what Safari leaves of a 390x844 phone)
+        self.page.set_viewport_size({"width": 390, "height": 664})
+        button, seed = self.remix_button(8)
+        self.assertGreater(self.settle(), 1500)
+        self.page.evaluate("document.getElementById('err').textContent = ''")
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('Gone from the server')")
+        self.settle()
+        self.assertTrue(self.page.is_visible("#fl"))
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.prompt_on_screen()
+
+    def test_one_column_reduced_motion_jumps(self):
+        self.page.emulate_media(reduced_motion="reduce")
+        self.one_column()
+        self.remix_button(6)
+        top = self.page.evaluate("""() => { document.querySelectorAll('#jobs .job')[6].querySelector('.reuse-all').click();
+            return document.getElementById('f').getBoundingClientRect().top; }""")     # at once, not smoothly
+        self.assertAlmostEqual(top, 14, delta=2)
+
+
 class SeedText(PageTest):
     """#15: the seed is plain text next to the time; Remix, Download and Delete share one row."""
 
@@ -646,6 +852,16 @@ class CancelCards(PageTest):
         return self.page.eval_on_selector_all(f"{self.card(jid)} .acts > *",
                                               "els => els.filter(e => e.offsetWidth).map(e => e.textContent.trim())")
 
+    def test_the_cancel_toast_uses_the_width_of_a_phone(self):
+        self.page.set_viewport_size({"width": 320, "height": 800})
+        a = self.studio.generate(prompt="running", seconds=8)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.page.click(f"{self.card(a)} .cancel")
+        self.page.wait_for_function("document.getElementById('toast').textContent.includes('models load again')")
+        width = self.page.eval_on_selector("#toast", "e => e.getBoundingClientRect().width")
+        self.assertGreater(width, 0.75 * 320, "a long toast is not squeezed to half the screen")
+        self.assertLessEqual(width, 320 - 30)
+
     def test_focus_stays_on_the_card_when_a_poll_hides_cancel(self):
         """Cancel focused, then the clip finishes, or another tab cancels it: focus moves to Delete or Remix,
         not to the page."""
@@ -745,6 +961,297 @@ class CancelCards(PageTest):
         job = next(j for j in new["jobs"] if j["prompt"] == "the cancelled one" and j["id"] != a)
         self.assertEqual([Path(job[k]).name for k in ("first_frame", "last_frame")], ["first.png", "last.png"])
         self.assertEqual((job["orientation"], job["seconds"], job["seed"]), ("portrait", 8, 1234))
+
+
+class DoubleClicks(PageTest):
+    """A double-click whose first click changes what is under the pointer: the second one (detail 2) must not reach
+    the Remix, Cancel or Delete that is there now, nor, after Undo, anything else. The running clip loads for 30 s, so
+    the others stay queued."""
+    load_s, clip_s = 30, 6
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([
+            finished_job("1" * 32, created=1), finished_job("2" * 32, created=2, status="failed", error="boom"),
+            finished_job("3" * 32, created=3)]))
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def status(self, jid, status):
+        self.page.wait_for_selector(f'{self.card(jid)}[data-status="{status}"]')
+
+    def center(self, selector):
+        box = self.page.locator(selector).bounding_box()
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+    def under(self, x, y):
+        """The card button at a point of the screen: [card id, class], or None."""
+        return self.page.evaluate("""([x, y]) => { const b = document.elementFromPoint(x, y)?.closest('.act');
+            return b ? [b.closest('.job').dataset.id, b.className] : null; }""", [x, y])
+
+    def second_click(self):
+        """The second click of a double-click, where the pointer is (the first was a plain click there)."""
+        self.page.mouse.down(click_count=2); self.page.mouse.up(click_count=2)
+
+    def test_a_double_click_on_cancel_of_a_queued_clip_does_not_delete_it(self):
+        """The answer shows Delete right where Cancel was; the double-click's second click must not delete."""
+        self.studio.generate(prompt="running", seconds=8)                     # keeps the next one queued
+        b = self.studio.generate(prompt="queued", seed=2)[1]["id"]
+        self.status(b, "queued")
+        self.page.mouse.move(*self.center(f"{self.card(b)} .cancel"))
+        self.page.mouse.down(); self.page.mouse.up()
+        self.page.wait_for_timeout(120)
+        self.second_click()
+        self.page.wait_for_timeout(600)
+        self.assertNotIn(b, self.studio.state()["deleted"], "the second click deleted the cancelled clip")
+        self.status(b, "cancelled")
+        self.assertEqual(self.studio.job(b)["status"], "cancelled")
+        self.assertFalse(self.page.eval_on_selector("#undo", "e => e.classList.contains('show')"))
+
+    def test_a_double_click_on_delete_does_not_cancel_the_next_card(self):
+        """A cancelled clip's card comes right before the older running or queued one (newest first), and both have
+        their last button at the right end: Delete takes the cancelled card away, the next card moves up, and its
+        Cancel is under the pointer for the double-click's second click."""
+        a = self.studio.generate(prompt="neighbour 1", seconds=8)[1]["id"]
+        self.status(a, "loading models + generating")
+        for neighbour, status, seed in ((a, "loading models + generating", 2), (None, "queued", 4)):
+            if neighbour is None:                                               # queued behind a
+                neighbour = self.studio.generate(prompt="neighbour 2", seed=seed - 1)[1]["id"]
+            gone = self.studio.generate(prompt=f"cancelled {seed}", seed=seed)[1]["id"]
+            self.assertEqual(self.studio.post("/api/cancel", json_body={"id": gone})[0], 200)
+            self.status(neighbour, status)
+            self.status(gone, "cancelled")
+            x, y = self.center(f"{self.card(gone)} .del")
+            self.page.mouse.move(x, y)
+            self.page.mouse.down(); self.page.mouse.up()
+            self.page.wait_for_selector(self.card(gone), state="detached")
+            self.assertEqual(self.under(x, y), [neighbour, "act cancel"], "the next card's Cancel moved up")
+            self.second_click()
+            self.page.wait_for_timeout(600)
+            self.assertIn(gone, self.studio.state()["deleted"])
+            self.assertEqual(self.studio.job(neighbour)["status"], status, f"the second click cancelled the {status} clip")
+            self.assertFalse(self.studio.job(neighbour).get("cancel_requested"))
+            self.assertEqual(self.page.get_attribute(self.card(neighbour), "data-status"), status)
+            self.page.wait_for_selector("#undo.show")                            # Undo is offered, no Cancel toast
+            self.assertFalse(self.page.eval_on_selector("#toast", "e => e.classList.contains('show')"))
+
+    def test_a_double_click_on_undo_does_not_cancel_the_card_under_it(self):
+        """Undo hides at once, so the double-click's second click goes to what is under the toast: on a phone, the
+        Cancel of the queued card below the restored one. Remix there ignores it too (it would replace the draft)."""
+        self.page.set_viewport_size({"width": 320, "height": 640})
+        self.studio.generate(prompt="running", seconds=8)
+        c = self.studio.generate(prompt="queued 1", seed=2)[1]["id"]
+        d = self.studio.generate(prompt="queued 2", seed=3)[1]["id"]
+        self.assertEqual(self.studio.post("/api/cancel", json_body={"id": d})[0], 200)
+        self.status(c, "queued")
+        self.status(d, "cancelled")
+        # where Undo shows: Delete a finished clip and bring it back
+        self.page.evaluate(f"document.querySelector('{self.card('1' * 32)} .del').scrollIntoView({{block: 'center'}})")
+        self.page.click(f"{self.card('1' * 32)} .del")
+        self.page.wait_for_selector("#undo.show")
+        self.page.wait_for_timeout(300)                                         # its transition
+        undo = self.page.locator("#undo button").bounding_box()
+        self.page.click("#undo button")
+        self.page.wait_for_selector(f"{self.card('1' * 32)}")
+        self.page.wait_for_selector("#undo", state="hidden")
+        # c's Cancel under the Undo button, d's Delete above it on screen
+        cancel = self.page.locator(f"{self.card(c)} .cancel").bounding_box()
+        x = (max(undo["x"], cancel["x"]) + min(undo["x"] + undo["width"], cancel["x"] + cancel["width"])) / 2
+        y = undo["y"] + undo["height"] / 2
+        self.assertTrue(undo["x"] < x < undo["x"] + undo["width"] and cancel["x"] < x < cancel["x"] + cancel["width"],
+                        "the Undo button is over the Cancel buttons' column at 320 px")
+        self.page.evaluate(f"scrollBy(0, {cancel['y'] + cancel['height'] / 2 - y})")
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.under(x, y), [c, "act cancel"])
+        self.page.mouse.click(*self.center(f"{self.card(d)} .del"))           # on screen, above c
+        self.page.wait_for_selector("#undo.show")
+        self.page.wait_for_timeout(300)
+        self.page.mouse.move(x, y)
+        self.page.mouse.down(); self.page.mouse.up()
+        self.page.wait_for_selector(self.card(d))                               # back, above c again
+        self.assertEqual(self.under(x, y), [c, "act cancel"], "c's Cancel is under the pointer again")
+        self.second_click()
+        self.page.wait_for_function("document.getElementById('toast').textContent === 'Clip restored'")
+        self.page.wait_for_timeout(600)
+        self.assertEqual(self.studio.job(c)["status"], "queued", "the second click took c out of the queue")
+        self.assertNotIn(d, self.studio.state()["deleted"])
+        self.assertEqual(self.page.inner_text("#toast"), "Clip restored")
+        # Remix: the rest of a double-click leaves the draft alone
+        self.page.fill("#prompt", "my draft")
+        self.page.evaluate(f"document.querySelector('{self.card(c)} .reuse-all').scrollIntoView({{block: 'center'}})")
+        x, y = self.center(f"{self.card(c)} .reuse-all")
+        self.assertEqual(self.under(x, y), [c, "act pri reuse-all"])
+        self.page.mouse.move(x, y)
+        self.second_click()
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.input_value("#prompt"), "my draft")
+
+    def test_a_double_click_on_undo_does_not_reach_the_form(self):
+        """In one column the form is above the gallery, and Undo shows for 10 s: scrolled up while it shows, Generate,
+        the "New random seed every run" toggle or a prompt chip can be under it, or the video of a card above the
+        deleted one. The rest of the double-click on Undo must not queue the draft, flip the toggle, add to the prompt
+        or play the clip (WebKit plays a video on a click). At 390 px the cards are in one column too."""
+        self.page.set_viewport_size({"width": 390, "height": 664})
+        self.page.fill("#prompt", "my draft")
+        form = ("[prompt.value, seed.value, autoroll.checked, "
+                "[...document.querySelectorAll('video')].filter(v => !v.paused).length]")
+        undo = None
+        for target in ("#go", ".toggle", "#chips button", f"{self.card('3' * 32)} video"):
+            with self.subTest(target=target):
+                jobs = {j["id"] for j in self.studio.state()["jobs"]}
+                self.page.click(f"{self.card('1' * 32)} .del")
+                self.page.wait_for_selector("#undo.show")
+                self.page.wait_for_timeout(300)                                 # its transition
+                undo = undo or self.page.locator("#undo button").bounding_box()
+                # scroll the target (the first one that shares columns with the Undo button) under the Undo button
+                box = self.page.evaluate("""([sel, l, r]) => {
+                    document.querySelectorAll('[data-target]').forEach(e => e.removeAttribute('data-target'));
+                    const e = [...document.querySelectorAll(sel)].find(e => {
+                        const b = e.getBoundingClientRect(); return b.left < r && b.right > l; });
+                    e.setAttribute('data-target', ''); const b = e.getBoundingClientRect();
+                    return {x: b.x, y: b.y, width: b.width, height: b.height}; }""",
+                    [target, undo["x"], undo["x"] + undo["width"]])
+                x = (max(undo["x"], box["x"]) + min(undo["x"] + undo["width"], box["x"] + box["width"])) / 2
+                y = undo["y"] + undo["height"] / 2
+                self.page.evaluate(f"scrollBy(0, {box['y'] + box['height'] / 2 - y})")
+                self.page.wait_for_timeout(300)
+                before = self.page.evaluate(form)
+                self.page.evaluate("document.getElementById('toast').textContent = ''")
+                self.page.mouse.move(x, y)
+                self.page.mouse.down(); self.page.mouse.up()                   # the clip comes back below
+                self.assertTrue(self.page.evaluate(f"!!document.elementFromPoint({x}, {y}).closest('[data-target]')"),
+                                f"{target} is under the pointer once Undo hides")
+                self.second_click()
+                self.page.wait_for_selector(self.card("1" * 32))
+                self.page.wait_for_timeout(600)
+                self.assertEqual({j["id"] for j in self.studio.state()["jobs"]}, jobs,
+                                 "the clip is back, and the second click queued nothing")
+                self.assertEqual(self.page.evaluate(form), before, "the second click changed the form or played a clip")
+                self.assertEqual(self.page.inner_text("#toast"), "Clip restored")
+
+
+def picture(color, size="64x36"):
+    """A PNG of one colour (ffmpeg)."""
+    return subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c={color}:s={size}", "-frames:v", "1",
+                           "-f", "image2pipe", "-c:v", "png", "-"], capture_output=True, check=True).stdout
+
+
+class QueuePicture(PageTest):
+    """#30: a queued or running card shows the clip's first picture behind its timer (clearer while queued, fainter
+    while it runs); the card is not rebuilt for it, and the picture goes when the clip is done, failed or cancelled."""
+    load_s, clip_s = 5, 5
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def status(self, jid, status):
+        self.page.wait_for_selector(f'{self.card(jid)}[data-status="{status}"]', timeout=30000)
+
+    def shown(self, jid):
+        """The card's picture, once loaded: [src, opacity, blur in px], or None if the card has none on screen."""
+        self.page.wait_for_function(f"""() => {{ const i = document.querySelector('{self.card(jid)} .qimg');
+            return !i || i.complete; }}""")
+        return self.page.evaluate(f"""() => {{ const i = document.querySelector('{self.card(jid)} .qimg');
+            if (!i || !i.offsetWidth || !i.naturalWidth) return null; const s = getComputedStyle(i);
+            return [new URL(i.src).pathname, +s.opacity, parseFloat(s.filter.match(/blur\\(([\\d.]+)px/)[1])]; }}""")
+
+    def test_queued_and_running_cards(self):
+        stills = []
+        self.page.on("request", lambda r: stills.append(r.url.rsplit("/", 1)[1]) if "/still/" in r.url else None)
+        a = self.studio.generate(task="fl2va", prompt="first frame", files={"first_frame": [("a.png", picture("red"))]})[1]["id"]
+        b = self.studio.generate(task="ref2va", prompt="a video only", seed=2, files={"ref_videos": [("v.mp4", mp4())]})[1]["id"]
+        c = self.studio.generate(prompt="text", seed=3)[1]["id"]
+        d = self.studio.generate(task="fl2va", prompt="last frame", seed=4,
+                                 files={"last_frame": [("d.png", picture("blue"))]})[1]["id"]
+        self.status(a, "loading models + generating")
+        self.status(b, "queued")
+        running, queued = self.shown(a), self.shown(b)
+        self.assertEqual((running[0], queued[0], self.shown(d)[0]), (f"/still/{a}", f"/still/{b}", f"/still/{d}"))
+        self.assertIsNone(self.shown(c))                                         # t2va: no picture
+        self.assertIsNone(self.page.query_selector(f"{self.card(c)} .qimg"))
+        self.assertLess(running[1], queued[1])                                   # fainter and more blurred while it runs
+        self.assertGreater(running[2], queued[2])
+        # a layer of its own: WebKit blurs it once, not again on every frame of the running card's shimmer
+        layer = f"getComputedStyle(document.querySelector('{self.card(a)} .qimg')).willChange"
+        self.assertEqual(self.page.evaluate(layer), "transform")
+        for width in (300, 320, 375, 420):                                       # phones: nothing wider than the screen
+            self.page.set_viewport_size({"width": width, "height": 900})
+            self.page.wait_for_timeout(200)
+            wide = self.page.evaluate("""() => [...document.querySelectorAll('body *')].filter(e =>
+                e.getBoundingClientRect().right > document.documentElement.clientWidth + 0.5).map(e => e.className)""")
+            self.assertEqual(wide, [], f"wider than the screen at {width} px")
+            self.assertLessEqual(self.page.evaluate("document.documentElement.scrollWidth"), width)
+        self.page.set_viewport_size({"width": 1280, "height": 900})
+        # polls change the card's attributes only: the same picture, now in the running style
+        self.page.evaluate(f"window.mark = document.querySelector('{self.card(b)} .qimg')")
+        self.page.wait_for_selector(f'{self.card(b)}[data-status="loading models + generating"]', timeout=30000)
+        self.page.wait_for_timeout(1000)                                         # its transition
+        self.assertEqual(self.shown(b)[1:], running[1:])
+        self.assertTrue(self.page.evaluate(f"window.mark === document.querySelector('{self.card(b)} .qimg')"))
+        self.status(b, "done")                                                   # done: the video with its poster
+        self.page.wait_for_selector(f"{self.card(b)} video")
+        self.assertIsNone(self.page.query_selector(f"{self.card(b)} .qimg"))
+        self.assertTrue(self.page.get_attribute(f"{self.card(b)} video", "poster").endswith(f"/poster/{b}"))
+        self.assertEqual(sorted(stills), sorted([a, b, d]))                      # each asked for once
+        self.studio.wait([a, b, c, d])
+        stills.clear()
+        self.page.reload()                                                       # finished cards ask for none
+        self.page.wait_for_selector(f"{self.card(d)} video")
+        self.page.wait_for_timeout(500)
+        self.assertEqual(stills, [])
+
+    def test_cancelled_and_failed_cards_drop_it(self):
+        a = self.studio.generate(task="fl2va", prompt="STUB_FAIL", files={"first_frame": [("a.png", picture("red"))]})[1]["id"]
+        b = self.studio.generate(task="fl2va", prompt="cancelled", seed=2,
+                                 files={"first_frame": [("b.png", picture("blue"))]})[1]["id"]
+        self.status(b, "queued")
+        self.assertIsNotNone(self.shown(b))
+        self.page.click(f"{self.card(b)} .cancel")
+        self.status(b, "cancelled")
+        self.assertIsNone(self.shown(b))
+        self.assertEqual(self.page.inner_text(f"{self.card(b)} .ph2 .big"), "Cancelled")
+        self.assertIsNotNone(self.shown(a))
+        self.studio.wait([a], timeout=60)
+        self.status(a, "failed")
+        self.assertIsNone(self.shown(a))
+
+    def contrast(self, jid, part):
+        """WCAG contrast of the card's placeholder text (.big or .small) against what is behind it, the worst pixel:
+        the text made transparent, a screenshot of its box decoded in the page."""
+        sel = f"{self.card(jid)} .ph2 {part}"
+        lum = """const lum = ([r, g, b]) => 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b),
+                       f = v => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;"""
+        text = self.page.evaluate(f"""() => {{ {lum} const x = document.createElement('canvas').getContext('2d');
+            x.fillStyle = getComputedStyle(document.querySelector('{sel}')).color; x.fillRect(0, 0, 1, 1);
+            return lum(x.getImageData(0, 0, 1, 1).data); }}""")
+        self.page.evaluate(f"""() => document.querySelectorAll('{self.card(jid)} .ph2 > div').forEach(e =>
+            e.style.cssText = 'color: transparent; text-shadow: none')""")
+        shot = base64.b64encode(self.page.locator(sel).screenshot()).decode()
+        self.page.evaluate(f"""() => document.querySelectorAll('{self.card(jid)} .ph2 > div').forEach(e =>
+            e.style.cssText = '')""")
+        back = self.page.evaluate(f"""async b64 => {{ {lum} const im = new Image(); im.src = 'data:image/png;base64,' + b64;
+            await im.decode(); const x = document.createElement('canvas').getContext('2d');
+            x.canvas.width = im.width; x.canvas.height = im.height; x.drawImage(im, 0, 0);
+            const d = x.getImageData(0, 0, im.width, im.height).data; let worst = 0;
+            for (let i = 0; i < d.length; i += 4) worst = Math.max(worst, lum([d[i], d[i + 1], d[i + 2]]));
+            return worst; }}""", shot)
+        return (max(text, back) + 0.05) / (min(text, back) + 0.05)
+
+    def test_text_readable_over_a_white_picture(self):
+        """The worst case for the light text: a white picture, in both themes, queued and running."""
+        self.page.emulate_media(reduced_motion="reduce")                         # no shimmer or transition: a still
+        white = {"first_frame": [("white.png", picture("white", "640x360"))]}
+        a = self.studio.generate(task="fl2va", prompt="running", files=white)[1]["id"]
+        b = self.studio.generate(task="fl2va", prompt="queued", seed=2, files=white)[1]["id"]
+        self.status(a, "loading models + generating")
+        self.status(b, "queued")
+        self.assertIsNotNone(self.shown(a) and self.shown(b))
+        for scheme in ("light", "dark"):
+            self.page.emulate_media(color_scheme=scheme)
+            for jid in (a, b):
+                for part, least in ((".big", 4.5), (".small", 4.5)):
+                    ratio = self.contrast(jid, part)
+                    self.assertGreaterEqual(ratio, least, f"{part} on the {scheme} {jid == a and 'running' or 'queued'} card")
 
 
 if __name__ == "__main__":

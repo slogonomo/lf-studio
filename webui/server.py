@@ -9,6 +9,9 @@
   workers get SIGTERM, so the next clip loads the models again). Either way it stays in the history with the status
   "cancelled" and its input files, for Remix and Delete. 409 for a clip that has finished (or is being saved).
   A studio before 0.3 shows cancelled clips as failed ("server restarted") and keeps them so.
+- GET /still/<id>: the picture a queued or running clip's card shows behind its timer: a keyframe, a reference image,
+  or the first frame of a reference video, as a JPEG at most 640 px wide (made on the first request, kept with the
+  clip's input files; an image ffmpeg can't read goes out as it is). 404 for t2va.
 
 Run it with cwd = the patched Sol-H3-Spark package (models/minimax_h3/Sol-H3-Spark in the patched Sana checkout):
 it imports runtime.config and runtime.pipeline from there. Standard library only; this process needs no torch.
@@ -660,7 +663,7 @@ def run_job(job):
 def make_poster(mp4):
     """Poster frame (~1 s in) for the gallery; best effort."""
     try:
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "1", "-i", str(mp4), "-frames:v", "1",
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", "1", "-i", str(mp4), "-frames:v", "1",
                         "-vf", "scale=640:-2", "-q:v", "4", str(Path(mp4).with_suffix(".jpg"))],
                        timeout=60, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -954,6 +957,49 @@ def zone_files(job, zone):
     return [job[zone]] if job.get(zone) else []
 
 
+STILL = "@still.jpg"     # a clip's card picture, in the clip's input directory (uploads never have an @)
+STILL_PART = ".still-*.part"   # one being made, in INPUTS itself; one left by a server stopped part-way goes at start
+PICTURE_CACHE = "private, max-age=86400"   # /still and /poster: they never change; the user's own pictures, so only
+                                           # the browser keeps them, not a shared cache in front of the studio
+
+
+def card_picture(job):
+    """The picture a queued or running clip's card shows behind its timer (#30): fl2va its first frame, else its last;
+    ref2va its first reference image, else the first frame of its first reference video. It is a small JPEG, at most
+    640 px wide (the card shows it blurred, and an upload can be a photo of many MB), made on the first request and
+    kept in the clip's input directory (INPUTS/<id>), so Delete, Undo and the trash purge move it with the inputs.
+    An image goes out as it is if ffmpeg can't make the JPEG, or if the clip has no input directory of its own (an
+    old history). None for t2va, when the file is gone, or when a video's frame can't be read. While ffmpeg makes the
+    JPEG, it is a temporary file in INPUTS itself, not in the clip's directory, which a Delete can move meanwhile (the
+    JPEG is then not kept, and the moved image is not served). Never writes elsewhere."""
+    src, video = None, False
+    if job.get("task") == "fl2va":
+        src = job.get("first_frame") or job.get("last_frame")
+    elif job.get("task") == "ref2va":
+        refs = job.get("references") or []
+        ref = next((r for kind in ("image", "video") for r in refs if r.get("type") == kind), None)
+        src, video = (ref["path"], ref["type"] == "video") if ref else (None, False)
+    if not src or not Path(src).is_file():
+        return None
+    original = None if video else Path(src)
+    still = INPUTS / job["id"] / STILL
+    if still.is_file():
+        return still
+    if not still.parent.is_dir():                      # no input directory of its own (an old history): no JPEG
+        return original
+    tmp = INPUTS / STILL_PART.replace("*", uuid.uuid4().hex)    # two requests at once: each its own, the last wins
+    try:            # -nostdin: runs at once (a page asks for every card's picture) could leave a terminal without echo
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", src, "-frames:v", "1", "-vf",
+                        "scale='min(640,iw)':-2", "-q:v", "4", "-f", "mjpeg", str(tmp)],
+                       capture_output=True, timeout=60, check=True)
+        os.replace(tmp, still)                          # FileNotFoundError if Delete has moved the directory
+    except (OSError, subprocess.SubprocessError):
+        return original if original and original.is_file() else None
+    finally:
+        tmp.unlink(missing_ok=True)
+    return still
+
+
 def reuse_input(job_dir, path):
     """Put an earlier job's input file into this job's directory: a hardlink (no extra space; deleting either job
     later leaves the other's file alone), or a copy across filesystems."""
@@ -993,8 +1039,9 @@ def prepare_reference_video(path):
     out = src.with_name(src.stem + "_ref.mp4")
     vf = (f"scale='trunc(iw*min(1,sqrt({REF_VIDEO_AREA}/(iw*ih)))/2)*2':"
           f"'trunc(ih*min(1,sqrt({REF_VIDEO_AREA}/(iw*ih)))/2)*2':flags=lanczos,fps=24")
-    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-t", "15", "-vf", vf, "-c:v", "libx264",
-                        "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", str(out)],
+    r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-t", "15", "-vf", vf,
+                        "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+                        str(out)],
                        capture_output=True, text=True, timeout=600)
     if r.returncode != 0 or not out.is_file():
         raise ValueError(f"{src.name}: could not read this video ({r.stderr.strip()[:200]})")
@@ -1075,7 +1122,7 @@ class H(BaseHTTPRequestHandler):
                 make_poster(mp4)
             if not poster or not poster.exists():
                 return self.send(404, {"error": "no poster"})
-            return self.send(200, poster.read_bytes(), "image/jpeg", {"Cache-Control": "max-age=86400"})
+            return self.send(200, poster.read_bytes(), "image/jpeg", {"Cache-Control": PICTURE_CACHE})
         m = re.fullmatch(r"/api/inputs/([0-9a-f]{32})", path)
         if m:                      # a clip's input files, for Remix: what can be reused and what is gone
             job = find_job(m.group(1))
@@ -1098,6 +1145,16 @@ class H(BaseHTTPRequestHandler):
             if not f or not f.is_file():
                 return self.send(404, {"error": "no such input"})
             return self.send_file(f, mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+        m = re.fullmatch(r"/still/([0-9a-f]{32})", path)
+        if m:                      # the picture behind a queued or running clip's timer (card_picture)
+            with lock:
+                job = find_job(m.group(1))
+                job = None if job is None or job.get("moving") else dict(job)    # not while Delete moves its files
+            f = card_picture(job) if job else None
+            if not f:
+                return self.send(404, {"error": "no picture"})
+            return self.send_file(f, mimetypes.guess_type(f.name)[0] or "application/octet-stream",
+                                  {"Cache-Control": PICTURE_CACHE})
         m = re.fullmatch(r"/video/([0-9a-f]{32})", path)
         if m:
             mp4 = clip_file(find_job(m.group(1)))
@@ -1106,7 +1163,7 @@ class H(BaseHTTPRequestHandler):
             return self.send_file(mp4)
         self.send(404, {"error": "not found"})
 
-    def send_file(self, p, ctype="video/mp4"):
+    def send_file(self, p, ctype="video/mp4", extra=None):
         size = p.stat().st_size
         rng = self.headers.get("Range")
         start, end = 0, size - 1
@@ -1130,6 +1187,8 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Content-Disposition", f'inline; filename="{p.name}"')
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         if code == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
@@ -1426,6 +1485,9 @@ def main():
             save_job(j)
     recover_moves()
     purge_trash()
+    for part in INPUTS.glob(STILL_PART):              # a card picture being made when the server stopped
+        with contextlib.suppress(OSError):
+            part.unlink()
     missing = [t for t in TASKS if t not in ready_tasks()]
     if missing:
         log("no path manifest for", ", ".join(missing), f"(looked for {PATHS_TEMPLATE})")

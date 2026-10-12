@@ -11,6 +11,7 @@ directory. Do not commit screenshots that show generated clips.
 Needs: pip install playwright && playwright install webkit (or chromium).
 """
 import atexit
+import re
 import shutil
 import struct
 import subprocess
@@ -203,6 +204,14 @@ with sync_playwright() as p:
     check(all(dl and not cancel for s, cancel, dl in cards if s in finished)
           and not any(dl for s, cancel, dl in cards if s not in finished),
           f"Cancel only on queued or running cards, Delete only on finished ones ({len(cards)} cards)")
+    # durations are rounded to whole seconds before they are split (#26): "2:00 min", never "1:60 min"
+    times = pg.evaluate("[...document.querySelectorAll('#go, #lenout, #loadtimer, .job .when, .job .ph2')]"
+                        ".map(e => e.textContent)")
+    bad = [t for t in times if re.search(r"\d:[6-9]\d\b", t)]
+    check(not bad, f"no time on the page shows 60 seconds or more ({len(times)} labels) {bad[:2]}")
+    pics = pg.evaluate("[...document.querySelectorAll('.qimg')].filter(i => i.offsetWidth)"
+                       ".map(i => i.closest('.job').dataset.status)")
+    check(not any(s in finished for s in pics), f"a clip's picture only on queued or running cards ({len(pics)} shown)")
 
     if RUN_JOB:
         if not n_done:

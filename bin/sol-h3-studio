@@ -175,13 +175,32 @@ except OSError:
 refuse() { say "REFUSED - $*"; exit 1; }
 
 run_checks() {
-    local t f found=0 missing=() have free
+    local t f rc found=0 missing=() have free
     [[ -x "$SOLH3_PYTHON" ]] || refuse "no Python at SOLH3_PYTHON=$SOLH3_PYTHON (install/40-stage1.sh, or set it in $ENV_FILE)"
     "$SOLH3_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null ||
         refuse "SOLH3_PYTHON=$SOLH3_PYTHON is not a working Python 3.10+"
     [[ -f "$SERVER" ]] || refuse "server not found: $SERVER"
     [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-Spark package at $PKG (SOLH3_SANA must be the patched Sana checkout; install/10-sana.sh)"
     [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio.patch"
+    # the patch's own settings check (0.3+: SOL_H3_STAGE2_AUDIO); an older patch has none. A bad value exits 3 with
+    # the message; any other error exits non-zero with Python's traceback, whose last line names it
+    f=$(cd "$PKG" && "$SOLH3_PYTHON" -B -c 'import sys
+try:
+    from runtime.config import stage2_audio_mode
+except ImportError:
+    sys.exit(0)
+try:
+    stage2_audio_mode()
+except ValueError as error:
+    print(error)
+    sys.exit(3)' 2>&1)
+    rc=$?
+    f=$(grep . <<<"$f" | tail -n 1)
+    case $rc in
+        0) ;;
+        3) refuse "$f (see bin/env.example)" ;;
+        *) refuse "cannot run the settings check in $PKG/runtime/config.py: ${f:-exit code $rc}" ;;
+    esac
     [[ "$SOL_H3_SPARK_RUNTIME_ROOT" == /* ]] || refuse "SOL_H3_SPARK_RUNTIME_ROOT must be an absolute path"
     mkdir -p "$SOL_H3_SPARK_RUNTIME_ROOT" || refuse "cannot create SOL_H3_SPARK_RUNTIME_ROOT=$SOL_H3_SPARK_RUNTIME_ROOT"
     [[ "$SOLH3_PATHS" == *"{task}"* ]] || refuse "SOLH3_PATHS must contain {task}"

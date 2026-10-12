@@ -5,7 +5,8 @@ usage: tests/stub/studio.py [--port N] [--dir DIR] [--load-s S] [--clip-s S] [--
 
 Everything (runtime root, state, manifests) goes under --dir, default a new temp directory, so it never touches
 a real install. Ctrl-C stops it. Open the printed URL, or point tests/ui_test.py at it.
-The tests import StubStudio from here.
+It stops at once, with a non-zero exit status, if the port is in use, and it exits non-zero if the server stops
+by itself. The tests import StubStudio from here.
 """
 import argparse
 import json
@@ -30,6 +31,18 @@ def free_port():
         return s.getsockname()[1]
 
 
+def port_taken(port):
+    """Why the server could not have 127.0.0.1:port (something listens there), or None. It binds as the server does,
+    with SO_REUSEADDR, so connections closing on the port don't count."""
+    with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError as error:
+            return error.strerror or str(error)
+    return None
+
+
 class StubStudio:
     def __init__(self, root, port=None, load_s=3, clip_s=2, preload=True, env=None):
         self.root = Path(root)
@@ -47,25 +60,39 @@ class StubStudio:
         self.env.pop("SOLH3_PUBLISH_DIR", None)
         self.env.update(env or {})
         self.proc = None
+        self.stdin = None                    # the server's stdin: None for this process's
         self.log = self.root / "server.log"
 
     def start(self, timeout=15):
+        """Run the server; return once it serves the port: its own start line in the log (the server writes it after
+        binding the port) and /health answering. Another studio on the port answers /health too, so that alone is not
+        enough: the requests that follow would go to it. A port in use fails at once."""
+        taken = port_taken(self.port)
+        if taken:
+            raise RuntimeError(f"port {self.port} is in use ({taken}): stop what listens there or pick another port")
         if getattr(self, "_logf", None):
             self._logf.close()
+        since = self.log.stat().st_size if self.log.exists() else 0     # the log is appended to: this start's lines
         self._logf = self.log.open("a")
-        self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=HERE, env=self.env,
+        self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=HERE, env=self.env, stdin=self.stdin,
                                      stdout=self._logf, stderr=subprocess.STDOUT)
+        serving = f"Sol-H3 Studio on {self.url}/".encode()
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 self._logf.close()
-                raise RuntimeError(f"stub studio exited: {self.log.read_text()[-2000:]}")
+                raise RuntimeError(f"stub studio exited with code {self.proc.returncode}: "
+                                   f"{self.log.read_bytes()[since:].decode(errors='replace')[-2000:]}")
             try:
-                urllib.request.urlopen(self.url + "/health", timeout=1)
-                return self
+                if serving in self.log.read_bytes()[since:]:
+                    urllib.request.urlopen(self.url + "/health", timeout=1)
+                    return self
             except OSError:
-                time.sleep(0.1)
-        raise RuntimeError("stub studio did not answer /health")
+                pass
+            time.sleep(0.1)
+        self.stop()
+        raise RuntimeError(f"stub studio did not start in {timeout} s: "
+                           f"{self.log.read_bytes()[since:].decode(errors='replace')[-2000:]}")
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
@@ -161,15 +188,21 @@ def main():
     ap.add_argument("--no-preload", action="store_true")
     a = ap.parse_args()
     root = Path(a.dir or tempfile.mkdtemp(prefix="sol-h3-stub-"))
-    s = StubStudio(root, a.port, a.load_s, a.clip_s, not a.no_preload).start()
+    try:
+        s = StubStudio(root, a.port, a.load_s, a.clip_s, not a.no_preload).start()
+    except RuntimeError as error:
+        sys.exit(f"stub studio not started: {error}")
     print(f"stub studio on {s.url}/  (files under {root}, log {s.log})", flush=True)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))      # stop the server too, as on Ctrl-C
+    died = None
     try:
-        s.proc.wait()
+        died = s.proc.wait()                                    # returns only if the server stops by itself
     except KeyboardInterrupt:
         pass
     finally:
         s.stop()
+    if died is not None:
+        sys.exit(f"stub studio: the server stopped by itself (exit code {died}), see {s.log}")
 
 
 if __name__ == "__main__":
