@@ -510,7 +510,7 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
   // new seed (#14); unticked, it keeps the clip's seed
-  body.querySelector('.reuse-all').onclick=e=>{setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
+  body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
     prompt.value=j.prompt;seed.value=j.seed;
     [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
     modeUI();updateGo();showForm(e.detail===0);$('err').textContent='';
@@ -523,10 +523,12 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
       if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
       toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
     .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
-  // detail 0: Enter/Space, not a pointer. detail 2+: the rest of a double-click whose first click was on Cancel of a
-  // queued clip; its answer shows Delete right where Cancel was
+  // detail 0: Enter/Space, not a pointer. Remix, Cancel and Delete ignore detail 2+, the rest of a double-click whose
+  // first click changed what is under the pointer: Cancel of a queued clip shows Delete where Cancel was; Delete of a
+  // card moves the next card's Delete or Cancel into its place; Undo hides at once, so the next click reaches the card
+  // under the toast
   body.querySelector('.del').onclick=e=>{if(e.detail>1)return;remove(j,e.detail===0);};
-  body.querySelector('.cancel').onclick=e=>cancel(j.id,e.currentTarget,e.detail===0);
+  body.querySelector('.cancel').onclick=e=>{if(e.detail>1)return;cancel(j.id,e.currentTarget,e.detail===0);};
   d.append(media,body);return d;}
 // The seed is text: a click selects the number (user-select: all), and so does Tab (it is one Tab stop). A pointer
 // press (mouse, touch, pen) takes its tabindex away until focus moves or something else is pressed, so a press never
