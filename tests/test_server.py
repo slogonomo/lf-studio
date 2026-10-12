@@ -1044,6 +1044,52 @@ class BadStage2Audio(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class BadPromptTokens(unittest.TestCase):
+    """SOL_H3_PROMPT_TOKENS (a patch setting, #38) is checked at start like SOL_H3_STAGE2_AUDIO."""
+
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        try:
+            with self.assertRaises(RuntimeError) as e:
+                StubStudio(d / "a", env={"SOL_H3_PROMPT_TOKENS": "special"}).start()
+            self.assertIn("SOL_H3_PROMPT_TOKENS must be one of", str(e.exception))
+            studio = StubStudio(d / "b", env={"SOL_H3_PROMPT_TOKENS": "MiniMax"}).start()
+            studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class LauncherSettingsCheck(unittest.TestCase):
+    """bin/sol-h3-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS) in the
+    package, here the stub runtime, and refuses a bad value with its message (#38)."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="sol-h3-check-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        (self.d / "sana/models/minimax_h3").mkdir(parents=True)
+        (self.d / "sana/models/minimax_h3/Sol-H3-Spark").symlink_to(Path(__file__).resolve().parent / "stub")
+        for task in ("t2va", "fl2va", "ref2va"):
+            (self.d / f"paths-{task}.json").write_text("{}")
+
+    def check(self, **settings):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "SOLH3_"))}
+        env.update(SOLH3_ENV=str(self.d / "no-env-file"), SOLH3_SANA=str(self.d / "sana"), SOLH3_PYTHON=sys.executable,
+                   SOLH3_PATHS=str(self.d / "paths-{task}.json"), SOL_H3_SPARK_RUNTIME_ROOT=str(self.d / "runtime"),
+                   SOLH3_STATE_DIR=str(self.d / "state"), SOLH3_HOST="127.0.0.1", SOLH3_PORT=str(free_port()),
+                   SOLH3_TEST_SKIP_DOCKER="1", SOLH3_MIN_FREE_GIB="0", PYTHONDONTWRITEBYTECODE="1", **settings)
+        run = subprocess.run(["bash", str(Path(__file__).resolve().parents[1] / "bin/sol-h3-studio"), "--check"],
+                             env=env, capture_output=True, text=True, timeout=120)
+        return run.returncode, run.stdout + run.stderr
+
+    def test_settings(self):
+        self.assertEqual(self.check()[0], 0)
+        self.assertEqual(self.check(SOL_H3_PROMPT_TOKENS="MiniMax", SOL_H3_STAGE2_AUDIO="joint")[0], 0)
+        for name, value in (("SOL_H3_PROMPT_TOKENS", "special"), ("SOL_H3_STAGE2_AUDIO", "noised")):
+            code, out = self.check(**{name: value})
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - {name} must be one of", out)
+
+
 class TrashPurge(Delete):
     env = {"SOLH3_TRASH_DAYS": "0.00001"}                                  # under a second
 

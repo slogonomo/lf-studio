@@ -30,8 +30,8 @@ Environment:
                              for good (default 7)
   SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
 
-SOL_H3_STAGE2_AUDIO (a patch setting, frozen or joint; see docs/PATCH.md) is checked at start: another value stops
-the server with a message.
+SOL_H3_STAGE2_AUDIO (frozen or joint) and SOL_H3_PROMPT_TOKENS (plain or minimax) are patch settings (see
+docs/PATCH.md), checked at start: another value stops the server with a message.
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
@@ -78,15 +78,15 @@ except ImportError as error:
     fail(f"cannot import the patched Sol-H3-Spark runtime from {PKG} ({error}). Start the server with the "
          "working directory set to models/minimax_h3/Sol-H3-Spark inside the patched Sana checkout.")
 
-try:                       # the Stage-2 audio setting (patch 0.3+): a bad value stops the studio here, not every clip
-    from runtime.config import stage2_audio_mode  # noqa: E402
-except ImportError:        # an older patch: it has no such setting
-    stage2_audio_mode = None
-if stage2_audio_mode:
-    try:
-        stage2_audio_mode()
-    except ValueError as error:
-        fail(str(error))
+# the patch's settings (SOL_H3_STAGE2_AUDIO, patch 0.3+; SOL_H3_PROMPT_TOKENS, 0.4+): a bad value stops the studio here,
+# not every clip. An older patch lacks one or both.
+import runtime.config  # noqa: E402
+for setting_check in (getattr(runtime.config, name, None) for name in ("stage2_audio_mode", "prompt_tokens_mode")):
+    if setting_check:
+        try:
+            setting_check()
+        except ValueError as error:
+            fail(str(error))
 
 if not os.environ.get("SOL_H3_SPARK_RUNTIME_ROOT"):
     fail("SOL_H3_SPARK_RUNTIME_ROOT is not set. Point it at your runtime directory "
