@@ -418,6 +418,19 @@ class JsonGenerate(ApiTest):
         self.assertEqual(self.inputs(), [])
         self.assertEqual(self.studio.state()["jobs"], [])
 
+    def test_prompt_with_half_an_emoji(self):
+        """JSON can escape a lone UTF-16 surrogate (an emoji cut in half by a length limit), which the form can't
+        send: refused at once, not queued to fail on the GPU. A whole emoji (a surrogate pair) is fine."""
+        error = "ValueError: prompt is not valid text (an unpaired UTF-16 surrogate, e.g. an emoji cut in half)"
+        ctype = {"Content-Type": "application/json"}
+        for body in (b'{"prompt": "a quiet lake at dawn \\ud83c", "seed": 7}', b'{"prompt": "\\udf05 dawn"}'):
+            code, _, answer = self.studio.request("POST", "/api/generate", body, ctype)
+            self.assertEqual((code, json.loads(answer)["error"]), (400, error), body)
+        self.assertEqual(self.studio.state()["jobs"], [])
+        code, _, answer = self.studio.request("POST", "/api/generate", b'{"prompt": "dawn \\ud83c\\udf05"}', ctype)
+        self.assertEqual(code, 200, answer)
+        self.assertEqual(self.studio.job(json.loads(answer)["id"])["prompt"], "dawn \U0001F305")
+
     def test_form_and_json_give_the_same_errors(self):
         frames = lambda name: {"first_frame": [(name, png())]}
         images = [(f"r{i}.png", png()) for i in range(10)]

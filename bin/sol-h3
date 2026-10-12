@@ -674,6 +674,11 @@ def build_request(prompt, task=None, orientation=None, seconds=None, seed=None, 
     number of reference videos), hashes (SHA-256 of each file). `names` maps first_frame, last_frame and reference
     to the words the messages use for them (reference: a function of the list index). Raises Fail (exit 2)."""
     names = names or {"first_frame": "first_frame", "last_frame": "last_frame", "reference": "references[{}]".format}
+    try:
+        prompt.encode("utf-8")
+    except UnicodeEncodeError as error:         # a lone surrogate: from JSON's "\ud83c", or argv bytes not in UTF-8
+        raise Fail(f"the prompt is not valid text at character {error.start + 1} (half of an emoji, or bytes that "
+                   "are not UTF-8)", 2) from None
     frames = [(zone, ref) for zone, ref in (("first_frame", first_frame), ("last_frame", last_frame)) if ref]
     references = list(references or [])
     if frames and references:

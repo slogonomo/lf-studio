@@ -207,6 +207,7 @@ class Protocol(McpTest):
                             ({"prompt": "x", "seconds": "5"}, "seconds must be an integer"),
                             ({"prompt": "x", "seed": -1}, "seed must be 0 or more"),
                             ({"prompt": "x", "references": "a.png"}, "references must be a list of strings"),
+                            ({"prompt": "dawn \ud83c"}, "the prompt is not valid text at character 6"),
                             ({}, "prompt is required")]:
             r = self.m.call("generate", args)
             self.assertTrue(r["isError"], args)

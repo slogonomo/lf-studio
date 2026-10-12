@@ -249,6 +249,9 @@ class Generate(CliTest):
         p = self.sol("generate", "--prompt", "x", "--ref", "x.wav")
         self.assertEqual(p.returncode, 2)
         self.assertIn("ref2va needs at least one reference image or video", p.stderr)
+        p = self.sol("generate", "--prompt", os.fsdecode(b"x \xff"))              # argv bytes that are not UTF-8
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("the prompt is not valid text at character 3", p.stderr)
         self.assertEqual(self.studio.state()["jobs"], [])                        # none of these reached the studio
         p = self.sol("generate", "--prompt", "x", "--seed", -1)
         self.assertEqual(p.returncode, 2)

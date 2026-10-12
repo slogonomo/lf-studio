@@ -263,8 +263,10 @@ Then the form and JSON go through the same checks, with the same messages, and a
 behind:
 
 1. Task and orientation (`bad task/orientation`), the task's path manifest (`no path manifest for ...`), the
-   prompt (`prompt is empty`, `prompt is too long (N characters; at most 32768)`), the length (`duration must be one
-   of (3, 4, 5, 6, 7, 8, 10, 12, 15) seconds`) and the seed (`seed must be a nonnegative 63-bit integer`).
+   prompt (`prompt is empty`, `prompt is too long (N characters; at most 32768)`, and `prompt is not valid text
+   ...` for a JSON prompt holding half of a UTF-16 surrogate pair, such as `"\ud83c"` from an emoji cut in two),
+   the length (`duration must be one of (3, 4, 5, 6, 7, 8, 10, 12, 15) seconds`) and the seed (`seed must be a
+   nonnegative 63-bit integer`).
 2. The files. fl2va needs a first frame, a last frame, or both. ref2va takes up to 9 images, 3 videos and 3 audio
    files, 12 in total (`H3 limits: ...`), and at least one image or video. A wrong type gets `unsupported file type
    .gif (allowed: ...)`. Reference videos are converted on arrival (at most 672x384, 24 fps, their first 15 s, sound

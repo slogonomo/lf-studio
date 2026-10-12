@@ -1233,6 +1233,10 @@ def check_fields(fields):
         raise ValueError("prompt is empty")
     if len(prompt) > PROMPT_MAX:
         raise ValueError(f"prompt is too long ({len(prompt)} characters; at most {PROMPT_MAX})")
+    try:
+        prompt.encode("utf-8")      # JSON can hold a lone surrogate ("\ud83c"); the tokenizer and the worker fail on it
+    except UnicodeEncodeError:
+        raise ValueError("prompt is not valid text (an unpaired UTF-16 surrogate, e.g. an emoji cut in half)") from None
     raw = (fields.get("seed") or "").strip()
     seconds = int(fields.get("seconds") or 5)
     if seconds not in DURATIONS:
