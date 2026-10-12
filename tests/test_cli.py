@@ -162,10 +162,11 @@ class CliTest(unittest.TestCase):
             print(f"\n--- server log ({self.studio.log})\n" + self.studio.log.read_text()[-3000:])
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def sol(self, *args, url=None, env=None, stdin=None, timeout=120):
-        """Run bin/sol-h3 with these arguments in self.work: the CompletedProcess (text)."""
+    def sol(self, *args, url=None, env=None, stdin=None, timeout=120, cwd=None):
+        """Run bin/sol-h3 with these arguments in self.work (or cwd): the CompletedProcess (text)."""
         return subprocess.run([sys.executable, str(BIN), *map(str, args)], input=stdin, capture_output=True, text=True,
-                              timeout=timeout, cwd=self.work, env=client_env(url or self.studio.url, **(env or {})))
+                              timeout=timeout, cwd=cwd or self.work,
+                              env=client_env(url or self.studio.url, **(env or {})))
 
     def ok(self, *args, **kw):
         p = self.sol(*args, **kw)
@@ -214,6 +215,28 @@ class Generate(CliTest):
         p = self.ok("fetch", jid, "--out", "again.mp4", "--json")             # an existing clip, from the page too
         self.assertEqual(json.loads(p.stdout)["path"], str(self.work / "again.mp4"))
         self.assertEqual((self.work / "again.mp4").read_bytes(), out.read_bytes())
+
+    def test_unwritable_place(self):
+        """generate --wait checks that it can save the clip before it submits; a save that fails all the same says
+        the clip is done and how to fetch it."""
+        if os.geteuid() == 0:
+            self.skipTest("root can write anywhere")
+        ro = self.work / "ro"
+        ro.mkdir()
+        ro.chmod(0o555)
+        self.addCleanup(lambda: ro.exists() and ro.chmod(0o755))
+        for args, cwd in ((["--wait"], ro), (["--out", "ro/new/c.mp4"], None), (["--out", "ro"], None)):
+            p = self.sol("generate", "--prompt", "x", *args, cwd=cwd)
+            self.assertEqual(p.returncode, 2, (args, p.stderr))
+            self.assertIn(f"can't save the clip there: no permission to write to {ro}; nothing was submitted",
+                          p.stderr)
+        self.assertEqual(self.studio.state()["jobs"], [])
+        jid = self.ok("generate", "--prompt", "x").stdout.strip()
+        self.studio.wait([jid], timeout=30)
+        p = self.sol("fetch", jid, "--out", "ro/c.mp4")                       # fetch doesn't check first
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn(f"The clip is done on the studio: save it with sol-h3 fetch {jid} --out <a directory you can "
+                      "write to>", p.stderr)
 
     def test_explicit_out_is_replaced(self):
         """A person typed --out: an existing file there is replaced."""

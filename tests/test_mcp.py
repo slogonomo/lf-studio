@@ -4,6 +4,7 @@ stub studio (tests/stub) and small fake servers. No models, no GPU.
 python3 -m unittest tests.test_mcp -v      (or with the rest: python3 -m unittest discover -s tests)
 """
 import json
+import os
 import queue
 import re
 import shutil
@@ -122,8 +123,8 @@ class McpTest(unittest.TestCase):
                                      preload=False).start()
         self.servers = []
 
-    def mcp(self, url=None, **env):
-        server = Mcp(self.work, url or self.studio.url, self.dir / f"mcp-{len(self.servers)}.log", **env)
+    def mcp(self, url=None, cwd=None, **env):
+        server = Mcp(cwd or self.work, url or self.studio.url, self.dir / f"mcp-{len(self.servers)}.log", **env)
         self.servers.append(server)
         return server
 
@@ -399,6 +400,56 @@ class Tools(McpTest):
         r = m2.call("generate", {"prompt": "y", "wait_s": 30})
         self.assertEqual(Path(r["structuredContent"]["path"]).parent, self.dir / "clips")
         self.assertEqual([p.name for p in self.work.glob("*.part")] + [p.name for p in outside.glob(".*")], [])
+
+    def test_unwritable_places(self):
+        """A host that starts the server where it can't write, without SOLH3_OUT_DIR: generate refuses before it
+        submits and names SOLH3_OUT_DIR; so does an out it can't write to. A save that fails all the same says the
+        clip is done and how to fetch it."""
+        if os.geteuid() == 0:
+            self.skipTest("root can write anywhere")
+        ro = self.work / "ro"
+        ro.mkdir()
+        ro.chmod(0o555)
+        self.addCleanup(lambda: ro.exists() and ro.chmod(0o755))
+        m = self.mcp(cwd=ro)
+        r = m.call("generate", {"prompt": "x", "wait_s": 30})
+        self.assertTrue(r["isError"])
+        self.assertEqual(text(r), f"can't save clips in {ro}/sol-h3-clips (the default; SOLH3_OUT_DIR is unset): no "
+                                  f"permission to write to {ro}. Pass out with a directory this server can write to, "
+                                  f"or set SOLH3_OUT_DIR in its settings to one (its working directory is {ro}). "
+                                  "Nothing was submitted.")
+        for out in (str(ro), "new/c.mp4"):
+            r = m.call("generate", {"prompt": "x", "wait_s": 30, "out": out})
+            self.assertTrue(r["isError"], out)
+            self.assertIn(f"no permission to write to {ro}. Nothing was submitted.", text(r))
+        self.assertEqual(self.studio.state()["jobs"], [])
+        m = self.mcp(SOLH3_OUT_DIR=str(self.dir / "clips"))
+        (self.work / "late").mkdir()
+        m.send({"jsonrpc": "2.0", "id": "g", "method": "tools/call",
+                "params": {"name": "generate", "arguments": {"prompt": "x", "wait_s": 30, "out": "late"}}})
+        deadline = time.time() + 10
+        while not self.studio.state()["jobs"] and time.time() < deadline:
+            time.sleep(0.05)
+        jid = self.studio.state()["jobs"][0]["id"]                          # checked and submitted: now take it away
+        (self.work / "late").chmod(0o555)
+        self.addCleanup(lambda: (self.work / "late").exists() and (self.work / "late").chmod(0o755))
+        r = m.response("g")["result"]
+        self.assertTrue(r["isError"])
+        self.assertIn(f'The clip is done on the studio: call fetch with id "{jid}" and an out this server can write '
+                      "to", text(r))
+        (self.work / "late").chmod(0o755)
+        r = m.call("fetch", {"id": jid, "out": "late"})
+        self.assertEqual(Path(r["structuredContent"]["path"]).parent, self.work / "late")
+
+    def test_relative_paths(self):
+        """Relative paths start from the server's working directory, also out when SOLH3_OUT_DIR is set (as the docs
+        say); a missing file's error names the absolute path it looked for."""
+        m = self.mcp(SOLH3_OUT_DIR=str(self.dir / "clips"))
+        r = m.call("generate", {"prompt": "x", "first_frame": "nothere.png"})
+        self.assertTrue(r["isError"])
+        self.assertEqual(text(r), f"first_frame: no such file: nothere.png (looked for {self.work / 'nothere.png'})")
+        r = m.call("generate", {"prompt": "x", "first_frame": self.frame(), "out": "mine.mp4", "wait_s": 30})
+        self.assertEqual(Path(r["structuredContent"]["path"]), self.work / "mine.mp4")
 
 
 class LongClips(McpTest):

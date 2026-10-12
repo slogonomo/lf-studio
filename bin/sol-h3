@@ -340,11 +340,13 @@ def check_id(jid):
 
 
 class Fail(Exception):
-    """What went wrong, in words for a person or an agent, with the CLI's exit code."""
+    """What went wrong, in words for a person or an agent, with the CLI's exit code. `mcp`: the words for an agent
+    when they differ (the MCP server's tools in place of CLI commands)."""
 
-    def __init__(self, message, code=2, http_status=None, jid=None, job=None):
+    def __init__(self, message, code=2, http_status=None, jid=None, job=None, mcp=None):
         super().__init__(message)
         self.message, self.code, self.http_status, self.jid, self.job = message, code, http_status, jid, job
+        self.mcp = mcp
 
 
 class Unreachable(Fail):
@@ -593,7 +595,8 @@ def read_input(ref, label, allowed, budget):
     else:
         p = Path(ref).expanduser()
         if not p.is_file():
-            raise Fail(f"{label}: no such file: {ref}", 2)
+            where = "" if p.is_absolute() else f" (looked for {os.path.abspath(p)})"
+            raise Fail(f"{label}: no such file: {ref}{where}", 2)
         if extension(p.name) in allowed and p.stat().st_size > budget:
             raise Fail(f"{label}: {ref} is {megabytes(p.stat().st_size)}; the files may total 199 MB", 2)
         name, data = p.name, (p.read_bytes() if extension(p.name) in allowed else b"")
@@ -790,6 +793,19 @@ class Saver:
     def target(self, name):
         return self.file if self.file is not None else self.directory / name
 
+    def unwritable(self):
+        """Why the MP4 can't be saved where it goes (the directory, or the nearest one above it that exists, to be
+        created in, is not writable), or None. Checked before a clip is submitted, so it isn't rendered for
+        nothing."""
+        d = Path(os.path.abspath(self.file.parent if self.file is not None else self.directory))
+        while not d.exists() and d.parent != d:
+            d = d.parent
+        if not d.is_dir():
+            return f"{d} is not a directory"
+        if not os.access(d, os.W_OK | os.X_OK):
+            return f"no permission to write to {d}"
+        return None
+
     def commit(self, part, final):
         """Move the finished .part into place; returns where it went."""
         if not self.keep:
@@ -851,7 +867,9 @@ def save_mp4(resp, conn, saver, jid, rec):
         raise Fail(f"the download of clip {jid} broke off ({reason(error)}); try again: sol-h3 fetch {jid}", 3,
                    jid=jid) from None
     except OSError as error:
-        raise Fail(f"could not save clip {jid} to {final}: {error}", 2, jid=jid) from None
+        what = f"could not save clip {jid} to {final}: {error}. The clip is done on the studio"
+        raise Fail(f"{what}: save it with sol-h3 fetch {jid} --out <a directory you can write to>", 2, jid=jid,
+                   mcp=f'{what}: call fetch with id "{jid}" and an out this server can write to') from None
     finally:
         conn.close()
         PARTS.discard(part)
@@ -1146,6 +1164,9 @@ def cmd_generate(studio, args, output):
         output.warn(warning)
     wait = args.wait or args.out is not None or args.poster
     saver = cli_saver(args.out, args.poster) if wait else None
+    why = saver and saver.unwritable()
+    if why:
+        raise Fail(f"can't save the clip there: {why}; nothing was submitted (--out picks another place)", 2)
     if req["bytes"] > 10e6:
         output.say(f"uploading {megabytes(req['bytes'])}")
     try:
@@ -1234,7 +1255,8 @@ PROGRESS_S = 10          # a notifications/progress this often while a call with
 REPEAT_S = 1800          # an identical generate this soon returns the earlier clip
 STR = {"type": "string"}
 OUT = {"type": "string", "description": "An existing directory, or a file name ending in .mp4, for the MP4 (default "
-                                        "SOLH3_OUT_DIR); an existing file is never replaced"}
+                                        "SOLH3_OUT_DIR); an existing file is never replaced. A relative path starts "
+                                        "from this server's working directory, not SOLH3_OUT_DIR"}
 POSTER = {"type": "boolean", "default": True, "description": "Include a poster frame image (also saved as .jpg)"}
 WAIT_S = {"type": "number", "minimum": 0,
           "description": "Seconds to wait for the clip (default from SOLH3_MCP_WAIT_S); 0 returns the id at once"}
@@ -1244,7 +1266,8 @@ TOOLS = [
          "Queue a clip on the Sol-H3 Studio and wait up to wait_s seconds for it; when done, the MP4 is saved locally. "
          "Tasks: t2va (text only), fl2va (first_frame and/or last_frame image), ref2va (references: up to 9 images, 3 "
          "videos of 2-15 s, 3 audio files, 12 in total, at least one image or video). The task is inferred from the "
-         "files when omitted. Files are paths on this machine or http(s) URLs; the type comes from the extension "
+         "files when omitted. Files are paths on this machine (best absolute: a relative one starts from this server's "
+         "working directory) or http(s) URLs; the type comes from the extension "
          "(.png .jpg .jpeg .webp / .mp4 .mov .m4v .webm .mkv / .wav .mp3 .flac .m4a .ogg). Keyframes should have the "
          "clip's shape (1344x768 or 768x1344): one of another shape is stretched or cropped to fit; without "
          "orientation, the first keyframe's shape picks it. Write the prompt in H3's format (prompt_guide). "
@@ -1543,7 +1566,7 @@ class McpServer:
                 except CallCancelled:
                     return
                 except Fail as error:
-                    result = text_result(error.message, error=True)
+                    result = text_result(error.mcp or error.message, error=True)
                 except Exception as error:            # a bug: the agent sees it, the server keeps serving
                     traceback.print_exc()
                     result = text_result(f"{type(error).__name__}: {error}", error=True)
@@ -1571,10 +1594,18 @@ class McpServer:
         return max(0.0, min(self.wait_s if wait_s is None else float(wait_s), self.max_wait_s))
 
     def saver(self, out, poster):
-        """Where an MP4 goes: never replaces a file, and stays inside SOLH3_OUT_DIR or the working directory unless
-        SOLH3_MCP_OUT_ANYWHERE=1. Checked before anything is submitted or downloaded."""
+        """Where an MP4 goes: never replaces a file, stays inside SOLH3_OUT_DIR or the working directory unless
+        SOLH3_MCP_OUT_ANYWHERE=1, and must be writable. A relative out starts from the working directory. Checked
+        before anything is submitted or downloaded."""
         if not out:
-            return Saver(directory=self.out_dir, keep=True, poster=poster)
+            saver = Saver(directory=self.out_dir, keep=True, poster=poster)
+            why = saver.unwritable()
+            if why:
+                where = "SOLH3_OUT_DIR" if os.environ.get("SOLH3_OUT_DIR") else "the default; SOLH3_OUT_DIR is unset"
+                raise Fail(f"can't save clips in {self.out_dir} ({where}): {why}. Pass out with a directory this server "
+                           "can write to, or set SOLH3_OUT_DIR in its settings to one (its working directory is "
+                           f"{Path.cwd()}). Nothing was submitted.")
+            return saver
         p = Path(out).expanduser()
         p = Path(os.path.abspath(p if p.is_absolute() else Path.cwd() / p))
         if p.is_dir():
@@ -1588,6 +1619,9 @@ class McpServer:
             if not any(real == root or root in real.parents for root in roots):
                 raise Fail(f"out must be inside SOLH3_OUT_DIR ({roots[0]}) or the working directory ({roots[1]}); "
                            "the MCP server's settings can allow other places (SOLH3_MCP_OUT_ANYWHERE=1)")
+        why = saver.unwritable()
+        if why:
+            raise Fail(f"can't save the clip at {p}: {why}. Nothing was submitted.")
         return saver
 
     def done_result(self, jid, saved, saver, prefix=""):
@@ -1638,7 +1672,7 @@ class McpServer:
         except Fail as error:
             if not prefix:
                 raise
-            return text_result(prefix + error.message, error=True)     # keeps "Already submitted as <id>"
+            return text_result(prefix + (error.mcp or error.message), error=True)   # keeps "Already submitted as"
         return self.outcome(jid, state, info, saver, prefix)
 
     def earlier_record(self, jid):

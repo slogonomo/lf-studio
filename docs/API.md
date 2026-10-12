@@ -484,7 +484,8 @@ more than 5% off the clip's aspect ratio gets a warning. The upload sends `X-Swi
 - Without `--wait`, `--out` or `--poster`, it prints the clip's id and exits.
 - With any of them it waits, then saves the MP4: into the current directory under the clip's own name
   (`sol-h3_<task>_<s>s_seed<seed>_<id6>.mp4`), into a directory given as `--out` (an existing one, or a path ending
-  in `/`), or as the `--out` file, which it replaces. `--poster` also saves the poster as `<name>.jpg`.
+  in `/`), or as the `--out` file, which it replaces. `--poster` also saves the poster as `<name>.jpg`. It checks
+  that it can write there before it submits (exit 2 if not).
 - `--timeout S` stops waiting after S seconds (exit 4, the id on stdout); the clip keeps running. Ctrl-C while
   waiting also leaves the clip running (exit 130) and says how to pick it up: `sol-h3 wait <id> --out ...`.
 
@@ -582,6 +583,14 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
 - **`out`** must be an existing directory or a name ending in `.mp4`, inside `SOLH3_OUT_DIR` or the working
   directory (unless `SOLH3_MCP_OUT_ANYWHERE=1`). An existing file is never replaced: the clip is saved as
   `<name>-1.mp4`, `-2`, ... instead.
+- **Relative paths** in `out`, `first_frame`, `last_frame` and `references` start from the MCP server's working
+  directory, not from `SOLH3_OUT_DIR`. That is the project directory in Claude Code; other hosts may start the
+  server anywhere, so agents there should pass absolute paths. A missing file's error names the absolute path it
+  looked for.
+- **Before it submits**, `generate` checks that it can write where the clip goes (`out`, else `SOLH3_OUT_DIR`, or
+  the directory above it that exists). A host that starts the server in a directory it can't write to (`/`, say)
+  gets a refusal naming `SOLH3_OUT_DIR`, not a rendered clip that can't be saved. If saving fails all the same, the
+  error says the clip is done on the studio and that `fetch` with its id and a writable `out` saves it.
 - **Progress:** when the host asks for it, `notifications/progress` every 10 s while a call waits, with the phase as
   the message.
 - **spark-switchboard:** as the CLI; a stopped studio makes `wait` and `fetch` answer that `fetch` with `wake: true`
@@ -623,7 +632,8 @@ mcp_servers:
 If Hermes's own model runs on the same Spark, use `SOLH3_MCP_WAIT_S: "1700"`, `SOLH3_MCP_MAX_WAIT_S: "1800"` and
 `timeout: 1800`, so that one call covers the submit, the wait and the download
 ([Through spark-switchboard](#through-spark-switchboard)). Set `SOLH3_OUT_DIR`: Hermes may start the server
-outside your project directory, and `out` must lie inside `SOLH3_OUT_DIR` or the server's working directory.
+outside your project directory, and `out` must lie inside `SOLH3_OUT_DIR` or the server's working directory. A
+relative `out` or input path still starts from that working directory, so tell the agent to pass absolute paths.
 
 **Codex:**
 
@@ -635,7 +645,8 @@ This keeps `SOLH3_MCP_WAIT_S` at 50, under Codex's 60 s. To wait longer per call
 `--env SOLH3_MCP_WAIT_S=580` to the command, and `tool_timeout_sec = 600` to the `[mcp_servers.sol-h3]` table it
 writes to `~/.codex/config.toml`.
 
-**Any other host:** the command `python3 /path/to/sol-h3 mcp`, with `SOLH3_URL` in its environment.
+**Any other host:** the command `python3 /path/to/sol-h3 mcp`, with `SOLH3_URL` in its environment, and
+`SOLH3_OUT_DIR` too unless the host starts the server in a directory where clips should go.
 
 ## Prompt guide
 
