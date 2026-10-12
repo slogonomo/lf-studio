@@ -470,7 +470,12 @@ const els={};
 // and the user keeps their place. In one column the form is above the gallery: its top comes into view (on a phone
 // that shows Generate too; the page top would not). A keyboard press (Enter/Space) moves focus there with the view,
 // so the next Tab does not jump back down; a tap does not, so no on-screen keyboard covers the form.
+// Remix changes the form's height (reload note, drop zones and their thumbnails, #err cleared or set), and the form
+// is above the gallery: scroll anchoring (WebKit) would then move the page to keep the card in place, and that
+// cancels the smooth scroll. So anchoring is off for 1.5 s, until the scroll is over (in WebKit it took about 0.2 s
+// whatever the distance).
 function showForm(keyboard){const f=$('f');if(getComputedStyle(f).position==='sticky')return;
+  const h=document.documentElement.style;h.overflowAnchor='none';clearTimeout(showForm.t);showForm.t=setTimeout(()=>h.overflowAnchor='',1500);
   window.scrollTo({top:scrollY+f.getBoundingClientRect().top-14,behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth'});   // 14: the sticky form's top
   if(keyboard)prompt.focus({preventScroll:true});}
 function card(j){const d=document.createElement('article');d.className='job';d.dataset.id=j.id;
