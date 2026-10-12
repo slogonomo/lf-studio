@@ -550,10 +550,21 @@ def extension(name):
     return os.path.splitext(name)[1].lower()
 
 
-def download_input(url, label, budget):
+def read_timeout(resp, seconds):
+    """Set the socket timeout for the next reads of a urllib response (its socket is not public; left as it is if
+    it can't be reached)."""
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    if sock is not None:
+        sock.settimeout(max(0.1, seconds))
+
+
+def download_input(url, label, budget, check=None):
     """An input file given as a URL, downloaded by this process (so tailnet and LAN addresses work): (name, bytes).
-    The type comes from the URL path's extension when it is a known one, else from Content-Type."""
+    The type comes from the URL path's extension when it is a known one, else from Content-Type. At most DOWNLOAD_S
+    seconds, also from a server that trickles: each read is one receive, with the socket timeout cut to the time
+    left. check() runs between reads (an MCP call that was cancelled raises there)."""
     deadline = time.time() + DOWNLOAD_S
+    too_slow = f"{label}: downloading {url} took longer than {DOWNLOAD_S} s"
     chunks, n = [], 0
     try:
         req = urllib.request.Request(url, headers={"User-Agent": AGENT, "Accept": "*/*"})
@@ -562,9 +573,13 @@ def download_input(url, label, budget):
             if length.isdigit() and int(length) > budget:
                 raise Fail(f"{label}: {url} is {megabytes(int(length))}; the files may total 199 MB", 2)
             while True:
-                if time.time() > deadline:
-                    raise Fail(f"{label}: downloading {url} took longer than {DOWNLOAD_S} s", 2)
-                chunk = r.read(1 << 20)
+                left = deadline - time.time()
+                if left <= 0:
+                    raise Fail(too_slow, 2)
+                if check is not None:
+                    check()
+                read_timeout(r, min(30.0, left))
+                chunk = r.read1(1 << 16)
                 if not chunk:
                     break
                 n += len(chunk)
@@ -575,6 +590,8 @@ def download_input(url, label, budget):
     except urllib.error.HTTPError as error:
         raise Fail(f"{label}: could not download {url}: HTTP {error.code}", 2) from None
     except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as error:
+        if time.time() >= deadline:                 # the socket timeout cut to the deadline
+            raise Fail(too_slow, 2) from None
         why = error.reason if isinstance(error, urllib.error.URLError) else error
         raise Fail(f"{label}: could not download {url} ({why})", 2) from None
     segment = urllib.parse.unquote(urllib.parse.urlsplit(final).path.rsplit("/", 1)[-1])
@@ -588,10 +605,10 @@ def download_input(url, label, budget):
     return name, b"".join(chunks)
 
 
-def read_input(ref, label, allowed, budget):
+def read_input(ref, label, allowed, budget, check=None):
     """One input file: a path on this machine or an http(s) URL. Returns (name, bytes)."""
     if is_url(ref):
-        name, data = download_input(ref, label, budget)
+        name, data = download_input(ref, label, budget, check)
     else:
         p = Path(ref).expanduser()
         if not p.is_file():
@@ -669,13 +686,14 @@ def image_size(data):
 
 
 def build_request(prompt, task=None, orientation=None, seconds=None, seed=None, first_frame=None, last_frame=None,
-                  references=(), names=None):
+                  references=(), names=None, check=None):
     """A clip request, checked here before anything is uploaded: loads the files (downloading URLs), takes the task
     from the files when it is not given, and checks the task against the files, the types, H3's reference counts and
     the 200 MB the studio takes. Without an orientation, a keyframe's shape picks it. Returns a dict: fields (the
     form's), files [(zone, name, bytes)], notes and warnings (lines for the person or agent), bytes, videos (the
     number of reference videos), hashes (SHA-256 of each file). `names` maps first_frame, last_frame and reference
-    to the words the messages use for them (reference: a function of the list index). Raises Fail (exit 2)."""
+    to the words the messages use for them (reference: a function of the list index); check() runs during downloads.
+    Raises Fail (exit 2)."""
     names = names or {"first_frame": "first_frame", "last_frame": "last_frame", "reference": "references[{}]".format}
     try:
         prompt.encode("utf-8")
@@ -701,11 +719,11 @@ def build_request(prompt, task=None, orientation=None, seconds=None, seed=None, 
         raise Fail(f"{names[frames[0][0]]} is used only by fl2va", 2)
     budget, files = MAX_FILES, []
     for zone, ref in frames:
-        name, data = read_input(ref, names[zone], IMG, budget)
+        name, data = read_input(ref, names[zone], IMG, budget, check)
         budget -= len(data)
         files.append((zone, name, data))
     for i, ref in enumerate(references):
-        name, data = read_input(ref, names["reference"](i), IMG + VID + AUD, budget)
+        name, data = read_input(ref, names["reference"](i), IMG + VID + AUD, budget, check)
         budget -= len(data)
         files.append((REF_ZONE[extension(name)], name, data))
     counts = {zone: sum(f[0] == zone for f in files) for zone in REF_MAX}
@@ -1730,7 +1748,7 @@ class McpServer:
         call.set_phase("reading the input files")
         req = build_request(args["prompt"], args.get("task"), args.get("orientation"), args.get("seconds"),
                             args.get("seed"), args.get("first_frame"), args.get("last_frame"),
-                            args.get("references") or [])
+                            args.get("references") or [], check=call.check)
         call.check()
         prefix = "".join(f"Note: {w} " for w in req["warnings"])
         if req["notes"]:

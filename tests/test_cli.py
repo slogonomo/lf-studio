@@ -595,6 +595,77 @@ class PassThrough(CliTest):
         self.assertEqual(p.returncode, 2)
 
 
+class Trickle:
+    """A server that sends an image's headers, then 100 bytes a second (for up to 30 s), with no Content-Length, or
+    chunked."""
+
+    def __init__(self, chunked=False):
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", free_port()))
+        self.sock.listen(4)
+        self.url = f"http://127.0.0.1:{self.sock.getsockname()[1]}/frame.png"
+        self.chunked, self.closed_early = chunked, threading.Event()
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        try:
+            conn, _ = self.sock.accept()
+        except OSError:
+            return
+        with conn:
+            conn.recv(65536)
+            head = "Transfer-Encoding: chunked\r\n" if self.chunked else "Connection: close\r\n"
+            conn.sendall(f"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n{head}\r\n".encode())
+            for _ in range(30):
+                piece = b"x" * 100
+                try:
+                    conn.sendall(b"64\r\n" + piece + b"\r\n" if self.chunked else piece)
+                except OSError:
+                    self.closed_early.set()          # the client gave up
+                    return
+                time.sleep(1)
+
+    def stop(self):
+        self.sock.close()
+
+
+class Downloads(unittest.TestCase):
+    """An input given as a URL takes at most DOWNLOAD_S (120 s), also from a server that trickles."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cli = load_cli()
+
+    def test_trickle_stops_at_the_deadline(self):
+        self.cli.DOWNLOAD_S = 3
+        self.addCleanup(setattr, self.cli, "DOWNLOAD_S", 120)
+        for chunked in (False, True):
+            server = Trickle(chunked)
+            self.addCleanup(server.stop)
+            t = time.time()
+            with self.assertRaises(self.cli.Fail) as caught:
+                self.cli.download_input(server.url, "--first-frame", 10 ** 9)
+            self.assertLess(time.time() - t, 6, chunked)
+            self.assertEqual(caught.exception.message, f"--first-frame: downloading {server.url} took longer than 3 s")
+
+    def test_check_stops_a_download(self):
+        """The MCP server passes its call's check: a cancelled call stops downloading at once."""
+        class Cancelled(Exception):
+            pass
+
+        def check():
+            if time.time() - t > 1:
+                raise Cancelled()
+        server = Trickle()
+        self.addCleanup(server.stop)
+        t = time.time()
+        with self.assertRaises(Cancelled):
+            self.cli.download_input(server.url, "first_frame", 10 ** 9, check)
+        self.assertLess(time.time() - t, 3)
+        self.assertTrue(server.closed_early.wait(5))
+
+
 class ImageSize(unittest.TestCase):
     """DECISIONS 12: the keyframe's size from its header (PNG, JPEG with EXIF rotation, WebP)."""
 
