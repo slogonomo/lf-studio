@@ -477,6 +477,14 @@ class RemixScroll(PageTest):
     def seed(self):
         jobs = history(30)                  # cards are newest first: card n is jobs[29 - n]
         jobs[21].update(task="fl2va", first_frame="gone/first.png", last_frame="gone/last.png")    # card 8
+        # card 11: Reference, with its files; three wide pictures take two rows in the zone on a phone
+        inputs = self.studio.runtime / "inputs" / "webui" / jobs[18]["id"]
+        inputs.mkdir(parents=True)
+        files = [(f"{c}.png", picture(c, "320x180"), "image") for c in ("red", "green", "blue")]
+        files += [("clip.mp4", mp4(), "video"), ("voice.wav", b"RIFF0000WAVEfmt ", "audio")]
+        for name, data, _ in files:
+            (inputs / name).write_bytes(data)
+        jobs[18].update(task="ref2va", references=[{"type": kind, "path": str(inputs / name)} for name, _, kind in files])
         (self.studio.state_dir / "jobs.json").write_text(json.dumps(jobs))
 
     def one_column(self):
@@ -575,6 +583,51 @@ class RemixScroll(PageTest):
         self.assertTrue(self.focused("#prompt"))
         self.assertTrue(0 <= ptop and pbottom <= height, "the focused prompt is on screen")
         self.assertEqual(self.page.input_value("#seed"), seed)
+
+    def prompt_on_screen(self):
+        """The prompt is focused and wholly on screen."""
+        ptop, pbottom, height = self.page.evaluate("""() => [...['top', 'bottom'].map(k =>
+            document.getElementById('prompt').getBoundingClientRect()[k]), innerHeight]""")
+        self.assertTrue(self.focused("#prompt"))
+        self.assertTrue(0 <= ptop and pbottom <= height, f"the focused prompt is on screen: {ptop}-{pbottom} of {height}")
+
+    def test_one_column_keyboard_scrolls_on_to_the_prompt(self):
+        """Keyframes and Reference show drop zones above the prompt (Reference pushes it ~350 px down): a keyboard Remix
+        scrolls on until the focused prompt is on screen, also when the clip's pictures then take a second row. A tap
+        still brings the form's top into view."""
+        self.one_column()
+        button, seed = self.remix_button(11)                                   # Reference, with its files
+        self.assertGreater(self.settle(), 1500)
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_function("""() => [...document.querySelectorAll('#ref .thumbs img.kept')].filter(i =>
+            i.complete && i.naturalWidth).length === 3""")
+        self.settle()
+        self.assertGreater(self.page.eval_on_selector("#ref .drop", "e => e.offsetHeight"), 140, "two rows of pictures")
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.prompt_on_screen()
+        top = self.page.evaluate("document.getElementById('f').getBoundingClientRect().top")
+        self.assertLess(top, -100, "scrolled past the form's top")
+        # a tap: the form's top, the prompt not focused
+        self.page.evaluate("document.activeElement.blur()")
+        button, seed = self.remix_button(11)
+        self.assertGreater(self.settle(), 1500)
+        button.click()
+        self.settle()
+        self.assertAlmostEqual(self.page.evaluate("document.getElementById('f').getBoundingClientRect().top"), 14, delta=2)
+        self.assertFalse(self.focused("#prompt"))
+        # Keyframes on a shorter screen (about what Safari leaves of a 390x844 phone)
+        self.page.set_viewport_size({"width": 390, "height": 664})
+        button, seed = self.remix_button(8)
+        self.assertGreater(self.settle(), 1500)
+        self.page.evaluate("document.getElementById('err').textContent = ''")
+        button.focus()
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_function("document.getElementById('err').textContent.includes('Gone from the server')")
+        self.settle()
+        self.assertTrue(self.page.is_visible("#fl"))
+        self.assertEqual(self.page.input_value("#seed"), seed)
+        self.prompt_on_screen()
 
     def test_one_column_reduced_motion_jumps(self):
         self.page.emulate_media(reduced_motion="reduce")
