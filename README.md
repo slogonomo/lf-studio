@@ -74,7 +74,9 @@ persistent compile cache is also part of the patch, but it is already in the 282
 the prompt cache with pinned versions, including fixes found on a DGX Spark (torchaudio on cu132, nvvm/crt pins
 for ltx-kernels, a torchaudio stub for the Qwen image). **A launcher** (`bin/sol-h3-studio`) with memory checks
 and clean shutdown for a terminal, NVIDIA Sync, systemd or
-[spark-switchboard](https://github.com/slogonomo/spark-switchboard). **Bench scripts** (`bench/`).
+[spark-switchboard](https://github.com/slogonomo/spark-switchboard). **Bench scripts** (`bench/`): whole-session
+timings, and a Stage-2 replay bench with bit-exact and picture checks
+([docs/PERFORMANCE.md](docs/PERFORMANCE.md#replay-bench-stage-2-on-saved-drafts)).
 **Tests** (`tests/`): the server end to end against a GPU-free stub of the pipeline, and the page in a
 browser; see [AGENTS.md](AGENTS.md).
 
