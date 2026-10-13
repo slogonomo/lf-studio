@@ -2,17 +2,17 @@
 
 `patches/sol-h3-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
-branch `sol-engine`. It is a plain `git diff`: 23 files, 18 modified and 5 new.
+branch `sol-engine`. It is a plain `git diff`: 25 files, 19 modified and 6 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 87 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 95 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
   The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
   are unchanged too.
-- 17 of the 18 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
+- 18 of the 19 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
-  tagged `sol-h3-studio:`. The 5 new files say they are part of sol-h3-studio.
+  tagged `sol-h3-studio:`. The 6 new files say they are part of sol-h3-studio.
 
 ## Apply, test, revert
 
@@ -27,7 +27,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 # prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
 cd models/minimax_h3/Sol-H3-Spark
 SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
-    -m unittest discover -s tests   # Ran 87 tests ... OK (skipped=1)
+    -m unittest discover -s tests   # Ran 95 tests ... OK (skipped=1)
 
 # the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
 # Qwen image, on the CPU (no --gpus)
@@ -288,6 +288,8 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   compiles new graphs. FastVideo caps Dynamo recompiles at 16; in a long-running session the 4th distinct prompt
   length failed with "Forward execution thread failed", the worker died and the next job reloaded everything.
   The limits are raised (`recompile_limit` 1,024, `accumulated_recompile_limit` 65,536).
+  `SOL_H3_DYNAMIC_TEXT_LENGTH=1` ([17](#17-prompt-lengths-without-recompiles-experimental)) stops the per-length
+  graphs of the body blocks.
 - **Files.** `runtime/stage1.py`.
 - **Switch.** None.
 - **Measured.** 7 distinct prompt lengths in one session, no failure. Each new length still costs 9-10 s once
@@ -409,7 +411,71 @@ and identity are unchanged, and the image is 5-11% sharper.
 - **Deviation.** With `minimax`, prompts reach H3 as MiniMax's tokenizer gives them, not as NVIDIA's route does (see
   the table).
 
-### 17. Tests
+### 17. Prompt lengths without recompiles (experimental)
+
+- **Purpose.** A warm session compiles new Stage-1 graphs for every prompt length it has not seen (13). From the
+  studio's receipts, that added 7-14 s to Stage 1 of 23% of warm clips (issue #41). With
+  `SOL_H3_DYNAMIC_TEXT_LENGTH=1`, the 50 body blocks of the H3 DiT compile 2 graphs per session (the first denoise
+  step and the rest: the AdaLN table has fewer rows in the first step) and none per new prompt length.
+- **Why they recompiled.** Dynamo specializes every int it reads from a global variable. FastVideo hands its
+  sparse-attention metadata to the attention through a global forward context. So each body graph was tied to
+  `total_seq_length` (the length check in FastVideo's `tile()`), to `num_prefix_tiles` (it changes every 64 text
+  tokens) and to `current_timestep`. The patch's opaque attention op took the tile counts and the step as ints; the
+  step made one graph per denoise step. `tile()` also branches on its tile buffer, which made one more graph for each
+  request's first block. Measured on the CPU, with a small model built from FastVideo's own H3 block and
+  attention-metadata classes and a stand-in for the attention kernel: 5 body graphs for every new length. The two
+  text-refiner blocks compile at the first length and once more at the second; then PyTorch's automatic dynamic
+  shapes cover any length.
+- **What changes.** In `runtime/stage1_ops/regional.py`, with the setting on:
+  - the opaque attention op reads the tile counts and the step from the forward context when it runs;
+  - the length check and the tile-buffer bookkeeping of `tile()` run before each block, outside its graph. The graph
+    keeps the scatter of the packed rows into the tile buffer and the gather back, as before;
+  - the packed-row dimension of the block inputs and of the tile metadata is marked dynamic. The attention gets its
+    row count from its own query instead of the block's int argument (the same value on one GPU).
+
+  The text refiner and FastVideo are not changed. One GPU only (no sequence parallelism).
+- **Ref2VA.** The dense route reads no sparse-attention metadata, so its body graphs already become length-dynamic
+  at a session's second length (automatic dynamic shapes). There the setting saves that one recompile, but it also
+  compiles the first length's body for a symbolic length (measured below: the same output). The optional Sol route
+  (`ref_stage1_attn=sol`) ignores the setting; its receipt says `per_length (setting ignored)`.
+- **Measured** on the test lane, 2026-10-13, with this setting's patch before its merge into 0.4 (prompts tokenized
+  `plain`, 16): a studio with the setting off and then one with it on, the same 19 clips (5 s, 16:9) in the same
+  order. A t2va, an fl2va (keyframe) and a ref2va session each had 2 new prompt lengths and repeated every prompt
+  later. Both studios started from the same copy of the compile cache.
+  - New prompt length, Stage 1 against the same prompt repeated later: with the setting 0.0-0.8 s in t2va and fl2va,
+    and 0.0 s in ref2va at its third length. ref2va's second length cost 2.6 s: the text refiner recompiles there,
+    with or without the setting. Without the setting: 2.3-9.7 s in t2va and fl2va, and 5.9 s and 0.0 s in ref2va
+    (its dense body is already length-dynamic from the second length).
+  - Graphs: with the setting, 2 body graphs at each session's first clip and none for any new length. Without it,
+    5 body graphs for every new length in t2va and fl2va.
+  - Known-length clips, median Stage 1 (3-4 clips per task): t2va 18.15 → 18.2 s (+0.3 %), fl2va 21.2 → 21.4 s
+    (+0.9 %), ref2va 22.0 → 22.1 s (+0.5 %).
+  - Output: every warm clip (16) was bit-identical with and without the setting (Stage-1 `payload_sha256` and
+    `native_normalized_sha256`, MP4 video and audio streams). Without the setting, 4 of the clips also matched the
+    same prompts and seeds from an earlier session of the #38 A/B.
+- **Why the output stays the same.** In the body graph, Inductor generates only data movement, casts, the FP8
+  activation scaling (a maximum and elementwise steps) and the residual adds. The norms, RoPE and SwiGLU are
+  FastVideo's own Triton kernels, and the matmuls are cuBLAS calls of the same sizes. None of these results depends
+  on how a kernel is tuned for a symbolic length (inferred).
+- **A session's first clip, with or without the setting.** In the same run, with the setting on, the first fl2va
+  clip's Stage-1 output differed from its own repeat later in the session (payload hash). Its MP4 against the
+  setting-off run's first fl2va clip: SSIM 0.88 at 672×384. The other first clips matched their repeats at Stage 1
+  (payload and native hashes) and in audio. The Stage-1 difference comes from the text refiner, which the setting
+  doesn't change. It compiles a graph for the session's first length, then a dynamic one at the second length (13),
+  and the repeat ran on the dynamic one. Inductor picks between two configurations of a reduction by timing it when
+  it first compiles a kernel, and keeps the choice in the compile cache. Here the refiner's residual-add + RMSNorm
+  kernel for that first length (the same source in both runs) got the looped configuration without the setting and
+  the persistent one with it. Only the looped one rounds like the dynamic graph. So the first clip of a session at a
+  length new to the compile cache can differ from a later re-render of the same prompt and seed, with or without the
+  setting. Separately, in both runs the MP4 video of every session's first clip differed from its repeats, also where
+  Stage 1 and the audio matched. That difference comes after Stage 1 (perhaps from Stage 2's first run in a session;
+  inferred, not examined). Later clips matched their repeats in video too.
+- **Files.** `runtime/stage1_ops/regional.py`, `runtime/stage1.py` (comment; the Sol route's receipt),
+  `tests/test_regional_length.py` (new).
+- **Switch.** `SOL_H3_DYNAMIC_TEXT_LENGTH`: `0` (default) as before, `1` on. Another value stops Stage 1 when it
+  loads.
+
+### 18. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
 deliver-first, when the resident prompt encoder starts, the new `Pipeline` arguments and the compile-cache
@@ -426,7 +492,11 @@ the Qwen image ([Apply, test, revert](#apply-test-revert)). `tests/test_pipeline
 worker starts and that the default, the setting or the `Pipeline` argument reaches every worker, the resident
 prompt encoder too, whether it starts during the first clip or after it; `tests/test_qwen_media.py` checks the
 receipt fields.
-87 tests in total (upstream: 65).
+`tests/test_regional_length.py` (new) checks `SOL_H3_DYNAMIC_TEXT_LENGTH` on the CPU. On a small stand-in model: the
+graphs it compiles over several prompt lengths, outputs equal to the uncompiled model, the tile-buffer rules and the
+FastVideo signatures it relies on. On FastVideo's own H3 blocks (skipped when FastVideo can't be imported): what
+`install()` and `install_dense()` wrap with the setting on and off.
+95 tests in total (upstream: 65).
 
 ## All switches
 
@@ -448,6 +518,7 @@ receipt fields.
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
 | `SOL_H3_PROMPT_TOKENS` | minimax | `plain` = as up to 0.3: the pinned ComfyUI splits MiniMax's 7 prompt tokens (`<d>`, `</d>`, ...) into text tokens; `minimax` reads each as one token, as in H3's training |
+| `SOL_H3_DYNAMIC_TEXT_LENGTH` | 0 | 1 = Stage 1's body blocks compile per session, not per prompt length (experimental, [17](#17-prompt-lengths-without-recompiles-experimental)) |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.

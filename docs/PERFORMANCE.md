@@ -138,13 +138,20 @@ comparable side by side.
 Stage 1's transformer is compiled with static shapes, so each new prompt length (in text tokens) compiles new
 graphs. FastVideo caps recompiles at 16; the 4th distinct prompt length in a session hit the limit, killed the
 worker and forced a full reload. The limit is raised (1,024; 65,536 accumulated). Tested: 7 distinct prompt
-lengths in one session, no failure.
+lengths in one session, no failure. `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (experimental, off by default) stops the
+per-length graphs of the body blocks.
 
 ## Known costs, not fixed
 
 - A new prompt length on a warm session adds 9-10 s (Stage 1 17.6 → 26.2 s). Reusing a prompt, or editing it
-  without changing its token count, avoids it. The failing guards are in FastVideo's H3 sparse-attention metadata
-  and tiling (`total_seq_length`), so a fix needs that dimension made dynamic.
+  without changing its token count, avoids it. The body blocks' graphs are tied to the length through FastVideo's H3
+  sparse-attention metadata and tiling (`total_seq_length`, the tile counts) and to the denoise step. The setting
+  `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (off by default;
+  [PATCH.md, 17](PATCH.md#17-prompt-lengths-without-recompiles-experimental)) compiles them per session (2 graphs:
+  the first denoise step and the rest), not per length. Measured on the test lane (2026-10-13, 19 clips each way):
+  a new length cost 0.0-0.8 s in t2va and fl2va with it, 2.3-9.7 s without; known-length clips +0.3 to +0.9 %;
+  every warm clip bit-identical. The text refiner still compiles once more at a session's second length (2.6 s in
+  that ref2va clip).
 - Cold vs warm overhead (~55 s), measured before the last fix: Stage 2 first compile 15-20 s, Stage 1 LoRA merge
   + FP8 ~7 s, Stage 1 first-denoise compile ~11 s, audio VAE 6 s.
 - The numbers above assume the compile cache is warm from an earlier run of the same mode, format and length.
@@ -165,6 +172,7 @@ lengths in one session, no failure.
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer clips load the prompt encoder per request |
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
 | `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip |
+| `SOL_H3_DYNAMIC_TEXT_LENGTH` | 0 | 1 = Stage 1's body blocks compile per session, not per length (experimental) |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 
 The warm-up at launch (`SOLH3_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled
