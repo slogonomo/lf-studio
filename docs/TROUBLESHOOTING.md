@@ -19,6 +19,11 @@ memory guard later.
 NVIDIA Sync, use switchboard's `delegate.sh` then, see [nvidia-sync.md](nvidia-sync.md)). Stop it or set
 `SOLH3_PORT`.
 
+**`REFUSED - SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...`**
+(or the same for `SOL_H3_STAGE2_AUDIO`). The repo was updated, but the Sana checkout still carries the patch of an
+older release, which would ignore that setting. Run `install/10-sana.sh`, then start again
+([updating](INSTALL.md#updating)).
+
 **`cannot talk to docker as <user>`, or `permission denied while trying to connect to the Docker daemon socket`.**
 Add yourself to the group (`sudo usermod -aG docker $USER`) and log in again. A login session started before
 that change keeps its old groups. NVIDIA Sync keeps one SSH login open for a long time, so this happens there

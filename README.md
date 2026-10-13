@@ -48,6 +48,12 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
   takes it over, and the Generate button says when it would be ready. Unload button. Dark and light themes, phone layout.
 - Uploaded reference videos are normalized (at most 672×384, 24 fps, 2-15 s).
 
+**Writing prompts:** the [prompt guide](docs/API.md#prompt-guide) sums up MiniMax's guides. Start each dialogue line
+inside `<d>...</d>` with a capital letter: a lowercase line that opens the clip can add a stray syllable at 0 s. In
+the A/B test of [#38](https://github.com/slogonomo/sol-h3-studio/issues/38) (4 seeds per prompt, one DGX Spark), with
+the default prompt tokens, a scene that opened with "what" had it in 4 of 4 clips, and none of 4 with "What"
+([#53](https://github.com/slogonomo/sol-h3-studio/issues/53)).
+
 **An API for agents and scripts** ([docs/API.md](docs/API.md)): the studio's HTTP API, documented, with a JSON
 submit and a wait that hands over the MP4 as soon as the clip is done; and `bin/sol-h3`, one Python file for other
 machines that is both a command line and an MCP server for agent hosts (Claude Code, Hermes, Codex). It uploads
@@ -92,9 +98,9 @@ NVIDIA validated the 5 s, 16:9 route. Portrait output is not quality-validated (
 were trained on landscape). Lengths other than 5 s are not validated by NVIDIA, and 3 s is below the 4-15 s that
 MiniMax lists for H3. The first-request attention self-check covers 8 calls instead of 200. Portrait and length
 are derived after the frozen-recipe hash check. Stage 2 refines the video against the H3 audio held fixed instead of
-a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync. An opt-in setting,
-`SOL_H3_PROMPT_TOKENS=minimax`, makes the prompt encoder read the dialogue tags `<d>` and `</d>` as single tokens, as
-MiniMax's tokenizer does; it is off until an A/B test on clips is done. All of it can be switched back; see
+a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync. Since 0.4 the prompt
+encoder reads the dialogue tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does and H3 was trained
+with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). All of it can be switched back; see
 [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 
 ## Requirements
@@ -130,6 +136,10 @@ bin/sol-h3-studio              # then open http://localhost:8190
 Every install script takes `--dry-run`. Paths, ports and switches: [bin/env.example](bin/env.example). Details,
 times, disk use, which scripts have been run end to end, and updating: [docs/INSTALL.md](docs/INSTALL.md).
 Problems: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+To update: `git pull`, then `install/10-sana.sh`, then restart the studio ([details](docs/INSTALL.md#updating)).
+0.4 changes the patch: until `install/10-sana.sh` has applied it, the studio refuses to start with
+"SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...".
 
 The server listens on 127.0.0.1:8190. From a laptop use [NVIDIA Sync](docs/nvidia-sync.md) or
 `ssh -L 8190:127.0.0.1:8190 you@spark-xxxx.local`. `SOLH3_HOST=0.0.0.0` serves the LAN; there is no login, so only

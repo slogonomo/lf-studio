@@ -51,7 +51,7 @@ index be0076a..ef2447e 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/config.py b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
-index 03804f7..b8dbbc1 100644
+index 03804f7..e2b4e71 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 @@ -6,6 +6,10 @@ import os
@@ -65,7 +65,7 @@ index 03804f7..b8dbbc1 100644
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,73 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,74 @@ REQUIRED_PATHS = (
  )
  
  
@@ -100,17 +100,18 @@ index 03804f7..b8dbbc1 100644
 +    return mode
 +
 +
-+# sol-h3-studio: MiniMax's prompt tokens (runtime/qwen_ops/prompt_tokens.py). "plain" (default): the pinned ComfyUI's
-+# Qwen tokenizer splits <d> and </d> into ordinary text tokens, as before; "minimax": the 7 tokens of MiniMax's
-+# tokenizer_config.json are added, so each tag is one token as in H3's training. The Qwen worker runs in Docker with a
-+# fixed environment, so the host reads the setting here and passes it in the recipe (stage1.prompt_tokens).
++# sol-h3-studio: MiniMax's prompt tokens (runtime/qwen_ops/prompt_tokens.py). "minimax" (default since 0.4): the 7
++# tokens of MiniMax's tokenizer_config.json are added, so each tag is one token as in H3's training; "plain": the
++# pinned ComfyUI's Qwen tokenizer splits <d> and </d> into ordinary text tokens, as up to 0.3. The Qwen worker runs
++# in Docker with a fixed environment, so the host reads the setting here and passes it in the recipe
++# (stage1.prompt_tokens).
 +PROMPT_TOKEN_MODES = ("plain", "minimax")
 +
 +
 +def prompt_tokens_mode(value=None):
-+    """SOL_H3_PROMPT_TOKENS (or value), default "plain" (case-insensitive)."""
++    """SOL_H3_PROMPT_TOKENS (or value), default "minimax" (case-insensitive)."""
 +    raw = os.environ.get("SOL_H3_PROMPT_TOKENS", "") if value is None else value
-+    mode = str(raw).strip().lower() or "plain"
++    mode = str(raw).strip().lower() or "minimax"
 +    if mode not in PROMPT_TOKEN_MODES:
 +        raise ValueError(f"SOL_H3_PROMPT_TOKENS must be one of {PROMPT_TOKEN_MODES}, not {raw!r}")
 +    return mode
@@ -936,10 +937,10 @@ index 39080d4..554c8de 100644
                  items.append({"type": "audio"})
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py
 new file mode 100644
-index 0000000..98dd567
+index 0000000..fd693b7
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,93 @@
 +"""MiniMax's prompt tokens for the pinned ComfyUI Qwen tokenizer (SOL_H3_PROMPT_TOKENS). Imports no GPU framework.
 +
 +Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-Spark package.
@@ -951,8 +952,9 @@ index 0000000..98dd567
 +("Minimax-H3: Add missing special tokens", first released in v0.34.0) with the call used here.
 +
 +Modes (runtime/config.py prompt_tokens_mode, passed to the Qwen worker as recipe["stage1"]["prompt_tokens"]):
-+  plain    the pinned tokenizer as it is (the behaviour before this setting; older clips reproduce from their seed)
-+  minimax  the 7 tokens added, so prompts tokenize as with MiniMax's own tokenizer
++  minimax  (default) the 7 tokens added, so prompts tokenize as with MiniMax's own tokenizer
++  plain    the pinned tokenizer as it is (the behaviour up to sol-h3-studio 0.3; a dialogue clip made then
++           reproduces from its seed only in this mode)
 +A prompt without any of the 7 tokens gets the same ids in both modes.
 +"""
 +from __future__ import annotations
@@ -965,7 +967,8 @@ index 0000000..98dd567
 +
 +
 +def recipe_mode(config):
-+    """The mode the host put in the recipe; "plain" for a recipe without one. A bad value raises ValueError."""
++    """The mode the host put in the recipe. A bad value raises ValueError. The host always puts one there; a recipe
++    without one was recorded before the setting existed (0.3 or older), when every prompt was encoded "plain"."""
 +    from ..config import prompt_tokens_mode
 +    stage1 = config.get("stage1", config) if isinstance(config, dict) else {}
 +    return prompt_tokens_mode(stage1.get("prompt_tokens") or "plain")
@@ -1003,7 +1006,7 @@ index 0000000..98dd567
 +        if present:
 +            raise RuntimeError(
 +                "SOL_H3_PROMPT_TOKENS=plain needs the pinned ComfyUI tokenizer without MiniMax's tokens, but this "
-+                f"ComfyUI already has {sorted(present)}; set SOL_H3_PROMPT_TOKENS=minimax")
++                f"ComfyUI already has {sorted(present)}; set SOL_H3_PROMPT_TOKENS=minimax (the default)")
 +        return {"mode": "plain", "added": 0, "vocab_size": len(hf)}
 +    if mode != "minimax":
 +        raise ValueError(f"unknown prompt-token mode {mode!r}")
@@ -1761,7 +1764,7 @@ index 0000000..087bed3
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..3ab9fd9 100644
+index 6c20301..5efd34b 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -1782,7 +1785,7 @@ index 6c20301..3ab9fd9 100644
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -84,6 +87,72 @@ class PipelineTests(unittest.TestCase):
+@@ -84,6 +87,76 @@ class PipelineTests(unittest.TestCase):
              finally:
                  pipeline.close()
  
@@ -1837,25 +1840,29 @@ index 6c20301..3ab9fd9 100644
 +                Pipeline({}, Path(directory) / "run", prompt_tokens="both", worker_factory=factory)
 +            self.assertFalse((Path(directory) / "run").exists())
 +            self.assertEqual(made, [])
-+            # the setting (any case), and the argument, which wins over the setting
-+            for name, setting, argument in (("setting", "MiniMax", None), ("argument", "plain", "minimax")):
++            # the default, the setting (any case), and the argument, which wins over the setting
++            for name, setting, argument, mode in (("default", None, None, "minimax"),
++                                                  ("setting", "Plain", None, "plain"),
++                                                  ("argument", "plain", "minimax", "minimax")):
 +                made.clear()
-+                os.environ["SOL_H3_PROMPT_TOKENS"] = setting
++                os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
++                if setting is not None:
++                    os.environ["SOL_H3_PROMPT_TOKENS"] = setting
 +                pipeline = Pipeline({}, Path(directory) / name, prompt_tokens=argument, worker_factory=factory)
 +                try:
 +                    pipeline.start(case, deliver=True)
 +                    pipeline._resident_qwen()
 +                    # every worker: Stage1, Stage2, the first request's Qwen and the resident Qwen
 +                    self.assertEqual(sorted(args[0] for args in made), ["qwen", "qwen", "stage1", "stage2"])
-+                    self.assertEqual({args[3]["stage1"]["prompt_tokens"] for args in made}, {"minimax"})
-+                    self.assertEqual(pipeline.report["recipe"]["stage1"]["prompt_tokens"], "minimax")
++                    self.assertEqual({args[3]["stage1"]["prompt_tokens"] for args in made}, {mode}, name)
++                    self.assertEqual(pipeline.report["recipe"]["stage1"]["prompt_tokens"], mode)
 +                finally:
 +                    pipeline.close()
 +
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +265,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +269,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -1864,7 +1871,7 @@ index 6c20301..3ab9fd9 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +294,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +298,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -1874,7 +1881,7 @@ index 6c20301..3ab9fd9 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +330,26 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +334,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -1904,7 +1911,7 @@ index 6c20301..3ab9fd9 100644
      unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py b/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py
 new file mode 100644
-index 0000000..4ec33b8
+index 0000000..47b58f0
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py
 @@ -0,0 +1,310 @@
@@ -1938,7 +1945,7 @@ index 0000000..4ec33b8
 +TOKENIZER_DIR = Path(COMFY_ROOT, "comfy", "text_encoders", "qwen25_tokenizer") if COMFY_ROOT else None
 +
 +# The example in sol-h3-studio issue #38: ids from MiniMax's released tokenizer (MiniMaxAI/MiniMax-H3 tokenizer/,
-+# transformers 4.57.1 and 5.17.0) and from the pinned ComfyUI v0.30.0 tokenizer as the studio used it until now.
++# transformers 4.57.1 and 5.17.0) and from the pinned ComfyUI v0.30.0 tokenizer as the studio used it up to 0.3.
 +EXAMPLE = "The woman (S1) says: <d>[English] Welcome to the garden.</d>"
 +EXAMPLE_MINIMAX = [785, 5220, 320, 50, 16, 8, 2727, 25, 220, 151669, 58, 22574, 60, 20166, 311, 279, 13551, 13,
 +                   151670]
@@ -1993,8 +2000,8 @@ index 0000000..4ec33b8
 +    def test_default_values_and_bad_value(self):
 +        with mock.patch.dict(os.environ):
 +            os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
-+            self.assertEqual(prompt_tokens_mode(), "plain")
-+            for value, mode in (("", "plain"), (" plain ", "plain"), ("MiniMax", "minimax"), ("minimax", "minimax")):
++            self.assertEqual(prompt_tokens_mode(), "minimax")
++            for value, mode in (("", "minimax"), (" plain ", "plain"), ("MiniMax", "minimax"), ("PLAIN", "plain")):
 +                os.environ["SOL_H3_PROMPT_TOKENS"] = value
 +                self.assertEqual(prompt_tokens_mode(), mode)
 +            os.environ["SOL_H3_PROMPT_TOKENS"] = "special"
@@ -2006,13 +2013,13 @@ index 0000000..4ec33b8
 +    def test_recipe_carries_the_mode_to_the_qwen_worker(self):
 +        with mock.patch.dict(os.environ):
 +            os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
-+            self.assertEqual(load_recipe()["stage1"]["prompt_tokens"], "plain")
-+            os.environ["SOL_H3_PROMPT_TOKENS"] = "minimax"
++            self.assertEqual(load_recipe()["stage1"]["prompt_tokens"], "minimax")      # the default
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "plain"
 +            for task in ("t2va", "fl2va", "ref2va"):
 +                recipe = load_recipe(task, orientation="portrait", seconds=10)
-+                self.assertEqual(recipe["stage1"]["prompt_tokens"], "minimax")
-+                self.assertEqual(recipe_mode(recipe), "minimax")
-+            self.assertEqual(load_recipe(prompt_tokens="plain")["stage1"]["prompt_tokens"], "plain")
++                self.assertEqual(recipe["stage1"]["prompt_tokens"], "plain")
++                self.assertEqual(recipe_mode(recipe), "plain")
++            self.assertEqual(load_recipe(prompt_tokens="minimax")["stage1"]["prompt_tokens"], "minimax")
 +        self.assertEqual(recipe_mode({"stage1": {}}), "plain")          # a recipe from before the setting
 +        with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
 +            recipe_mode({"stage1": {"prompt_tokens": "both"}})
@@ -2159,7 +2166,7 @@ index 0000000..4ec33b8
 +    def test_example_prompt_gives_minimax_ids(self):
 +        self.assertEqual(self.ids(self.minimax, EXAMPLE), EXAMPLE_MINIMAX)
 +        self.assertEqual(self.ids(self.minimax, MIXED), MIXED_MINIMAX)
-+        self.assertEqual(self.ids(self.plain, EXAMPLE), EXAMPLE_PLAIN)      # what the studio sent before
++        self.assertEqual(self.ids(self.plain, EXAMPLE), EXAMPLE_PLAIN)      # what the studio sent up to 0.3
 +
 +    def test_prompts_without_the_tokens_are_unchanged(self):
 +        for text in NO_TAGS:

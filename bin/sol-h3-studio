@@ -187,17 +187,18 @@ run_checks() {
     [[ -f "$SERVER" ]] || refuse "server not found: $SERVER"
     [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-Spark package at $PKG (SOLH3_SANA must be the patched Sana checkout; install/10-sana.sh)"
     [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio.patch"
-    # the patch's own settings checks (SOL_H3_STAGE2_AUDIO, patch 0.3+; SOL_H3_PROMPT_TOKENS, 0.4+). A bad value exits 3
-    # with the message. An older patch lacks one or both: it does what the last value of each row asks, so any other
-    # value exits 4 (the checkout needs the current patch). Any other error exits non-zero with Python's traceback,
-    # whose last line names it
+    # the patch's own settings checks: (name, check, default, what a patch without the setting does, the version
+    # that added it). A bad value exits 3 with the message. An older patch lacks one or both (0.3's has no
+    # SOL_H3_PROMPT_TOKENS): any value but what it does, set or the default, exits 4 (the checkout needs the current
+    # patch). Any other error exits non-zero with Python's traceback, whose last line names it
     f=$(cd "$PKG" && "$SOLH3_PYTHON" -B -c 'import os, sys
 import runtime.config as config
-for var, name, older in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "joint"),
-                         ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "plain")):
+for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
+                                         ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4")):
     check, value = getattr(config, name, None), os.environ.get(var, "")
-    if check is None and value.strip().lower() not in ("", older):
-        print(f"{var}={value} needs a newer patch than the one applied in {os.getcwd()}")
+    if check is None and (value.strip().lower() or default) != older:
+        asked = f"{var}={value}" if value.strip() else f"{var}={default} (the default since {since})"
+        print(f"{asked} needs a newer patch than the one applied in {os.getcwd()}")
         sys.exit(4)
     try:
         check and check()

@@ -14,8 +14,8 @@ the measurements in [PERFORMANCE.md](PERFORMANCE.md) came from. Step 80 built a 
 one the measurements used. On that install the first clip (t2va, 16:9, 5 s) took 213 s, including the one-time
 kernel compile; the next clip 65 s; after a restart, a cold start with the filled compile cache 104 s. That run
 reused weights already on the box (step 20 only verified them) and Docker's build cache for NVIDIA's base image.
-0.3 changed `install/10-sana.sh` and the patch (now 74 tests); its update path was checked in scratch clones, not by
-a fresh install on hardware.
+0.3 changed `install/10-sana.sh` and the patch (74 tests then), and 0.4 changes the patch again (87 tests). Their
+update paths were checked in scratch clones, not by a fresh install on hardware.
 <!-- /validation-status -->
 
 NVIDIA notes that a clean installation of Sol-H3-Spark has not been validated upstream; the pins here are the
@@ -172,6 +172,13 @@ patch>`), or re-clone as above.
 
 The compile cache is keyed on code and versions, so it stays valid; delete `$SOL_H3_SPARK_RUNTIME_ROOT/cache` to
 start clean.
+
+From 0.3 to 0.4: the patch changed, so run `install/10-sana.sh` after the pull. Until then the studio refuses to start
+with "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...; run
+install/10-sana.sh": the old patch would ignore the new setting. With `minimax` the prompt encoder reads the dialogue
+tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does. A dialogue prompt therefore encodes differently
+from 0.3, and a 0.3 dialogue clip doesn't come back from its seed unless you set `SOL_H3_PROMPT_TOKENS=plain`. Prompts
+without these tags encode as before ([PATCH.md](PATCH.md#16-minimaxs-prompt-tokens)).
 
 From 0.1 to 0.2: the first start imports the clip history (`jobs.json`) into `jobs.db` in the same directory
 (see "Where the clip history is" in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#while-it-runs)). Back up

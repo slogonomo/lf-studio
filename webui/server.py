@@ -52,9 +52,10 @@ Environment:
                              submit gets 429 until one has started.
   SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
 
-SOL_H3_STAGE2_AUDIO (frozen or joint) and SOL_H3_PROMPT_TOKENS (plain or minimax) are patch settings (see
-docs/PATCH.md), checked at start: another value stops the server with a message. So does a value that the applied patch
-is too old to give (it lacks the setting): run install/10-sana.sh.
+SOL_H3_STAGE2_AUDIO (frozen or joint) and SOL_H3_PROMPT_TOKENS (minimax or plain) are patch settings (see
+docs/PATCH.md), checked at start: another value stops the server with a message. So does a value, set or the default,
+that the applied patch is too old to give. 0.3's patch has no SOL_H3_PROMPT_TOKENS and tokenizes as plain, so the
+default minimax stops the server until install/10-sana.sh has applied the current patch.
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
@@ -104,15 +105,16 @@ except ImportError as error:
     fail(f"cannot import the patched Sol-H3-Spark runtime from {PKG} ({error}). Start the server with the "
          "working directory set to models/minimax_h3/Sol-H3-Spark inside the patched Sana checkout.")
 
-# the patch's settings (SOL_H3_STAGE2_AUDIO, patch 0.3+; SOL_H3_PROMPT_TOKENS, 0.4+): a bad value stops the studio here,
-# not every clip. An older patch lacks one or both and does what the last value of each row asks; any other value stops
-# the studio too, since that patch would ignore it.
+# the patch's settings: (name, its check in runtime/config.py, default, what a patch without the setting does, the
+# version that added it). A bad value stops the studio here, not every clip. An older patch lacks one or both and
+# would ignore them: any other value, set or the default, stops the studio too.
 import runtime.config  # noqa: E402
-for setting, name, older in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "joint"),
-                             ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "plain")):
+for setting, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
+                                             ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4")):
     setting_check, value = getattr(runtime.config, name, None), os.environ.get(setting, "")
-    if setting_check is None and value.strip().lower() not in ("", older):
-        fail(f"{setting}={value} needs a newer patch than the one applied in {PKG}; run install/10-sana.sh")
+    if setting_check is None and (value.strip().lower() or default) != older:
+        asked = f"{setting}={value}" if value.strip() else f"{setting}={default} (the default since {since})"
+        fail(f"{asked} needs a newer patch than the one applied in {PKG}; run install/10-sana.sh")
     try:
         setting_check and setting_check()
     except ValueError as error:

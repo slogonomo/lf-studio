@@ -1342,7 +1342,7 @@ TOOLS = [
              "H3 structured prompt. t2va/fl2va: integrated_multimodal_description, overall_soundscape, "
              "non_diegetic_music (fl2va starts with a keyframe line). ref2va: subject_definitions, summary, "
              "retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. Dialogue: (S1) ... "
-             "<d>[English] exact words</d>. See prompt_guide.")},
+             "<d>[English] Exact words, first letter capitalised</d>. See prompt_guide.")},
          "task": {"type": "string", "enum": list(TASKS)},
          "orientation": {"type": "string", "enum": list(ORIENTATIONS),
                          "description": "Default: from the first keyframe's shape, else landscape"},
