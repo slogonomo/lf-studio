@@ -164,7 +164,7 @@ lengths in one session, no failure.
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer clips load the prompt encoder per request |
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
-| `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 | MemAvailable needed to load it during the first clip |
+| `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 
 The warm-up at launch (`SOLH3_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled
