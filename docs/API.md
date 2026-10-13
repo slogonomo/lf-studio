@@ -324,8 +324,12 @@ The clip as stored (the keys `/api/state` shows), plus these keys, worked out fo
 
 Some stored keys: `id`, `task`, `orientation`, `seconds`, `seed`, `prompt`, `created`, `started` and `finished`
 (Unix times), `wall_s` (seconds from start to end), `error` (failed), `load_eta` (while the models load: the last
-measured load plus clip for these settings, in seconds), `includes_model_load`. Paths in the record
-(`first_frame`, `references`, `output`, `published`, `case_dirs`) are paths on the Spark, for information only.
+measured load plus clip for these settings, in seconds), `includes_model_load`. A clip of the loaded task with another
+length or orientation keeps the models loaded and changes the session's shape first: it has `reshaped_from` (the
+session's `[task, orientation, seconds]` before) and, once the change is done, `reshape_s` (the seconds it took). It
+runs with `phase` `generating` from the start; its first clip at a shape the session hasn't run takes longer (below).
+A clip that loads the models has neither key. Paths in the record (`first_frame`, `references`, `output`,
+`published`, `case_dirs`) are paths on the Spark, for information only.
 
 A done fl2va clip, abbreviated:
 
@@ -362,9 +366,10 @@ One clip renders at a time. Measured on one DGX Spark ([PERFORMANCE.md](PERFORMA
 
 | | Time |
 |---|---|
-| t2va with the models loaded (the same task, orientation and length as the clip before) | 3 s: 36 s · 5 s: 54-66 s · 10 s: 123 s · 15 s: 191 s |
+| t2va with the models loaded (the same task as the clip before, at an orientation and length the session has run) | 3 s: 36 s · 5 s: 54-66 s · 10 s: 123 s · 15 s: 191 s |
 | ref2va with a 5 s reference video, 5 s | 133 s per clip |
-| t2va, the first clip after a change of task, orientation or length (the models load first) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
+| The first clip at an orientation or length the session hasn't run, same task (the models stay loaded; Stage 1 compiles for it) | a clip with the models loaded plus 0.2-27 s (5 → 10 s: 14 s, 5 → 15 s: 27 s, fl2va 16:9 → 9:16: 0.2 s; one run, [PERFORMANCE.md](PERFORMANCE.md#changing-length-or-format)) |
+| t2va, the first clip after a change of task (the models load first; also after any change with `SOLH3_RESHAPE=0`) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
 | The first clip of fl2va (first and last frame) / ref2va (an image and a video), 5 s | 115 s / 178 s with `infer.py` |
 | Cancel of a running clip, until the pipeline has closed | about 40 s; the next clip then loads the models again |
 
@@ -410,7 +415,7 @@ call) never cancels the clip.
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "session", "jobs", "done", "more", "deleted"}`. `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
+| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "session", "jobs", "done", "more", "deleted"}`. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`SOLH3_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
 | `GET /api/jobs?before=<created>&limit=<n>` | Older clips, newest first: `{"jobs": [...], "more": true/false}`. `before` is a `created` time (default: now), `limit` 1-100 (default 24). Records as stored. |
 | `GET /api/inputs/<id>` | A clip's input files, for Remix: `{"task", "inputs": {"<zone>": [{"name", "index", "url"}]}, "missing": [...]}` |
 | `GET /input/<id>/<zone>/<index>` | One input file (reference videos as converted). 404 `no such input`. |
@@ -423,7 +428,7 @@ Used by the page; stable, but not designed for agents. Each takes a JSON body of
 |---|---|---|
 | `POST /api/delete` | `{"id"}` | moves a finished clip and its files to the trash for `SOLH3_TRASH_DAYS` (default 7); 409 while it is queued or running |
 | `POST /api/undelete` | `{"id"}` | brings it back |
-| `POST /api/load` | `{"task", "orientation", "seconds"}` | loads the models for those settings ahead of a clip ("Load selected now"); 409 while a clip is queued or running |
+| `POST /api/load` | `{"task", "orientation", "seconds"}` | loads the models for those settings ahead of a clip ("Load selected now"). With that task loaded, it only changes the session's length and orientation, without a warm-up clip (`reshape` true). 409 while a clip is queued or running |
 | `POST /api/unload` | none | frees the models; 409 while a clip runs |
 
 ## Errors

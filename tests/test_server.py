@@ -970,7 +970,8 @@ class ReleaseReview(StudioTest):
     def test_delete_during_a_requested_warm_up(self):
         src = self.warm_up_source()
         self.studio.wait_for(lambda st: st["session"]["state"] == "ready", timeout=30)
-        self.studio.post("/api/load", json_body={"task": "fl2va", "orientation": "portrait", "seconds": 5})
+        self.assertEqual(self.studio.post("/api/unload")[0], 200)     # else the loaded fl2va session only changes
+        self.studio.post("/api/load", json_body={"task": "fl2va", "orientation": "portrait", "seconds": 5})   # shape
         self.studio.wait_for(lambda st: st["session"].get("preloading") and st["session"]["state"] == "loading"
                              and st["session"].get("loading_key") == ["fl2va", "portrait", 5], timeout=20)
         self.assertEqual(self.studio.post("/api/delete", json_body={"id": src})[0], 200)   # its inputs move away
@@ -1102,17 +1103,22 @@ class BadStage2Audio(unittest.TestCase):
             self.assertIn("SOL_H3_STAGE2_AUDIO must be one of", str(e.exception))
             studio = StubStudio(d / "b", env={"SOL_H3_STAGE2_AUDIO": "JOINT"}).start()
             studio.stop()
+            with self.assertRaises(RuntimeError) as e:                      # the same for SOL_H3_STATIC_SHAPES
+                StubStudio(d / "c", env={"SOL_H3_STATIC_SHAPES": "yes"}).start()
+            self.assertIn("SOL_H3_STATIC_SHAPES must be 1 or 0", str(e.exception))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
 
 def older_patch_package(directory, version):
-    """The stub runtime as an older patch has it. 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS; 0.2's has
-    neither. Such a patch tokenizes as plain does, and 0.2's refines as joint does."""
+    """The stub runtime as an older patch has it. 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS or
+    SOL_H3_STATIC_SHAPES; 0.2's has none of them. Such a patch tokenizes as plain does and compiles as
+    SOL_H3_STATIC_SHAPES=0 does, and 0.2's refines as joint does."""
     package = Path(directory) / f"package-{version}"
     shutil.copytree(Path(__file__).resolve().parent / "stub" / "runtime", package / "runtime",
                     ignore=shutil.ignore_patterns("__pycache__"))
-    missing = {"0.3": "prompt_tokens_mode", "0.2": "stage2_audio_mode, prompt_tokens_mode"}[version]
+    missing = {"0.3": "prompt_tokens_mode, compile_dynamic",
+               "0.2": "stage2_audio_mode, prompt_tokens_mode, compile_dynamic"}[version]
     with (package / "runtime" / "config.py").open("a") as f:
         f.write(f"\ndel {missing}   # the patch of {version} has no such setting\n")
     return package
@@ -1124,15 +1130,19 @@ def older_patch_package(directory, version):
 OLDER_PATCH_CASES = (
     ("0.3", {}, "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4)"),        # a git pull without install/10-sana.sh
     ("0.3", {"SOL_H3_PROMPT_TOKENS": "minimax"}, "SOL_H3_PROMPT_TOKENS=minimax"),
-    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain"}, None),
-    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain"}, "SOL_H3_STAGE2_AUDIO=frozen (the default since 0.3)"),
-    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STAGE2_AUDIO": "frozen"}, "SOL_H3_STAGE2_AUDIO=frozen"),
-    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STAGE2_AUDIO": "JOINT"}, None),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain"}, "SOL_H3_STATIC_SHAPES=1 (the default since 0.4)"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "1"}, "SOL_H3_STATIC_SHAPES=1"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain", "SOL_H3_STATIC_SHAPES": " 0"}, None),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0"},
+     "SOL_H3_STAGE2_AUDIO=frozen (the default since 0.3)"),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_STAGE2_AUDIO": "frozen"},
+     "SOL_H3_STAGE2_AUDIO=frozen"),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_STAGE2_AUDIO": "JOINT"}, None),
 )
 
 
 def older_patch_settings(settings):
-    return {"SOL_H3_PROMPT_TOKENS": "", "SOL_H3_STAGE2_AUDIO": "", **settings}
+    return {"SOL_H3_PROMPT_TOKENS": "", "SOL_H3_STAGE2_AUDIO": "", "SOL_H3_STATIC_SHAPES": "", **settings}
 
 
 class BadPromptTokens(unittest.TestCase):
@@ -1173,9 +1183,9 @@ class BadPromptTokens(unittest.TestCase):
 
 
 class LauncherSettingsCheck(unittest.TestCase):
-    """bin/sol-h3-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS) in the
-    package, here the stub runtime, and refuses a bad value with its message, or a value an older patch can't give
-    (#38)."""
+    """bin/sol-h3-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS,
+    SOL_H3_STATIC_SHAPES) in the package, here the stub runtime, and refuses a bad value with its message, or a value
+    an older patch can't give (#38)."""
 
     def setUp(self):
         self.d = Path(tempfile.mkdtemp(prefix="sol-h3-check-"))
@@ -1203,6 +1213,10 @@ class LauncherSettingsCheck(unittest.TestCase):
             code, out = self.check(**{name: value})
             self.assertEqual(code, 1, out)
             self.assertIn(f"REFUSED - {name} must be one of", out)
+        self.assertEqual(self.check(SOL_H3_STATIC_SHAPES="0")[0], 0)
+        code, out = self.check(SOL_H3_STATIC_SHAPES="yes")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - SOL_H3_STATIC_SHAPES must be 1 or 0", out)
 
     def test_older_patch(self):
         """A checkout with an older patch (no settings checks, or one of them) passes only when every setting, set or
@@ -1240,10 +1254,12 @@ class TrashPurge(Delete):
 
 class LoadSelected(StudioTest):
     """#3: POST /api/load warms up chosen settings on request: it replaces what is loaded or warming up, never runs
-    while clips are queued or running, and needs an earlier clip of the mode for fl2va/ref2va."""
+    while clips are queued or running, and needs an earlier clip of the mode for fl2va/ref2va. With SOLH3_RESHAPE=0,
+    so that another length or format of the loaded mode closes the session too (ReshapeLoadSelected: the default)."""
     load_s, clip_s, preload = 2, 1, True
 
     def seed(self):
+        self.studio.env["SOLH3_RESHAPE"] = "0"
         self.write_state([finished_job()])
 
     def load(self, task="t2va", orientation="portrait", seconds=10):
@@ -1293,7 +1309,7 @@ class LoadDuringClose(StudioTest):
     load_s, clip_s, preload = 2, 1, True
 
     def seed(self):
-        self.studio.env["STUB_CLOSE_S"] = "3"
+        self.studio.env.update(STUB_CLOSE_S="3", SOLH3_RESHAPE="0")     # length/format changes close the session too
         self.write_state([finished_job()])
 
     def load(self, orientation="portrait", seconds=10):
@@ -1367,6 +1383,193 @@ class LoadDuringClose(StudioTest):
         self.assertEqual(self.load()[0], 409)
 
 
+class Reshape(StudioTest):
+    """#45: a clip with the loaded task but another length or orientation keeps the models loaded: the session changes
+    its shape (Pipeline.reshape), then renders the clip. Another task closes the session and loads the models again."""
+    load_s, clip_s = 2, 1
+
+    def sessions(self):
+        return sorted(d.name for d in (self.studio.runtime / "outputs" / "webui").iterdir() if d.is_dir())
+
+    def reshapes(self, session):
+        log = self.studio.runtime / "outputs" / "webui" / session / "RESHAPES"
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def test_same_task_keeps_the_models(self):
+        self.assertTrue(self.studio.state()["reshape"])
+        plan = [("landscape", 5), ("portrait", 10), ("landscape", 5), ("landscape", 3)]
+        jobs = [self.studio.wait([self.generate(orientation=o, seconds=s, seed=n)], timeout=60)[0]
+                for n, (o, s) in enumerate(plan)]
+        self.assertEqual([j["status"] for j in jobs], ["done"] * 4)
+        self.assertTrue(jobs[0]["includes_model_load"])
+        for job, (orientation, seconds), before in zip(jobs[1:], plan[1:], plan):
+            self.assertNotIn("includes_model_load", job)
+            self.assertEqual(job["reshaped_from"], ["t2va", *before])
+            w, h = (336, 192) if orientation == "landscape" else (192, 336)
+            self.assertEqual(Path(job["output"]).name, f"refined_{w}x{h}_{seconds * 24 + 1}f.mp4")   # its own shape
+        [session] = self.sessions()                                          # one pipeline for all four
+        self.assertEqual([r["to"]["seconds"] for r in self.reshapes(session)], [10, 5, 3])
+        st = self.studio.state()["session"]
+        self.assertEqual((st["key"], st["state"]), (["t2va", "landscape", 3], "ready"))
+        log = self.studio.log.read_text()
+        self.assertNotIn("closing session", log)
+        self.assertIn("reshaping session ('t2va', 'landscape', 5) -> ('t2va', 'portrait', 10)", log)
+        again = self.studio.wait([self.generate(seconds=3, seed=9)], timeout=30)[0]
+        self.assertNotIn("reshaped_from", again)                             # the same settings: a warm clip
+
+    def test_another_task_reloads(self):
+        self.studio.wait([self.generate()], timeout=30)
+        job = self.studio.wait([self.generate(task="fl2va", orientation="portrait", seconds=3,
+                                              files={"first_frame": [("f.png", png())]})], timeout=60)[0]
+        self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
+        self.assertNotIn("reshaped_from", job)
+        self.assertEqual(len(self.sessions()), 2)
+        self.assertIn("closing session ('t2va', 'landscape', 5)", self.studio.log.read_text())
+
+    def test_a_failed_change_closes_the_session_and_the_retry_loads(self):
+        self.studio.stop()
+        self.studio.env["STUB_RESHAPE_FAIL"] = "1"
+        self.studio.start()
+        self.studio.wait([self.generate()], timeout=30)
+        job = self.studio.wait([self.generate(seconds=8)], timeout=60)[0]
+        self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
+        self.assertIn("STUB_RESHAPE_FAIL", job["first_error"])
+        self.assertNotIn("reshaped_from", job)                                # the retry loaded the models
+        self.assertNotIn("reshape_s", job)
+        self.assertEqual(len(self.sessions()), 2)
+        self.assertIn("closing session ('t2va', 'landscape', 5) - length/format change failed",
+                      self.studio.log.read_text())
+
+    def test_cancel_during_the_change(self):
+        self.studio.stop()
+        self.studio.env["STUB_RESHAPE_S"] = "6"
+        self.studio.start()
+        self.studio.wait([self.generate()], timeout=30)
+        b = self.generate(orientation="portrait", seed=2)
+        self.studio.wait_for(lambda st: any(j["id"] == b and j.get("reshaped_from") for j in st["jobs"]))
+        deadline = time.time() + 10
+        while not worker_groups(self.studio.proc.pid) and time.time() < deadline:
+            time.sleep(0.05)
+        t0 = time.time()
+        self.assertEqual(self.studio.post("/api/cancel", json_body={"id": b})[0], 200)
+        job = self.studio.wait([b], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertLess(time.time() - t0, 4, "stopped right away, not after the change")
+        self.assertEqual(self.studio.state()["session"]["state"], "idle")    # its workers were stopped
+        c = self.studio.wait([self.generate(orientation="portrait", seed=3)], timeout=30)[0]
+        self.assertEqual((c["status"], c["includes_model_load"]), ("done", True))
+
+
+class ReshapeDuringUnload(StudioTest):
+    """From the review: a clip at another length queued while Unload closes the session must not change the shape of
+    the pipeline being closed (on the real runtime that could start a resident prompt encoder next to the next load);
+    it waits for the close and loads its own models."""
+    load_s, clip_s = 2, 1
+
+    def seed(self):
+        self.studio.env["STUB_CLOSE_S"] = "3"
+
+    def test_unload_then_another_length(self):
+        import threading
+        self.studio.wait([self.generate()], timeout=30)
+        unload = threading.Thread(target=self.studio.post, args=("/api/unload",))
+        unload.start()
+        self.studio.wait_for(lambda st: st["session"]["state"] == "unloading", timeout=10)
+        job = self.studio.wait([self.generate(seconds=8, seed=2)], timeout=60)[0]
+        unload.join(30)
+        self.assertEqual((job["status"], job.get("includes_model_load")), ("done", True))
+        self.assertNotIn("reshaped_from", job)
+        self.assertNotIn("first_error", job)                                 # it never touched the closing pipeline
+        self.assertNotIn("reshaping session", self.studio.log.read_text())
+        roots = sorted((self.studio.runtime / "outputs" / "webui").iterdir())
+        self.assertEqual([(r / "STARTED").exists() and not (r / "CLOSED").exists() for r in roots], [False, True])
+        self.assertEqual(self.studio.state()["session"]["key"], ["t2va", "landscape", 8])
+
+
+class ReshapeOff(StudioTest):
+    """SOLH3_RESHAPE=0: any other task, length or orientation closes the session and loads the models again."""
+
+    def seed(self):
+        self.studio.env["SOLH3_RESHAPE"] = "0"
+
+    def test_a_new_length_reloads(self):
+        self.assertFalse(self.studio.state()["reshape"])
+        self.studio.wait([self.generate()], timeout=30)
+        job = self.studio.wait([self.generate(seconds=8)], timeout=60)[0]
+        self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
+        self.assertNotIn("reshaped_from", job)
+        self.assertIn("closing session ('t2va', 'landscape', 5) - switching to ('t2va', 'landscape', 8)",
+                      self.studio.log.read_text())
+
+
+class ReshapeLoadSelected(StudioTest):
+    """With the task loaded, "Load selected now" for another length or orientation changes the session's shape:
+    no close, no warm-up clip."""
+    load_s, clip_s, preload = 2, 1, True
+
+    def seed(self):
+        self.studio.env["STUB_RESHAPE_S"] = "2"
+        self.write_state([finished_job()])
+
+    def test_changes_the_shape_only(self):
+        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 5]
+                             and st["session"]["state"] == "ready", timeout=30)
+        self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "portrait",
+                                                                  "seconds": 10}), (200, {"ok": True}))
+        st = self.studio.wait_for(lambda st: st["session"]["state"] == "reshaping", timeout=10)   # not "loading"
+        self.assertEqual(st["session"]["loading_key"], ["t2va", "portrait", 10])
+        st = self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "portrait", 10]
+                                  and st["session"]["state"] == "ready", timeout=30)
+        self.assertIsNone(st["session"]["switching_to"])
+        log = self.studio.log.read_text()
+        self.assertIn("reshaping session ('t2va', 'landscape', 5) -> ('t2va', 'portrait', 10) - as asked", log)
+        self.assertNotIn("preloading ('t2va', 'portrait', 10)", log)
+        self.assertNotIn("closing session", log)
+        job = self.studio.wait([self.generate(orientation="portrait", seconds=10)], timeout=30)[0]
+        self.assertEqual(job["status"], "done")
+        self.assertNotIn("includes_model_load", job)
+        self.assertNotIn("reshaped_from", job)                               # already that shape
+        self.assertEqual(len(list((self.studio.runtime / "outputs" / "webui").iterdir())), 1)
+
+
+class ReshapeWarmUp(StudioTest):
+    """The warm-up's takeover rule counts a clip of the warm-up's task as one for the same models: early in the warm-up
+    it stops the warm-up and loads them itself, later it waits and changes the shape. A queued one keeps the warm-up
+    alive when a clip for another task arrives."""
+    load_s, clip_s, preload = 4, 1, True
+    times = {"t2va/landscape/5": 4}                                    # no warm time: window = half the load, 2 s
+
+    def seed(self):
+        self.write_state([finished_job()], self.times)
+
+    def warming(self):
+        return self.studio.wait_for(lambda s: s["session"].get("preloading"))["session"]
+
+    def test_early_takes_over(self):
+        self.warming()
+        job = self.studio.wait([self.generate(orientation="portrait")])[0]
+        self.assertEqual((job["status"], job.get("includes_model_load")), ("done", True))
+        self.assertIn("aborting preload: a job for the same models arrived early", self.studio.log.read_text())
+
+
+class ReshapeWarmUpLate(ReshapeWarmUp):
+    times = {"t2va/landscape/5": 4, "warm/t2va/landscape/5": 6}       # window = 6 - 5 = 1 s
+
+    def test_early_takes_over(self):
+        pass
+
+    def test_late_waits_and_changes_the_shape(self):
+        s = self.warming()
+        time.sleep(max(0, s["takeover_until"] - s["since"]) + 0.8)
+        waiting = self.generate(orientation="portrait", seconds=3)            # the warm-up's task: it waits
+        other = self.generate(task="fl2va", files={"first_frame": [("f.png", png())]})   # kept for `waiting`
+        jw, jo = self.studio.wait([waiting, other], timeout=60)
+        self.assertNotIn("aborting preload", self.studio.log.read_text())
+        self.assertEqual((jw["status"], jw.get("includes_model_load")), ("done", None))
+        self.assertEqual(jw["reshaped_from"], ["t2va", "landscape", 5])
+        self.assertEqual((jo["status"], jo["includes_model_load"]), ("done", True))
+
+
 class PipelineNotMade(StudioTest):
     def test_session_goes_back_to_idle(self):
         """A pipeline that can't be created (here: its session directory) fails the clip; the session is idle again,
@@ -1386,11 +1589,13 @@ class PipelineNotMade(StudioTest):
 
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
-    takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it."""
+    takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it. With
+    SOLH3_RESHAPE=0, so that another length or format counts as other settings (ReshapeWarmUp: the default)."""
     load_s, clip_s, preload = 4, 1, True
     times = {"t2va/landscape/5": 4}
 
     def seed(self):
+        self.studio.env["SOLH3_RESHAPE"] = "0"
         self.write_state([finished_job()], self.times)
 
     def warming(self):
@@ -1560,15 +1765,15 @@ class Cancel(CancelTest):
         self.studio.env["STUB_CLOSE_S"] = "3"
         self.studio.start()
         self.studio.wait([self.generate()], timeout=30)
-        b = self.generate(orientation="portrait", seed=2)       # other settings: the loaded session closes first
-        self.studio.wait_for(lambda st: st["session"]["state"] == "unloading")
+        b = self.generate(task="fl2va", seed=2, files={"first_frame": [("f.png", png())]})   # another mode: the
+        self.studio.wait_for(lambda st: st["session"]["state"] == "unloading")              # loaded session closes
         self.assertEqual(self.studio.job(b)["status"], "starting")
         self.assertEqual(self.cancel(b)[0], 200)
         job = self.studio.wait([b], timeout=30)[0]
         self.assertEqual(job["status"], "cancelled")
         self.assertNotIn("case_dirs", job)                       # nothing of its own ran: no session for it
         sessions = (self.studio.runtime / "outputs" / "webui").iterdir()
-        self.assertEqual([d.name for d in sessions if "portrait" in d.name], [])
+        self.assertEqual([d.name for d in sessions if "fl2va" in d.name], [])
         self.assertNotIn("cancel: sent SIGTERM", self.studio.log.read_text())
         self.assertEqual(self.studio.state()["session"]["state"], "idle")
 

@@ -2,17 +2,17 @@
 
 `patches/sol-h3-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
-branch `sol-engine`. It is a plain `git diff`: 25 files, 19 modified and 6 new.
+branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 95 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 123 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
   The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
   are unchanged too.
-- 18 of the 19 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
+- 19 of the 20 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
-  tagged `sol-h3-studio:`. The 6 new files say they are part of sol-h3-studio.
+  tagged `sol-h3-studio:`. The 7 new files say they are part of sol-h3-studio.
 
 ## Apply, test, revert
 
@@ -27,7 +27,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 # prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
 cd models/minimax_h3/Sol-H3-Spark
 SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
-    -m unittest discover -s tests   # Ran 95 tests ... OK (skipped=1)
+    -m unittest discover -s tests   # Ran 123 tests ... OK (skipped=1)
 
 # the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
 # Qwen image, on the CPU (no --gpus)
@@ -62,6 +62,8 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
 | The prompt encoder tokenizes `<d>`, `</d>` and 5 more tags as single tokens, as MiniMax's tokenizer does, instead of splitting them into text as the pinned ComfyUI does. Compared on clips in an A/B test; see [16](#16-minimaxs-prompt-tokens). | on (since 0.4) | `SOL_H3_PROMPT_TOKENS=plain` |
+| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differs between any two processes today, reshaped or not (see [8](#8-inductor-autotune-cache-fix-torch-213) and [18](#18-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
+| Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change. This changes Stage 1's graphs from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). The output was the same with and without it in one GPU check (3 clips). See [18](#18-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
 
@@ -115,8 +117,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 ### 3. Prompt encoder per request for clips over 10 s
 
 - **Purpose.** With the Qwen prompt encoder resident next to Stage1 and Stage2, a 15 s refine dropped to 4 GiB
-  MemAvailable and the memory guard stopped it. Sessions whose output exceeds 241 frames load the encoder for
-  each request and close it again.
+  MemAvailable and the memory guard stopped it. Clips whose output exceeds 241 frames load the encoder for each
+  request and close it again. A session that changes to such a length closes its resident encoder first, and loads
+  it again when it changes back ([18](#18-reshape-another-length-or-orientation-without-a-reload)).
 - **Files.** `runtime/pipeline.py`.
 - **Switch.** `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` (default 241).
 - **Measured.** A 15 s session with the encoder resident: 192.9 s per clip vs 190.8 s, lowest MemAvailable
@@ -141,7 +144,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 - **Files.** `runtime/pipeline.py`, `infer.py`, `tests/test_pipeline.py`.
 - **Switch.** `deliver` is opt-in (`infer.py` without `--deliver-first` keeps the separate warm-up). The overlap
   itself has no switch. `SOL_H3_RESIDENT_QWEN_EARLY=0` loads the resident encoder after the first clip, as before
-  0.4. `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` sets one minimum for every length instead.
+  0.4. `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` sets one minimum for every length instead. The same minimum, for the
+  new length, decides whether the resident encoder loads again right after a session changes back to 10 s or less
+  ([18](#18-reshape-another-length-or-orientation-without-a-reload)).
 - **Measured.** First clip 282 → 177 s, lowest MemAvailable 18 GiB. The first overlap attempt fell to 2.4 GiB
   MemAvailable and was stopped by the memory guard; the version in the patch waits for the Stage1 marker.
 - **Resident encoder during the refine (0.4).** Before 0.4 it loaded after the first clip, and the next clip
@@ -210,7 +215,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 
 - **Purpose.** On the first request upstream compares all 200 cuDNN block-sparse attention calls with the
   original Triton kernel. Each comparison adds a reference pass and two host syncs, ~30 s per cold start. The
-  patch checks the first 8 calls (layers 0-7 of the first update, the same kernel, real data).
+  patch checks the first 8 calls (layers 0-7 of the first update, the same kernel, real data). A session that
+  changes its clip shape checks again on the first request at each new shape
+  ([18](#18-reshape-another-length-or-orientation-without-a-reload)).
 - **Files.** `runtime/stage1_ops/vsa.py`, `tests/test_stage1_contracts.py`.
 - **Switch.** `SOL_H3_BSA_CHECK_CALLS` (default 8, range 1-200; 200 = upstream).
 - **Measured.** Part of 177 → 127 s (item 5).
@@ -239,9 +246,17 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   saved the same result again. After an upstream miss the patch reads the entry through the kernel's own
   `AutotuneCache` (same key, same configs hash that the save used) and then does what upstream does on a hit.
 - **Files.** `runtime/stage2.py` (monkeypatch, installed in the Stage2 worker).
-- **Switches.** `SPARK_AUTOTUNE_CACHE_FIX=0` disables it; `SPARK_DEBUG_AUTOTUNE=1` prints each fallback hit.
+- **Switches.** `SPARK_AUTOTUNE_CACHE_FIX=0` disables it; `SPARK_DEBUG_AUTOTUNE=1` prints each fallback hit, each
+  kernel tuned at run time and each tuning result stored.
 - **Measured.** 11/11 hits, no re-tuning; Stage2 first render 45-49 → 41 s; first clip 103-104 → 99.3/99.4 s.
   Specific to torch 2.13's Inductor; re-check it when the Stage2 torch changes.
+- **Known issue** (issue #51). The fallback labels the kernel's cache state "hit (spark fallback)". Torch skips its
+  run-time R0_BLOCK halving (`_dynamic_scale_rblock`) only when the state is exactly "hit". Where that halving
+  applies, a kernel read through the fallback gets smaller-block candidates added, is benchmarked by timing and tuned
+  again, and the winner overwrites the stored result. The next process reads that result and may pick another
+  config, which changes a reduction's order and so the output. Seen at 15 s for three of Stage 2's audio-branch
+  reductions (`SPARK_DEBUG_AUTOTUNE=1` lines, two GPU runs); not at 5 s or 10 s, where the halving rule adds no
+  candidates.
 
 ### 9. VAEs built on the GPU
 
@@ -359,13 +374,14 @@ and identity are unchanged, and the image is 5-11% sharper.
 - **How the setting reaches the worker.** The Qwen worker runs in Docker with a fixed environment (`qwen_python.sh`),
   so the host reads `SOL_H3_PROMPT_TOKENS` in `runtime/config.py` and passes the mode to the worker in the recipe, as
   `stage1.prompt_tokens`. Every Qwen worker gets that recipe: the warm-up one, the resident one (also when it starts
-  during the first clip, see 4) and those loaded per request. A value other than `plain` or `minimax` (any case)
-  fails when the pipeline is created, before any worker loads; the studio and `bin/sol-h3-studio --check` refuse to
-  start with it. They also refuse `minimax`, set or by default, when the Sana checkout still carries an older patch,
-  which would ignore the setting and tokenize as `plain`: "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4)
-  needs a newer patch than the one applied in ...; run install/10-sana.sh". So after a `git pull`, run
-  `install/10-sana.sh`. (Likewise `SOL_H3_STAGE2_AUDIO=frozen` with a patch older than 0.3, which refines as
-  `joint`.)
+  during the first clip, see 4, or again after a reshape, see
+  [18](#18-reshape-another-length-or-orientation-without-a-reload)) and those loaded per request. A value other than
+  `plain` or `minimax` (any case) fails when the pipeline is created, before any worker loads; the studio and
+  `bin/sol-h3-studio --check` refuse to start with it. They also refuse `minimax`, set or by default, when the Sana
+  checkout still carries an older patch, which would ignore the setting and tokenize as `plain`:
+  "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...; run
+  install/10-sana.sh". So after a `git pull`, run `install/10-sana.sh`. (Likewise `SOL_H3_STAGE2_AUDIO=frozen` with a
+  patch older than 0.3, which refines as `joint`.)
 - **Older clips.** Up to 0.3 every prompt was encoded `plain`. A dialogue prompt now encodes differently, so a
   dialogue clip made with 0.3 doesn't come back from its seed unless `SOL_H3_PROMPT_TOKENS=plain`. A prompt without
   any of the 7 tokens gets the same ids in both modes, and its clips came out bit-identical (measured; see below).
@@ -470,12 +486,96 @@ and identity are unchanged, and the image is 5-11% sharper.
   setting. Separately, in both runs the MP4 video of every session's first clip differed from its repeats, also where
   Stage 1 and the audio matched. That difference comes after Stage 1 (perhaps from Stage 2's first run in a session;
   inferred, not examined). Later clips matched their repeats in video too.
+- **With static compiles** (`SOL_H3_STATIC_SHAPES=1`, the default;
+  [18](#18-reshape-another-length-or-orientation-without-a-reload)). The Stage1 worker then turns Dynamo's automatic
+  dynamic shapes off. A dimension marked dynamic stays dynamic without them (Dynamo's builder honours an explicit
+  mark), so the body blocks keep their 2 graphs per session. What relied on automatic dynamic shapes compiles per
+  length instead: the text refiner from a session's second length on, and, without this setting, the dense Ref2VA body
+  (inferred). CPU tests show the graph counts of the body blocks and the text refiner with a stand-in model
+  (`tests/test_regional_length.py`, `tests/test_reshape.py`), and the receipt's `text_regions` says which applies. The
+  measurements above ran with dynamic compiles, before static compiles were in. The GPU check runs again in staging
+  with `SOL_H3_DYNAMIC_TEXT_LENGTH=1`.
 - **Files.** `runtime/stage1_ops/regional.py`, `runtime/stage1.py` (comment; the Sol route's receipt),
   `tests/test_regional_length.py` (new).
 - **Switch.** `SOL_H3_DYNAMIC_TEXT_LENGTH`: `0` (default) as before, `1` on. Another value stops Stage 1 when it
   loads.
 
-### 18. Tests
+### 18. Reshape: another length or orientation without a reload
+
+- **Purpose.** A session was built for one task, length and orientation. Another length or orientation closed it
+  and loaded every model again: the first clip after such a switch took about 60-80 s longer than a warm clip
+  (from the studio's worker logs on one DGX Spark; issue #45). Nothing loaded depends on the shape.
+  `Pipeline.reshape(orientation=..., seconds=...)` gives the running workers the recipe of the new shape, for the
+  same task (worker command `reshape`):
+  - Stage 1: height, width and frame count of the next request (FastVideo takes them per request), the latent
+    capture's shape check and PCM length, and the ref2va reference-video canvas. The 8-call cuDNN BSA self-check
+    runs again on the first request at a shape the worker has not checked; the receipt lists `bsa_checked_shapes`.
+  - Stage 2: the shared module's frame and shape globals, set to the values a fresh worker for that shape has
+    (`bind_geometry`; a test runs the module's own import code for every length), the latent tools, the decoder
+    tiles (validated against the new pixel shape) and the spatial route. The next request runs under the
+    compile warm-up timeout, as a fresh worker's first request does.
+  - Prompt encoder: the keyframe canvas. Above `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` the resident encoder closes and
+    each request loads its own, as before. Back below, the resident encoder loads again in the background if
+    MemAvailable is at least the minimum of its early load in item 4, for the new length (32 GiB up to 5 s, 34 GiB
+    above, or `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB`). Otherwise the next clip loads its own encoder and the resident
+    one loads after that clip. `results.json` records the reading with the reshape. Every encoder started after a
+    reshape gets the session's prompt-token mode (16), even if `SOL_H3_PROMPT_TOKENS` changed meanwhile, and a
+    resident one refuses a recipe with another mode.
+  - If a worker fails the command, the reshape fails, and the pipeline refuses requests until it is closed. A
+    pipeline that is closing refuses a reshape, and starts no resident encoder after its close began.
+  - Before the first clip only the recipe changes, and the first clip follows the new length's rules for the
+    resident encoder (item 3, item 4).
+- **Static compiles.** Graphs for a new shape compile on its first request. Stage 1's regions and Stage 2's blocks
+  now compile with `dynamic=False` (Stage 1 sets `torch._dynamo.config.automatic_dynamic_shapes = False` in its
+  worker, which does the same for every compile there). With upstream's `dynamic=None`, Dynamo compiles a graph
+  statically the first time and, when a size changes, may compile it again with that size dynamic, which can use
+  other kernels (a CPU test shows it for a small function with the Stage 1 torch, 2.12). That happens already in a
+  fresh worker's first request: the AdaLN lookup has 1 timestep row in the first update and 2 in the next three, so
+  Stage 1's regions for updates 2-4 get a dynamic size (inferred from the code). It happens again after a prompt
+  length or clip shape change. With `dynamic=False` every graph is static, and each shape gets the graph a fresh
+  worker compiles for it, so a worker's output does not depend on what it ran before. Consequences:
+  - Stage 1's graphs differ from upstream's and 0.3's for every clip, not only after a reshape. In one GPU check the
+    Stage-1 latents and the MP4 streams were the same with `SOL_H3_STATIC_SHAPES=0` and `1` (3 clips at 5 s 16:9,
+    two prompt lengths, fresh sessions).
+  - Each new prompt length also compiles the two text-refiner regions statically (about 1-2 s, inferred); before,
+    their dynamic graph served later lengths.
+  - The compile-cache keys don't include the setting (read in torch's source), but the graphs change: each prompt
+    length and shape that Stage 1 compiled before compiles once more after the upgrade (inferred).
+  - With `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (17): the dimensions it marks dynamic stay dynamic, because Dynamo honours an
+    explicit mark without automatic dynamic shapes. Its body blocks keep their 2 graphs per session; the text-refiner
+    regions, which it leaves alone, compile once per new length, as above. CPU tests show both graph counts with a
+    stand-in model and the Stage 1 torch. The two settings have not run together on the GPU; that check runs again
+    in staging with `SOL_H3_DYNAMIC_TEXT_LENGTH=1`.
+- **Files.** `runtime/pipeline.py`, `runtime/worker.py`, `runtime/config.py`, `runtime/stage1.py`,
+  `runtime/stage1_ops/{capture,vsa,regional}.py`, `runtime/stage2.py`, `runtime/stage2_ops/models.py`,
+  `runtime/qwen.py`, `tests/test_reshape.py` (new), `tests/test_regional_length.py`.
+- **Switches.** `SOL_H3_STATIC_SHAPES=0` restores `dynamic=None`. Another value (empty is the default) fails when the
+  pipeline is created; the studio and `bin/sol-h3-studio --check` refuse to start with it. They also refuse `1`, set
+  or by default, when the Sana checkout carries an older patch, which compiles as `0`. The studio's
+  `SOLH3_RESHAPE=0` closes the session and loads the models again for any change, as before. `infer.py` does not
+  reshape.
+- **Measured** (one GPU run on one DGX Spark, 22 clips, one seed, short prompts: a reshaped session against fresh
+  sessions at each shape, each a first and a warm clip; with this change's patch before its merge into 0.4, so
+  prompts tokenized `plain` and the resident encoder loaded after the first clip):
+  - Stage-1 latents (capture sha256) were the same as in a fresh session at every shape: t2va 5, 10 and 15 s 16:9,
+    fl2va 5 s 9:16. The MP4 streams of warm clips were the same at 5 s, 10 s and fl2va 9:16, and a fresh-against-fresh
+    control at 5 s matched too. The first clip of a process, or the first after a change to a shape that process had
+    not compiled, differs slightly from later clips in fresh sessions as well, and it matched the fresh first clip
+    where checked (10 s).
+  - At 15 s the warm MP4s' video differed (audio and Stage 1 the same). A second run, with
+    `SPARK_DEBUG_AUTOTUNE=1`, showed why. Two fresh 15 s sessions differ too: Stage 2 at 15 s isn't reproducible
+    across processes today, reshaped or not. Both runs used the same compiled Stage-2 graph. Three reduction kernels
+    of the 15 s audio branch read their stored tuning result through item 8's fallback, are tuned again at run time
+    anyway (see the known issue there; issue #51), and store a new winner each time. So reshape matches a fresh
+    session at every shape where two fresh sessions match each other (5 s, 10 s, fl2va 9:16).
+  - First clip after a change, minus a warm clip at that shape: 5 → 10 s 14.4 s, 5 → 15 s 27.0 s (both compiled
+    Stage 1 for this prompt length from scratch), 15 → 5 s (a shape the session had run) none, fl2va 16:9 → 9:16
+    0.2 s. Reloads in the same run: 37.5-47.1 s, plus 4-9 s of closing.
+  - Lowest MemAvailable 8.1 GiB, at 10 s, in the reshaped and in a fresh session alike. Stage 1's reserved memory
+    after the 15 s clips was back at its 5 s level (37.6 GiB). The BSA self-check ran 8 calls at each new shape.
+- **Deviation.** One worker renders several shapes; NVIDIA ran one shape per process (see the table above).
+
+### 19. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
 deliver-first, when the resident prompt encoder starts, the new `Pipeline` arguments and the compile-cache
@@ -493,10 +593,16 @@ worker starts and that the default, the setting or the `Pipeline` argument reach
 prompt encoder too, whether it starts during the first clip or after it; `tests/test_qwen_media.py` checks the
 receipt fields.
 `tests/test_regional_length.py` (new) checks `SOL_H3_DYNAMIC_TEXT_LENGTH` on the CPU. On a small stand-in model: the
-graphs it compiles over several prompt lengths, outputs equal to the uncompiled model, the tile-buffer rules and the
-FastVideo signatures it relies on. On FastVideo's own H3 blocks (skipped when FastVideo can't be imported): what
-`install()` and `install_dense()` wrap with the setting on and off.
-95 tests in total (upstream: 65).
+graphs it compiles over several prompt lengths (also with static compiles), outputs equal to the uncompiled model,
+the tile-buffer rules and the FastVideo signatures it relies on. On FastVideo's own H3 blocks (skipped when FastVideo
+can't be imported): what `install()` and `install_dense()` wrap with the setting on and off.
+`tests/test_reshape.py` (new) covers reshape: stand-in workers check that Stage 1, Stage 2 and the prompt encoder each
+see the shape of every request; the Stage 2 globals are compared with the shared module's own import code for every
+length and orientation. It also covers the capture's shape check and PCM trim, the BSA self-check per shape, the
+keyframe canvas, the static compiles (with the torch behaviour they rely on, a marked dimension included), a
+pipeline that is closing or failed a reshape, the resident encoder's restart (the minimum of item 4 for the new
+length, and the session's prompt-token mode), a reshape before the first clip, and the `SPARK_DEBUG_AUTOTUNE` lines.
+123 tests in total (upstream: 65).
 
 ## All switches
 
@@ -506,19 +612,21 @@ FastVideo signatures it relies on. On FastVideo's own H3 blocks (skipped when Fa
 | `SOL_H3_SECONDS` | unset (5 s) | `infer.py` default for `--seconds` (the web server ignores it) |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer outputs load the prompt encoder per request |
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
-| `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip |
+| `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip, or right after a reshape back to 10 s or less (else the next clip loads its own first) |
 | `SPARK_FAST_SAFETENSORS` | 1 | 0 = upstream safetensors loading |
 | `SPARK_DIRECT_IO` | 1 | 0 = no O_DIRECT reads |
 | `SPARK_DIRECT_AHEAD` | 1 | 0 = no read-ahead of the next O_DIRECT window |
 | `SOL_H3_BSA_CHECK_CALLS` | 8 | 200 = upstream's full cuDNN BSA self-check |
 | `SOL_H3_COMPILE_CACHE` | `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` | a directory, or `session` = upstream per-session caches |
 | `SPARK_AUTOTUNE_CACHE_FIX` | 1 | 0 = upstream Inductor behaviour |
-| `SPARK_DEBUG_AUTOTUNE` | 0 | 1 = print autotune-cache fallback hits |
+| `SPARK_DEBUG_AUTOTUNE` | 0 | 1 = print autotune-cache fallback hits, kernels tuned at run time and stored results |
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
 | `SOL_H3_PROMPT_TOKENS` | minimax | `plain` = as up to 0.3: the pinned ComfyUI splits MiniMax's 7 prompt tokens (`<d>`, `</d>`, ...) into text tokens; `minimax` reads each as one token, as in H3's training |
 | `SOL_H3_DYNAMIC_TEXT_LENGTH` | 0 | 1 = Stage 1's body blocks compile per session, not per prompt length (experimental, [17](#17-prompt-lengths-without-recompiles-experimental)) |
+| `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)`: after a size change a graph may get dynamic sizes ([18](#18-reshape-another-length-or-orientation-without-a-reload)) |
+| `SOLH3_RESHAPE` (studio) | 1 | 0 = another length or orientation closes the session and loads the models again |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.

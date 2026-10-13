@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Sol-H3 Studio: a small web front end for NVIDIA Research's Sol-H3-Spark pipeline (unofficial).
 
-- One job at a time (FIFO queue). Models stay loaded between jobs with the same task, orientation and length
-  (one Pipeline session). A different combination closes the session and loads the models again.
+- One job at a time (FIFO queue). Models stay loaded between jobs with the same task (one Pipeline session). A
+  clip with another length or orientation changes the loaded session's shape in place (Pipeline.reshape: Stage 1
+  and Stage 2 keep their models; only the prompt encoder closes or loads again when a clip crosses 10 s; the first
+  clip at a shape the session has not run compiles for it). Another task closes the session and loads the models
+  again. SOLH3_RESHAPE=0 closes and reloads for any change, as before 0.4.
 - Tasks: t2va (text), fl2va (first and/or last frame), ref2va (reference images, videos, audio).
 - Output: 1344x768 (landscape) or 768x1344 (portrait), 24 fps, 3-15 s, with audio.
 - POST /api/cancel {"id": ...}: a queued clip leaves the queue at once; a running one is stopped (its pipeline
@@ -46,16 +49,20 @@ Environment:
                              other name (Host, or X-Forwarded-Host when present) gets 421, so a web page can't reach
                              the studio by DNS rebinding (a name of its own that resolves to the studio's address).
   SOLH3_PRELOAD              1 (default): at start, warm up the settings of the last finished clip. 0: off.
+  SOLH3_RESHAPE              1 (default): a clip with the loaded task but another length or orientation keeps the
+                             models loaded and changes the session's shape. 0: close the session and load the models
+                             again, as before 0.4. A patch without Pipeline.reshape always reloads.
   SOLH3_TRASH_DAYS           days a deleted clip stays in $SOL_H3_SPARK_RUNTIME_ROOT/trash before it is removed
                              for good (default 7)
   SOLH3_MAX_QUEUED           clips that may wait in the queue (default 20; the running one does not count). Another
                              submit gets 429 until one has started.
   SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
 
-SOL_H3_STAGE2_AUDIO (frozen or joint) and SOL_H3_PROMPT_TOKENS (minimax or plain) are patch settings (see
-docs/PATCH.md), checked at start: another value stops the server with a message. So does a value, set or the default,
-that the applied patch is too old to give. 0.3's patch has no SOL_H3_PROMPT_TOKENS and tokenizes as plain, so the
-default minimax stops the server until install/10-sana.sh has applied the current patch.
+SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain) and SOL_H3_STATIC_SHAPES (1 or 0) are
+patch settings (see docs/PATCH.md), checked at start: another value stops the server with a message. So does a value,
+set or the default, that the applied patch is too old to give. 0.3's patch has neither of the last two: it tokenizes
+as plain and compiles as SOL_H3_STATIC_SHAPES=0 does, so the defaults stop the server until install/10-sana.sh has
+applied the current patch.
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
@@ -106,11 +113,12 @@ except ImportError as error:
          "working directory set to models/minimax_h3/Sol-H3-Spark inside the patched Sana checkout.")
 
 # the patch's settings: (name, its check in runtime/config.py, default, what a patch without the setting does, the
-# version that added it). A bad value stops the studio here, not every clip. An older patch lacks one or both and
+# version that added it). A bad value stops the studio here, not every clip. An older patch lacks some of them and
 # would ignore them: any other value, set or the default, stops the studio too.
 import runtime.config  # noqa: E402
 for setting, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
-                                             ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4")):
+                                             ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4"),
+                                             ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4")):
     setting_check, value = getattr(runtime.config, name, None), os.environ.get(setting, "")
     if setting_check is None and (value.strip().lower() or default) != older:
         asked = f"{setting}={value}" if value.strip() else f"{setting}={default} (the default since {since})"
@@ -140,6 +148,7 @@ PUBLISH = Path(os.environ["SOLH3_PUBLISH_DIR"]).expanduser() if os.environ.get("
 HOST = os.environ.get("SOLH3_HOST") or "127.0.0.1"
 PORT = int(os.environ.get("SOLH3_PORT") or "8190")
 PRELOAD = os.environ.get("SOLH3_PRELOAD", "1") == "1"
+RESHAPE = os.environ.get("SOLH3_RESHAPE", "1") == "1" and hasattr(Pipeline, "reshape")   # an older patch reloads
 
 
 def host_name(value):
@@ -279,9 +288,16 @@ def save_job(job, strict=False):
             changed.notify_all()
 
 
+def same_models(a, b):
+    """Whether the models loaded for settings `a` (task, orientation, seconds) serve a clip with settings `b`: the same
+    settings, or with SOLH3_RESHAPE the same task (the session changes length and orientation in place)."""
+    return a is not None and b is not None and (tuple(a) == tuple(b) or RESHAPE and a[0] == b[0])
+
+
 def warm_up_wanted():
-    """A queued job waits for the warm-up's settings, so the warm-up is kept for it. Call it holding `lock`."""
-    return any(j["status"] == "queued" and (j["task"], j["orientation"], j.get("seconds", 5)) == session.get("loading_key")
+    """A queued job waits for the warm-up's models, so the warm-up is kept for it. Call it holding `lock`."""
+    return any(j["status"] == "queued" and same_models(session.get("loading_key"),
+                                                       (j["task"], j["orientation"], j.get("seconds", 5)))
                for j in jobs)
 
 
@@ -618,6 +634,36 @@ def new_pipeline(key, root):
                     orientation=orientation, seconds=None if seconds == 5 else seconds)   # 5 s = frozen route
 
 
+def reshape_args(key):
+    """Pipeline.reshape's arguments for settings `key`, as new_pipeline passes them (5 s = the frozen route)."""
+    return {"orientation": key[1], "seconds": None if key[2] == 5 else key[2]}
+
+
+def loaded_pipeline():
+    """The session's pipeline, or None while it is being closed (Unload, a failed clip): a closing pipeline is not
+    loaded any more, so nothing reshapes it or renders with it. Call it without holding `lock`."""
+    with lock:
+        p = session["pipeline"]
+        return p if p is not None and session.get("state") != "unloading" and not close_lock.locked() else None
+
+
+def reshape_session(key, reason):
+    """Give the loaded session the length and orientation of `key` (same task), without a clip ("Load selected now").
+    A failure closes the session. Call it without holding `lock`."""
+    p, old = session["pipeline"], session["key"]
+    log("reshaping session", old, "->", key, "-", reason)
+    session.update(state="reshaping", since=time.time(), loading_key=key)
+    try:
+        p.reshape(**reshape_args(key))
+    except Exception:
+        traceback.print_exc()
+        close_session("length/format change failed")
+        return
+    with lock:
+        if session["pipeline"] is p:
+            session.update(key=key, state="ready", since=time.time(), loading_key=None)
+
+
 def close_session(reason, p=None):
     """Close the session's pipeline, or `p` (a pipeline of this thread's that may no longer be the session's).
     One close at a time: a second caller waits for the first, then finds nothing left to close. The session is reset
@@ -679,8 +725,30 @@ def run_job(job):
         if job.get(k):
             case[k] = job[k]
     case = normalize_case(case)
-    if session["key"] != key:
-        close_session(f"switching to {key}")
+    loaded = loaded_pipeline()             # None while an Unload or a failed clip closes the session
+    if loaded is not None and session["key"] != key and same_models(session["key"], key):
+        # same task, another length or orientation: the loaded session changes its shape, then renders the clip
+        if job.get("cancel_requested"):    # nothing ran: the models stay loaded
+            raise Cancelled("cancelled before it started")
+        p, old = loaded, session["key"]
+        job["status"] = "generating"
+        job["phase_since"] = time.time()
+        job["reshaped_from"] = list(old)
+        job.setdefault("case_dirs", []).append(str(Path(p.root) / job["case_id"]))
+        session["state"] = "busy"
+        log("reshaping session", old, "->", key)
+
+        def reshape_and_generate():
+            record = p.reshape(**reshape_args(key))
+            job["reshape_s"] = round(record.get("reshape_s", 0.0), 2)
+            session["key"] = key           # the workers have the new shape; a failure from here closes the session
+            return p.generate(case)
+        row = pipeline_call(job, reshape_and_generate, "length/format change failed")
+        session["state"] = "ready"         # not a warm time: the first clip at a shape compiles for it
+    elif session["key"] != key or loaded is None:
+        job.pop("reshaped_from", None)     # a retry after a failed length/format change loads the models
+        job.pop("reshape_s", None)
+        close_session(f"switching to {key}")   # (waits for a close in progress)
         if job.get("cancel_requested"):    # cancelled while the old models were closed: nothing of its own ran
             raise Cancelled("cancelled before it started")
         job["status"] = "loading models + generating"
@@ -973,7 +1041,10 @@ def worker_loop():
             pending, preload["pending"] = preload["pending"], None
         if pending:
             if session["pipeline"] is not None and session["key"] != pending[0]:
-                close_session(f"loading {pending[0]} as asked")
+                if loaded_pipeline() is not None and same_models(session["key"], pending[0]):
+                    reshape_session(pending[0], "as asked")         # keeps the models: no warm-up pass
+                else:
+                    close_session(f"loading {pending[0]} as asked")
             with lock:
                 go = (session.get("switching_to") == pending[0] and not preload["pending"] and not stopping.is_set()
                       and session["pipeline"] is None and not any(j["status"] == "queued" for j in jobs))
@@ -1490,11 +1561,11 @@ def submit(fields, files):
         return full
     save_job(job)
     if session.get("preloading"):
-        if session.get("loading_key") != (job["task"], job["orientation"], job["seconds"]):
+        if not same_models(session.get("loading_key"), (job["task"], job["orientation"], job["seconds"])):
             if not waited_for:
                 abort_preload("a job for another mode/format/length arrived")
         elif time.time() < (session.get("takeover_until") or 0):
-            abort_preload("a job for the same settings arrived early in the warm-up; it loads the models itself")
+            abort_preload("a job for the same models arrived early in the warm-up; it loads the models itself")
     wake.set()
     return 200, {"id": jid, "job": api_record(job)}
 
@@ -1556,6 +1627,7 @@ class H(BaseHTTPRequestHandler):
                 window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
                 warmable = [t for t in ready if mode_warmup_case(t)]     # modes "Load selected now" can warm up
                 state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS, "warmable": warmable,
+                         "reshape": RESHAPE,
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
                                                                  "takeover_until", "load_eta", "warm_s",
                                                                  "switching_to")},

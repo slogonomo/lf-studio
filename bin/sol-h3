@@ -269,12 +269,13 @@ sound), `<Video 1>` and `<Audio 2>` (the WAV). The prompt must then use those nu
 INSTRUCTIONS = (
     "Sol-H3 Studio makes short video clips with sound on a DGX Spark: 3-15 s, 1344x768 (landscape) or 768x1344 "
     "(portrait), 24 fps. One clip renders at a time: about 40 s for a 3 s clip to 3:15 for a 15 s clip once the models "
-    "are loaded, plus about 1-2 min when they must load first (a different task, format or length than the last clip), "
-    "plus any queue. Call prompt_guide once and write the prompt in H3's structured format: nothing rewrites it. Then "
-    "call generate: it uploads your files (paths on this machine or http(s) URLs), waits up to wait_s seconds and, when "
-    "the clip is done, saves the MP4 here and returns its absolute path, its studio URL and a poster frame. If it "
-    "answers that the clip is still running, call wait with the id. Cancelling a tool call does not cancel the clip; "
-    "use cancel for that.")
+    "are loaded, plus about 1-2 min when they must load first (a different task than the last clip; a new format or "
+    "length of the same task keeps them loaded and adds up to about 30 s the first time), plus any queue. Call "
+    "prompt_guide once and write the prompt in H3's structured format: nothing rewrites it. Then call generate: it "
+    "uploads your files (paths on this machine or http(s) URLs), waits up to wait_s seconds and, when the clip is "
+    "done, saves the MP4 here and returns its absolute path, its studio URL and a poster frame. If it answers that the "
+    "clip is still running, call wait with the id. Cancelling a tool call does not cancel the clip; use cancel for "
+    "that.")
 
 
 # ---- small things ------------------------------------------------------------------------------------------------

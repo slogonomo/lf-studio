@@ -17,6 +17,16 @@ def stage2_audio_mode():
     return mode
 
 
+def compile_dynamic():
+    """The patch's SOL_H3_STATIC_SHAPES check (runtime/config.py), same rules."""
+    import os
+    raw = os.environ.get("SOL_H3_STATIC_SHAPES", "")
+    value = raw.strip() or "1"
+    if value not in ("0", "1"):
+        raise ValueError(f"SOL_H3_STATIC_SHAPES must be 1 or 0, not {raw!r}")
+    return False if value == "1" else None
+
+
 PROMPT_TOKEN_MODES = ("plain", "minimax")
 
 

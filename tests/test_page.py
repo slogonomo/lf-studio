@@ -68,10 +68,12 @@ class PageTest(unittest.TestCase):
 
 
 class WarmUpLabel(PageTest):
-    """#4: during a warm-up for the selected settings the button says when the clip would be ready."""
+    """#4: during a warm-up for the selected settings the button says when the clip would be ready. With
+    SOLH3_RESHAPE=0, so that another format counts as other settings (ReshapeLabel: the default)."""
     load_s, preload = 20, True
 
     def seed(self):
+        self.studio.env["SOLH3_RESHAPE"] = "0"
         (self.studio.state_dir / "jobs.json").write_text(json.dumps([finished_job()]))
         (self.studio.state_dir / "load-times.json").write_text(
             '{"t2va/landscape/5": 20, "warm/t2va/landscape/5": 12}')        # takeover window 12 - 5 = 7 s
@@ -316,11 +318,12 @@ class DeleteUndo(PageTest):
 
 
 class LoadSelectedNow(PageTest):
-    """#3: the link under Generate loads the selected settings on request."""
+    """#3: the link under Generate loads the selected settings on request. With SOLH3_RESHAPE=0: by default another
+    format or length of the loaded mode keeps the models, and the page offers no link for it (ReshapeLabel)."""
     load_s, preload = 6, True
 
     def seed(self):
-        self.studio.env["STUB_CLOSE_S"] = "2"
+        self.studio.env.update(STUB_CLOSE_S="2", SOLH3_RESHAPE="0")
         (self.studio.state_dir / "jobs.json").write_text(json.dumps([finished_job()]))
 
     def test_link_switches_the_warm_up(self):
@@ -354,6 +357,43 @@ class LoadSelectedNow(PageTest):
         self.page.wait_for_timeout(2500)
         self.assertIn("after the queue", self.page.inner_text("#reloadnote"))
         self.assertFalse(self.page.is_visible("#loadnow"))
+
+
+class ReshapeLabel(PageTest):
+    """#45: another format or length of the loaded mode keeps the models: the button says so, without a reload note
+    or a "Load selected now" link; another mode still reloads. SOLH3_RESHAPE=0 (ReshapeLabelOff) reloads for both."""
+    reshape = True
+
+    def seed(self):
+        self.studio.env.update(SOLH3_RESHAPE="1" if self.reshape else "0", STUB_RESHAPE_S="3")
+
+    def test_labels(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid])
+        self.studio.wait_for(lambda s: s["session"]["state"] == "ready")
+        self.page.wait_for_timeout(1200)                                     # next poll and render
+        self.pick("orientation", "portrait")
+        self.pick("seconds", "10")
+        if self.reshape:
+            self.assertIn("same models · a bit over", self.go_text())     # its first clip compiles
+            self.assertNotIn("load", self.go_text())
+            self.assertFalse(self.page.is_visible("#reloadnote"))
+            self.assertNotIn("reload", self.page.get_attribute("#go", "class") or "")
+            self.assertIn("keeps the models loaded", self.page.inner_text(".foot"))
+        else:
+            self.assertIn("reloads the models first", self.go_text())
+            self.assertTrue(self.page.is_visible("#loadnow"))
+            self.assertIn("Changing any of them reloads", self.page.inner_text(".foot"))
+        self.pick("task", "fl2va")                                           # another mode reloads either way
+        self.assertIn("reloads the models first", self.go_text())
+        if self.reshape:                                                     # a requested change of length/format
+            self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "portrait", "seconds": 10})
+            self.page.wait_for_function(
+                "document.getElementById('loaded').textContent.startsWith('changing to Text · 9:16 · 10 s')")
+
+
+class ReshapeLabelOff(ReshapeLabel):
+    reshape = False
 
 
 class ReleaseReviewPage(PageTest):

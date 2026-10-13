@@ -20,8 +20,8 @@ NVIDIA Sync, use switchboard's `delegate.sh` then, see [nvidia-sync.md](nvidia-s
 `SOLH3_PORT`.
 
 **`REFUSED - SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...`**
-(or the same for `SOL_H3_STAGE2_AUDIO`). The repo was updated, but the Sana checkout still carries the patch of an
-older release, which would ignore that setting. Run `install/10-sana.sh`, then start again
+(or the same for `SOL_H3_STAGE2_AUDIO` or `SOL_H3_STATIC_SHAPES`). The repo was updated, but the Sana checkout still
+carries the patch of an older release, which would ignore that setting. Run `install/10-sana.sh`, then start again
 ([updating](INSTALL.md#updating)).
 
 **`cannot talk to docker as <user>`, or `permission denied while trying to connect to the Docker daemon socket`.**
@@ -123,8 +123,11 @@ the existing copy in switchboard's `services/` directory (whatever you named it)
 `spark-switchboard check`, and restart switchboard ([INSTALL.md](INSTALL.md#updating)). Until then, deleting the
 cancelled clip ends the block at once.
 
-**Switching mode, format or length takes minutes.** Each combination is one loaded session. Changing any of them
-closes the session and loads the models again; the Generate button says so before you click.
+**Switching mode takes minutes.** Each mode is one loaded session. Another mode closes it and loads the models again;
+the Generate button says so before you click. Another format or length in the same mode keeps the models loaded: the
+session changes its shape, and the first clip at a shape it has not run yet compiles for it (measured 0-27 s more
+than a warm clip, against 43-54 s for a reload in the same run). With `SOLH3_RESHAPE=0` any change of mode, format or
+length reloads, as before 0.4.
 
 **Clips in the gallery after pruning old session directories.** Each clip lives in its session directory under
 `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/`. If you prune those, clips that also have a copy in
