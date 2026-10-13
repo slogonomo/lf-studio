@@ -253,7 +253,8 @@ better. The sheets and side-by-sides are for looking.
 Stage 2 muxes the draft's own audio into every output, so every arm of a draft has the same audio (the report
 checks this). For the same reason the speaking turns belong to the draft: `add --turns` stores them. A dialogue
 draft without turns gets them once, detected by the scorer on the baseline output, and every arm is scored with
-those.
+those. Not every scorer can detect them: the one used on 2026-10-12 expects two speakers and fails on a clip with
+one. Give such drafts their turns with `add --turns`.
 
 ### Arms
 
@@ -285,8 +286,8 @@ deeper change, such as an FP8 Stage 2, may need a hook in the patch.
 ### Reference numbers
 
 Measured 2026-10-12 on one DGX Spark with the bench this one was ported from (the same Stage-2 session code and
-the same arms under other names), on one
-5 s t2va draft without dialogue and four 10 s fl2va dialogue drafts. Medians of warm runs.
+the same arms under other names), on one 5 s t2va draft without dialogue and four 10 s fl2va dialogue drafts.
+Medians of warm runs.
 
 | | 5 s, 1344×768 | 10 s, 1344×768 |
 |---|---|---|
