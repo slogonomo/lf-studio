@@ -450,7 +450,7 @@ and identity are unchanged, and the image is 5-11% sharper.
     5 body graphs for every new length in t2va and fl2va.
   - Known-length clips, median Stage 1 (3-4 clips per task): t2va 18.15 → 18.2 s (+0.3 %), fl2va 21.2 → 21.4 s
     (+0.9 %), ref2va 22.0 → 22.1 s (+0.5 %).
-  - Output: every warm clip (15) was bit-identical with and without the setting (Stage-1 `payload_sha256` and
+  - Output: every warm clip (16) was bit-identical with and without the setting (Stage-1 `payload_sha256` and
     `native_normalized_sha256`, MP4 video and audio streams). Without the setting, 4 of the clips also matched the
     same prompts and seeds from an earlier session of the #38 A/B.
 - **Why the output stays the same.** In the body graph, Inductor generates only data movement, casts, the FP8
