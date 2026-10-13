@@ -122,12 +122,14 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
     so `close()` can stop them.
   - The resident prompt encoder loads in the background while the first clip refines, so the next clip doesn't
     wait for it. It starts once Stage1's first request has returned and Stage2 is built: both load peaks are over.
-    Stage2 releases its idle cache first, as it does before every later clip. The warm-up encoder still closes
-    before Stage2 starts. Sessions over 241 output frames load the encoder per request, as before (item 3).
+    Stage2 releases its idle cache first, as it does before every later clip. If MemAvailable is then below
+    `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` (default 32 GiB), the encoder loads after the first clip, as before.
+    `results.json` records the reading and where the encoder started (`resident_qwen`). The warm-up encoder still
+    closes before Stage2 starts. Sessions over 241 output frames load the encoder per request, as before (item 3).
 - **Files.** `runtime/pipeline.py`, `infer.py`, `tests/test_pipeline.py`.
 - **Switch.** `deliver` is opt-in (`infer.py` without `--deliver-first` keeps the separate warm-up). The overlap
   itself has no switch. `SOL_H3_RESIDENT_QWEN_EARLY=0` loads the resident encoder after the first clip, as before
-  0.4.
+  0.4. `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` sets the memory it needs to load during the refine.
 - **Measured.** First clip 282 → 177 s, lowest MemAvailable 18 GiB. The first overlap attempt fell to 2.4 GiB
   MemAvailable and was stopped by the memory guard; the version in the patch waits for the Stage1 marker.
 - **Resident encoder during the refine (0.4).** Before 0.4 it loaded after the first clip, and the next clip
@@ -138,11 +140,21 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
     At 5 s it was already that low when Stage2 became ready, before the refine.
   - The release after the MP4 then freed 12-14 GiB, at every length.
   - Loading the encoder took 17-19 GiB of MemAvailable, more than its 14.6 GiB of weights.
-  - A warm 5 s clip with the encoder resident refined at 11.0-12.7 GiB.
+  - A warm refine with the encoder resident took 4.1-5.7 GiB at 5 s (down to 11.0-12.7 GiB) and ~8 GiB at 15 s.
 
   So the encoder can't just start during the refine: that would leave ~3-5 GiB, at the memory guard's 5 GiB
   (inferred). With Stage2's release first, the first refine should get about as low as a warm clip with the
-  encoder resident: ~9-13 GiB at 5 s (inferred, not yet measured).
+  encoder resident (inferred, not yet measured):
+  - t2va 5 s: ~9-13 GiB (34.2 GiB after the release, minus 17-19 GiB for the encoder and 4-6 GiB for the refine);
+  - t2va 10 s: ~9-12 GiB (34.9 GiB after the release; a 10 s refine taken as ~6-7 GiB, between 5 and 15 s);
+  - fl2va 10 s: ~11-15 GiB (studio receipts: 18.7-21.1 GiB free with all three workers idle at that setting).
+
+  The 32 GiB minimum is the encoder's load (up to 19 GiB) plus a first 10 s refine (~7 GiB) plus the memory guard's
+  5 GiB floor and 1 GiB. After the release, the bench traces had 34-39 GiB in every setting (closest: t2va 5 s,
+  34.2 GiB), so the check should pass in a normal session. It is there for a box with less free memory.
+  With a cold compile cache (the first run of a format and length), Stage2's first refine also compiles and
+  benchmarks kernels (max-autotune) while the encoder loads. That first clip is then likely slower than it would be
+  without the load, and the kernel choices saved in the cache are timed under it (inferred, not measured).
 
 ### 5. O_DIRECT weight loading (`runtime/fastload.py`)
 
@@ -312,6 +324,7 @@ older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 te
 | `SOL_H3_SECONDS` | unset (5 s) | `infer.py` default for `--seconds` (the web server ignores it) |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer outputs load the prompt encoder per request |
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
+| `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 | MemAvailable needed to load it during the first clip |
 | `SPARK_FAST_SAFETENSORS` | 1 | 0 = upstream safetensors loading |
 | `SPARK_DIRECT_IO` | 1 | 0 = no O_DIRECT reads |
 | `SPARK_DIRECT_AHEAD` | 1 | 0 = no read-ahead of the next O_DIRECT window |
