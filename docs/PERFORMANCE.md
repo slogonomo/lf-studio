@@ -127,9 +127,9 @@ comparable side by side.
   Keeping it resident saved nothing (192.9 vs 190.8 s per clip).
 - Lowest MemAvailable: 15-18 GiB for a 5 s first clip (upstream flow: 13 GiB); 12 GiB for 15 s. Measured before
   0.4, when the resident prompt encoder loaded after the first clip. It now loads during the first clip's refine,
-  so the next clip doesn't wait for it. That should take a first clip down to about what a warm clip with the
-  encoder resident reaches: ~9-13 GiB at 5 s, ~9-12 GiB at 10 s t2va (inferred, not yet measured;
-  [PATCH.md](PATCH.md) item 4).
+  so the next clip doesn't wait for it. On the test lane (2026-10-13) that took the lowest point of a load from
+  14.0-16.3 to 10.3-12.1 GiB (t2va 5 s, fl2va 10 s, a warm-up), about what the next warm clip reaches
+  (11.8-12.2 GiB). [PATCH.md](PATCH.md) item 4 has the numbers.
 - Read-ahead into the page cache made the cold start slower (177 → 195 s): 54 GB of Stage 2 read-ahead competed
   with Stage 1's compile for disk and memory.
 

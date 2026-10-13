@@ -143,15 +143,30 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   - A warm refine with the encoder resident took 4.1-5.7 GiB at 5 s (down to 11.0-12.7 GiB) and ~8 GiB at 15 s.
 
   So the encoder can't just start during the refine: that would leave ~3-5 GiB, at the memory guard's 5 GiB
-  (inferred). With Stage2's release first, the first refine should get about as low as a warm clip with the
-  encoder resident (inferred, not yet measured):
-  - t2va 5 s: ~9-13 GiB (34.2 GiB after the release, minus 17-19 GiB for the encoder and 4-6 GiB for the refine);
-  - t2va 10 s: ~9-12 GiB (34.9 GiB after the release; a 10 s refine taken as ~6-7 GiB, between 5 and 15 s);
-  - fl2va 10 s: ~11-15 GiB (studio receipts: 18.7-21.1 GiB free with all three workers idle at that setting).
+  (inferred). With Stage2's release first, the first refine gets about as low as a warm clip with the encoder
+  resident. Measured on the test lane, 2026-10-13, one run each: `SOL_H3_RESIDENT_QWEN_EARLY=0` → the default (the
+  same branch); MemAvailable every 0.5 s.
+
+  | Load | Next clip's encoding starts after its request | Next clip | MemAvailable at the check | Lowest in the load | Lowest in the next clip |
+  |---|---|---|---|---|---|
+  | t2va 16:9 5 s | 11.1 → 0.16 s | 74.2 → 54.6 s | 34.2 GiB | 14.0 → 10.3 GiB | 12.6 → 11.9 GiB |
+  | fl2va 16:9 10 s | 6.1 → 0.13 s | 124.2 → 118.4 s | 37.0 GiB | 15.4 → 10.3 GiB | 11.2 → 12.2 GiB |
+  | warm-up, t2va 16:9 5 s | 6.2 → 0.16 s | 61.4 → 55.3 s | 35.2 GiB | 16.3 → 12.1 GiB | 12.1 → 11.8 GiB |
+
+  - The load's lowest point is now in the first refine, 23-27 GiB below the reading at the check (the encoder plus a
+    first refine). In two of the three loads it was 1.5-2 GiB below the next clip's. The memory guard never fired.
+  - From Stage1's first request to the MP4, the part of the first clip the change acts on, it took 0.7-3.0 s
+    longer: the refine while the encoder loads. One whole first clip was 12.6 s slower, 9.6 s of it before Stage1
+    returned, where both runs run the same code.
+  - The next clips came out identical for t2va: the encoder's output, Stage1's tensors, decoded audio and video.
+    For fl2va the encoder's output was identical, but Stage1 differed. Each run had compiled that prompt length's
+    Stage1 graphs anew, and autotuning picked another reduction kernel in one of them. A check from one shared
+    compile cache is pending.
 
   The 32 GiB minimum is the encoder's load (up to 19 GiB) plus a first 10 s refine (~7 GiB) plus the memory guard's
-  5 GiB floor and 1 GiB. After the release, the bench traces had 34-39 GiB in every setting (closest: t2va 5 s,
-  34.2 GiB), so the check should pass in a normal session. It is there for a box with less free memory.
+  5 GiB floor and 1 GiB. Measured, the encoder plus a first refine took 23-27 GiB, so at the minimum ~5-9 GiB would
+  be left. After the release, the bench traces had 34-39 GiB in every setting and the test lane 34.2-37.0 GiB, so
+  the check passes in a normal session. It is there for a box with less free memory.
   With a cold compile cache (the first run of a format and length), Stage2's first refine also compiles and
   benchmarks kernels (max-autotune) while the encoder loads. That first clip is then likely slower than it would be
   without the load, and the kernel choices saved in the cache are timed under it (inferred, not measured).
