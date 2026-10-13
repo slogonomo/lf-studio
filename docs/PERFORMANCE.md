@@ -134,13 +134,18 @@ comparable side by side.
 Stage 1's transformer is compiled with static shapes, so each new prompt length (in text tokens) compiles new
 graphs. FastVideo caps recompiles at 16; the 4th distinct prompt length in a session hit the limit, killed the
 worker and forced a full reload. The limit is raised (1,024; 65,536 accumulated). Tested: 7 distinct prompt
-lengths in one session, no failure.
+lengths in one session, no failure. `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (experimental, off by default) stops the
+per-length graphs of the body blocks.
 
 ## Known costs, not fixed
 
 - A new prompt length on a warm session adds 9-10 s (Stage 1 17.6 → 26.2 s). Reusing a prompt, or editing it
-  without changing its token count, avoids it. The failing guards are in FastVideo's H3 sparse-attention metadata
-  and tiling (`total_seq_length`), so a fix needs that dimension made dynamic.
+  without changing its token count, avoids it. The body blocks' graphs are tied to the length through FastVideo's H3
+  sparse-attention metadata and tiling (`total_seq_length`, the tile counts) and to the denoise step. The setting
+  `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (off by default;
+  [PATCH.md, 16](PATCH.md#16-prompt-lengths-without-recompiles-experimental)) compiles them once for any length.
+  The text refiner then compiles once more, at a session's second length. With the setting on, Stage-1 times and
+  output on the GPU have not been measured yet.
 - Cold vs warm overhead (~55 s), measured before the last fix: Stage 2 first compile 15-20 s, Stage 1 LoRA merge
   + FP8 ~7 s, Stage 1 first-denoise compile ~11 s, audio VAE 6 s.
 - The numbers above assume the compile cache is warm from an earlier run of the same mode, format and length.
@@ -159,6 +164,7 @@ lengths in one session, no failure.
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer clips load the prompt encoder per request |
+| `SOL_H3_DYNAMIC_TEXT_LENGTH` | 0 | 1 = Stage 1's body blocks compile once for any prompt length (experimental) |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 
 The warm-up at launch (`SOLH3_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled

@@ -2,12 +2,12 @@
 
 `patches/sol-h3-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
-branch `sol-engine`. It is a plain `git diff`: 21 files, 18 modified and 3 new.
+branch `sol-engine`. It is a plain `git diff`: 23 files, 19 modified and 4 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 74 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 80 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
-- 17 of the 18 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
+- 18 of the 19 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
   tagged `sol-h3-studio:`. The 3 new files say they are part of sol-h3-studio.
@@ -23,7 +23,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 74 tests ... OK
+CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 80 tests ... OK
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -229,6 +229,8 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   compiles new graphs. FastVideo caps Dynamo recompiles at 16; in a long-running session the 4th distinct prompt
   length failed with "Forward execution thread failed", the worker died and the next job reloaded everything.
   The limits are raised (`recompile_limit` 1,024, `accumulated_recompile_limit` 65,536).
+  `SOL_H3_DYNAMIC_TEXT_LENGTH=1` ([16](#16-prompt-lengths-without-recompiles-experimental)) stops the per-length
+  graphs of the body blocks.
 - **Files.** `runtime/stage1.py`.
 - **Switch.** None.
 - **Measured.** 7 distinct prompt lengths in one session, no failure. Each new length still costs 9-10 s once
@@ -278,14 +280,49 @@ and identity are unchanged, and the image is 5-11% sharper.
   `tests/test_stage2_contract.py`, `tests/test_pipeline.py`.
 - **Switch.** `SOL_H3_STAGE2_AUDIO=joint` restores upstream's behaviour (older clips then reproduce from their seed).
 
-### 16. Tests
+### 16. Prompt lengths without recompiles (experimental)
+
+- **Purpose.** A warm session compiles new Stage-1 graphs for every prompt length it has not seen (13). From the
+  studio's receipts, that added 7-14 s to Stage 1 of 23% of warm clips (issue #41). With
+  `SOL_H3_DYNAMIC_TEXT_LENGTH=1`, the 50 body blocks of the H3 DiT compile once, for any prompt length.
+- **Why they recompiled.** Dynamo specializes every int it reads from a global variable. FastVideo hands its
+  sparse-attention metadata to the attention through a global forward context. So each body graph was tied to
+  `total_seq_length` (the length check in FastVideo's `tile()`), to `num_prefix_tiles` (it changes every 64 text
+  tokens) and to `current_timestep`. The patch's opaque attention op took the tile counts and the step as ints; the
+  step made one graph per denoise step. `tile()` also branches on its tile buffer, which made one more graph for each
+  request's first block. Measured on the CPU, with a small model built from FastVideo's own H3 block and attention-metadata classes
+  and a stand-in for the attention kernel: 5 body graphs for every new length. The two text-refiner blocks compile at
+  the first length and once more at the second; then PyTorch's automatic dynamic shapes cover any length.
+- **What changes.** In `runtime/stage1_ops/regional.py`, with the setting on:
+  - the opaque attention op reads the tile counts and the step from the forward context when it runs;
+  - the length check and the tile-buffer bookkeeping of `tile()` run before each block, outside its graph. The graph
+    keeps the scatter of the packed rows into the tile buffer and the gather back, as before;
+  - the packed-row dimension of the block inputs and of the tile metadata is marked dynamic. The attention gets its
+    row count from its own query instead of the block's int argument (the same value on one GPU).
+
+  The text refiner and FastVideo are not changed. One GPU only (no sequence parallelism).
+- **Output.** Expected to be bit-identical; not yet checked on the GPU. Inductor generates only data movement,
+  casts, the FP8 activation scaling (a maximum and elementwise steps) and the residual adds of the body graph. The
+  norms, RoPE and SwiGLU are FastVideo's own Triton kernels, and the matmuls are cuBLAS calls of the same sizes. None
+  of these results depends on how a kernel is tuned for a symbolic length (inferred). On the CPU, the small model's
+  outputs were identical with and without the setting at 4 prompt lengths (Inductor's C++ backend).
+- **Measured.** CPU only so far: the small model compiles 1 body graph for 5 prompt lengths (without the setting: 5
+  per length). GPU times: not measured yet.
+- **Files.** `runtime/stage1_ops/regional.py`, `runtime/stage1.py` (comment), `tests/test_regional_length.py` (new).
+- **Switch.** `SOL_H3_DYNAMIC_TEXT_LENGTH`: `0` (default) as before, `1` on. Another value stops Stage 1 when it
+  loads.
+
+### 17. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
 deliver-first, the background prompt encoder, the new `Pipeline` arguments and the compile-cache location (it
 also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
-older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 tests in total (upstream: 65).
+older LTX-2), `tests/test_pipeline.py` its check before any worker starts. `tests/test_regional_length.py` (new)
+checks the setting on a small stand-in model on the CPU: the graphs it compiles over several prompt lengths, outputs
+equal to the uncompiled model, the tile-buffer rules and the FastVideo signatures it relies on. 80 tests in total
+(upstream: 65).
 
 ## All switches
 
@@ -304,6 +341,7 @@ older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 te
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
+| `SOL_H3_DYNAMIC_TEXT_LENGTH` | 0 | 1 = compile Stage 1's body blocks once for any prompt length (experimental, [16](#16-prompt-lengths-without-recompiles-experimental)) |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.
