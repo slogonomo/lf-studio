@@ -192,6 +192,68 @@ class Basics(StudioTest):
         self.assertEqual(e.exception.code, 403)
 
 
+class HostCheck(StudioTest):
+    """#29: a request for a host name the studio does not answer to gets 421, whatever the method: a web page on a
+    name of its own that resolves to the studio's address (DNS rebinding) gets nothing. IP addresses, localhost, names
+    without a dot and local suffixes pass; SOLH3_ALLOWED_HOSTS adds names, or turns the check off with *."""
+    load_s, clip_s = 1, 0.5
+
+    def ask(self, host, method="GET", path="/api/state", **headers):
+        body = json.dumps({"id": "f" * 32}).encode() if method == "POST" else None
+        code, _, data = self.studio.request(method, path, body, dict(headers, Host=host))
+        return code, data
+
+    def refused(self, host, method="GET", path="/api/state", **headers):
+        code, data = self.ask(host, method, path, **headers)
+        self.assertEqual(code, 421, (host, method, path, data))
+        if method != "HEAD":
+            self.assertIn(b"add it to SOLH3_ALLOWED_HOSTS", data)
+        return json.loads(data or b"{}").get("error")
+
+    def test_unknown_names_refused_for_every_method(self):
+        self.assertEqual(self.refused("Evil.Example:8190"),
+                         "unknown host name evil.example; add it to SOLH3_ALLOWED_HOSTS")
+        self.refused("evil.example", "HEAD")
+        self.refused("evil.example", "GET", "/")
+        self.refused("evil.example", "GET", f"/video/{'f' * 32}")
+        self.refused("evil.example", "POST", "/api/cancel")
+        self.refused("studio.lan.evil.example", "POST", "/api/unload")
+        self.refused("ts.net")                                               # a suffix, not a name of its own
+        b = "hostcheck7MA4"
+        form = (f'--{b}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\na clip\r\n--{b}--\r\n').encode()
+        code, _, data = self.studio.request("POST", "/api/generate", form,
+                                            {"Host": "evil.example", "Content-Type": f"multipart/form-data; boundary={b}"})
+        self.assertEqual(code, 421, data)
+        self.assertEqual(self.studio.state()["jobs"], [])                     # nothing queued
+        self.refused(f"127.0.0.1:{self.studio.port}", **{"X-Forwarded-Host": "evil.example"})
+        self.refused(f"127.0.0.1:{self.studio.port}", **{"X-Forwarded-Host": "spark:8190, evil.example"})
+
+    def test_addresses_local_names_and_the_busy_probe_pass(self):
+        port = self.studio.port
+        for host in (f"127.0.0.1:{port}", "127.0.0.1", f"[::1]:{port}", "[::1]", f"localhost:{port}", "LOCALHOST",
+                     "localhost.", "10.1.2.3:8190", "100.101.102.103", "[fd7a:115c:a1e0::1]:8190", "spark:8190",
+                     "spark-box", "spark.tail1234.ts.net:8190", "studio.local", "box.lan", "box.home",
+                     "box.home.arpa", "gpu.internal:8190"):
+            self.assertEqual(self.ask(host)[0], 200, host)
+        self.assertEqual(self.ask("spark:8190", "POST", "/api/cancel")[0], 404)         # past the check: no such clip
+        self.assertEqual(self.ask(f"127.0.0.1:{port}", **{"X-Forwarded-Host": "spark.tail1234.ts.net:8190"})[0], 200)
+
+    def test_allowed_hosts_setting(self):
+        self.studio.stop()
+        self.studio.env["SOLH3_ALLOWED_HOSTS"] = " Studio.Example.com:8443 , other.example"
+        self.studio.start()
+        for host in ("studio.example.com", "STUDIO.example.com:8190", "other.example:80"):
+            self.assertEqual(self.ask(host)[0], 200, host)
+        self.assertEqual(self.ask(f"127.0.0.1:{self.studio.port}", **{"X-Forwarded-Host": "other.example"})[0], 200)
+        self.refused("evil.example")
+        self.refused("example.com")
+        self.studio.stop()
+        self.studio.env["SOLH3_ALLOWED_HOSTS"] = "*"
+        self.studio.start()
+        self.assertEqual(self.ask("evil.example")[0], 200)
+        self.assertEqual(self.ask("evil.example", "POST", "/api/cancel")[0], 404)
+
+
 def mp4(seconds=3):
     """A small test video with sound (reference videos must be at least 2 s)."""
     out = Path(tempfile.mkdtemp(prefix="sol-h3-mp4-")) / "ref.mp4"
