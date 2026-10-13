@@ -128,6 +128,8 @@ Write these three fields in this order, each as `name: text`, with a blank line 
   - Describe the voice (age, timbre, on or off screen) **outside** the tags.
 - **Inside `<d>...</d>`** goes only `[Language]` and the exact words, untranslated:
   `the fisherman with a low, gravelly voice (S1) says: <d>[English] The tide is turning.</d>`
+- **Capital first letter:** start the words in each `<d>` with a capital letter, because a lowercase line that
+  opens the clip can add a stray syllable at 0 s (measured in the A/B of issue #38; see issue #53).
 - **Voice-over:** `says in an off-screen voiceover: <d>[English] ...</d> while his lips remain completely closed`.
 - **Cuts and the clip's end** (MiniMax's rule; its guides give no example with these tokens, nor say whether they
   go inside `<d>`):
