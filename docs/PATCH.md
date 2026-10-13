@@ -2,12 +2,12 @@
 
 `patches/sol-h3-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
-branch `sol-engine`. It is a plain `git diff`: 21 files, 18 modified and 3 new.
+branch `sol-engine`. It is a plain `git diff`: 23 files, 19 modified and 4 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 74 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 93 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
-- 17 of the 18 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
+- 18 of the 19 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
   tagged `sol-h3-studio:`. The 3 new files say they are part of sol-h3-studio.
@@ -23,7 +23,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 74 tests ... OK
+CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 93 tests ... OK
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -50,6 +50,8 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Model loading overlaps (see below), so stages load at the same time instead of one after another. | on | no switch; `git apply -R` |
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
+| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It is meant to give the same output as a fresh session at that shape; that is not yet checked on the GPU. See [16](#16-reshape-another-length-or-orientation-without-a-reload). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
+| Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: after a shape change a worker compiles a static graph, not one with dynamic sizes. A worker's first shape compiles as upstream. | on | `SOL_H3_STATIC_SHAPES=0` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
 
@@ -103,8 +105,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 ### 3. Prompt encoder per request for clips over 10 s
 
 - **Purpose.** With the Qwen prompt encoder resident next to Stage1 and Stage2, a 15 s refine dropped to 4 GiB
-  MemAvailable and the memory guard stopped it. Sessions whose output exceeds 241 frames load the encoder for
-  each request and close it again.
+  MemAvailable and the memory guard stopped it. Clips whose output exceeds 241 frames load the encoder for each
+  request and close it again. A session that changes to such a length closes its resident encoder first, and loads
+  it again when it changes back ([16](#16-reshape-another-length-or-orientation-without-a-reload)).
 - **Files.** `runtime/pipeline.py`.
 - **Switch.** `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` (default 241).
 - **Measured.** A 15 s session with the encoder resident: 192.9 s per clip vs 190.8 s, lowest MemAvailable
@@ -151,7 +154,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 
 - **Purpose.** On the first request upstream compares all 200 cuDNN block-sparse attention calls with the
   original Triton kernel. Each comparison adds a reference pass and two host syncs, ~30 s per cold start. The
-  patch checks the first 8 calls (layers 0-7 of the first update, the same kernel, real data).
+  patch checks the first 8 calls (layers 0-7 of the first update, the same kernel, real data). A session that
+  changes its clip shape checks again on the first request at each new shape
+  ([16](#16-reshape-another-length-or-orientation-without-a-reload)).
 - **Files.** `runtime/stage1_ops/vsa.py`, `tests/test_stage1_contracts.py`.
 - **Switch.** `SOL_H3_BSA_CHECK_CALLS` (default 8, range 1-200; 200 = upstream).
 - **Measured.** Part of 177 → 127 s (item 5).
@@ -278,14 +283,53 @@ and identity are unchanged, and the image is 5-11% sharper.
   `tests/test_stage2_contract.py`, `tests/test_pipeline.py`.
 - **Switch.** `SOL_H3_STAGE2_AUDIO=joint` restores upstream's behaviour (older clips then reproduce from their seed).
 
-### 16. Tests
+### 16. Reshape: another length or orientation without a reload
+
+- **Purpose.** A session was built for one task, length and orientation. Another length or orientation closed it
+  and loaded every model again: the first clip after such a switch took about 60-80 s longer than a warm clip
+  (from the studio's worker logs on one DGX Spark; issue #45). Nothing loaded depends on the shape.
+  `Pipeline.reshape(orientation=..., seconds=...)` gives the running workers the recipe of the new shape, for the
+  same task (worker command `reshape`):
+  - Stage 1: height, width and frame count of the next request (FastVideo takes them per request), the latent
+    capture's shape check and PCM length, and the ref2va reference-video canvas. The 8-call cuDNN BSA self-check
+    runs again on the first request at a shape the worker has not checked; the receipt lists `bsa_checked_shapes`.
+  - Stage 2: the shared module's frame and shape globals, set to the values a fresh worker for that shape has
+    (`bind_geometry`; a test runs the module's own import code for every length), the latent tools, the decoder
+    tiles (validated against the new pixel shape) and the spatial route. The next request runs under the
+    compile warm-up timeout, as a fresh worker's first request does.
+  - Prompt encoder: the keyframe canvas. Above `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` the resident encoder closes and
+    each request loads its own, as before. Back below, the resident encoder loads again in the background.
+  - If a worker fails the command, the reshape fails, and the pipeline refuses requests until it is closed.
+- **Static compiles.** Graphs for a new shape compile on its first request. Stage 1's regions and Stage 2's blocks
+  now compile with `dynamic=False` (Stage 1 sets `torch._dynamo.config.automatic_dynamic_shapes = False` in its
+  worker, which does the same for every compile there). Upstream's `dynamic=None` compiles a worker's first shape
+  statically; after a shape change Dynamo may compile a graph with dynamic sizes, which can use other kernels (a
+  CPU test shows it for a small function with the Stage 1 torch, 2.12). With `dynamic=False` each shape gets the
+  static graph that a fresh worker compiles for it, so a worker's output does not depend on the shapes it ran
+  before. This also applies to Stage 1's prompt-length recompiles (item 13): each new prompt length gets its own
+  static graph. The compile-cache keys don't include this setting (read in torch's source), so existing caches stay
+  valid (inferred).
+- **Files.** `runtime/pipeline.py`, `runtime/worker.py`, `runtime/config.py`, `runtime/stage1.py`,
+  `runtime/stage1_ops/{capture,vsa}.py`, `runtime/stage2.py`, `runtime/stage2_ops/models.py`, `runtime/qwen.py`,
+  `tests/test_reshape.py` (new).
+- **Switches.** `SOL_H3_STATIC_SHAPES=0` restores `dynamic=None`. The studio's `SOLH3_RESHAPE=0` closes the session
+  and loads the models again for any change, as before. `infer.py` does not reshape.
+- **Measured.** Not yet on the GPU. Expected: a same-task switch costs about 5-25 s over a warm clip instead of
+  60-80 s, and about warm speed at a shape the session already ran (estimates, issue #45).
+- **Deviation.** One worker renders several shapes; NVIDIA ran one shape per process (see the table above).
+
+### 17. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
 deliver-first, the background prompt encoder, the new `Pipeline` arguments and the compile-cache location (it
 also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
-older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 tests in total (upstream: 65).
+older LTX-2), `tests/test_pipeline.py` its check before any worker starts. `tests/test_reshape.py` (new) covers
+reshape: stand-in workers check that Stage 1, Stage 2 and the prompt encoder each see the shape of every request;
+the Stage 2 globals are compared with the shared module's own import code for every length and orientation; it also
+covers the capture's shape check and PCM trim, the BSA self-check per shape, the keyframe canvas and the static
+compiles. 93 tests in total (upstream: 65).
 
 ## All switches
 
@@ -304,6 +348,8 @@ older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 te
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
+| `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)`: after a shape change a graph may get dynamic sizes |
+| `SOLH3_RESHAPE` (studio) | 1 | 0 = another length or orientation closes the session and loads the models again |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.

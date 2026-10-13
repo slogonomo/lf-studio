@@ -41,7 +41,9 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
   Delete moves a clip and its files to a trash folder for 7 days, with Undo. Cancel takes a queued clip out of the
   queue, or stops a running one (the models then load again for the next clip, about 1-2 min); its card stays as
   Cancelled, with Remix and Delete.
-- The Generate button says when your settings need a model reload; the clip card shows how long the last load took.
+- Another format or length in the same mode keeps the models loaded: the running session changes its shape. Only
+  another mode reloads them; the Generate button says when your settings need that, and the clip card shows how
+  long the last load took.
   "Load selected now" under it starts loading other settings while you finish the prompt (nothing loads on a
   selection change alone).
 - Warm-up at launch with the settings of your last clip; a clip with those settings submitted early in the warm-up

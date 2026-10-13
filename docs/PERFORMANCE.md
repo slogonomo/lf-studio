@@ -136,6 +136,27 @@ graphs. FastVideo caps recompiles at 16; the 4th distinct prompt length in a ses
 worker and forced a full reload. The limit is raised (1,024; 65,536 accumulated). Tested: 7 distinct prompt
 lengths in one session, no failure.
 
+## Changing length or format
+
+Before 0.4 a clip with another length or format closed the loaded session and loaded every model again, like a
+change of mode. Measured cost of such a switch: the first clip after it, minus a warm clip of the new setting
+(seconds, on one DGX Spark, from the studio's worker logs and `results.json`; issue #45):
+
+| | 5 → 15 s, t2va 16:9 | 15 → 5 s, t2va 16:9 | 9:16 5 s → 16:9 10 s, fl2va | mode only, 16:9 10 s |
+|---|---|---|---|---|
+| Close the old session | 15 | 5 | 7 | 9 |
+| Start Stage 1 and the prompt encoder | 15 | 14 | 15 | 14 |
+| Stage 1 weights: read, LoRA merge, FP8 | 21 | 22 | 20 | 23 |
+| Stage 1 first denoise, extra over a warm clip | ~35 | ~16 | 22 | 12 |
+| Stage 2 first run, extra over a warm clip | ~9 | ~6 | 5 | 7 |
+| **Total extra** | **~81** | **~62** | **~65** | **~63** |
+
+Now the session keeps its models for another length or format of the same mode and changes its shape in place
+([PATCH.md](PATCH.md#16-reshape-another-length-or-orientation-without-a-reload)). The first two rows and the weights
+go away; the first clip at a shape the session has not run compiles its graphs (from the compile cache when that
+shape ran before). Expected: about 5-25 s over a warm clip, and about warm speed back at a shape the session already
+ran (estimates, not measured yet). A change of mode still reloads. `SOLH3_RESHAPE=0` reloads for any change.
+
 ## Known costs, not fixed
 
 - A new prompt length on a warm session adds 9-10 s (Stage 1 17.6 → 26.2 s). Reusing a prompt, or editing it
@@ -159,7 +180,9 @@ lengths in one session, no failure.
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer clips load the prompt encoder per request |
+| `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)` |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
+| `SOLH3_RESHAPE` (web UI) | 1 | 0 = another length or format closes the session and loads the models again |
 
 The warm-up at launch (`SOLH3_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled
 compile cache. A clip with the same settings submitted while it runs used to wait for it and then render warm
@@ -171,6 +194,9 @@ choice. Either way nothing is lost by submitting early, and the Generate button 
 clip would be ready ("replaces the warm-up" or "after the warm-up", from the recorded load and clip times). A clip
 for other settings stops the warm-up too, unless a queued clip is waiting for it. "Load selected now" starts the
 same kind of warm-up for the selected settings on request (with the prompt and inputs of the newest clip of that
-mode, or a built-in prompt for Text), so the same rules apply to it. If other models are loaded, they are closed
-first (~40 s; the status shows "switching to ..."); a clip or Unload in that time cancels the request, and the clip
-loads its own settings right after the close.
+mode, or a built-in prompt for Text), so the same rules apply to it. If another mode is loaded, it is closed first
+(~40 s; the status shows "switching to ..."); a clip or Unload in that time cancels the request, and the clip
+loads its own settings right after the close. For another length or format of the loaded mode the models stay:
+the session only changes its shape, without a warm-up clip, and the page offers no "Load selected now" for it. A clip
+of the warm-up's mode with another length or format counts as one for the same models: early in the warm-up it
+takes the warm-up over, later it waits for it and the session then changes its shape.

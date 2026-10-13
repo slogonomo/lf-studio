@@ -118,8 +118,11 @@ the existing copy in switchboard's `services/` directory (whatever you named it)
 `spark-switchboard check`, and restart switchboard ([INSTALL.md](INSTALL.md#updating)). Until then, deleting the
 cancelled clip ends the block at once.
 
-**Switching mode, format or length takes minutes.** Each combination is one loaded session. Changing any of them
-closes the session and loads the models again; the Generate button says so before you click.
+**Switching mode takes minutes.** Each mode is one loaded session. Another mode closes it and loads the models
+again; the Generate button says so before you click. Another format or length in the same mode keeps the models
+loaded: the session changes its shape, and the first clip at a shape it has not run yet compiles for it (estimated
+5-25 s more than a warm clip, not measured yet). With `SOLH3_RESHAPE=0` any change of mode, format or length
+reloads, as before 0.4.
 
 **Clips in the gallery after pruning old session directories.** Each clip lives in its session directory under
 `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/`. If you prune those, clips that also have a copy in
