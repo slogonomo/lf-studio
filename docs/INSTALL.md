@@ -125,9 +125,11 @@ mkdir -p ~/.local/bin && curl -fsSLo ~/.local/bin/sol-h3 \
 SOLH3_URL=http://<spark-host>:8190 sol-h3 status
 ```
 
-The first clip of each new mode, format and length loads the models (5 s clips: 104-113 s for t2va in the studio,
-99 s in the `infer.py` bench; ~115 s for fl2va and ~180 s for ref2va with a video reference, both measured with
-`infer.py`). The very first run of a configuration also compiles its kernels (see
+The first clip of each new mode loads the models (5 s clips: 104-113 s for t2va in the studio, 99 s in the
+`infer.py` bench; ~115 s for fl2va and ~180 s for ref2va with a video reference, both measured with `infer.py`).
+Another format or length of the loaded mode keeps them loaded; its first clip compiles for the new shape (up to 27 s
+more than a warm clip in one measured run, [PERFORMANCE.md](PERFORMANCE.md#changing-length-or-format)). With
+`SOLH3_RESHAPE=0` any change loads the models. The very first run of a configuration also compiles its kernels (see
 [PERFORMANCE.md](PERFORMANCE.md#known-costs-not-fixed)); after that the compile cache in
 `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` makes cold starts faster. Ctrl-C stops the server, its workers and the
 Qwen container.
