@@ -540,7 +540,7 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
-index 9aad551..c2a8fc3 100644
+index 9aad551..7d7a767 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 @@ -6,8 +6,11 @@ from pathlib import Path
@@ -556,7 +556,31 @@ index 9aad551..c2a8fc3 100644
  from .worker import write_json
  
  
-@@ -45,6 +48,20 @@ def worker_environment(name, paths):
+@@ -25,6 +28,23 @@ def await_json(path, process, timeout=1800):
+     return receipt
+ 
+ 
++# sol-h3-studio: MemAvailable can show a cache release a moment after the release has answered (bench trace: +6.6 GiB
++# between two 0.25 s samples around the answer), so the check before the early resident Qwen reads it for up to 1 s.
++MEM_SETTLE_S = 1.0
++
++
++def mem_available_gib():
++    """sol-h3-studio: MemAvailable from /proc/meminfo in GiB, or None where it can't be read."""
++    try:
++        with open("/proc/meminfo") as meminfo:
++            for line in meminfo:
++                if line.startswith("MemAvailable:"):
++                    return int(line.split()[1]) / 1048576
++    except (OSError, ValueError, IndexError):
++        pass
++    return None
++
++
+ def worker_environment(name, paths):
+     env = os.environ.copy()
+     env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
+@@ -45,6 +65,20 @@ def worker_environment(name, paths):
          env.pop("LD_LIBRARY_PATH", None)
      elif name == "stage2":
          env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -577,7 +601,15 @@ index 9aad551..c2a8fc3 100644
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -120,15 +137,29 @@ class Pipeline:
+@@ -115,20 +149,41 @@ class Worker:
+ class Pipeline:
+     """Reuse three isolated runtime environments and the same models for a batch.
+ 
+-    A full warmup precedes permanent Qwen residency to bound Stage2's initial
+-    loading peak. It is reported separately; the first formal request counts.
++    sol-h3-studio: a full warmup pass loads the models. The resident Qwen starts during its Stage2 refine, after
++    Stage2's initial loading peak, if memory allows (start()). The warmup is reported separately; the first formal
++    request counts.
      """
  
      def __init__(self, paths, output_root, *, task="t2va", ref_image_match=None,
@@ -599,17 +631,23 @@ index 9aad551..c2a8fc3 100644
 +        from . import geometry as _geometry
 +        self.transient_qwen = (_geometry.from_recipe(self.config)["output_frames"]
 +                               > int(os.environ.get("SOL_H3_RESIDENT_QWEN_MAX_FRAMES", "241")))
-+        # sol-h3-studio: the resident Qwen loads while start()'s Stage2 refines, so the next clip finds it ready.
-+        # SOL_H3_RESIDENT_QWEN_EARLY=0: it loads after start()'s MP4, as before.
++        # sol-h3-studio: the resident Qwen loads while start()'s Stage2 refines, so the next clip finds it ready, if
++        # MemAvailable after Stage2's cache release is at least SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB (default 32: Qwen's
++        # load, up to 19 GiB measured, + a first 10 s refine, ~7 GiB inferred, + memguard's 5 GiB floor + 1 GiB).
++        # Otherwise, and with SOL_H3_RESIDENT_QWEN_EARLY=0, it loads after start()'s MP4, as before.
 +        self.early_qwen = (not self.transient_qwen
 +                           and os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY", "1") == "1")
++        self.early_qwen_min_gib = float(os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB") or "32")
++        self.resident_qwen = ({"spawn": "per_request"} if self.transient_qwen else
++                              {"spawn": "after_first_clip", "reason": "SOL_H3_RESIDENT_QWEN_EARLY=0"}
++                              if not self.early_qwen else {"spawn": "first_refine"})
 +        self.started = False
 +        self.qwen_loads = 0
 +        self._qwen_future = None
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -138,32 +169,110 @@ class Pipeline:
+@@ -138,32 +193,132 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -671,9 +709,10 @@ index 9aad551..c2a8fc3 100644
 +                # sol-h3-studio: both load peaks are over. From its load until the release after the first MP4,
 +                # Stage2 holds ~12 GiB that the release frees (MemAvailable +12-14 GiB at that release at 5, 10 and
 +                # 15 s, measured). Release it now, as generate() does before each clip, and load the resident Qwen
-+                # during this refine.
++                # during this refine if there is room for it.
 +                self.stage2.call("release_idle_cache")
-+                self._spawn_resident_qwen(pool)
++                if self._room_for_early_qwen():
++                    self._spawn_resident_qwen(pool)
 +            self.stage2.call("prepare", request_id=request_id, output_root=str(request / "stage2"))
 +            s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
 +                                  request_id=request_id)
@@ -691,11 +730,11 @@ index 9aad551..c2a8fc3 100644
 +                self.save()
 +            pool.shutdown(wait=False)
 +            raise
-+        if not self.transient_qwen and not self.early_qwen:
++        if not self.transient_qwen and self._qwen_future is None:
 +            self._spawn_resident_qwen(pool)
 +        pool.shutdown(wait=False)
 +        self.started = True
-+        self.report.update(status="READY", transient_qwen=self.transient_qwen, early_resident_qwen=self.early_qwen,
++        self.report.update(status="READY", transient_qwen=self.transient_qwen, resident_qwen=self.resident_qwen,
 +                           startup_and_warmup_s=(time.monotonic_ns() - started) / 1e9,
 +                           first_request_delivered=deliver,
 +                           warmup={"case_id": case["case_id"], "seed": pass_case["seed"], "output": s2["output"]})
@@ -722,6 +761,27 @@ index 9aad551..c2a8fc3 100644
 +            time.sleep(0.5)
 +        return self.worker_factory("stage2", self.root / "stage2-worker", self.paths, self.config)
 +
++    def _room_for_early_qwen(self):
++        """sol-h3-studio: MemAvailable after Stage2's release is at least the minimum for loading the resident Qwen
++        during the first refine. Records the reading (and why not) in results.json."""
++        deadline = time.monotonic() + MEM_SETTLE_S
++        while True:
++            gib = mem_available_gib()
++            if gib is not None and gib >= self.early_qwen_min_gib or time.monotonic() >= deadline:
++                break
++            time.sleep(0.1)
++        room = gib is not None and gib >= self.early_qwen_min_gib
++        self.resident_qwen = {"spawn": "first_refine" if room else "after_first_clip",
++                              "mem_available_gib": None if gib is None else round(gib, 2),
++                              "min_gib": self.early_qwen_min_gib}
++        if not room:
++            self.resident_qwen["reason"] = ("MemAvailable unknown" if gib is None else
++                                            f"MemAvailable {gib:.1f} GiB after Stage2's release, below "
++                                            f"SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB={self.early_qwen_min_gib:g}")
++            print(f"[sol-h3-studio] the resident Qwen loads after the first clip: {self.resident_qwen['reason']}",
++                  flush=True)
++        return room
++
 +    def _spawn_resident_qwen(self, pool):
 +        self._qwen_future = pool.submit(self.worker_factory, "qwen", self.root / "qwen-worker", self.paths,
 +                                        self.config)
@@ -738,7 +798,7 @@ index 9aad551..c2a8fc3 100644
              raise RuntimeError("Call start() before generate()")
          if case.get("task", "t2va") != self.task:
              raise ValueError("Use a separate pipeline for a different task")
-@@ -175,13 +284,22 @@ class Pipeline:
+@@ -175,13 +330,22 @@ class Pipeline:
          started = time.monotonic_ns()
          row["request_start_monotonic_ns"] = started
          try:
@@ -764,7 +824,7 @@ index 9aad551..c2a8fc3 100644
              self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -195,7 +313,8 @@ class Pipeline:
+@@ -195,7 +359,8 @@ class Pipeline:
                         qwen_s=conditioning["request_wall_s"], stage1_s=s1["request_wall_s"],
                         stage2_s=s2["stage2_request_s"],
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
@@ -774,7 +834,7 @@ index 9aad551..c2a8fc3 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -213,6 +332,11 @@ class Pipeline:
+@@ -213,6 +378,11 @@ class Pipeline:
  
      def close(self):
          try:
@@ -1619,7 +1679,7 @@ index 0000000..087bed3
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..f82001c 100644
+index 6c20301..4aa1450 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -1640,7 +1700,7 @@ index 6c20301..f82001c 100644
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -59,31 +62,120 @@ class FakeWorker:
+@@ -59,31 +62,149 @@ class FakeWorker:
          self.events.append(("close", self.name))
  
  
@@ -1661,27 +1721,48 @@ index 6c20301..f82001c 100644
 +        return super().call(op, **kwargs)
 +
 +
++def residency_settings(early=None, mem_gib=64.0):
++    """sol-h3-studio: the resident-Qwen settings at their defaults (a user's own values would change the order the
++    tests expect), SOL_H3_RESIDENT_QWEN_EARLY as given, and MemAvailable after Stage2's release as given."""
++    stack = contextlib.ExitStack()
++    stack.enter_context(mock.patch.dict(os.environ))
++    for name in ("SOL_H3_RESIDENT_QWEN_EARLY", "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB", "SOL_H3_RESIDENT_QWEN_MAX_FRAMES"):
++        os.environ.pop(name, None)
++    if early is not None:
++        os.environ["SOL_H3_RESIDENT_QWEN_EARLY"] = early
++    stack.enter_context(mock.patch("runtime.pipeline.mem_available_gib", return_value=mem_gib))
++    stack.enter_context(mock.patch("runtime.pipeline.MEM_SETTLE_S", 0.05))
++    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))      # its note when Qwen loads after the clip
++    return stack
++
++
  class PipelineTests(unittest.TestCase):
++    def setUp(self):
++        # sol-h3-studio: start() reads MemAvailable before it loads the resident Qwen early; not this machine's
++        patcher = mock.patch("runtime.pipeline.mem_available_gib", return_value=64.0)
++        patcher.start()
++        self.addCleanup(patcher.stop)
++
      def test_residency_order_and_real_endpoint(self):
 -        FakeWorker.events = []
          case = {"case_id": "example", "prompt": "A bird glides over a mountain lake.", "seed": 42}
-+        # sol-h3-studio: SOL_H3_RESIDENT_QWEN_EARLY unset (default) and 0, and a 15 s clip (Qwen per request)
-+        for early, seconds in ((None, None), ("0", None), (None, 15)):
-+            loads_early = early is None and seconds is None
++        # sol-h3-studio: (SOL_H3_RESIDENT_QWEN_EARLY, clip length, MemAvailable after Stage2's release, where the
++        # resident Qwen starts): the default; too little memory for it during the refine; the switch off; 15 s
++        for early, seconds, mem_gib, spawn in ((None, None, 40.0, "first_refine"),
++                                               (None, None, 20.0, "after_first_clip"),
++                                               ("0", None, 40.0, "after_first_clip"),
++                                               (None, 15, 40.0, "per_request")):
 +            FakeWorker.events = []
-+            with self.subTest(early=early, seconds=seconds), tempfile.TemporaryDirectory() as directory, \
-+                 mock.patch.dict(os.environ):
-+                os.environ.pop("SOL_H3_RESIDENT_QWEN_EARLY", None)
-+                if early is not None:
-+                    os.environ["SOL_H3_RESIDENT_QWEN_EARLY"] = early
++            with self.subTest(early=early, seconds=seconds, mem_gib=mem_gib), tempfile.TemporaryDirectory() as \
++                    directory, residency_settings(early, mem_gib):
 +                pipeline = Pipeline({}, Path(directory) / "run", seconds=seconds,
-+                                    worker_factory=Stage2WaitsForQwen if loads_early else FakeWorker)
++                                    worker_factory=Stage2WaitsForQwen if spawn == "first_refine" else FakeWorker)
 +                try:
 +                    pipeline.start(case)
 +                    row = pipeline.generate(case)
 +                    pipeline.finish()
 +                    self.assertEqual(pipeline.report["status"], "PASS")
-+                    self.assertEqual(pipeline.report["early_resident_qwen"], loads_early)
++                    self.assertEqual(pipeline.report["resident_qwen"]["spawn"], spawn)
 +                    self.assertEqual(len(pipeline.report["requests"]), 1)
 +                    self.assertFalse(pipeline.report["phase_sum_used"])
 +                    self.assertEqual(row["e2e_s"],
@@ -1692,17 +1773,26 @@ index 6c20301..f82001c 100644
 +                    self.assertEqual(len(starts), 2)
 +                    first_refine = events.index(("call", "stage2", "run"))
 +                    release = events.index(("call", "stage2", "release_idle_cache"))
-+                    if loads_early:
-+                        # once Stage1's first request has returned and Stage2 is built and has released its load
-+                        # cache, the resident Qwen starts, and it loads while the first clip refines
++                    if early is None and seconds is None:
++                        # once Stage1's first request has returned and Stage2 is built, Stage2 releases its load
++                        # cache before the first refine; then the resident Qwen starts and loads during the refine,
++                        # if MemAvailable allows it
 +                        self.assertLess(events.index(("call", "stage1", "run")), release)
 +                        self.assertLess(events.index(("start", "stage2")), release)
++                        self.assertLess(release, first_refine)
++                        self.assertEqual(pipeline.report["resident_qwen"]["mem_available_gib"], mem_gib)
++                        self.assertEqual(pipeline.report["resident_qwen"]["min_gib"], 32)
++                    else:
++                        # the switch off, or Qwen per request (over 10 s): no release before the first refine
++                        self.assertLess(first_refine, release)
++                    if spawn == "first_refine":
 +                        self.assertLess(release, starts[1])
 +                        self.assertLess(starts[1], first_refine)
 +                    else:
-+                        # after the first MP4 and Stage2's release (switch off), or per request (over 10 s)
-+                        self.assertLess(first_refine, release)
-+                        self.assertLess(release, starts[1])
++                        # after the first MP4 (switch off, or not enough memory), or per request (over 10 s)
++                        self.assertGreater(starts[1], first_refine)
++                    if mem_gib < 32:
++                        self.assertIn("MemAvailable 20.0 GiB", pipeline.report["resident_qwen"]["reason"])
 +                    self.assertEqual(events.count(("start", "stage1")), 1)
 +                    self.assertEqual(events.count(("start", "stage2")), 1)
 +                finally:
@@ -1714,8 +1804,7 @@ index 6c20301..f82001c 100644
 +                    raise RuntimeError("Stage2 died")
 +                return super().call(op, **kwargs)
 +        FakeWorker.events = []
-+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
-+            os.environ.pop("SOL_H3_RESIDENT_QWEN_EARLY", None)
++        with tempfile.TemporaryDirectory() as directory, residency_settings():
 +            pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FailingRefine)
 +            with self.assertRaisesRegex(RuntimeError, "Stage2 died"):
 +                pipeline.start(case, deliver=True)
@@ -1773,7 +1862,7 @@ index 6c20301..f82001c 100644
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +288,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +317,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -1782,7 +1871,7 @@ index 6c20301..f82001c 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +317,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +346,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -1792,7 +1881,7 @@ index 6c20301..f82001c 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +353,26 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +382,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
