@@ -50,7 +50,7 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Model loading overlaps (see below), so stages load at the same time instead of one after another. | on | no switch; `git apply -R` |
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
-| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 at 5 s, 10 s and 9:16; at 15 s the MP4 differed through Stage 2's run-time kernel tuning (see [16](#16-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
+| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differs between any two processes today, reshaped or not (see [8](#8-inductor-autotune-cache-fix-torch-213) and [16](#16-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
 | Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change. This changes Stage 1's graphs from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). The output was the same with and without it in one GPU check (3 clips). See [16](#16-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
@@ -189,6 +189,12 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   kernel tuned at run time and each tuning result stored.
 - **Measured.** 11/11 hits, no re-tuning; Stage2 first render 45-49 → 41 s; first clip 103-104 → 99.3/99.4 s.
   Specific to torch 2.13's Inductor; re-check it when the Stage2 torch changes.
+- **Known issue.** The fallback labels the kernel's cache state "hit (spark fallback)". Torch skips its run-time
+  R0_BLOCK halving (`_dynamic_scale_rblock`) only when the state is exactly "hit". Where that halving applies, a
+  kernel read through the fallback gets smaller-block candidates added, is benchmarked by timing and tuned again, and
+  the winner overwrites the stored result. The next process reads that result and may pick another config, which
+  changes a reduction's order and so the output. Seen at 15 s for three of Stage 2's audio-branch reductions
+  (`SPARK_DEBUG_AUTOTUNE=1` lines, two GPU runs); not at 5 s or 10 s, where the halving rule adds no candidates.
 
 ### 9. VAEs built on the GPU
 
@@ -332,10 +338,12 @@ and identity are unchanged, and the image is 5-11% sharper.
     control at 5 s matched too. The first clip of a process, or the first after a change to a shape that process had
     not compiled, differs slightly from later clips in fresh sessions as well, and it matched the fresh first clip
     where checked (10 s).
-  - At 15 s the warm MP4s' video differed (audio the same). Both workers ran the same compiled Stage-2 graph. Three
-    Stage-2 reduction kernels of that shape had no tuning result stored yet, so each process tuned them by timing at
-    run time, which can pick another block size and shifts the numerics; only the fresh worker stored its result
-    (read from the compile cache afterwards). `SPARK_DEBUG_AUTOTUNE=1` prints such tunings.
+  - At 15 s the warm MP4s' video differed (audio and Stage 1 the same). A second run, with
+    `SPARK_DEBUG_AUTOTUNE=1`, showed why. Two fresh 15 s sessions differ too: Stage 2 at 15 s isn't reproducible
+    across processes today, reshaped or not. Both runs used the same compiled Stage-2 graph. Three reduction kernels
+    of the 15 s audio branch read their stored tuning result through item 8's fallback, are tuned again at run time
+    anyway (see the known issue there), and store a new winner each time. So reshape matches a fresh session at every
+    shape where two fresh sessions match each other (5 s, 10 s, fl2va 9:16).
   - First clip after a change, minus a warm clip at that shape: 5 → 10 s 14.4 s, 5 → 15 s 27.0 s (both compiled
     Stage 1 for this prompt length from scratch), 15 → 5 s (a shape the session had run) none, fl2va 16:9 → 9:16
     0.2 s. Reloads in the same run: 37.5-47.1 s, plus 4-9 s of closing.
