@@ -4,7 +4,7 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 23 files, 19 modified and 4 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 97 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 98 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
 - 18 of the 19 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
@@ -23,7 +23,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 97 tests ... OK
+CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 98 tests ... OK
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -50,8 +50,8 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Model loading overlaps (see below), so stages load at the same time instead of one after another. | on | no switch; `git apply -R` |
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
-| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It is meant to give the same output as a fresh session at that shape; that is not yet checked on the GPU. See [16](#16-reshape-another-length-or-orientation-without-a-reload). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
-| Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change. This changes Stage 1 from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). Output may differ from 0.4; not yet measured on the GPU. See [16](#16-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
+| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 at 5 s, 10 s and 9:16; at 15 s the MP4 differed through Stage 2's run-time kernel tuning (see [16](#16-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
+| Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change. This changes Stage 1's graphs from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). The output was the same with and without it in one GPU check (3 clips). See [16](#16-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
 
@@ -185,7 +185,8 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   saved the same result again. After an upstream miss the patch reads the entry through the kernel's own
   `AutotuneCache` (same key, same configs hash that the save used) and then does what upstream does on a hit.
 - **Files.** `runtime/stage2.py` (monkeypatch, installed in the Stage2 worker).
-- **Switches.** `SPARK_AUTOTUNE_CACHE_FIX=0` disables it; `SPARK_DEBUG_AUTOTUNE=1` prints each fallback hit.
+- **Switches.** `SPARK_AUTOTUNE_CACHE_FIX=0` disables it; `SPARK_DEBUG_AUTOTUNE=1` prints each fallback hit, each
+  kernel tuned at run time and each tuning result stored.
 - **Measured.** 11/11 hits, no re-tuning; Stage2 first render 45-49 → 41 s; first clip 103-104 → 99.3/99.4 s.
   Specific to torch 2.13's Inductor; re-check it when the Stage2 torch changes.
 
@@ -312,7 +313,9 @@ and identity are unchanged, and the image is 5-11% sharper.
   Stage 1's regions for updates 2-4 get a dynamic size (inferred from the code). It happens again after a prompt
   length or clip shape change. With `dynamic=False` every graph is static, and each shape gets the graph a fresh
   worker compiles for it, so a worker's output does not depend on what it ran before. Consequences:
-  - Stage 1's output may differ from 0.4 for every clip, not only after a reshape; the GPU check measures it.
+  - Stage 1's graphs differ from 0.4's for every clip, not only after a reshape. In one GPU check the Stage-1
+    latents and the MP4 streams were the same with `SOL_H3_STATIC_SHAPES=0` and `1` (3 clips at 5 s 16:9, two
+    prompt lengths, fresh sessions).
   - Each new prompt length also compiles the two text-refiner regions statically (about 1-2 s, inferred); before,
     their dynamic graph served later lengths.
   - The compile-cache keys don't include the setting (read in torch's source), but the graphs change: each prompt
@@ -322,8 +325,22 @@ and identity are unchanged, and the image is 5-11% sharper.
   `tests/test_reshape.py` (new).
 - **Switches.** `SOL_H3_STATIC_SHAPES=0` restores `dynamic=None`. The studio's `SOLH3_RESHAPE=0` closes the session
   and loads the models again for any change, as before. `infer.py` does not reshape.
-- **Measured.** Not yet on the GPU. Expected: a same-task switch costs about 5-25 s over a warm clip instead of
-  60-80 s, and about warm speed at a shape the session already ran (estimates, issue #45).
+- **Measured** (one GPU run on one DGX Spark, 22 clips, one seed, short prompts: a reshaped session against fresh
+  sessions at each shape, each a first and a warm clip):
+  - Stage-1 latents (capture sha256) were the same as in a fresh session at every shape: t2va 5, 10 and 15 s 16:9,
+    fl2va 5 s 9:16. The MP4 streams of warm clips were the same at 5 s, 10 s and fl2va 9:16, and a fresh-against-fresh
+    control at 5 s matched too. The first clip of a process, or the first after a change to a shape that process had
+    not compiled, differs slightly from later clips in fresh sessions as well, and it matched the fresh first clip
+    where checked (10 s).
+  - At 15 s the warm MP4s' video differed (audio the same). Both workers ran the same compiled Stage-2 graph. Three
+    Stage-2 reduction kernels of that shape had no tuning result stored yet, so each process tuned them by timing at
+    run time, which can pick another block size and shifts the numerics; only the fresh worker stored its result
+    (read from the compile cache afterwards). `SPARK_DEBUG_AUTOTUNE=1` prints such tunings.
+  - First clip after a change, minus a warm clip at that shape: 5 → 10 s 14.4 s, 5 → 15 s 27.0 s (both compiled
+    Stage 1 for this prompt length from scratch), 15 → 5 s (a shape the session had run) none, fl2va 16:9 → 9:16
+    0.2 s. Reloads in the same run: 37.5-47.1 s, plus 4-9 s of closing.
+  - Lowest MemAvailable 8.1 GiB, at 10 s, in the reshaped and in a fresh session alike. Stage 1's reserved memory
+    after the 15 s clips was back at its 5 s level (37.6 GiB). The BSA self-check ran 8 calls at each new shape.
 - **Deviation.** One worker renders several shapes; NVIDIA ran one shape per process (see the table above).
 
 ### 17. Tests
@@ -337,8 +354,8 @@ older LTX-2), `tests/test_pipeline.py` its check before any worker starts. `test
 reshape: stand-in workers check that Stage 1, Stage 2 and the prompt encoder each see the shape of every request;
 the Stage 2 globals are compared with the shared module's own import code for every length and orientation; it also
 covers the capture's shape check and PCM trim, the BSA self-check per shape, the keyframe canvas, the static
-compiles, and a pipeline that is closing, failed a reshape or is short of memory for the resident encoder. 97 tests in
-total (upstream: 65).
+compiles, a pipeline that is closing, failed a reshape or is short of memory for the resident encoder, and the
+`SPARK_DEBUG_AUTOTUNE` lines. 98 tests in total (upstream: 65).
 
 ## All switches
 
@@ -353,7 +370,7 @@ total (upstream: 65).
 | `SOL_H3_BSA_CHECK_CALLS` | 8 | 200 = upstream's full cuDNN BSA self-check |
 | `SOL_H3_COMPILE_CACHE` | `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` | a directory, or `session` = upstream per-session caches |
 | `SPARK_AUTOTUNE_CACHE_FIX` | 1 | 0 = upstream Inductor behaviour |
-| `SPARK_DEBUG_AUTOTUNE` | 0 | 1 = print autotune-cache fallback hits |
+| `SPARK_DEBUG_AUTOTUNE` | 0 | 1 = print autotune-cache fallback hits, kernels tuned at run time and stored results |
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |

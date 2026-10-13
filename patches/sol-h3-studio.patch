@@ -1568,7 +1568,7 @@ index 7f691fa..3b80f2a 100644
      sparse.triton_block_sparse_attn_forward = counted_sparse
      original_mask = native._build_block_mask
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-index 8f1a36c..b2ef480 100644
+index 8f1a36c..aa72989 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 @@ -3,25 +3,57 @@
@@ -1716,7 +1716,7 @@ index 8f1a36c..b2ef480 100644
                      crf=19, preset="veryfast", thread_count=8)
                  if not temporary.is_file() or temporary.stat().st_size == 0:
                      raise RuntimeError("video encoder produced no output")
-@@ -133,6 +185,47 @@ def _refiner_class(base, compat, session):
+@@ -133,6 +185,81 @@ def _refiner_class(base, compat, session):
      return SparkRefiner
  
  
@@ -1759,12 +1759,46 @@ index 8f1a36c..b2ef480 100644
 +
 +    recheck._spark_fix = True
 +    th.CachingAutotuner.recheck_autotune_cache = recheck
++    if debug:
++        _install_autotune_debug(th)
++
++
++def _install_autotune_debug(th):
++    """sol-h3-studio (SPARK_DEBUG_AUTOTUNE=1): also print every kernel tuned at run time and every tuning result stored.
++    A reduction kernel tuned by timing can pick another block config in another process, which shifts its numerics;
++    one whose result is stored and read back does not. These lines tell the two apart in worker.log."""
++    from torch._inductor.runtime.autotune_cache import AutotuneCache
++
++    def name(self_):
++        return (getattr(self_, "inductor_meta", None) or {}).get("kernel_name") or Path(self_.filename or "?").name[:14]
++
++    def state(self_):
++        return ((getattr(self_, "autotune_cache_info", None) or {}).get("autotune_cache_state"),
++                getattr(self_, "save_cache_hook", None) is not None)
++
++    def wrap(cls, attribute, report):
++        original = getattr(cls, attribute, None)
++        if original is None or getattr(original, "_spark_debug", False):
++            return
++
++        def wrapper(self_, *args, **kwargs):
++            result = original(self_, *args, **kwargs)
++            print(f"[sol-h3-studio] {report(self_, args, result)}", flush=True)
++            return result
++        wrapper._spark_debug = True
++        setattr(cls, attribute, wrapper)
++    wrap(th.CachingAutotuner, "autotune_to_one_config", lambda self_, args, result:
++         f"tuned at run time {name(self_)} -> {self_.launchers[0].config} (cache, save hook: {state(self_)})")
++    wrap(th.CachingAutotuner, "_coordinate_descent_tuning", lambda self_, args, result:
++         f"coordinate descent {name(self_)}: {args[0].config} -> {result.config} (cache, save hook: {state(self_)})")
++    wrap(AutotuneCache, "save", lambda self_, args, result:
++         f"tuning result stored {self_.local_cache[1] if getattr(self_, 'local_cache', None) else None}: {args[0]}")
 +
 +
  class Session:
      """Construct once, prepare/run sequential requests, then close the worker."""
  
-@@ -143,9 +236,13 @@ class Session:
+@@ -143,9 +270,13 @@ class Session:
          self.closed = self.failed = False
          self.prepared = self.current_capture = self.payload = None
          self.completed_requests = 0
@@ -1778,7 +1812,7 @@ index 8f1a36c..b2ef480 100644
          config = config.get("stage2", config)
          self.compile_enabled = config.get("compile", True)
          self.fixed_prompt = config.get("fixed_prompt", FIXED_PROMPT)
-@@ -159,11 +256,22 @@ class Session:
+@@ -159,11 +290,22 @@ class Session:
              if not path.is_file() or not path.stat().st_size:
                  raise FileNotFoundError(path)
          self.work_dir = Path(work_dir).resolve()
@@ -1802,7 +1836,7 @@ index 8f1a36c..b2ef480 100644
          try:
              self._construct()
          except BaseException:
-@@ -185,8 +293,14 @@ class Session:
+@@ -185,8 +327,14 @@ class Session:
              self._owns_dist = True
          if dist.get_world_size() != 1:
              raise RuntimeError("Spark requires one distributed rank")
@@ -1818,7 +1852,7 @@ index 8f1a36c..b2ef480 100644
          with torch.inference_mode():
              self.models = _refiner_class(base, compat, self)()
          self.conv_layout_receipt = self.stack.enter_context(installed_direct_upsample_nhwc(torch_module=torch))
-@@ -195,6 +309,7 @@ class Session:
+@@ -195,6 +343,7 @@ class Session:
              "session_started_monotonic_ns": self.started_ns, "session_ready_monotonic_ns": self.ready_ns,
              "session_initialization_s": (self.ready_ns - self.started_ns) / 1e9,
              "refiner_recipe": {"sigmas": list(SIGMAS), "updates": 3, "lora_strength": 0.8,
@@ -1826,7 +1860,7 @@ index 8f1a36c..b2ef480 100644
                                 "joint_audio_video": True, "expected_sol_backend": "triton"},
              "spatial_route": self.models.h3_spatial_route, "conv_actual_tiling": asdict(self.models.tiling_config),
              "actual_parameter_dtypes": self.models.parameter_dtypes,
-@@ -225,18 +340,22 @@ class Session:
+@@ -225,18 +374,22 @@ class Session:
          if (self.closed or self.failed or self.current_capture is not None or self.prepared is None
                  or self.prepared["request_id"] != request_id or self.prepared["output_root"] != str(root)):
              raise RuntimeError("run requires the matching completed prepare identity and output root")
@@ -1851,7 +1885,7 @@ index 8f1a36c..b2ef480 100644
              record = {"prompt_id": row["case_id"], "prompt": self.fixed_prompt, "seed": row["seed"],
                        "source_index": row["source_index"], "index": 0, "_source_path": "/dev/null"}
              with self.torch.inference_mode():
-@@ -265,9 +384,11 @@ class Session:
+@@ -265,9 +418,11 @@ class Session:
              write_new(root / "final_file_manifest.json", {key: receipt[key] for key in (
                  "status", "request_id", "case_id", "output", "output_sha256", "output_bytes",
                  "stage2_started_monotonic_ns", "final_mp4_complete_monotonic_ns", "stage2_request_s")})
@@ -1864,7 +1898,7 @@ index 8f1a36c..b2ef480 100644
              return receipt
          except BaseException as error:
              self.failed = True
-@@ -277,6 +398,45 @@ class Session:
+@@ -277,6 +432,45 @@ class Session:
              self.current_capture = self.payload = self.prepared = None
              write_new(root / "stage2_result.json", receipt)
  
@@ -2358,10 +2392,10 @@ index 4af9048..840b1da 100644
                                                "last_frame": None, "references": refs})
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
 new file mode 100644
-index 0000000..4b5b86d
+index 0000000..067f62f
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
-@@ -0,0 +1,653 @@
+@@ -0,0 +1,710 @@
 +"""sol-h3-studio: CPU tests of reshape, another clip length or orientation in a running session (not part of upstream
 +Sol-H3-Spark). Stand-in workers check that every worker sees the shape of each request; the shape state each real
 +worker rebinds is checked against what a fresh worker for that shape has."""
@@ -2983,6 +3017,63 @@ index 0000000..4b5b86d
 +        session.closed = True
 +        with self.assertRaises(RuntimeError):
 +            session.reshape(load_recipe())
++
++
++class AutotuneDebugTests(unittest.TestCase):
++    """SPARK_DEBUG_AUTOTUNE=1 prints each kernel tuned at run time and each stored result (the 15 s check of #45)."""
++
++    def test_tuning_and_stores_are_printed(self):
++        import contextlib
++        import io
++
++        class Config:
++            def __init__(self, warps):
++                self.warps = warps
++
++            def __repr__(self):
++                return f"num_warps={self.warps}"
++
++        class Autotuner:
++            inductor_meta, filename = {"kernel_name": "triton_red_fused_rms_norm_8"}, "/cache/cj/kernel.py"
++            autotune_cache_info, save_cache_hook = {"autotune_cache_state": "miss"}, None
++
++            def recheck_autotune_cache(self, reload_kernel_from_src):
++                pass
++
++            def autotune_to_one_config(self, *args):
++                self.launchers = [SimpleNamespace(config=Config(16))]
++
++            def _coordinate_descent_tuning(self, launcher, *args):
++                return SimpleNamespace(config=Config(8))
++
++        class Cache:
++            local_cache = ("cache", "cj/8b5d.best_config")
++
++            def save(self, config, time_taken_ns, **kwargs):
++                return "saved"
++        th = SimpleNamespace(CachingAutotuner=Autotuner, triton_config_to_hashable=repr)
++        heuristics = types.ModuleType("torch._inductor.runtime.triton_heuristics")
++        heuristics.__dict__.update(vars(th))
++        caches = types.ModuleType("torch._inductor.runtime.autotune_cache")
++        caches.AutotuneCache = Cache
++        import torch._inductor.runtime as runtime
++        with mock.patch.object(runtime, "triton_heuristics", heuristics, create=True), \
++             mock.patch.dict(sys.modules, {"torch._inductor.runtime.triton_heuristics": heuristics,
++                                           "torch._inductor.runtime.autotune_cache": caches}), \
++             contextlib.redirect_stdout(io.StringIO()) as out:
++            stage2._install_autotune_cache_fix(debug=True)
++            tuner = Autotuner()
++            tuner.autotune_to_one_config()
++            tuner._coordinate_descent_tuning(SimpleNamespace(config=Config(16)))
++            self.assertEqual(Cache().save(Config(8), 1), "saved")
++            stage2._install_autotune_cache_fix(debug=True)          # installed once
++        lines = out.getvalue().splitlines()
++        self.assertEqual(lines, [
++            "[sol-h3-studio] tuned at run time triton_red_fused_rms_norm_8 -> num_warps=16 (cache, save hook: "
++            "('miss', False))",
++            "[sol-h3-studio] coordinate descent triton_red_fused_rms_norm_8: num_warps=16 -> num_warps=8 (cache, "
++            "save hook: ('miss', False))",
++            "[sol-h3-studio] tuning result stored cj/8b5d.best_config: num_warps=8"])
 +
 +
 +class StaticCompileTests(unittest.TestCase):

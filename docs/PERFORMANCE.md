@@ -157,11 +157,13 @@ change of mode. Measured cost of such a switch: the first clip after it, minus a
 Now the session keeps its models for another length or format of the same mode and changes its shape in place
 ([PATCH.md](PATCH.md#16-reshape-another-length-or-orientation-without-a-reload)). The first two rows and the weights
 go away; the first clip at a shape the session has not run compiles its graphs (from the compile cache when that
-shape ran before). Expected: about 5-25 s over a warm clip, and about warm speed back at a shape the session already
-ran (estimates, not measured yet). Above 10 s the prompt encoder still loads per request; after a change back to
-10 s or less the resident encoder loads again in the background (with at least 32 GiB MemAvailable, else after the
-next clip), so the first clip after such a change may wait for it. A change of mode still reloads. `SOLH3_RESHAPE=0`
-reloads for any change.
+shape ran before). Measured in one run (t2va and fl2va, one prompt; first clip after the change minus a warm clip of
+that shape): 5 → 10 s 14.4 s, 5 → 15 s 27.0 s (both compiled Stage 1 for this prompt length from scratch), 15 → 5 s
+(a shape the session had run) none, fl2va 16:9 → 9:16 0.2 s. Reloads in the same run cost 37.5-47.1 s over a warm
+clip, plus 4-9 s to close the previous session. Above 10 s the prompt encoder still loads per request; after a change
+back to 10 s or less the resident encoder loads again in the background (with at least 32 GiB MemAvailable, else
+after the next clip), so the first clip after such a change may wait for it. A change of mode still reloads.
+`SOLH3_RESHAPE=0` reloads for any change.
 
 ## Known costs, not fixed
 
