@@ -50,44 +50,84 @@ def mem_avail_gib():
     return 0.0
 
 
-def descendants(pid):
+def proc_stat(pid):
+    """(ppid, state, start time in clock ticks) of a process, or None if it is gone."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return int(fields[1]), fields[0], int(fields[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def descendants(roots):
+    """{pid: start time} of every process under the given pids (children, grandchildren, ...)."""
     children = {}
     for d in Path("/proc").iterdir():
-        if not d.name.isdigit():
-            continue
-        try:
-            ppid = int((d / "stat").read_text().rsplit(")", 1)[1].split()[1])
-        except (OSError, IndexError, ValueError):
-            continue
-        children.setdefault(ppid, []).append(int(d.name))
-    out, todo = [], [pid]
+        if d.name.isdigit():
+            st = proc_stat(int(d.name))
+            if st:
+                children.setdefault(st[0], []).append((int(d.name), st[2]))
+    out, todo = {}, list(roots)
     while todo:
-        for child in children.get(todo.pop(), []):
-            out.append(child)
-            todo.append(child)
+        for child, started in children.get(todo.pop(), []):
+            if child not in out:
+                out[child] = started
+                todo.append(child)
     return out
 
 
-def stop_tree(pid):
-    """SIGTERM to every process group under pid (memguard puts the GPU process in its own session), SIGKILL 15 s on."""
-    own = os.getpgrp()
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        groups = set()
-        for p in [pid] + descendants(pid):
+def alive(pid, started=None):
+    """Running, and the same process (start time) when given; a zombie has exited and only waits to be reaped."""
+    st = proc_stat(pid)
+    return st is not None and st[1] != "Z" and (started is None or st[2] == started)
+
+
+def stop_tree(pid, grace=15.0):
+    """Stop pid and everything under it: SIGTERM to each process and its process group (memguard-run.sh puts the GPU
+    process in its own session), then SIGKILL to whatever still runs after `grace` seconds. The processes are
+    collected before the first signal and kept: once memguard-run.sh has exited, its children are reparented and no
+    longer found under it. Returns as soon as all of them have exited (True), or False if any survived SIGKILL."""
+    own_pid, own_group = os.getpid(), os.getpgrp()
+    st = proc_stat(pid)
+    known = {pid: st[2]} if st else {}
+    known.update(descendants([pid]))
+    known.pop(own_pid, None)
+    running = lambda: [p for p, started in known.items() if alive(p, started)]
+
+    def signal_all(sig):            # only processes still running, and their current process groups
+        targets, groups = running(), set()
+        for p in targets:
             try:
                 groups.add(os.getpgid(p))
             except OSError:
                 pass
-        for g in groups - {own}:
+        for g in groups - {own_group}:
             try:
                 os.killpg(g, sig)
             except OSError:
                 pass
-        if sig == signal.SIGTERM:
-            for _ in range(15):
-                if not [p for p in [pid] + descendants(pid) if Path(f"/proc/{p}").exists()]:
-                    return
-                time.sleep(1)
+        for p in targets:
+            try:
+                os.kill(p, sig)
+            except OSError:
+                pass
+    signal_all(signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while True:
+        for p, started in descendants(running()).items():       # anything started meanwhile
+            if p != own_pid:
+                known.setdefault(p, started)
+        if not running():
+            return True
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    signal_all(signal.SIGKILL)
+    for _ in range(50):
+        if not running():
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def copy_compile_cache(out):
@@ -181,27 +221,29 @@ def cmd_run(a):
     need = float(setting("SOLH3_MIN_FREE_GIB", "110"))
     out.mkdir(parents=True)
     (out / "logs").mkdir()
-    print(f"run directory {out}")
-    cache, plan["compile_cache"] = copy_compile_cache(out)
-    print(f"compile cache: {plan['compile_cache']['note']}")
+    print(f"run directory {out}", flush=True)
     plan_path = out / "plan.json"
+    plan["compile_cache"] = {"note": "not copied (the run stopped before)"}
     plan_path.write_text(json.dumps(plan, indent=1))
-    env = group_env(cache)
     current, stopping = {"pid": None}, {"signal": None}
 
     def on_signal(signum, _frame):
         stopping["signal"] = signum
         if current["pid"]:
             stop_tree(current["pid"])
-    signal.signal(signal.SIGTERM, on_signal)
-    signal.signal(signal.SIGINT, on_signal)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, on_signal)
     clocks = clocks_file = None
-    if shutil.which("nvidia-smi") and os.environ.get("CUDA_VISIBLE_DEVICES") != "":   # 1 Hz clocks, temperature
-        clocks_file = open(out / "gpu_clocks.csv", "w")
-        clocks = subprocess.Popen(["nvidia-smi", f"--query-gpu={CLOCKS_QUERY}", "--format=csv", "-l", "1"],
-                                  stdout=clocks_file, stderr=subprocess.DEVNULL)
-    exits = {}
+    cache, exits = None, {}
     try:
+        cache, plan["compile_cache"] = copy_compile_cache(out)
+        print(f"compile cache: {plan['compile_cache']['note']}")
+        plan_path.write_text(json.dumps(plan, indent=1))
+        env = group_env(cache)
+        if shutil.which("nvidia-smi") and os.environ.get("CUDA_VISIBLE_DEVICES") != "":   # 1 Hz clocks, temperature
+            clocks_file = open(out / "gpu_clocks.csv", "w")
+            clocks = subprocess.Popen(["nvidia-smi", f"--query-gpu={CLOCKS_QUERY}", "--format=csv", "-l", "1"],
+                                      stdout=clocks_file, stderr=subprocess.DEVNULL)
         for g in plan["groups"]:
             if stopping["signal"]:
                 break
@@ -213,6 +255,8 @@ def cmd_run(a):
                 print(f"[replay] MemAvailable {mem_avail_gib():.0f} GiB < {need:.0f}: waiting")
                 time.sleep(10)
                 waited += 10
+            if stopping["signal"]:
+                break
             if need and mem_avail_gib() < need:
                 print(f"[replay] MemAvailable stayed under {need:.0f} GiB: no further process started")
                 break
@@ -225,6 +269,8 @@ def cmd_run(a):
                   f"{out / 'logs' / (g['id'] + '.log')}", flush=True)
             p = subprocess.Popen(cmd, cwd=plan["package"], env=env, start_new_session=True)
             current["pid"] = p.pid
+            if stopping["signal"]:                  # a signal between Popen and the line above
+                stop_tree(p.pid)
             exits[g["id"]] = p.wait()
             current["pid"] = None
             print(f"[replay] process {g['id']}: exit {exits[g['id']]}", flush=True)

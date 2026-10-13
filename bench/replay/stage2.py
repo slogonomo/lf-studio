@@ -23,17 +23,14 @@ from pathlib import Path
 
 from . import arms as armlib
 
-STUDIO_WORKER_KEYS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS",
-                      "TOKENIZERS_PARALLELISM", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE",
-                      "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_IMPLICIT_TOKEN",
-                      "PYTORCH_CUDA_ALLOC_CONF", "MIMALLOC_PURGE_DELAY", "TRITON_CACHE_AUTOTUNING")
-
-
 def env_differences(expected, environ):
-    """Worker settings the studio's Stage-2 worker would have but this process lacks (PYTHONPATH aside: the bench
-    adds its own directory after the package)."""
-    return {k: (v, environ.get(k)) for k, v in expected.items()
-            if k != "PYTHONPATH" and k in STUDIO_WORKER_KEYS and environ.get(k) != v}
+    """How this process's environment differs from what runtime/pipeline.py worker_environment("stage2") gives the
+    studio's Stage-2 worker: every key it sets to another value, and every key it removes that is present here.
+    PYTHONPATH aside: the bench adds its own directory after the package. worker_environment starts from a copy of
+    this environment, so only the keys it sets or removes can differ."""
+    diff = {k: (v, environ.get(k)) for k, v in expected.items() if k != "PYTHONPATH" and environ.get(k) != v}
+    diff.update({k: ("(removed by the studio)", environ[k]) for k in environ if k not in expected})
+    return diff
 
 
 def attention_contract(steps):
@@ -125,8 +122,9 @@ class GpuRun:
             self._undo.pop()()
 
 
-def verify(receipt, expected):
-    """Problems if the receipt does not show the arm's settings (an arm that silently stopped working)."""
+def verify(receipt, expected, actual=None, run_dir=None):
+    """Problems if the receipt (and what the refiner held during the run) does not show the arm's settings: an arm
+    that silently stopped working fails its run instead of passing as the baseline."""
     result = receipt.get("result") or {}
     att, info = result.get("attention") or {}, result.get("output_info") or {}
     problems = []
@@ -141,8 +139,15 @@ def verify(receipt, expected):
         problems.append(f"output frames {info.get('frames')}, expected {expected['frames']}")
     tiling = (result.get("official_vae_tiling") or {}).get("config")
     want = {k: {"tile_size": v[0], "overlap": v[1]} for k, v in expected["tiles"].items()}
-    if tiling is not None and tiling != want:
+    if tiling is None:
+        problems.append("the receipt has no official_vae_tiling config")
+    elif tiling != want:
         problems.append(f"decoder tiles {tiling}, expected {want}")
+    if actual is not None and [float(x) for x in actual.get("sigmas", [])] != [float(x) for x in expected["sigmas"]]:
+        problems.append(f"the refiner held sigmas {actual.get('sigmas')}, expected {expected['sigmas']}")
+    if expected.get("profile_step") is not None and run_dir is not None:
+        if not (Path(run_dir) / "profile" / "profile_kernels.csv").is_file():
+            problems.append("no profile/profile_kernels.csv for the profiled step")
     return problems
 
 
@@ -374,7 +379,7 @@ def main():
             wall = time.time() - wall
             torch.cuda.synchronize()
             row["actual"] = gpu_run.actual()
-            problems = verify(receipt, expected)
+            problems = verify(receipt, expected, row["actual"], run_dir)
             result = receipt.get("result") or {}
             row.update(status="PASS" if not problems else "FAIL", error="; ".join(problems) or None,
                        request_index=receipt.get("request_index"),

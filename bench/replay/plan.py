@@ -21,9 +21,9 @@ FIRST_RUN_EXTRA_S = {768: 7, 480: 80, 384: 75}   # first run of a process: +6-7 
 STAGE2_PATH_KEYS = ("stage2_python", "ltx_root", "transformer", "refiner_lora", "output_video_vae", "audio_vae",
                     "adapter_dir", "h3_upscaler_source", "h3_upscaler_checkpoint", "prompt_cache")
 # the package files Stage 2 runs (their combined hash tells two installs apart even when the patch is the same)
-STAGE2_FILES = ("runtime/stage2.py", "runtime/geometry.py", "runtime/latent_transfer.py", "runtime/prompt_cache.py",
-                "runtime/stage2_ops/*.py", "runtime/stage2_ops/h3_ltx_adapter/**/*.py",
-                "../super_acceleration/stage2/*.py")
+STAGE2_FILES = ("runtime/stage2.py", "runtime/geometry.py", "runtime/config.py", "runtime/fastload.py",
+                "runtime/latent_transfer.py", "runtime/prompt_cache.py", "runtime/stage2_ops/*.py",
+                "runtime/stage2_ops/h3_ltx_adapter/**/*.py", "../super_acceleration/stage2/*.py")
 
 
 def parse_arms(text, repeats):
@@ -165,16 +165,19 @@ def build(drafts, arm_specs, *, package, geometry, paths_template, out, label=""
             runs = []
 
             def add_run(d, arm_name, repeat, first=False):
+                # the first run of a process also compiles (or loads) its shapes: FIRST_RUN_EXTRA_S, so that
+                # --stop-at counts it
+                est = armlib.ARMS[arm_name].estimate_s(native["output_frames"]) + (FIRST_RUN_EXTRA_S[canvas]
+                                                                                   if first else 0)
                 runs.append({"draft": d["name"], "arm": arm_name, "repeat": repeat, "first_in_process": first,
-                             "dir": f"runs/{gid}/{d['name']}/{arm_name}/r{repeat}",
-                             "est_s": round(armlib.ARMS[arm_name].estimate_s(native["output_frames"]), 1)})
+                             "dir": f"runs/{gid}/{d['name']}/{arm_name}/r{repeat}", "est_s": round(est, 1)})
             add_run(members[0], group_arms[0][0], 0, first=True)
             for rep in range(1, max(k for _, k in group_arms) + 1):
                 for d in members:
                     for n, k in group_arms:
                         if rep <= k:
                             add_run(d, n, rep)
-            est = LOAD_S + FIRST_RUN_EXTRA_S[canvas] + sum(r["est_s"] for r in runs)
+            est = LOAD_S + sum(r["est_s"] for r in runs)
             groups[gid] = {"id": gid, "orientation": orientation, "seconds": seconds, "canvas": canvas,
                            "task": tasks[0], "tasks": tasks, "paths_manifest": manifest,
                            "stage2_python": s2paths["stage2_python"], "geometry": jsonable(geo),
@@ -226,7 +229,8 @@ def describe(plan):
                 lines.append(f"      relaxes: {r}")
         for r in g["runs"]:
             lines.append(f"  run {r['draft']} {r['arm']} r{r['repeat']}"
-                         + (" (first in process: the noise floor)" if r["first_in_process"] else "")
+                         + (" (first in process: the noise floor; includes the first-run compile)"
+                            if r["first_in_process"] else "")
                          + f" ~{r['est_s']:.0f} s")
     n = sum(len(g["runs"]) for g in plan["groups"])
     lines.append(f"total: {n} runs in {len(plan['groups'])} processes, ~{plan['est_s'] / 60:.0f} min of GPU time "

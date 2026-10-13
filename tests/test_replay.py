@@ -10,16 +10,18 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "bench"))
-from replay import arms, drafts, media, plan, quality, report, stage2, syncnet  # noqa: E402
+from replay import arms, cli, drafts, media, plan, quality, report, stage2, syncnet  # noqa: E402
 
 if not shutil.which("ffmpeg"):
     raise unittest.SkipTest("ffmpeg not installed")
@@ -268,6 +270,10 @@ class PlanTests(Fixture):
         self.assertEqual(len({r["dir"] for g in p["groups"] for r in g["runs"]}),
                          sum(len(g["runs"]) for g in p["groups"]))
         self.assertEqual(list(p["groups"][3]["arms"]), ["canvas480_steps2"])
+        g4 = p["groups"][3]                       # a new shape: its first run carries the compile (+69-80 s measured)
+        self.assertEqual(g4["runs"][0]["est_s"], round(arms.ARMS["canvas480_steps2"].estimate_s(121)
+                                                       + plan.FIRST_RUN_EXTRA_S[480], 1))
+        self.assertEqual(g4["est_s"], round(plan.LOAD_S + sum(r["est_s"] for r in g4["runs"])))
         self.assertEqual(p["groups"][1]["geometry"]["output_frames"], 241)
         self.assertGreater(p["est_s"], 0)
         text = plan.describe(p)
@@ -369,6 +375,40 @@ class ScriptTests(Fixture):
             rows = list(csv.DictReader(f))
         self.assertEqual([(r["arm"], r["repeat"], r["same_as_studio"]) for r in rows if r["arm"] == "baseline"],
                          [("baseline", "0", "n/a: first run in this process"), ("baseline", "1", "yes")])
+
+    def test_hangup_stops_the_gpu_process_and_reports(self):
+        """SIGHUP (like TERM and INT) to `replay.sh run` stops the running group's process, removes the cache copy and
+        still writes the report."""
+        fake = self.tmp / "stage2-python"
+        fake.write_text("#!/usr/bin/env bash\necho $$ > \"$REPLAY_TEST_MARK\"\nexec sleep 300\n")
+        fake.chmod(0o755)
+        for task in ("t2va", "fl2va", "ref2va"):
+            values = json.loads((self.tmp / f"paths-{task}.json").read_text())
+            values["stage2_python"] = str(fake)
+            (self.tmp / f"paths-{task}.json").write_text(json.dumps(values))
+        cache = self.tmp / "cache"
+        (cache / "stage2").mkdir(parents=True)
+        self.assertEqual(self.script("add", "d5", str(make_case(self.rt, self.geometry, "web_1"))).returncode, 0)
+        mark = self.tmp / "gpu.pid"
+        env_file = self.tmp / "env"
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOLH3_", "SOL_H3_"))}
+        env.update(SOLH3_ENV=str(env_file), SOLH3_MIN_FREE_GIB="0", SOL_H3_COMPILE_CACHE=str(cache),
+                   CUDA_VISIBLE_DEVICES="", REPLAY_TEST_MARK=str(mark))
+        p = subprocess.Popen(["bash", str(REPO / "bench" / "replay.sh"), "run", "--label", "hup"], env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for _ in range(200):
+            if mark.is_file() and mark.read_text().strip():
+                break
+            time.sleep(0.1)
+        gpu = int(mark.read_text())
+        self.assertTrue(cli.alive(gpu))
+        p.send_signal(signal.SIGHUP)
+        output = p.communicate(timeout=60)[0]
+        self.assertEqual(p.returncode, 128 + signal.SIGHUP, output)
+        self.assertFalse(cli.alive(gpu))
+        run = next((self.rt / "outputs" / "bench").glob("replay-*-hup"))
+        self.assertFalse((run / "compile").exists())
+        self.assertIn("0 of 3 planned runs passed", (run / "summary.md").read_text())
 
     def test_no_switchboard_sudo_or_studio_ports(self):
         files = [REPO / "bench" / "replay.sh"] + sorted((REPO / "bench" / "replay").glob("*.py"))
@@ -541,15 +581,102 @@ class GpuRunTests(Fixture):
                               "official_vae_tiling": {"config": {"frames": {"tile_size": 128, "overlap": 24},
                                                                  "height": {"tile_size": 448, "overlap": 64},
                                                                  "width": {"tile_size": 768, "overlap": 64}}}}}
+        expected["sigmas"], expected["profile_step"] = [0.725, 0.421875, 0.0], None
         self.assertEqual(stage2.verify(receipt, expected), [])
+        self.assertEqual(stage2.verify(receipt, expected, {"sigmas": [0.725, 0.421875, 0.0]}), [])
+        self.assertEqual(len(stage2.verify(receipt, expected, {"sigmas": [0.909375, 0.725, 0.421875, 0.0]})), 1)
+        profiled = dict(expected, profile_step=1)
+        self.assertEqual(len(stage2.verify(receipt, profiled, run_dir=self.tmp)), 1)
+        (self.tmp / "profile").mkdir()
+        (self.tmp / "profile" / "profile_kernels.csv").write_text("name\n")
+        self.assertEqual(stage2.verify(receipt, profiled, run_dir=self.tmp), [])
         receipt["result"]["attention"]["completed_steps"] = 3
         receipt["result"]["official_vae_tiling"]["config"]["height"]["tile_size"] = 0
         self.assertEqual(len(stage2.verify(receipt, expected)), 2)
+        del receipt["result"]["official_vae_tiling"]
+        self.assertIn("the receipt has no official_vae_tiling config", stage2.verify(receipt, expected))
 
     def test_env_differences(self):
-        expected = {"OMP_NUM_THREADS": "1", "PYTHONPATH": "/pkg", "HOME": "/h"}
-        self.assertEqual(stage2.env_differences(expected, {"OMP_NUM_THREADS": "1", "PYTHONPATH": "/pkg:/b"}), {})
-        self.assertEqual(stage2.env_differences(expected, {}), {"OMP_NUM_THREADS": ("1", None)})
+        expected = {"OMP_NUM_THREADS": "1", "PYTHONPATH": "/pkg", "HOME": "/h", "ANY_NEW_KEY": "x"}
+        here = {"OMP_NUM_THREADS": "1", "PYTHONPATH": "/pkg:/b", "HOME": "/h", "ANY_NEW_KEY": "x"}
+        self.assertEqual(stage2.env_differences(expected, here), {})
+        self.assertEqual(stage2.env_differences(expected, dict(here, ANY_NEW_KEY="y")), {"ANY_NEW_KEY": ("x", "y")})
+        self.assertEqual(stage2.env_differences(expected, dict(here, HF_TOKEN="t")),
+                         {"HF_TOKEN": ("(removed by the studio)", "t")})
+        self.assertEqual(stage2.env_differences(expected, {"PYTHONPATH": "/b"}),
+                         {"OMP_NUM_THREADS": ("1", None), "HOME": ("/h", None), "ANY_NEW_KEY": ("x", None)})
+
+    def test_env_matches_a_worker_environment_like_the_studios(self):
+        """cli.group_env against a worker_environment built the way runtime/pipeline.py builds it for Stage 2."""
+        def worker_environment(environ):
+            env = dict(environ)
+            env.update(cli.STUDIO_WORKER_ENV)
+            for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+                env.pop(key, None)
+            env.setdefault("MIMALLOC_PURGE_DELAY", "0")
+            env.setdefault("TRITON_CACHE_AUTOTUNING", "1")
+            env["PYTHONPATH"] = "/pkg"
+            return env
+        saved = dict(os.environ)
+        try:
+            os.environ.update(SOLH3_PKG="/pkg", HF_TOKEN="secret")
+            env = cli.group_env("/cache")
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        self.assertEqual(stage2.env_differences(worker_environment(env), env), {})
+        self.assertNotIn("HF_TOKEN", env)
+
+
+# ---- stopping a GPU process under the real memory guard --------------------------------------------------------
+class StopTreeTests(unittest.TestCase):
+    """cli.stop_tree against bench/memguard-run.sh, which runs its command in a session of its own."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="replay-stop-"))
+        self.procs = []
+
+    def tearDown(self):
+        for p in self.procs:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def start(self, ignore_term):
+        mark = self.tmp / "child.pid"
+        code = ("import os, signal, sys, time\n"
+                + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+                + "open(sys.argv[1], 'w').write(str(os.getpid()))\ntime.sleep(300)\n")
+        p = subprocess.Popen([str(REPO / "bench" / "memguard-run.sh"), str(self.tmp / "log"), "--", sys.executable,
+                              "-c", code, str(mark)], start_new_session=True)
+        self.procs.append(p)
+        for _ in range(200):
+            if mark.is_file() and mark.read_text().strip():
+                return p, int(mark.read_text())
+            time.sleep(0.05)
+        self.fail("the child did not start")
+
+    def test_a_child_that_ignores_sigterm_is_killed(self):
+        # memguard-run.sh exits on SIGTERM and its child is reparented: the child must still get the SIGKILL
+        p, child = self.start(ignore_term=True)
+        self.assertTrue(cli.alive(child))
+        self.assertTrue(cli.stop_tree(p.pid, grace=2))
+        self.assertFalse(cli.alive(child))
+        p.wait(timeout=10)
+
+    def test_returns_once_everything_has_exited(self):
+        p, child = self.start(ignore_term=False)
+        started = time.monotonic()
+        self.assertTrue(cli.stop_tree(p.pid, grace=15))
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertFalse(cli.alive(child))
+        p.wait(timeout=10)
+
+    def test_alive_checks_the_start_time(self):
+        me = cli.proc_stat(os.getpid())
+        self.assertTrue(cli.alive(os.getpid(), me[2]))
+        self.assertFalse(cli.alive(os.getpid(), me[2] + 1))       # another process that got the same pid
 
 
 # ---- report, quality and SyncNet ----------------------------------------------------------------------------------
@@ -614,6 +741,62 @@ class ReportTests(Fixture):
         self.assertTrue((qdir / "sheets" / "d5_preview_vs_baseline.mp4").is_file())
 
 
+class QualityRobustnessTests(Fixture):
+    """The quality step always writes quality.md, and refuses tools that cannot run before doing any work."""
+
+    def make_run(self, missing_output=False):
+        self.add("talk", turns="R:0-0.4")
+        d = drafts.load(self.store, "talk")
+        out = self.tmp / "run"
+        p = plan.build([d], plan.parse_arms("baseline:1,steps2_from_0725:1", 1), package=self.pkg,
+                       geometry=self.geometry, paths_template=self.paths_template, out=out)
+        out.mkdir()
+        (out / "plan.json").write_text(json.dumps(p))
+        arms_ = p["groups"][0]["arms"]
+        rows = [(0, "baseline", "blue", 0), (1, "baseline", "red", 1), (1, "steps2_from_0725", "green", 2)]
+        with open(out / "runs.jsonl", "w") as f:
+            for repeat, arm, color, index in rows:
+                mp4 = tiny_mp4(out / f"{arm}{repeat}.mp4", color=color)
+                if missing_output and arm == "steps2_from_0725":
+                    mp4.unlink()
+                f.write(json.dumps({"group": p["groups"][0]["id"], "draft": "talk", "arm": arm, "repeat": repeat,
+                                    "status": "PASS", "request_index": index, "output": str(mp4),
+                                    "settings": arms_[arm], "relaxes": arms_[arm]["relaxes"]}) + "\n")
+        return out
+
+    def test_tools_are_checked_first(self):
+        out = self.make_run()
+        with self.assertRaises(ValueError):
+            quality.quality(out, lpips_python=str(self.tmp / "no-python"))
+        with self.assertRaises(ValueError):
+            quality.quality(out, syncnet_command=f"{self.tmp / 'no-scorer'} --threads 4")
+        with self.assertRaises(ValueError):
+            quality.quality(out, syncnet_command="  ")
+        self.assertFalse((out / "quality").exists())
+        quality.check_tools(sys.executable, f"{sys.executable} -c pass")
+
+    def test_bad_scorer_output_still_writes_the_report(self):
+        out = self.make_run()
+        for body in ("[]", "{}", "[1, 2]", "not json", ""):
+            scorer = self.tmp / "scorer.py"
+            write = (f"open(a[a.index('--json') + 1], 'w').write({body!r})\n" if body else "")
+            scorer.write_text("import sys\na = sys.argv[1:]\n" + write)
+            qdir, complete = quality.quality(out, syncnet_command=f"{sys.executable} {scorer}", log=lambda *a: None)
+            self.assertFalse(complete, body)
+            text = (qdir / "quality.md").read_text()
+            self.assertIn("| talk | steps2_from_0725 | baseline |", text)
+            self.assertIn("INCOMPLETE", text, body)
+
+    def test_a_missing_output_is_reported_not_fatal(self):
+        out = self.make_run(missing_output=True)
+        qdir, complete = quality.quality(out, log=lambda *a: None)
+        self.assertFalse(complete)
+        text = (qdir / "quality.md").read_text()
+        self.assertIn("## Failed", text)
+        self.assertIn("talk steps2_from_0725 vs baseline", text)
+        self.assertIn("| talk | baseline first in process | baseline warm |", text)
+
+
 class SyncnetTests(Fixture):
     def test_table_uses_the_manifest(self):
         # arm names with underscores and digits broke the old file-name parse (IndexError)
@@ -665,7 +848,7 @@ class SyncnetTests(Fixture):
         rows, done = syncnet.score(f"{sys.executable} {scorer}", self.tmp / "sync",
                                    {"solo": {"baseline": str(clip), "preview": str(clip)}}, d)
         self.assertFalse(done)
-        self.assertTrue(all(r["status"].startswith("missing: SyncNet scorer failed") for r in rows))
+        self.assertTrue(all(r["status"].startswith("missing: RuntimeError: SyncNet scorer failed") for r in rows))
         self.assertIn("INCOMPLETE", (self.tmp / "sync" / "syncnet.md").read_text())
 
 

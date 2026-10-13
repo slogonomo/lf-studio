@@ -37,6 +37,7 @@ def run_scorer(command, files, json_out, turns=None, log=None):
     if turns:
         cmd += ["--turns", turns]
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
+    Path(json_out).unlink(missing_ok=True)              # never read an earlier run's results
     with open(log or os.devnull, "a") as stream:
         r = subprocess.run(cmd, stdout=stream, stderr=subprocess.STDOUT, env=env)
     if r.returncode != 0 or not Path(json_out).is_file():
@@ -49,6 +50,8 @@ def table(results, manifest):
     manifest: {file path as passed to the scorer: (draft, arm)}. A pair the scorer gave nothing for is 'missing'."""
     by_file = {}
     for r in results:
+        if not isinstance(r, dict):
+            continue
         by_file[str(r.get("file"))] = r
         by_file[os.path.realpath(str(r.get("file")))] = r
     rows = []
@@ -59,7 +62,7 @@ def table(results, manifest):
             why = error.read_text().strip()[:200] if error.is_file() else "no result from the scorer"
             rows.append({"draft": draft, "arm": arm, "face": "", "status": f"missing: {why}"})
             continue
-        faces = r.get("faces") or {}
+        faces = r.get("faces") if isinstance(r.get("faces"), dict) else {}
         if not faces:
             rows.append({"draft": draft, "arm": arm, "face": "", "status": "missing: no face in the result"})
         for face in sorted(faces):
@@ -140,8 +143,9 @@ def score(command, work, picks, drafts):
                 source = "detected on the baseline output"
             (folder / "turns.txt").write_text(f"{spec}\n{source}\n")
             results += run_scorer(command, list(files.values()), work / f"{name}.json", turns=spec, log=log)
-        except (RuntimeError, ValueError) as error:       # this draft stays unscored ("missing"); the others go on
-            (folder / "error.txt").write_text(f"{error}\n")
+        except (RuntimeError, ValueError, OSError, KeyError, IndexError, TypeError) as error:
+            # this draft stays unscored ("missing", with the reason); the others go on
+            (folder / "error.txt").write_text(f"{type(error).__name__}: {error}\n")
     rows = table(results, manifest)
     (work / "syncnet.json").write_text(json.dumps({"rows": rows, "manifest": manifest}, indent=1))
     (work / "syncnet.md").write_text(markdown(rows, manifest))
