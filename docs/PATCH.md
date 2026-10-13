@@ -4,7 +4,7 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 123 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 126 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
   The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
@@ -27,7 +27,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 # prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
 cd models/minimax_h3/Sol-H3-Spark
 SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
-    -m unittest discover -s tests   # Ran 123 tests ... OK (skipped=1)
+    -m unittest discover -s tests   # Ran 126 tests ... OK (skipped=1)
 
 # the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
 # Qwen image, on the CPU (no --gpus)
@@ -62,7 +62,7 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
 | The prompt encoder tokenizes `<d>`, `</d>` and 5 more tags as single tokens, as MiniMax's tokenizer does, instead of splitting them into text as the pinned ComfyUI does. Compared on clips in an A/B test; see [16](#16-minimaxs-prompt-tokens). | on (since 0.4) | `SOL_H3_PROMPT_TOKENS=plain` |
-| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differs between any two processes today, reshaped or not (see [8](#8-inductor-autotune-cache-fix-torch-213) and [18](#18-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
+| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differed between any two processes, reshaped or not, because three kernels were tuned again in each. 0.4 stops that ([8](#8-inductor-autotune-cache-fix-torch-213), issue #51); the 15 s check runs again in staging ([18](#18-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
 | Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change. This changes Stage 1's graphs from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). The output was the same with and without it in one GPU check (3 clips). See [18](#18-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
@@ -245,18 +245,36 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   was saved under. The lookup always missed, so every new process re-ran coordinate-descent tuning (3-4 s) and
   saved the same result again. After an upstream miss the patch reads the entry through the kernel's own
   `AutotuneCache` (same key, same configs hash that the save used) and then does what upstream does on a hit.
-- **Files.** `runtime/stage2.py` (monkeypatch, installed in the Stage2 worker).
+- **A fallback hit is a hit (0.4, issue #51).** Up to 0.3 the fallback labelled the kernel's cache state
+  "hit (spark fallback)". Torch skips its run-time R0_BLOCK halving (`_dynamic_scale_rblock`) only when the state is
+  exactly "hit". Where that halving applies, a kernel read through the fallback got smaller-block candidates added and
+  was benchmarked by timing. A smaller-block winner then also went through coordinate descent, because Triton's
+  `Config` drops its `found_by_coordesc` mark when it is copied (read in torch's and Triton's code, shown on the
+  CPU). The winner overwrote the stored result. The next process read that result and could pick another config,
+  which changes a reduction's order and so the output. Seen at 15 s for three of Stage 2's audio-branch reductions
+  (`SPARK_DEBUG_AUTOTUNE=1` lines, two GPU runs). Not at 5 s or 10 s, where the halving rule adds no candidates for
+  these kernels.
+  - Now the fallback sets the cache info that torch's own hit sets (`autotune_cache_state` `"hit"` and
+    `best_config`), plus `spark_fallback: True`. Torch uses the stored result as it is: no halving, no benchmark, no
+    coordinate descent, nothing stored. The marker keeps the fallback visible: `SPARK_DEBUG_AUTOTUNE=1` prints a
+    `fallback hit` line for each, and a tuning line would name the state `hit (spark fallback)`.
+  - Nothing needs clearing after the upgrade. The first 15 s clip after it uses the result the last process before
+    the upgrade stored, and stores nothing new; every later process reads the same result. So that clip settles the
+    configs used from then on (inferred). The same holds for any other shape whose kernels were re-tuned this way.
+    A kernel without a stored result is still tuned by timing once, on the first clip that needs it, as before.
+  - Not part of the patch (proposals 2-3 of the issue): deleting the stored results first so that one deliberate run
+    tunes them, and a pre-tune pass per shape.
+  - 5 s and 10 s are expected to give the same output as before: their kernels read through the fallback already
+    ran the stored config (inferred).
+- **Files.** `runtime/stage2.py` (monkeypatch, installed in the Stage2 worker), `tests/test_stage2_contract.py`,
+  `tests/test_reshape.py` (the debug lines).
 - **Switches.** `SPARK_AUTOTUNE_CACHE_FIX=0` disables it; `SPARK_DEBUG_AUTOTUNE=1` prints each fallback hit, each
   kernel tuned at run time and each tuning result stored.
 - **Measured.** 11/11 hits, no re-tuning; Stage2 first render 45-49 → 41 s; first clip 103-104 → 99.3/99.4 s.
-  Specific to torch 2.13's Inductor; re-check it when the Stage2 torch changes.
-- **Known issue** (issue #51). The fallback labels the kernel's cache state "hit (spark fallback)". Torch skips its
-  run-time R0_BLOCK halving (`_dynamic_scale_rblock`) only when the state is exactly "hit". Where that halving
-  applies, a kernel read through the fallback gets smaller-block candidates added, is benchmarked by timing and tuned
-  again, and the winner overwrites the stored result. The next process reads that result and may pick another
-  config, which changes a reduction's order and so the output. Seen at 15 s for three of Stage 2's audio-branch
-  reductions (`SPARK_DEBUG_AUTOTUNE=1` lines, two GPU runs); not at 5 s or 10 s, where the halving rule adds no
-  candidates.
+  Specific to torch 2.13's Inductor; re-check it when the Stage2 torch changes. The 0.4 change is checked on the CPU
+  only, with a stand-in `CachingAutotuner` that follows torch 2.13's halving, benchmark and coordinate-descent rules
+  and uses torch's own cache check (19). The GPU check (two fresh 15 s sessions and a reshaped one with the same MP4
+  streams, no `tuned at run time` line after the first 15 s process) runs in staging.
 
 ### 9. VAEs built on the GPU
 
@@ -563,11 +581,12 @@ and identity are unchanged, and the image is 5-11% sharper.
     not compiled, differs slightly from later clips in fresh sessions as well, and it matched the fresh first clip
     where checked (10 s).
   - At 15 s the warm MP4s' video differed (audio and Stage 1 the same). A second run, with
-    `SPARK_DEBUG_AUTOTUNE=1`, showed why. Two fresh 15 s sessions differ too: Stage 2 at 15 s isn't reproducible
-    across processes today, reshaped or not. Both runs used the same compiled Stage-2 graph. Three reduction kernels
-    of the 15 s audio branch read their stored tuning result through item 8's fallback, are tuned again at run time
-    anyway (see the known issue there; issue #51), and store a new winner each time. So reshape matches a fresh
-    session at every shape where two fresh sessions match each other (5 s, 10 s, fl2va 9:16).
+    `SPARK_DEBUG_AUTOTUNE=1`, showed why. Two fresh 15 s sessions differed too: Stage 2 at 15 s wasn't reproducible
+    across processes, reshaped or not. Both runs used the same compiled Stage-2 graph. Three reduction kernels of
+    the 15 s audio branch read their stored tuning result through item 8's fallback, were tuned again at run time
+    anyway, and stored a new winner each time. So reshape matched a fresh session at every shape where two fresh
+    sessions matched each other (5 s, 10 s, fl2va 9:16). Item 8's fallback now marks its reads as hits, so these
+    kernels are no longer tuned again (issue #51). The 15 s comparison runs again in staging.
   - First clip after a change, minus a warm clip at that shape: 5 → 10 s 14.4 s, 5 → 15 s 27.0 s (both compiled
     Stage 1 for this prompt length from scratch), 15 → 5 s (a shape the session had run) none, fl2va 16:9 → 9:16
     0.2 s. Reloads in the same run: 37.5-47.1 s, plus 4-9 s of closing.
@@ -583,6 +602,10 @@ location (it also points the cache at a temp directory, so running the tests wri
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
 older LTX-2), `tests/test_pipeline.py` its check before any worker starts.
+`tests/test_stage2_contract.py` also covers item 8's fallback with a stand-in `CachingAutotuner` that follows torch
+2.13's rules for halving, benchmarking and coordinate descent, with torch's own recheck and cache check and Triton's
+`Config`. A fallback hit gets the cache info of torch's own hit plus `spark_fallback`, and runs as stored. With the
+label used before issue #51, or without the fix, the kernel is halved, benchmarked, tuned again and stored again.
 `tests/test_prompt_tokens.py` (new) covers the prompt-token setting (default `minimax`) and its recipe entry, the token
 checks with a stand-in tokenizer, and the Qwen worker's session applying the recipe's mode to the CLIP's tokenizer (with
 stand-ins for ComfyUI, torch and the checkpoint). With `SOL_H3_SPARK_COMFY_ROOT` set it also loads the pinned ComfyUI's
@@ -602,7 +625,7 @@ length and orientation. It also covers the capture's shape check and PCM trim, t
 keyframe canvas, the static compiles (with the torch behaviour they rely on, a marked dimension included), a
 pipeline that is closing or failed a reshape, the resident encoder's restart (the minimum of item 4 for the new
 length, and the session's prompt-token mode), a reshape before the first clip, and the `SPARK_DEBUG_AUTOTUNE` lines.
-123 tests in total (upstream: 65).
+126 tests in total (upstream: 65).
 
 ## All switches
 
