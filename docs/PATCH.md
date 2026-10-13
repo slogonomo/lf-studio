@@ -2,15 +2,16 @@
 
 `patches/sol-h3-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
-branch `sol-engine`. It is a plain `git diff`: 21 files, 18 modified and 3 new.
+branch `sol-engine`. It is a plain `git diff`: 23 files, 18 modified and 5 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 74 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 89 CPU tests pass
+  (2 skipped).
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
 - 17 of the 18 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
-  tagged `sol-h3-studio:`. The 3 new files say they are part of sol-h3-studio.
+  tagged `sol-h3-studio:`. The 5 new files say they are part of sol-h3-studio.
 
 ## Apply, test, revert
 
@@ -23,7 +24,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 74 tests ... OK
+CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests # Ran 89 tests ... OK (skipped=2)
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -278,14 +279,65 @@ and identity are unchanged, and the image is 5-11% sharper.
   `tests/test_stage2_contract.py`, `tests/test_pipeline.py`.
 - **Switch.** `SOL_H3_STAGE2_AUDIO=joint` restores upstream's behaviour (older clips then reproduce from their seed).
 
-### 16. Tests
+### 16. Decode ahead of the H.264 encoder
+
+- **Purpose.** Stage 2 ends by streaming LTX-2's tiled VAE decoder into LTX-2's `encode_video` (libx264 `veryfast`,
+  CRF 19, 8 threads). The GPU decoder and the CPU encoder used to take turns. The decoder made a temporal chunk
+  (96-104 frames), waited while the encoder took all but two of its 16-frame views, then decoded the next chunk
+  while the encoder sat idle. There were two reasons:
+  - `encode_video` hands frames to its encoder thread through a one-slot queue;
+  - the decoder yields chunk k only after it has decoded group k+1, although chunk k's frames are final after
+    group k (group k+1 only adds into the overlap, and chunk k does not include it).
+
+  Now the queue holds one decoder chunk (8 views, about 200 MB of I420 frames at 1344×768). The decoder yields each
+  chunk before it decodes the next group, so the encoder works on chunk k while the GPU decodes group k+1. After
+  the last decoded frame, only the last chunk (41 frames at 10 s, 57 at 15 s), the flush, the AAC track and the
+  mux remain. A 5 s clip is a single chunk, so nothing changes there.
+- **Same file.** The same frames reach the same encoder, in the same order, with the same settings. The decoder
+  runs on the same thread and CUDA stream, with the same tiles, decoder calls, random draws and blending.
+  `runtime/stage2_ops/decode_ahead.py` wraps LTX-2 and copies none of its code:
+  - while `encode_video` runs, LTX-2's encode module builds its queue with room for 8 views instead of 1;
+  - between two temporal groups the decoder gets an empty marker group that spans their overlap. LTX-2's own
+    generator blends it like any group and so yields the previous chunk one group earlier. The marker's empty
+    chunks are dropped. Adding the marker's zeros can only turn -0.0 into +0.0 in the overlap, and `to_rgb`
+    (x + 1) removes that.
+
+  Both hooks first check the source hashes of the LTX-2 code they rely on (LTX-2 `d151147`). With another LTX-2
+  version, Stage 2 keeps LTX-2's own order, and the receipt says so (`eager_decoder: false`,
+  `encoder_queue.hooked: false`).
+- **Receipts** (`stage2_result.json`). `decode_ahead`; `decode_done_to_mp4_s`, from the last decoded frame to the
+  finished MP4; `timing_notes`, which says what the writer's timings mean. `writer_chunking` adds
+  `decoder_done_monotonic_ns`, `cuda_peak_allocated_bytes` and `cuda_peak_reserved_bytes` (decode and encode), and
+  `encoder_queue`: `decoder_blocked_s` (the decoder waited for room), `encoder_waited_s` (the encoder waited for
+  frames) and `max_queued_views`. `h264_encode_mux_s` keeps its formula, decode-and-mux time minus decoder time.
+  It is now the part of the encode that is not hidden behind the decode. The encode itself takes as long as
+  before. `e2e_s` and `stage2_request_s` still end at the finished MP4.
+- **Files.** `runtime/stage2_ops/decode_ahead.py` (new), `runtime/stage2.py`, `runtime/stage2_ops/writer_chunking.py`,
+  `runtime/config.py`, `tests/test_decode_ahead.py` (new).
+- **Switch.** `SOL_H3_DECODE_AHEAD=0` restores LTX-2's order and one-view queue. The queue's wait times are still
+  recorded.
+- **Measured before.** Stage-2 receipts of warm t2va 16:9 clips on one DGX Spark (studio and bench runs, medians):
+  decoder 7.1 / 17.4 / 25.4 s and `h264_encode_mux_s` 1.50 / 2.76 / 2.13 s at 5 / 10 / 15 s (46, 12 and 3
+  clips). Expected after (inferred): about 1 s of `h264_encode_mux_s` left at 10 and 15 s, so 1-2 s less per
+  clip; no change at 5 s.
+- **Tests.** `tests/test_decode_ahead.py` uses stand-ins: a decoder generator, a module with `encode_video`'s
+  one-slot queue to an encoder thread, and a tiled decoder with LTX-2's yield and blend rule. It checks the same
+  frames in the same order, that the decoder runs one chunk ahead and no further, that errors from either side
+  reach the caller and undo the hooks, the same chunks (values, shapes, strides, random draws) one group earlier,
+  the version check and the Stage-2 glue. With `SOL_H3_TEST_LTX_ROOT` set and the Stage-2 Python, it also runs
+  LTX-2's own tiled decoder (equal chunks, complementary and weighted blending) and its `encode_video` with PyAV
+  and libx264 (byte-identical MP4) on the CPU.
+
+### 17. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
 deliver-first, the background prompt encoder, the new `Pipeline` arguments and the compile-cache location (it
 also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
-older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 tests in total (upstream: 65).
+older LTX-2), `tests/test_pipeline.py` its check before any worker starts. `tests/test_decode_ahead.py` (new) covers
+decoding ahead of the encoder ([16](#16-decode-ahead-of-the-h264-encoder)); 2 of its tests run only with the
+Stage-2 Python and `SOL_H3_TEST_LTX_ROOT`. 89 tests in total, 2 skipped with the Stage1 Python (upstream: 65).
 
 ## All switches
 
@@ -304,6 +356,7 @@ older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 te
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
+| `SOL_H3_DECODE_AHEAD` | 1 | 0 = LTX-2's order: the decoder waits for the H.264 encoder ([16](#16-decode-ahead-of-the-h264-encoder)) |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.

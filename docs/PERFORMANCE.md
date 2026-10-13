@@ -136,6 +136,16 @@ graphs. FastVideo caps recompiles at 16; the 4th distinct prompt length in a ses
 worker and forced a full reload. The limit is raised (1,024; 65,536 accumulated). Tested: 7 distinct prompt
 lengths in one session, no failure.
 
+## Decode and encode at the end of Stage 2
+
+Stage 2 ends with the VAE decode and the H.264/AAC encode of the MP4. In the Stage-2 receipts of warm t2va 16:9
+clips (studio and bench runs, medians of 46, 12 and 3 clips) the decoder took 7.1 s at 5 s, 17.4 s at 10 s and
+25.4 s at 15 s. The encode added 1.50 s, 2.76 s and 2.13 s on top (`h264_encode_mux_s`), because the decoder and
+the encoder took turns. Now the decoder runs one chunk ahead of the encoder, and the MP4 is the same file as
+before ([PATCH.md](PATCH.md#16-decode-ahead-of-the-h264-encoder)). The expected effect is 1-2 s less per 10 or 15 s
+clip and none at 5 s (inferred, not yet measured): a 5 s clip is one decoder chunk, so its whole encode still
+follows the decode.
+
 ## Known costs, not fixed
 
 - A new prompt length on a warm session adds 9-10 s (Stage 1 17.6 → 26.2 s). Reusing a prompt, or editing it
@@ -159,6 +169,7 @@ lengths in one session, no failure.
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer clips load the prompt encoder per request |
+| `SOL_H3_DECODE_AHEAD` | 1 | 0 = the VAE decoder waits for the H.264 encoder (LTX-2's order) |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 
 The warm-up at launch (`SOLH3_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled
