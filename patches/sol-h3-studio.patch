@@ -51,21 +51,21 @@ index be0076a..ef2447e 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/config.py b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
-index 03804f7..27a8051 100644
+index 03804f7..2dfe585 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 @@ -6,6 +6,10 @@ import os
  from pathlib import Path
  import re
  
-+# Modified by sol-h3-studio: portrait orientation, clip length, the persistent compile-cache location and the Stage-2
-+# audio setting.
++# Modified by sol-h3-studio: portrait orientation, clip length, the persistent compile-cache location, the Stage-2
++# audio setting and the decode-ahead switch.
 +from .geometry import ORIENTATIONS, orient_recipe
 +
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,54 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,59 @@ REQUIRED_PATHS = (
  )
  
  
@@ -98,6 +98,11 @@ index 03804f7..27a8051 100644
 +        raise ValueError(f"SOL_H3_STAGE2_AUDIO must be one of {STAGE2_AUDIO_MODES}, "
 +                         f"not {os.environ.get('SOL_H3_STAGE2_AUDIO')!r}")
 +    return mode
++
++
++def decode_ahead_enabled():
++    """sol-h3-studio: SOL_H3_DECODE_AHEAD, default on; "0" restores LTX-2's decode/encode order (stage2_ops/decode_ahead.py)."""
++    return os.environ.get("SOL_H3_DECODE_AHEAD", "1").strip() != "0"
 +
 +
 +def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None, orientation=None, seconds=None):
@@ -1108,10 +1113,10 @@ index 7f691fa..6c775e5 100644
          before_order = before.get("bsa_index_order", {})
          match_order = order.get("match_triton_order", False)
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-index 8f1a36c..4b0cbf5 100644
+index 8f1a36c..9513a30 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-@@ -3,17 +3,23 @@
+@@ -3,17 +3,25 @@
  The module imports GPU frameworks only when Session is constructed. A request
  consumes one same-request normalized H3/PCM bundle and the exact offline generic
  post-connector AV cache. Original PCM is muxed into the final MP4.
@@ -1128,17 +1133,21 @@ index 8f1a36c..4b0cbf5 100644
  import gc
  import os
  from pathlib import Path
++import sys
  import time
  
 +# Modified by sol-h3-studio: clip-length/orientation geometry, persistent compile cache, Inductor autotune-cache
-+# fix, O_DIRECT weight loading, load-timing prints and the Stage-2 audio policy (see "sol-h3-studio:" notes).
-+from .config import STAGE2_AUDIO_MODES, compile_cache_root, stage2_audio_mode
++# fix, O_DIRECT weight loading, load-timing prints, the Stage-2 audio policy and decoding ahead of the encoder (see
++# "sol-h3-studio:" notes).
++from .config import STAGE2_AUDIO_MODES, compile_cache_root, decode_ahead_enabled, stage2_audio_mode
  from .latent_transfer import (WIRE_METADATA, load_latent_capture, load_payload,
                                sha256, validate_request_id, write_new)
  from .prompt_cache import FIXED_PROMPT, load_cache
-@@ -22,6 +28,31 @@ from .stage2_ops.h3_upscale import (ADAPTER_OUTPUT, H3_INPUT, H3_UPSCALED,
+@@ -21,7 +29,44 @@ from .stage2_ops.h3_upscale import (ADAPTER_OUTPUT, H3_INPUT, H3_UPSCALED,
+                                    REFINER_INPUT, upscale_comfy_normalized_h3)
  from .stage2_ops.models import SIGMAS, TILES, construct, public_refiner_modules
  from .stage2_ops.conv_direct_nhwc import installed_direct_upsample_nhwc
++from .stage2_ops.decode_ahead import encoder_queue, install_eager_decode, queue_views
  from .stage2_ops.writer_chunking import tracked_writer_chunks
 +from . import geometry as canvas
 +
@@ -1149,6 +1158,17 @@ index 8f1a36c..4b0cbf5 100644
 +# refine, as LTX-2's own audio-to-video pipeline does (a2vid_two_stage: frozen=True, noise_scale=0.0), so the video is
 +# refined against the audio in the MP4. "joint" is upstream's behaviour (older clips reproduce from their seed).
 +# The setting: runtime/config.stage2_audio_mode (SOL_H3_STAGE2_AUDIO).
++
++# sol-h3-studio: what the writer's timing fields mean (stage2_result.json "timing_notes"). With SOL_H3_DECODE_AHEAD
++# (stage2_ops/decode_ahead.py) most of the H.264 encode runs while the decoder works.
++TIMING_NOTES = {
++    "official_video_vae_decode_s": "time inside the VAE decoder's next() calls",
++    "decode_stream_and_h264_mux_s": "decode, colour conversion, H.264 and AAC encode, mux and rename (wall time)",
++    "h264_encode_mux_s": "decode_stream_and_h264_mux_s - official_video_vae_decode_s: the writer's time outside "
++                         "the decoder, i.e. the encode not hidden behind the decode",
++    "decode_done_to_mp4_s": "from the last decoded frame (all frames queued for the encoder) to the finished MP4",
++    "stage2_request_s": "run() entry to the finished MP4; e2e_s also ends at the finished MP4",
++}
 +
 +
 +def check_frozen_states(state_type):
@@ -1168,7 +1188,7 @@ index 8f1a36c..4b0cbf5 100644
  
  REQUIRED_PATHS = ("transformer", "refiner_lora", "output_video_vae", "audio_vae",
                    "adapter_dir", "h3_upscaler_source", "h3_upscaler_checkpoint", "prompt_cache")
-@@ -33,11 +64,21 @@ def _refiner_class(base, compat, session):
+@@ -33,11 +78,21 @@ def _refiner_class(base, compat, session):
      class SparkRefiner(compat.OfficialCompatRefiner):
          def __init__(self):
              construct(self, session.paths, torch=torch, dist=session.dist,
@@ -1191,7 +1211,7 @@ index 8f1a36c..4b0cbf5 100644
          def encode_highres_first_frame(self, image_path):
              if image_path is not None:
                  raise ValueError("latent transfer has no RGB first-frame conditioning")
-@@ -50,8 +91,14 @@ def _refiner_class(base, compat, session):
+@@ -50,8 +105,14 @@ def _refiner_class(base, compat, session):
              return session.prompt_cache.contexts(prompt, self.device)
  
          def prepare_input(self, source_path):
@@ -1207,7 +1227,7 @@ index 8f1a36c..4b0cbf5 100644
                  "preprocess": "normalized_h3_x2_then_adapter_crop_t16",
                  "latent_upsampler": False}
  
-@@ -63,17 +110,18 @@ def _refiner_class(base, compat, session):
+@@ -63,17 +124,18 @@ def _refiner_class(base, compat, session):
                      raise RuntimeError(f"H3 bridge shape/dtype/layout contract failed: {shape}")
                  return value
  
@@ -1233,9 +1253,13 @@ index 8f1a36c..4b0cbf5 100644
  
          def encode_source_audio(self, source_path):
              from ltx_core.model.audio_vae import encode_audio
-@@ -107,14 +155,17 @@ def _refiner_class(base, compat, session):
+@@ -105,17 +167,30 @@ def _refiner_class(base, compat, session):
+             from ltx_core.types import Audio
+ 
              session.writer_chunk_receipt = {"chunk_frames": 16, "source_chunks": 0,
-                 "emitted_chunks": 0, "frames": 0, "source_layouts": [], "complete": False}
+-                "emitted_chunks": 0, "frames": 0, "source_layouts": [], "complete": False}
++                "emitted_chunks": 0, "frames": 0, "source_layouts": [], "complete": False,
++                "decode_ahead": session.decode_ahead, "eager_decoder": session.eager_decoder}
              chunks = tracked_writer_chunks(chunks, session.writer_chunk_receipt,
 -                                           expected_dtype=torch.bfloat16)
 +                                           expected_dtype=torch.bfloat16,
@@ -1246,14 +1270,26 @@ index 8f1a36c..4b0cbf5 100644
              temporary = output_path.with_name(f".{output_path.stem}.partial-{os.getpid()}.mp4")
              if temporary.exists() or output_path.exists():
                  raise FileExistsError(output_path)
++            # sol-h3-studio: LTX-2's queue to its libx264 thread holds one decoder chunk of views instead of one view
++            # (decode_ahead.py); the same frames reach the same encoder in the same order. views=1 only measures.
++            tile_frames = session.geometry.get("tiles", TILES)["frames"]["tile_size"]
++            views = queue_views(tile_frames) if session.decode_ahead else 1
++            torch.cuda.reset_peak_memory_stats()
              try:
-                 base.encode_video(video=iter(chunks), fps=24, audio=audio,
+-                base.encode_video(video=iter(chunks), fps=24, audio=audio,
 -                    output_path=str(temporary), video_chunks_number=8,
-+                    output_path=str(temporary), video_chunks_number=-(-session.geometry["output_frames"] // 16),
-                     crf=19, preset="veryfast", thread_count=8)
+-                    crf=19, preset="veryfast", thread_count=8)
++                with encoder_queue(sys.modules.get(getattr(base.encode_video, "__module__", "")), views,
++                                   session.writer_chunk_receipt):
++                    base.encode_video(video=iter(chunks), fps=24, audio=audio,
++                        output_path=str(temporary), video_chunks_number=-(-session.geometry["output_frames"] // 16),
++                        crf=19, preset="veryfast", thread_count=8)
++                session.writer_chunk_receipt.update(cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(),
++                                                    cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved())
                  if not temporary.is_file() or temporary.stat().st_size == 0:
                      raise RuntimeError("video encoder produced no output")
-@@ -133,6 +184,47 @@ def _refiner_class(base, compat, session):
+                 os.replace(temporary, output_path)
+@@ -133,6 +208,47 @@ def _refiner_class(base, compat, session):
      return SparkRefiner
  
  
@@ -1301,16 +1337,18 @@ index 8f1a36c..4b0cbf5 100644
  class Session:
      """Construct once, prepare/run sequential requests, then close the worker."""
  
-@@ -146,6 +238,8 @@ class Session:
+@@ -146,6 +262,10 @@ class Session:
          self.final_mp4_complete_monotonic_ns = None
          self.writer_chunk_receipt = None
          self.timings = {}
 +        self.geometry = canvas.from_recipe(config)
 +        self.stage2_audio = stage2_audio_mode()     # sol-h3-studio: before this worker loads its models
++        self.decode_ahead = decode_ahead_enabled()  # sol-h3-studio: SOL_H3_DECODE_AHEAD
++        self.eager_decoder = False
          config = config.get("stage2", config)
          self.compile_enabled = config.get("compile", True)
          self.fixed_prompt = config.get("fixed_prompt", FIXED_PROMPT)
-@@ -159,11 +253,22 @@ class Session:
+@@ -159,11 +279,22 @@ class Session:
              if not path.is_file() or not path.stat().st_size:
                  raise FileNotFoundError(path)
          self.work_dir = Path(work_dir).resolve()
@@ -1334,7 +1372,7 @@ index 8f1a36c..4b0cbf5 100644
          try:
              self._construct()
          except BaseException:
-@@ -185,8 +290,13 @@ class Session:
+@@ -185,17 +316,27 @@ class Session:
              self._owns_dist = True
          if dist.get_world_size() != 1:
              raise RuntimeError("Spark requires one distributed rank")
@@ -1348,20 +1386,26 @@ index 8f1a36c..4b0cbf5 100644
 +        print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')} refiner modules imported (+{(time.monotonic_ns() - self.started_ns) / 1e9:.1f}s)", flush=True)
          with torch.inference_mode():
              self.models = _refiner_class(base, compat, self)()
++        # sol-h3-studio: chunks leave the decoder as soon as they are final (decode_ahead.py; LTX-2's own order if its
++        # decoder is not the version checked there)
++        self.eager_decoder = self.decode_ahead and install_eager_decode(self.models.video_decoder)
          self.conv_layout_receipt = self.stack.enter_context(installed_direct_upsample_nhwc(torch_module=torch))
-@@ -195,6 +305,7 @@ class Session:
+         self.ready_ns = time.monotonic_ns()
+         self.session_receipt = {"schema_version": 1, "status": "READY", "model_load_count": 1,
              "session_started_monotonic_ns": self.started_ns, "session_ready_monotonic_ns": self.ready_ns,
              "session_initialization_s": (self.ready_ns - self.started_ns) / 1e9,
              "refiner_recipe": {"sigmas": list(SIGMAS), "updates": 3, "lora_strength": 0.8,
 +                               "stage2_audio": self.stage2_audio,
                                 "joint_audio_video": True, "expected_sol_backend": "triton"},
++            "decode_ahead": {"enabled": self.decode_ahead, "eager_decoder": self.eager_decoder},
              "spatial_route": self.models.h3_spatial_route, "conv_actual_tiling": asdict(self.models.tiling_config),
              "actual_parameter_dtypes": self.models.parameter_dtypes,
-@@ -226,17 +337,19 @@ class Session:
+             "stage2_gemma_loaded": False, "stage2_connector_loaded": False,
+@@ -226,17 +367,19 @@ class Session:
                  or self.prepared["request_id"] != request_id or self.prepared["output_root"] != str(root)):
              raise RuntimeError("run requires the matching completed prepare identity and output root")
          receipt = {"status": "RUNNING", "request_id": request_id, "stage2_started_monotonic_ns": started_ns,
-+            "stage2_audio": self.stage2_audio,
++            "stage2_audio": self.stage2_audio, "decode_ahead": self.decode_ahead, "timing_notes": TIMING_NOTES,
              "request_index": self.completed_requests, "preparation": dict(self.prepared),
              "timing_boundary": "run_entry_after_prepare_to_atomic_final_muxed_MP4"}
          try:
@@ -1379,6 +1423,222 @@ index 8f1a36c..4b0cbf5 100644
              record = {"prompt_id": row["case_id"], "prompt": self.fixed_prompt, "seed": row["seed"],
                        "source_index": row["source_index"], "index": 0, "_source_path": "/dev/null"}
              with self.torch.inference_mode():
+@@ -260,6 +403,7 @@ class Session:
+                 stage2_prepare_to_mp4_s=(finished_ns - self.prepared["stage2_prepare_started_monotonic_ns"]) / 1e9,
+                 stage2_gemma_loaded=False, stage2_connector_loaded=False,
+                 fixed_prompt_cache=self.prompt_cache.receipt(), writer_chunking=deepcopy(self.writer_chunk_receipt),
++                decode_done_to_mp4_s=(finished_ns - self.writer_chunk_receipt["decoder_done_monotonic_ns"]) / 1e9,
+                 conv_output_layout_request_calls=self.conv_layout_receipt["calls"] - layout_before)
+             self.timings.update(stage2_request_s=receipt["stage2_request_s"], phases_s=dict(phases))
+             write_new(root / "final_file_manifest.json", {key: receipt[key] for key in (
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/decode_ahead.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/decode_ahead.py
+new file mode 100644
+index 0000000..f3548af
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/decode_ahead.py
+@@ -0,0 +1,202 @@
++"""Decode the next frames while the H.264 encoder works: same frames, same order, same encoder settings.
++
++Part of sol-h3-studio (Apache-2.0). Switch: SOL_H3_DECODE_AHEAD (runtime/config.py; "0" = LTX-2's own order).
++
++Stage 2 streams LTX-2's tiled VAE decoder (ConvVideoDecoder.tiled_decode) into LTX-2's encode_video. Two things kept
++the GPU and the CPU encoder from working at the same time:
++
++1. encode_video hands frames to its libx264 thread through a one-slot queue, and the writer feeds it 16-frame
++   views. A decoder chunk is 96-104 frames, so the decoder waited until the encoder had taken all but two views of a
++   chunk before it decoded the next one. encoder_queue() gives that queue room for one decoder chunk of views.
++2. tiled_decode yields temporal chunk k only after it has decoded group k+1, though chunk k's frames are final
++   after group k (group k+1 only adds into the overlap, which chunk k does not include). install_eager_decode()
++   makes LTX-2's own generator yield each chunk before it decodes the next group (see HeadMarker).
++
++The decoder still runs on the calling thread and the current CUDA stream. The colour conversion and the copies to
++the CPU still happen there, and encode_video gets the same frames in the same order with the same libx264 settings
++and thread count. The queue holds converted CPU frames (I420, ~25 MB per view at 1344x768), one decoder chunk.
++No LTX-2 code is copied here; the hooks wrap it and check its source hashes.
++"""
++from __future__ import annotations
++
++from contextlib import contextmanager
++import hashlib
++import inspect
++import queue
++import sys
++import threading
++import time
++
++VIEW_FRAMES = 16
++# sha256 of inspect.getsource() of the LTX-2 methods whose behaviour install_eager_decode relies on, at LTX-2 d151147
++# (ltx_core/model/video_vae/conv_video_decoder.py). Another version keeps LTX-2's own order.
++LTX2_SOURCE_SHA256 = {
++    "tiled_decode": "5f07b52e8b2ecf7f408e51ddc28fe96f3cd3dc77a93b44735e3457497c4e8d56",
++    "_accumulate_temporal_group_into_buffer": "25ed27e2d453b078636d69097620d7ba2215b83154fd380ee2a4fdd0689ad86b",
++}
++
++
++def queue_views(tile_frames, view_frames=VIEW_FRAMES):
++    """Room for one decoder chunk: every chunk but the last (which no decode follows) is shorter than a tile."""
++    return max(1, -(-int(tile_frames) // view_frames))
++
++
++class TimedQueue(queue.Queue):
++    """queue.Queue that records how long put() waited for room (the decoder held back by the encoder) and get()
++    waited for an item (the encoder held back by the decoder). One producer and one consumer thread; each touches
++    only its own counters, and they are read after both are done."""
++
++    def __init__(self, maxsize=0):
++        super().__init__(maxsize)
++        self.items = self.max_queued = self.put_wait_ns = self.get_wait_ns = 0
++        self.first_get_ns = self.end_taken_ns = None
++
++    def put(self, item, block=True, timeout=None):
++        started = time.monotonic_ns()
++        super().put(item, block, timeout)
++        self.put_wait_ns += time.monotonic_ns() - started
++        if item is not None:
++            self.items += 1
++        self.max_queued = max(self.max_queued, self.qsize())
++
++    def get(self, block=True, timeout=None):
++        started = time.monotonic_ns()
++        if self.first_get_ns is None:
++            self.first_get_ns = started
++        item = super().get(block, timeout)
++        taken = time.monotonic_ns()
++        self.get_wait_ns += taken - started
++        if item is None:                     # encode_video's end-of-stream marker: every frame has reached libx264
++            self.end_taken_ns = taken
++        return item
++
++    def receipt(self):
++        return {"views_passed": self.items, "max_queued_views": self.max_queued,
++                "decoder_blocked_s": self.put_wait_ns / 1e9, "encoder_waited_s": self.get_wait_ns / 1e9,
++                "encoder_started_monotonic_ns": self.first_get_ns,
++                "frames_to_encoder_monotonic_ns": self.end_taken_ns}
++
++
++_QUEUE_HOOK = threading.Lock()
++
++
++@contextmanager
++def encoder_queue(module, views, receipt):
++    """While active, LTX-2's encode module (ltx_pipelines.utils.media_io.encode) builds the queue to its libx264
++    thread as a TimedQueue with room for `views` views (LTX-2: 1; views=1 keeps that and only measures).
++
++    The module looks up its global Queue when it builds the queue, so only calls inside this block are affected.
++    Nothing is hooked, and the receipt says so, if the module does not use queue.Queue or another call holds the
++    hook. receipt["encoder_queue"] gets the queue's counters.
++    """
++    if (getattr(module, "Queue", None) is not queue.Queue or not hasattr(module, "_encode_chunks_threaded")
++            or not _QUEUE_HOOK.acquire(blocking=False)):
++        receipt["encoder_queue"] = {"hooked": False, "views": 1}
++        yield
++        return
++    created = []
++
++    def make(maxsize=0):
++        maxsize = int(maxsize)
++        made = TimedQueue(max(maxsize, int(views)) if maxsize > 0 else maxsize)
++        created.append(made)
++        return made
++
++    module.Queue = make
++    try:
++        yield
++    finally:
++        module.Queue = queue.Queue
++        _QUEUE_HOOK.release()
++        stats = {"hooked": True, "views": int(views), "queues": len(created)}
++        if len(created) == 1:
++            stats.update(created[0].receipt())
++        receipt["encoder_queue"] = stats
++
++
++# ---- chunks out of the decoder as soon as they are final ------------------------------------------------------------
++class HeadMarker:
++    """A temporal group with nothing to decode, placed between two real groups and spanning their overlap.
++
++    tiled_decode handles it like any group: it adds the marker's (zero) buffer into the previous group's overlap,
++    copies that overlap into the marker, and yields the previous group's head (the frames before the next group
++    starts). Then it decodes the next group and blends the marker, which now holds the previous group's overlap,
++    into it, and yields the marker's empty head (dropped). The next group therefore gets the same sums as when it is
++    blended with the previous group directly, and the previous group's head leaves one group earlier. Adding zeros
++    can only turn -0.0 into +0.0, which decode_video's to_rgb (x + 1) removes.
++    """
++
++    def __init__(self, start, stop):
++        self.out_coords = (slice(None), slice(None), slice(start, stop))
++
++
++def with_head_markers(groups):
++    """LTX-2's temporal groups with a HeadMarker group between each pair of consecutive groups."""
++    marked = []
++    for index, group in enumerate(groups):
++        marked.append(group)
++        if index + 1 < len(groups):
++            start = groups[index + 1][0].out_coords[2].start
++            marked.append([HeadMarker(start, max(start, group[0].out_coords[2].stop))])
++    return marked
++
++
++_GROUP_HOOK = threading.Lock()
++
++
++@contextmanager
++def head_markers(module):
++    """While active, the decoder module's group_tiles_by_temporal_slice adds the HeadMarker groups."""
++    original = getattr(module, "group_tiles_by_temporal_slice", None)
++    if original is None or not _GROUP_HOOK.acquire(blocking=False):
++        yield False
++        return
++    module.group_tiles_by_temporal_slice = lambda tiles: with_head_markers(original(tiles))
++    try:
++        yield True
++    finally:
++        module.group_tiles_by_temporal_slice = original
++        _GROUP_HOOK.release()
++
++
++def source_sha256(function):
++    try:
++        return hashlib.sha256(inspect.getsource(function).encode()).hexdigest()
++    except (OSError, TypeError):
++        return None
++
++
++def install_eager_decode(decoder):
++    """Make this decoder instance's tiled_decode (which decode_video calls) yield each temporal chunk as soon as its
++    frames are final. Returns whether it was installed: only for the LTX-2 version checked by LTX2_SOURCE_SHA256.
++
++    Same tiles, same decoder calls with the same generator in the same order, the same chunks (views of the same
++    buffers, so the same shapes and strides) with the same values; see HeadMarker.
++    """
++    cls = type(decoder)
++    module = sys.modules.get(getattr(getattr(cls, "tiled_decode", None), "__module__", ""))
++    if (any(source_sha256(getattr(cls, name, None)) != digest for name, digest in LTX2_SOURCE_SHA256.items())
++            or getattr(module, "group_tiles_by_temporal_slice", None) is None):
++        return False
++    accumulate, tiled_decode = decoder._accumulate_temporal_group_into_buffer, decoder.tiled_decode
++
++    def accumulate_decoded_groups(group_tiles, buffer, *args, complementary, **kwargs):
++        if isinstance(group_tiles[0], HeadMarker):        # nothing to decode; no weight (as a group without tiles)
++            return None if complementary else buffer.new_zeros(buffer.shape)
++        return accumulate(group_tiles, buffer, *args, complementary=complementary, **kwargs)
++
++    def eager_tiled_decode(*args, **kwargs):
++        chunks = tiled_decode(*args, **kwargs)
++        with head_markers(module):                         # tiled_decode groups its tiles in its first step
++            first = next(chunks, None)
++        if first is None:
++            return
++        if first.shape[2]:
++            yield first
++        for frames in chunks:
++            if frames.shape[2]:                             # a marker's empty head
++                yield frames
++
++    decoder._accumulate_temporal_group_into_buffer = accumulate_decoded_groups
++    decoder.tiled_decode = eager_tiled_decode
++    return True
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/h3_upscale.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/h3_upscale.py
 index 4e6e910..47a0c62 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/h3_upscale.py
@@ -1528,15 +1788,17 @@ index dafe5ee..9513659 100644
      if (not models.parameter_dtypes.get("torch.bfloat16")
              or not set(models.parameter_dtypes) <= {"torch.bfloat16", "torch.float32"}):
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/writer_chunking.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/writer_chunking.py
-index 9264fee..31b3db2 100644
+index 9264fee..36c55b5 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/writer_chunking.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/writer_chunking.py
-@@ -1,16 +1,17 @@
+@@ -1,16 +1,19 @@
  """Writer views preserving original decoder checks and the native encoder."""
++import time
  
  
 -def tracked_writer_chunks(chunks, receipt, *, expected_dtype):
-+# Modified by sol-h3-studio: frame_shape and expected_frames arguments (clip length, orientation).
++# Modified by sol-h3-studio: frame_shape and expected_frames arguments (clip length, orientation), and the time the
++# decoder iterator ended.
 +def tracked_writer_chunks(chunks, receipt, *, expected_dtype, frame_shape=(768, 1344, 3), expected_frames=121):
      """Use the gated 16-frame slicing expression without copies or casts.
  
@@ -1552,15 +1814,559 @@ index 9264fee..31b3db2 100644
          receipt["source_chunks"] += 1
          receipt["source_layouts"].append({"shape": list(chunk.shape), "dtype": str(chunk.dtype),
                                            "stride": list(chunk.stride())})
-@@ -19,6 +20,6 @@ def tracked_writer_chunks(chunks, receipt, *, expected_dtype):
+@@ -19,6 +22,8 @@ def tracked_writer_chunks(chunks, receipt, *, expected_dtype):
              receipt["emitted_chunks"] += 1
              receipt["frames"] += int(view.shape[0])
              yield view
 -    if receipt["frames"] != 121:
 -        raise RuntimeError(f"writer chunk16 consumed {receipt['frames']} frames, expected 121")
++    # sol-h3-studio: every frame is decoded and on its way to the encoder
++    receipt["decoder_done_monotonic_ns"] = time.monotonic_ns()
 +    if receipt["frames"] != expected_frames:
 +        raise RuntimeError(f"writer chunk16 consumed {receipt['frames']} frames, expected {expected_frames}")
      receipt["complete"] = True
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_decode_ahead.py b/models/minimax_h3/Sol-H3-Spark/tests/test_decode_ahead.py
+new file mode 100644
+index 0000000..d96c153
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_decode_ahead.py
+@@ -0,0 +1,536 @@
++"""CPU checks for decoding ahead of the H.264 encoder (runtime/stage2_ops/decode_ahead.py).
++
++Part of sol-h3-studio (Apache-2.0). No GPU, no weights. The decoder and the encoder here are stand-ins written for
++these tests: a generator of small tensors, a module with encode_video's producer/consumer shape (a one-slot Queue to
++an encoder thread), and a tiled decoder with the yield and blend rule of LTX-2's ConvVideoDecoder.tiled_decode.
++
++With SOL_H3_TEST_LTX_ROOT=<an LTX-2 checkout> and the Stage-2 Python, RealLTXTests also run LTX-2's own tiled
++decoder and its encode_video (PyAV, libx264) on the CPU.
++"""
++from __future__ import annotations
++
++from contextlib import nullcontext
++import hashlib
++import os
++from pathlib import Path
++import queue
++import sys
++import tempfile
++import threading
++import types
++from types import SimpleNamespace
++import unittest
++from unittest.mock import patch
++
++import torch
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from runtime import config
++from runtime import stage2
++from runtime.stage2_ops import decode_ahead as ahead
++from runtime.stage2_ops.writer_chunking import tracked_writer_chunks
++
++FRAME = (2, 2, 3)          # tiny frames; the writer checks only shape and dtype
++CHUNKS = (96, 104, 41)     # the decoder chunks of a 10 s clip
++
++
++# ---- writer and encoder queue ---------------------------------------------------------------------------------------
++def frames_tensor(count, start=0):
++    values = torch.arange(start, start + count, dtype=torch.float32).reshape(count, 1, 1, 1)
++    return (values / 1000).expand(count, *FRAME).to(torch.bfloat16).contiguous()
++
++
++def decoder(sizes=CHUNKS, *, log=None, fail_at=None):
++    """Chunks of frames whose values number them; log(("ask", k)) before chunk k is made."""
++    start = 0
++    for index, size in enumerate(sizes):
++        if log is not None:
++            log(("ask", index))
++        if index == fail_at:
++            raise RuntimeError(f"decoder failed at chunk {index}")
++        yield frames_tensor(size, start)
++        start += size
++
++
++STAND_IN_ENCODE = '''
++import threading
++from queue import Queue
++
++
++def _encode_chunks_threaded(items, encode_frame, flush):
++    pending = Queue(maxsize=1)
++    failures = []
++
++    def consume():
++        while (item := pending.get()) is not None:
++            if failures:
++                continue                        # keep taking items so the producer is never stuck
++            try:
++                for frame in item:
++                    encode_frame(frame)
++            except Exception as error:
++                failures.append(error)
++        if not failures:
++            try:
++                flush()
++            except Exception as error:
++                failures.append(error)
++
++    worker = threading.Thread(target=consume, name="stand-in-encoder")
++    worker.start()
++    try:
++        for item in items:
++            pending.put(item)
++    finally:
++        pending.put(None)
++        worker.join()
++    if failures:
++        raise failures[0]
++
++
++def encode_video(video, encode_frame, flush=lambda: None, convert=lambda chunk: chunk.clone()):
++    first = next(video, None)
++    if first is None:
++        raise ValueError("video is empty")
++    converted = convert(first)
++
++    def items():
++        yield converted
++        for chunk in video:
++            yield convert(chunk)
++
++    _encode_chunks_threaded(items(), encode_frame, flush)
++'''
++
++
++def encode_module(name="stand_in_encode"):
++    """Stand-in for ltx_pipelines.utils.media_io.encode: the producer converts each view (a copy, as the colour
++    conversion and the copy to the CPU are) and puts it into a one-item Queue, a module global built per call; an
++    encoder thread takes them; the first view is converted before that thread starts."""
++    module = types.ModuleType(name)
++    exec(compile(STAND_IN_ENCODE, name, "exec"), module.__dict__)
++    return module
++
++
++class Recorder:
++    """The encoder: keeps every frame it gets, in order; can wait for a gate first or fail at a frame."""
++
++    def __init__(self, gate=None, fail_at=None):
++        self.frames, self.gate, self.fail_at, self.flushed = [], gate, fail_at, False
++
++    def __call__(self, frame):
++        if self.gate is not None:
++            self.gate.wait(30)
++        if self.fail_at is not None and len(self.frames) == self.fail_at:
++            raise OSError("libx264 failed")
++        self.frames.append(frame.clone())
++
++    def flush(self):
++        self.flushed = True
++
++    def all(self):
++        return torch.stack(self.frames)
++
++
++def writer_receipt():
++    return {"chunk_frames": 16, "source_chunks": 0, "emitted_chunks": 0, "frames": 0, "source_layouts": [],
++            "complete": False}
++
++
++def write(module, views, source, encoder, receipt=None):
++    """What write_full_vae_video does around encode_video: the writer's views, the hook (views None: no hook)."""
++    receipt = writer_receipt() if receipt is None else receipt
++    video = iter(tracked_writer_chunks(source, receipt, expected_dtype=torch.bfloat16, frame_shape=FRAME,
++                                       expected_frames=sum(CHUNKS)))
++    with nullcontext() if views is None else ahead.encoder_queue(module, views, receipt):
++        module.encode_video(video, encoder, encoder.flush)
++    return receipt
++
++
++class EncoderQueueTests(unittest.TestCase):
++    def test_same_frames_in_the_same_order(self):
++        expected = frames_tensor(sum(CHUNKS))
++        for views in (None, 1, 8):
++            module, encoder = encode_module(), Recorder()
++            receipt = write(module, views, decoder(), encoder)
++            self.assertTrue(torch.equal(encoder.all(), expected), views)
++            self.assertTrue(encoder.flushed and receipt["complete"])
++            self.assertEqual((receipt["source_chunks"], receipt["emitted_chunks"], receipt["frames"]), (3, 16, 241))
++            self.assertIsInstance(receipt["decoder_done_monotonic_ns"], int)
++            self.assertIs(module.Queue, queue.Queue)
++            if views is not None:
++                stats = receipt["encoder_queue"]
++                self.assertEqual((stats["hooked"], stats["views"], stats["queues"]), (True, views, 1))
++                self.assertLessEqual(stats["max_queued_views"], views)
++                self.assertGreaterEqual(stats["frames_to_encoder_monotonic_ns"], stats["encoder_started_monotonic_ns"])
++
++    def run_gated(self, views):
++        """The encoder is stuck on its first frame. Returns which later chunks the decoder was asked for meanwhile."""
++        module, gate = encode_module(), threading.Event()
++        asked = {index: threading.Event() for index in range(len(CHUNKS))}
++        encoder, results = Recorder(gate=gate), []
++        writer = threading.Thread(target=lambda: results.append(
++            write(module, views, decoder(log=lambda event: asked[event[1]].set()), encoder)))
++        writer.start()
++        try:
++            seen = {index: asked[index].wait(10 if (index, views) == (1, 8) else 0.5) for index in (1, 2)}
++        finally:
++            gate.set()
++            writer.join(30)
++        self.assertEqual(len(results), 1)
++        self.assertTrue(torch.equal(encoder.all(), frames_tensor(sum(CHUNKS))))
++        return seen
++
++    def test_the_decoder_runs_one_chunk_ahead(self):
++        # room for one decoder chunk: chunk 1 is made while the encoder still has all of chunk 0, but not chunk 2
++        self.assertEqual(self.run_gated(8), {1: True, 2: False})
++
++    def test_upstream_queue_holds_the_decoder_back(self):
++        # one view (LTX-2): no new chunk while the encoder is busy with this one
++        self.assertEqual(self.run_gated(1), {1: False, 2: False})
++
++    def test_a_decoder_error_reaches_the_caller_and_the_hook_is_undone(self):
++        module, encoder, receipt = encode_module(), Recorder(), writer_receipt()
++        with self.assertRaisesRegex(RuntimeError, "decoder failed at chunk 2"):
++            write(module, 8, decoder(fail_at=2), encoder, receipt)
++        self.assertIs(module.Queue, queue.Queue)
++        self.assertFalse(receipt["complete"])
++        self.assertNotIn("decoder_done_monotonic_ns", receipt)
++        self.assertTrue(receipt["encoder_queue"]["hooked"])
++        self.assertTrue(torch.equal(encoder.all(), frames_tensor(200)))     # what came before the error, in order
++        self.assertTrue(write(module, 8, decoder(), Recorder())["encoder_queue"]["hooked"])     # free again
++
++    def test_an_encoder_error_reaches_the_caller(self):
++        module = encode_module()
++        with self.assertRaisesRegex(OSError, "libx264 failed"):
++            write(module, 8, decoder(), Recorder(fail_at=50))
++        self.assertIs(module.Queue, queue.Queue)
++        with self.assertRaisesRegex(RuntimeError, "consumed 0 frames, expected 241"):    # the writer's own check
++            write(module, 8, iter(()), Recorder())
++        self.assertIs(module.Queue, queue.Queue)
++
++    def test_hooked_only_where_it_is_the_same_queue(self):
++        receipt, changed = {}, encode_module()
++        changed.Queue = lambda maxsize=0: queue.LifoQueue(maxsize)          # not queue.Queue: left alone
++        with ahead.encoder_queue(changed, 8, receipt):
++            pass
++        self.assertEqual(receipt["encoder_queue"], {"hooked": False, "views": 1})
++        with ahead.encoder_queue(None, 8, receipt):                         # module not loaded
++            pass
++        self.assertFalse(receipt["encoder_queue"]["hooked"])
++        outer, inner, first, second = {}, {}, encode_module(), encode_module("other")
++        with ahead.encoder_queue(first, 8, outer):
++            with ahead.encoder_queue(second, 8, inner):                     # one hook at a time
++                self.assertIs(second.Queue, queue.Queue)
++            self.assertIsNot(first.Queue, queue.Queue)
++        self.assertIs(first.Queue, queue.Queue)
++        self.assertFalse(inner["encoder_queue"]["hooked"])
++        self.assertEqual((outer["encoder_queue"]["hooked"], outer["encoder_queue"]["queues"]), (True, 0))
++
++    def test_queue_views(self):
++        self.assertEqual([ahead.queue_views(n) for n in (1, 16, 17, 128, 129)], [1, 1, 2, 8, 9])
++        module, made = encode_module(), []
++        with ahead.encoder_queue(module, 8, {}):
++            made += [module.Queue(maxsize=1), module.Queue(maxsize=12), module.Queue()]
++        self.assertEqual([q.maxsize for q in made], [8, 12, 0])
++
++    def test_setting(self):
++        with patch.dict(os.environ):
++            os.environ.pop("SOL_H3_DECODE_AHEAD", None)
++            self.assertTrue(config.decode_ahead_enabled())
++            for value, enabled in (("1", True), ("", True), (" 0 ", False), ("0", False)):
++                os.environ["SOL_H3_DECODE_AHEAD"] = value
++                self.assertEqual(config.decode_ahead_enabled(), enabled, value)
++
++
++# ---- chunks out of the decoder as soon as they are final ------------------------------------------------------------
++def group_tiles_by_temporal_slice(tiles):
++    """Consecutive tiles with the same temporal output slice form a group (what LTX-2's function returns)."""
++    groups = []
++    for tile in tiles:
++        if groups and groups[-1][0].out_coords[2] == tile.out_coords[2]:
++            groups[-1].append(tile)
++        else:
++            groups.append([tile])
++    return groups
++
++
++GROUPING = group_tiles_by_temporal_slice
++
++
++class StandInDecoder:
++    """Written for these tests. Like LTX-2's ConvVideoDecoder.tiled_decode: each temporal group is decoded into its
++    own buffer; the overlap with the previous buffer is summed and copied into this buffer's start; then the
++    previous buffer's frames before this group's start are yielded; the last buffer is yielded whole. Without
++    complementary masks, buffers carry weights that the yielded frames are divided by. "Decoding" draws from the
++    generator, so the values show the decode order."""
++
++    def __init__(self, groups, complementary, log):
++        self.groups, self.complementary, self.log = groups, complementary, log
++
++    def _prepare_tiles(self, latent, tiling_config=None):
++        tiles, width = [], latent.shape[4]
++        for index, (start, stop) in enumerate(self.groups):
++            for side in (slice(0, width // 2 + 1), slice(width // 2 - 1, width)):      # two overlapping tiles
++                tiles.append(SimpleNamespace(group=index, side=side, out_coords=(slice(None), slice(None),
++                                                                                 slice(start, stop))))
++        return tiles
++
++    def _accumulate_temporal_group_into_buffer(self, group_tiles, buffer, latent, timestep, generator, *,
++                                               complementary):
++        self.log(("decode", group_tiles[0].group))
++        weights = None if complementary else torch.zeros_like(buffer)
++        for tile in group_tiles:
++            region = (slice(None), slice(None), slice(None), slice(None), tile.side)
++            ramp = torch.linspace(0.2, 1.0, buffer[region].shape[-1])
++            buffer[region] += (torch.randn(buffer[region].shape, generator=generator) * ramp).to(buffer.dtype)
++            if weights is not None:
++                weights[region] += ramp.to(weights.dtype)
++        return weights
++
++    def tiled_decode(self, latent, tiling_config=None, timestep=None, generator=None):
++        tiles = self._prepare_tiles(latent, tiling_config)
++        complementary = self.complementary
++        previous = None
++        for group in group_tiles_by_temporal_slice(tiles):           # this module's global, as in LTX-2's module
++            span = group[0].out_coords[2]
++            buffer = torch.zeros(1, 3, span.stop - span.start, latent.shape[3], latent.shape[4], dtype=latent.dtype)
++            weights = self._accumulate_temporal_group_into_buffer(
++                group_tiles=group, buffer=buffer, latent=latent, timestep=timestep, generator=generator,
++                complementary=complementary)
++            if previous is not None:
++                last, last_weights, last_span = previous
++                shared, offset = last_span.stop - span.start, span.start - last_span.start
++                if shared > 0:
++                    last[:, :, offset:] += buffer[:, :, :shared]
++                    buffer[:, :, :shared] = last[:, :, offset:]
++                    if not complementary:
++                        last_weights[:, :, offset:] += weights[:, :, :shared]
++                        weights[:, :, :shared] = last_weights[:, :, offset:]
++                yield last[:, :, :offset] if complementary else (last / last_weights.clamp(min=1e-8))[:, :, :offset]
++            previous = buffer, weights, span
++        if previous is not None:
++            last, last_weights, _ = previous
++            yield last if complementary else last / last_weights.clamp(min=1e-8)
++
++
++GROUPS = {"5 s": [(0, 121)],
++          "10 s": [(0, 121), (96, 225), (200, 241)],
++          "15 s": [(0, 121), (96, 225), (200, 329), (304, 361)],
++          "no overlap": [(0, 121), (121, 241)]}
++STAND_IN_SHA256 = {name: ahead.source_sha256(getattr(StandInDecoder, name)) for name in ahead.LTX2_SOURCE_SHA256}
++
++
++def decode_video(model, latent, generator):
++    """decode_video's tiled branch: to_rgb works in place on each yielded chunk."""
++    for frames in model.tiled_decode(latent, None, generator=generator):
++        yield frames[0].permute(1, 2, 3, 0).add_(1.0).mul_(0.5).clamp_(0.0, 1.0)
++
++
++def run_decoder(groups, complementary, eager):
++    log = []
++    model = StandInDecoder(groups, complementary, log.append)
++    if eager:
++        with patch.dict(ahead.LTX2_SOURCE_SHA256, STAND_IN_SHA256):
++            assert ahead.install_eager_decode(model)
++    generator = torch.Generator().manual_seed(7)
++    latent = torch.zeros(1, 4, (groups[-1][1] - 1) // 8 + 1, 2, 6, dtype=torch.bfloat16)
++    chunks = []
++    for chunk in decode_video(model, latent, generator):
++        log.append(("yield", len(chunks)))
++        chunks.append((chunk, chunk.clone()))
++    return chunks, log, generator.get_state()
++
++
++class EagerDecodeTests(unittest.TestCase):
++    def test_same_chunks_same_values_one_group_earlier(self):
++        for name, groups in GROUPS.items():
++            for complementary in (True, False):
++                with self.subTest(name, complementary=complementary):
++                    upstream, upstream_log, upstream_rng = run_decoder(groups, complementary, eager=False)
++                    eager, eager_log, eager_rng = run_decoder(groups, complementary, eager=True)
++                    self.assertEqual([(c.shape, c.stride()) for c, _ in eager],
++                                     [(c.shape, c.stride()) for c, _ in upstream])
++                    for (view, copy), (_, reference) in zip(eager, upstream):
++                        self.assertTrue(torch.equal(copy, reference))       # the same values, as yielded
++                        self.assertTrue(torch.equal(view, copy))            # and nothing wrote into them later
++                    self.assertTrue(torch.equal(eager_rng, upstream_rng))  # the same generator draws
++                    if name == "10 s":
++                        self.assertEqual([c.shape[0] for c, _ in eager], [96, 104, 41])
++                    count = len(groups)
++                    # chunk k right after group k (eager), not after group k+1 (upstream); no empty chunks
++                    self.assertEqual(eager_log, [e for k in range(count) for e in (("decode", k), ("yield", k))])
++                    self.assertEqual(upstream_log, [("decode", 0)] + [
++                        e for k in range(1, count) for e in (("decode", k), ("yield", k - 1))] + [("yield", count - 1)])
++        self.assertIs(sys.modules[__name__].group_tiles_by_temporal_slice, GROUPING)     # the hook is undone
++
++    def test_markers(self):
++        groups = [[SimpleNamespace(out_coords=(None, None, slice(a, b)))] for a, b in GROUPS["15 s"]]
++        marked = ahead.with_head_markers(groups)
++        self.assertEqual([g[0].out_coords[2] for g in marked], [slice(0, 121), slice(96, 121), slice(96, 225),
++                                                                slice(200, 225), slice(200, 329), slice(304, 329),
++                                                                slice(304, 361)])
++        self.assertEqual([isinstance(g[0], ahead.HeadMarker) for g in marked], [False, True] * 3 + [False])
++        apart = [[SimpleNamespace(out_coords=(None, None, slice(a, b)))] for a, b in GROUPS["no overlap"]]
++        self.assertEqual(ahead.with_head_markers(apart)[1][0].out_coords[2], slice(121, 121))
++
++    def test_only_on_the_checked_ltx2_version(self):
++        model = StandInDecoder(GROUPS["10 s"], True, print)
++        self.assertFalse(ahead.install_eager_decode(model))                 # the stand-in is not LTX-2 d151147
++        self.assertNotIn("tiled_decode", vars(model))
++        with patch.dict(ahead.LTX2_SOURCE_SHA256, STAND_IN_SHA256):
++            self.assertTrue(ahead.install_eager_decode(model))
++        self.assertIn("tiled_decode", vars(model))
++
++
++# ---- write_full_vae_video ---------------------------------------------------------------------------------------
++class WriterGlueTests(unittest.TestCase):
++    def write(self, decode_ahead, directory):
++        module, seen = encode_module("stand_in_encode_glue"), {}
++
++        def encode_video(video, fps, audio, output_path, video_chunks_number, crf, preset, thread_count):
++            encoder = Recorder()
++            module.encode_video(video, encoder, encoder.flush)
++            Path(output_path).write_bytes(encoder.all().to(torch.float32).numpy().tobytes())
++            seen.update(settings=(fps, video_chunks_number, crf, preset, thread_count), audio=audio)
++        encode_video.__module__ = module.__name__
++
++        cuda = SimpleNamespace(reset_peak_memory_stats=lambda: seen.update(reset=True),
++                               max_memory_allocated=lambda: 123, max_memory_reserved=lambda: 456)
++        session = SimpleNamespace(torch=SimpleNamespace(bfloat16=torch.bfloat16, cuda=cuda),
++                                  decode_ahead=decode_ahead, eager_decoder=decode_ahead, payload={"audio": "pcm"},
++                                  geometry={"output_height": 2, "output_width": 2, "output_frames": 241,
++                                            "tiles": {"frames": {"tile_size": 128, "overlap": 24}}})
++        base = SimpleNamespace(encode_video=encode_video, _normalize_audio=lambda audio: audio)
++        model = object.__new__(stage2._refiner_class(base, SimpleNamespace(OfficialCompatRefiner=object), session))
++        output = Path(directory) / f"refined-{decode_ahead}.mp4"
++        types_module = types.ModuleType("ltx_core.types")
++        types_module.Audio = lambda waveform, sampling_rate: (waveform, sampling_rate)
++        with patch.dict(sys.modules, {module.__name__: module, "ltx_core": types.ModuleType("ltx_core"),
++                                      "ltx_core.types": types_module}):
++            model.write_full_vae_video(decoder(), 3, None, output)
++        self.assertIs(module.Queue, queue.Queue)
++        return output, session.writer_chunk_receipt, seen, model
++
++    def test_writer(self):
++        with tempfile.TemporaryDirectory() as directory:
++            files = []
++            for decode_ahead, views in ((True, 8), (False, 1)):
++                output, receipt, seen, model = self.write(decode_ahead, directory)
++                files.append(output.read_bytes())
++                self.assertEqual(seen["settings"], (24, 16, 19, "veryfast", 8))     # libx264 settings unchanged
++                self.assertEqual(seen["audio"], ("pcm", 32000))
++                self.assertTrue(seen["reset"] and receipt["complete"])
++                self.assertEqual((receipt["decode_ahead"], receipt["eager_decoder"]), (decode_ahead, decode_ahead))
++                self.assertEqual((receipt["encoder_queue"]["hooked"], receipt["encoder_queue"]["views"]), (True, views))
++                self.assertEqual((receipt["cuda_peak_allocated_bytes"], receipt["cuda_peak_reserved_bytes"]), (123, 456))
++                self.assertLessEqual(receipt["decoder_done_monotonic_ns"], model.final_mp4_complete_monotonic_ns)
++                self.assertEqual([p.name for p in Path(directory).iterdir() if "partial" in p.name], [])
++            self.assertEqual(files[0], files[1])
++            self.assertEqual(len(files[0]), sum(CHUNKS) * 12 * 4)
++
++    def test_timing_notes(self):
++        self.assertEqual(set(stage2.TIMING_NOTES), {"official_video_vae_decode_s", "decode_stream_and_h264_mux_s",
++                                                    "h264_encode_mux_s", "decode_done_to_mp4_s", "stage2_request_s"})
++
++
++# ---- optional: LTX-2 itself -----------------------------------------------------------------------------------------
++LTX_ROOT = os.environ.get("SOL_H3_TEST_LTX_ROOT")
++
++
++@unittest.skipUnless(LTX_ROOT, "set SOL_H3_TEST_LTX_ROOT to an LTX-2 checkout and use the Stage-2 Python")
++class RealLTXTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        for package in ("ltx-core", "ltx-pipelines"):
++            source = str(Path(LTX_ROOT) / "packages" / package / "src")
++            if source not in sys.path:
++                sys.path.insert(0, source)
++
++    def test_eager_chunks_equal_ltx2_chunks(self):
++        from ltx_core.model.video_vae import conv_video_decoder as ltx
++        from ltx_core.tiling import DimensionSizeConfig, TileSizeConfig
++        from ltx_core.types import SpatioTemporalScaleFactors
++
++        class Decoder:
++            video_downscale_factors = SpatioTemporalScaleFactors(time=8, height=32, width=32)
++            _prepare_tiles = ltx.ConvVideoDecoder._prepare_tiles
++            _accumulate_temporal_group_into_buffer = ltx.ConvVideoDecoder._accumulate_temporal_group_into_buffer
++            tiled_decode = ltx.ConvVideoDecoder.tiled_decode
++            decode_video = ltx.ConvVideoDecoder.decode_video
++
++            calls = 0
++
++            def forward(self, latent, timestep=None, generator=None):
++                self.calls += 1
++                b, _, f, h, w = latent.shape
++                return torch.randn((b, 3, f * 8 + 1, h * 32, w * 32), generator=generator).to(latent.dtype)
++
++        tiling = TileSizeConfig(frames=DimensionSizeConfig(tile_size=128, overlap=24),
++                                width=DimensionSizeConfig(tile_size=64, overlap=32))
++        cases = ((16, [121]), (31, [96, 104, 41]), (46, [96, 104, 104, 57]))
++        for (latent_frames, sizes), complementary in [(c, m) for c in cases for m in (None, False)]:
++            with self.subTest(frames=latent_frames, complementary=complementary):
++                latent = torch.randn(1, 4, latent_frames, 1, 4, generator=torch.Generator().manual_seed(1))
++                forced = (patch.object(ltx, "masks_are_complementary", lambda tiles, shape: False)
++                          if complementary is False else nullcontext())
++                runs = []
++                with forced:
++                    for eager in (False, True):
++                        model = Decoder()
++                        if eager:
++                            self.assertTrue(ahead.install_eager_decode(model))
++                        generator = torch.Generator().manual_seed(3)
++                        chunks = [(c, c.clone(), model.calls) for c in model.decode_video(
++                            latent.to(torch.bfloat16), tiling, generator=generator)]
++                        runs.append(([c[:2] for c in chunks], generator.get_state(), [c[2] for c in chunks]))
++                (upstream, upstream_rng, upstream_calls), (eager, eager_rng, eager_calls) = runs
++                self.assertEqual([c.shape[0] for c, _ in upstream], sizes)
++                # decoder calls made when each chunk came out: eager after its own group, upstream after the next
++                tiles = eager_calls[-1] // len(sizes)
++                self.assertEqual(eager_calls, [tiles * (k + 1) for k in range(len(sizes))])
++                self.assertEqual(upstream_calls, [tiles * min(k + 2, len(sizes)) for k in range(len(sizes))])
++                self.assertEqual([(c.shape, c.stride()) for c, _ in eager],
++                                 [(c.shape, c.stride()) for c, _ in upstream])
++                for (view, copy), (_, reference) in zip(eager, upstream):
++                    self.assertTrue(torch.equal(copy, reference) and torch.equal(view, copy))
++                self.assertTrue(torch.equal(eager_rng, upstream_rng))
++                self.assertEqual(ltx.group_tiles_by_temporal_slice.__module__, "ltx_core.tiling")   # hook undone
++
++    def test_same_mp4_bytes(self):
++        from ltx_core.types import Audio
++        from ltx_pipelines.utils.media_io import encode as ltx_encode
++
++        height, width, count = 96, 160, sum(CHUNKS)
++        generator = torch.Generator().manual_seed(5)
++        planes = (torch.rand(3, count, height, width, generator=generator) * 0.2
++                  + torch.linspace(0, 0.8, width)).to(torch.bfloat16)
++        seconds = torch.arange(count * 32000 // 24) / 32000
++        audio = Audio(waveform=torch.stack([torch.sin(440 * 6.2832 * seconds)] * 2) * 0.3, sampling_rate=32000)
++
++        def chunks():                    # channel-last views of channel-first buffers, as the decoder yields them
++            start = 0
++            for size in CHUNKS:
++                yield planes[:, start:start + size].permute(1, 2, 3, 0)
++                start += size
++
++        digests = {}
++        with tempfile.TemporaryDirectory() as directory:
++            for views in (None, 1, 8):
++                receipt, path = writer_receipt(), Path(directory) / f"{views}.mp4"
++                video = iter(tracked_writer_chunks(chunks(), receipt, expected_dtype=torch.bfloat16,
++                                                   frame_shape=(height, width, 3), expected_frames=count))
++                with nullcontext() if views is None else ahead.encoder_queue(ltx_encode, views, receipt):
++                    ltx_encode.encode_video(video=video, fps=24, audio=audio, output_path=str(path),
++                                            video_chunks_number=16, crf=19, preset="veryfast", thread_count=2)
++                self.assertIs(ltx_encode.Queue, queue.Queue)
++                if views is not None:
++                    stats = receipt["encoder_queue"]
++                    self.assertEqual((stats["hooked"], stats["views"], stats["queues"]), (True, views, 1))
++                    self.assertLessEqual(stats["max_queued_views"], views)
++                digests[views] = hashlib.sha256(path.read_bytes()).hexdigest()
++        self.assertEqual(len(set(digests.values())), 1, digests)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_geometry.py b/models/minimax_h3/Sol-H3-Spark/tests/test_geometry.py
 new file mode 100644
 index 0000000..087bed3
