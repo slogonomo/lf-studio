@@ -144,9 +144,10 @@ per-length graphs of the body blocks.
   sparse-attention metadata and tiling (`total_seq_length`, the tile counts) and to the denoise step. The setting
   `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (off by default;
   [PATCH.md, 16](PATCH.md#16-prompt-lengths-without-recompiles-experimental)) compiles them per session (2 graphs:
-  the first denoise step and the rest), not per length. The text refiner still compiles once more, at a session's
-  second length (measured on the CPU, with FastVideo's own blocks). With the setting on, Stage-1 times and output on
-  the GPU have not been measured yet.
+  the first denoise step and the rest), not per length. Measured on the test lane (2026-10-13, 19 clips each way):
+  a new length cost 0.0-0.8 s in t2va and fl2va with it, 2.3-9.7 s without; known-length clips +0.3 to +0.9 %;
+  every warm clip bit-identical. The text refiner still compiles once more at a session's second length (2.6 s in
+  that ref2va clip).
 - Cold vs warm overhead (~55 s), measured before the last fix: Stage 2 first compile 15-20 s, Stage 1 LoRA merge
   + FP8 ~7 s, Stage 1 first-denoise compile ~11 s, audio VAE 6 s.
 - The numbers above assume the compile cache is warm from an earlier run of the same mode, format and length.

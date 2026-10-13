@@ -305,15 +305,35 @@ and identity are unchanged, and the image is 5-11% sharper.
   The text refiner and FastVideo are not changed. One GPU only (no sequence parallelism).
 - **Ref2VA.** The dense route reads no sparse-attention metadata, so its body graphs already become length-dynamic
   at a session's second length (automatic dynamic shapes). There the setting saves that one recompile, but it also
-  compiles the first length's body for a symbolic length (see Output). The optional Sol route (`ref_stage1_attn=sol`)
-  ignores the setting; its receipt says `per_length (setting ignored)`.
-- **Output.** Expected to be bit-identical; not yet checked on the GPU. Inductor generates only data movement,
-  casts, the FP8 activation scaling (a maximum and elementwise steps) and the residual adds of the body graph. The
-  norms, RoPE and SwiGLU are FastVideo's own Triton kernels, and the matmuls are cuBLAS calls of the same sizes. None
-  of these results depends on how a kernel is tuned for a symbolic length (inferred). On the CPU, the small model's
-  outputs were identical with and without the setting at 5 prompt lengths (Inductor's C++ backend).
-- **Measured.** CPU only so far: the small model compiles 2 body graphs in a session of 5 prompt lengths (without the
-  setting: 5 per length). GPU times: not measured yet.
+  compiles the first length's body for a symbolic length (measured below: the same output). The optional Sol route
+  (`ref_stage1_attn=sol`) ignores the setting; its receipt says `per_length (setting ignored)`.
+- **Measured** on the test lane, 2026-10-13: one run with this patch, a studio with the setting off and then one with
+  it on, the same 19 clips (5 s, 16:9) in the same order. A t2va, an fl2va (keyframe) and a ref2va session each had
+  2 new prompt lengths and repeated every prompt later. Both studios started from the same copy of the compile cache.
+  - New prompt length, Stage 1 against the same prompt repeated later: with the setting 0.0-0.8 s in t2va and fl2va,
+    and 0.0 s in ref2va at its third length. ref2va's second length cost 2.6 s: the text refiner recompiles there,
+    with or without the setting. Without the setting: 2.3-9.7 s in t2va and fl2va, and 5.9 s and 0.0 s in ref2va
+    (its dense body is already length-dynamic from the second length).
+  - Graphs: with the setting, 2 body graphs at each session's first clip and none for any new length. Without it,
+    5 body graphs for every new length in t2va and fl2va.
+  - Known-length clips, median Stage 1 (3-4 clips per task): t2va 18.15 → 18.2 s (+0.3 %), fl2va 21.2 → 21.4 s
+    (+0.9 %), ref2va 22.0 → 22.1 s (+0.5 %).
+  - Output: every warm clip (15) was bit-identical with and without the setting (Stage-1 `payload_sha256` and
+    `native_normalized_sha256`, MP4 video and audio streams). Without the setting, 4 of the clips also matched the
+    same prompts and seeds from an earlier session of the #38 A/B.
+- **Why the output stays the same.** In the body graph, Inductor generates only data movement, casts, the FP8
+  activation scaling (a maximum and elementwise steps) and the residual adds. The norms, RoPE and SwiGLU are
+  FastVideo's own Triton kernels, and the matmuls are cuBLAS calls of the same sizes. None of these results depends
+  on how a kernel is tuned for a symbolic length (inferred).
+- **A session's first clip, with or without the setting.** In the same run, the first fl2va clip differed from its
+  own repeat later in the session with the setting on (SSIM 0.88 at 672×384); all other first clips matched. The
+  cause is the text refiner, which the setting doesn't change. It compiles a graph for the session's first length,
+  then a dynamic one at the second length (13), and the repeat ran on the dynamic one. Inductor picks between two
+  configurations of a reduction by timing it when it first compiles a kernel, and keeps the choice in the compile
+  cache. Here the refiner's residual-add + RMSNorm kernel for that first length (the same source in both runs) got
+  the looped configuration without the setting and the persistent one with it. Only the looped one rounds like the
+  dynamic graph. So the first clip of a session at a length new to the compile cache can differ from a later
+  re-render of the same prompt and seed, with or without the setting.
 - **Files.** `runtime/stage1_ops/regional.py`, `runtime/stage1.py` (comment; the Sol route's receipt),
   `tests/test_regional_length.py` (new).
 - **Switch.** `SOL_H3_DYNAMIC_TEXT_LENGTH`: `0` (default) as before, `1` on. Another value stops Stage 1 when it
