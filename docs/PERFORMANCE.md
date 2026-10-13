@@ -174,3 +174,153 @@ same kind of warm-up for the selected settings on request (with the prompt and i
 mode, or a built-in prompt for Text), so the same rules apply to it. If other models are loaded, they are closed
 first (~40 s; the status shows "switching to ..."); a clip or Unload in that time cancels the request, and the clip
 loads its own settings right after the close.
+
+## Replay bench: Stage 2 on saved drafts
+
+`bench/duration.sh` and `bench/first-clip.sh` time whole sessions. `bench/replay.sh` replays one stage, Stage 2, on
+fixed inputs: the Stage-1 drafts of clips the studio made. It answers two questions about a speed change: how much
+faster, and whether the picture or the sound changed. Each change is an *arm*. `baseline` is today's recipe,
+unchanged.
+
+### How to run it
+
+```bash
+# 1. Copy drafts out of the studio: a clip's case folder is <runtime root>/outputs/webui/<session>/<case>.
+#    Copies go to <runtime root>/outputs/bench/replay-drafts/. The trash would otherwise delete them.
+bench/replay.sh add talk5 <case folder> --turns 'R:0-2.1'          # a dialogue draft: speaker:start-end in s
+bench/replay.sh add quiet5 <case folder>
+bench/replay.sh add scene10 <case folder> --turns 'R:0-1,L:4-6.3,R:6.3-7.5' --mouth 600:300:400:200
+bench/replay.sh list
+bench/replay.sh arms                                                  # what each arm changes
+
+# 2. Plan and check without the GPU: processes, shapes, arms, runs, the runtime checks each arm relaxes, minutes.
+bench/replay.sh run --dry --arms baseline:2,steps2_from_0725:1,decode_untiled:1,preview:1
+
+# 3. Replay (GPU: stop the studio first). Then the CPU checks, which can run while the studio is back.
+bench/replay.sh run --arms baseline:2,steps2_from_0725:1,decode_untiled:1,preview:1 --label steps
+bench/replay.sh quality <run directory> [--lpips <python>] [--syncnet '<scorer command>']
+```
+
+`run` reads the same settings file as `bin/sol-h3-studio`. Like `bench/duration.sh`, it refuses to start below
+`SOLH3_MIN_FREE_GIB` (110) and runs each GPU process under `bench/memguard-run.sh`. It copies the Stage-2 compile
+cache into the run directory and uses the copy, so a run never writes the studio's cache. It deletes the copy at the
+end (`--keep-cache` keeps it). It does not stop or start the studio and does not use sudo. Everything goes to
+`<runtime root>/outputs/bench/replay-<time>[-label]/`: `plan.json`, `runs.jsonl` and `runs.csv` (one row per run),
+`summary.md`, `logs/`, `gpu_clocks.csv`, and each run's MP4 and Stage-2 receipts under `runs/`.
+
+`--arms` takes `ARM` or `ARM:N`, with N warm runs per draft (`--repeats`, default 2). Runs are grouped into one
+process per format, length and output size: Inductor compiles one shape per process, as in the studio's Stage-2
+worker. Each process loads Stage 2 once (16.4-16.8 s, measured 2026-10-12) and runs its list. The first run of each
+process is an extra run, marked "first in process". `--stop-at EPOCH` starts no run that would end after that time,
+by the estimates `--dry` prints; the first run of a process includes its compile (+6-7 s for a shape in the cache,
++69-80 s for a new one, measured 2026-10-12).
+
+### Choosing drafts
+
+Draft selection is up to you; nothing is hard-coded. A useful set:
+
+- a 5 s t2va clip with on-screen dialogue (SyncNet needs a visible speaking face);
+- a 5 s t2va clip without dialogue whose baseline already looks good (a draft that looks poor unchanged makes any
+  change hard to judge);
+- a 10 s fl2va dialogue clip with two people in one static shot (the scorer below expects that framing);
+- a 9:16 clip and a ref2va clip, when you have them.
+
+Clips that were warm runs in the studio (not the first clip after loading) can be checked bit for bit against
+the replay. `add` records which kind each clip was.
+
+### What each check measures
+
+| Check | What it is | Where |
+|---|---|---|
+| Stage 2 s | Stage 2's own clock in its receipt (`stage2_request_s`): from the run's start to the finished MP4 | `runs.csv` |
+| Phases | upscale, adapter, denoise, decode, H.264 mux, from the receipt's `phases_s` | `runs.csv` |
+| Per-step s | CUDA-event time of each call of the refiner's transformer (one per denoise step) | `step_s` |
+| Memory | torch peak allocated and reserved; lowest MemAvailable, sampled every 0.5 s during the run | `runs.csv` |
+| Settings | each run's sigmas, steps, output size, decoder tiles and upscale factor; the runtime checks it relaxes | `runs.jsonl` |
+| Arm took effect | the receipt shows the arm's step count, Sol-call count, output size, frames and decoder tiles, the refiner held the arm's sigmas, and `profile_step` wrote its profile; otherwise the run fails | `status` |
+| Patch | SHA-256 of the patch applied to the package (the copy `install/10-sana.sh` keeps) and of the Stage-2 code it runs | `runs.csv` |
+| Output | SHA-256 of the MP4, and MD5 of its decoded video frames and of its decoded audio | `runs.csv` |
+| Same as baseline | decoded video and audio equal to the same draft's first warm baseline run | `runs.csv` |
+| Same as studio | baseline runs: the MP4 equal to the studio's clip of that draft, warm run against warm clip | `runs.csv` |
+| Repeats | whether the warm runs of each draft and arm are identical; the first run of each process against the warm one | `summary.md` |
+| GPU clocks | SM clock, temperature, power and throttle reasons from `nvidia-smi` at 1 Hz | `summary.md` |
+| SSIM, PSNR | ffmpeg, every frame, at the draft canvas (672×384 or 384×672): each arm against the baseline, against the `preview` arm when the run has it (how close it stays to the draft), the first run against the warm run (the noise floor), and the studio clip against the baseline | `quality/` |
+| LPIPS | optional: the same pairs, AlexNet, every 2nd frame, CPU | `quality/` |
+| Sheets | per draft: 3 frames per arm, the middle frame's centre at full size, a mouth strip with `--mouth`; side-by-side MP4s, baseline left, arm right, with the arm's audio | `quality/sheets/` |
+| SyncNet | optional, dialogue drafts: LSE-C (higher is better) and LSE-D (lower is better) per face over that speaker's turns | `quality/syncnet/` |
+
+SSIM, PSNR and LPIPS measure how much the picture changed, not its quality: a lower score can look as good or
+better. The sheets and side-by-sides are for looking.
+
+Stage 2 muxes the draft's own audio into every output, so every arm of a draft has the same audio (the report
+checks this). For the same reason the speaking turns belong to the draft: `add --turns` stores them. A dialogue
+draft without turns gets them once, detected by the scorer on the baseline output, and every arm is scored with
+those. Not every scorer can detect them: the one used on 2026-10-12 expects two speakers and fails on a clip with
+one. Give such drafts their turns with `add --turns`.
+
+### Arms
+
+Each arm is one named function in `bench/replay/arms.py`. On the GPU it changes the live Stage-2 session for one run
+and is undone after it, so the next run starts from the runtime's own state. Nothing in the installed package is
+edited.
+
+| Arm | Change | Runtime checks it relaxes |
+|---|---|---|
+| `baseline` | none | none |
+| `steps2_from_0725`, `steps2_from_0625` | 2-step refine (sigmas 0.725/0.421875/0, or LTX-2's 0.625/0.4/0) | the attention-call count, checked for 2 steps instead of 3 |
+| `preview` | no refine: the draft through the upscaler, the adapter and the LTX decoder | denoise skipped; the attention-call count, checked for 0 steps |
+| `decode_untiled`, `decode_long768` | decoder tiles: one per frame, or the short side untiled and the long side 768/64 | none (the tiles pass the decoder's own validation) |
+| `profile_step` | the baseline with torch.profiler around denoise step 1 (timings perturbed) | none |
+| `canvas480`, `canvas480_untiled`, `canvas480_steps2`, `preview480` | refine at 832×480 with the H3 upscaler at ×1.25 (`preview480`: no refine) | the 2×-draft output rule, the upscaler's ×2, the refiner modules' 1344×768 size; the attention-call count for `canvas480_steps2` (2 steps); for `preview480` the denoise (skipped) and the attention-call count (0 steps) |
+| `canvas384`, `preview384` | refine at 672×384, the draft's own size, without the upscaler (`preview384`: no refine) | the same three, with the upscaler skipped; for `preview384` the denoise (skipped) and the attention-call count (0 steps) |
+
+All other runtime checks stay in force: the capture and payload checks, the shape and dtype checks between the
+upscaler, the adapter and the refiner, the Sol backend check, the writer's frame-count check and the output check.
+`--dry` prints the exact list per arm.
+
+Arms are runtime patches in the bench, not hooks in the patch. That keeps the studio's runtime free of bench-only
+code, and the bench works with any installed 0.3 or later patch without reinstalling. Such patches could break
+silently when the package changes, so the bench checks three times. Before loading: its worker settings against
+the studio's (`runtime/pipeline.py`), and that the runtime modules still have the functions it replaces and the
+recipe's sigmas. Right after loading (Stage 2 loads in ~17 s): that the refiner has every attribute and method an
+arm changes. After each run: that the receipt and the refiner show the arm's settings (see "Arm took effect").
+A deeper change, such as an FP8 Stage 2, may need a hook in the patch.
+
+### Reference numbers
+
+Measured 2026-10-12 on one DGX Spark with the bench this one was ported from (the same Stage-2 session code and
+the same arms under other names), on one 5 s t2va draft without dialogue and four 10 s fl2va dialogue drafts.
+Medians of warm runs.
+
+| | 5 s, 1344×768 | 10 s, 1344×768 |
+|---|---|---|
+| `baseline` Stage 2 | 35.6 s (denoise 24.6, decode 7.2) | 75.4 s (denoise 51.1, decode 17.3) |
+| `steps2_from_0725` | 27.5 s | 58.9 s |
+| `decode_untiled` | 34.5 s | 72.8 s (one draft) |
+| `canvas480` / `canvas480_steps2` | 14.4 s / 11.2 s | 29.2 s / 23.2 s |
+| `preview` | 11.0 s | 24.3 s (one draft) |
+
+- Warm repeats were within 1.5% of each other (one arm 5%) and bit-identical (decoded-frame MD5).
+- The first run in each process differed from the warm runs: PSNR 40.2 dB and SSIM 0.985 at 5 s, at 672×384. So
+  bit-exact checks compare warm runs, and that difference is the noise floor. First-run kernel autotuning is a
+  likely cause (inferred, not measured).
+- The first run of a new output size compiles: +69-80 s. At 1344×768 with the copied cache: +6-7 s.
+- The SM clock median was 2385-2463 MHz per process group, with no thermal throttling in a 37-minute window.
+
+The draft without dialogue in that run was judged poor even unchanged, which is why the list above asks for one
+that looks good. Some arms change the content: in that run the 3-step refine at 832×480 changed objects and faces,
+and at 672×384 objects. They are for measurement, not presets.
+
+### Optional quality tools (CPU)
+
+- **LPIPS:** a Python with the CPU build of torch, numpy and `lpips` (`pip install lpips`, BSD-2-Clause). Its first
+  use downloads torchvision's AlexNet weights. Pass it with `--lpips <python>`.
+- **SyncNet:** not included. The original SyncNet code (MIT) is at
+  [joonson/syncnet_python](https://github.com/joonson/syncnet_python); its `download_model.sh` fetches the SyncNet
+  and face-detector weights. Pass a scorer command with `--syncnet`. It must accept
+  `VIDEO... --json OUT [--turns 'R:0-1.2,L:2.4-4.7']` and write, per video, `file`, `turns` and `faces` with
+  `det_rate` and `speaking` = `offset`, `lse_d`, `lse_c` (the format is in `bench/replay/syncnet.py`). The table is
+  complete when every dialogue draft and arm has a score; `quality` exits with 1 when it is not.
+
+Not done yet: Stage-1 arms (they need a scratch runtime root and compile cache for Stage 1, see
+`runtime/config.py` `compile_cache_root`).

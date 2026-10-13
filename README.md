@@ -48,6 +48,12 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
   takes it over, and the Generate button says when it would be ready. Unload button. Dark and light themes, phone layout.
 - Uploaded reference videos are normalized (at most 672×384, 24 fps, 2-15 s).
 
+**An API for agents and scripts** ([docs/API.md](docs/API.md)): the studio's HTTP API, documented, with a JSON
+submit and a wait that hands over the MP4 as soon as the clip is done; and `bin/sol-h3`, one Python file for other
+machines that is both a command line and an MCP server for agent hosts (Claude Code, Hermes, Codex). It uploads
+the input files, waits and saves the MP4 in one step; reading a clip's state never starts a studio that
+spark-switchboard has stopped.
+
 **A patch** to Sol-H3-Spark (`patches/sol-h3-studio.patch`, details in [docs/PATCH.md](docs/PATCH.md)). Measured on
 one DGX Spark; each "Before" is described in its row:
 
@@ -74,9 +80,11 @@ persistent compile cache is also part of the patch, but it is already in the 282
 the prompt cache with pinned versions, including fixes found on a DGX Spark (torchaudio on cu132, nvvm/crt pins
 for ltx-kernels, a torchaudio stub for the Qwen image). **A launcher** (`bin/sol-h3-studio`) with memory checks
 and clean shutdown for a terminal, NVIDIA Sync, systemd or
-[spark-switchboard](https://github.com/slogonomo/spark-switchboard). **Bench scripts** (`bench/`).
-**Tests** (`tests/`): the server end to end against a GPU-free stub of the pipeline, and the page in a
-browser; see [AGENTS.md](AGENTS.md).
+[spark-switchboard](https://github.com/slogonomo/spark-switchboard). **Bench scripts** (`bench/`): whole-session
+timings, and a Stage-2 replay bench with bit-exact and picture checks
+([docs/PERFORMANCE.md](docs/PERFORMANCE.md#replay-bench-stage-2-on-saved-drafts)).
+**Tests** (`tests/`): the server and the API clients end to end against a GPU-free stub of the pipeline, and the
+page in a browser; see [AGENTS.md](AGENTS.md).
 
 ## Deviations from NVIDIA's validated recipe
 
@@ -125,7 +133,8 @@ Problems: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 The server listens on 127.0.0.1:8190. From a laptop use [NVIDIA Sync](docs/nvidia-sync.md) or
 `ssh -L 8190:127.0.0.1:8190 you@spark-xxxx.local`. `SOLH3_HOST=0.0.0.0` serves the LAN; there is no login, so only
-on a network you trust (cross-site form posts are refused).
+on a network you trust (cross-site form posts, and host names the studio doesn't know, are refused; see
+[docs/API.md](docs/API.md#access)). Scripts and agents use the same port: [docs/API.md](docs/API.md).
 
 ## Model terms
 

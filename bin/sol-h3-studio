@@ -7,6 +7,8 @@
 #   sol-h3-studio --check    run the start-up checks only, then exit (0 = would start)
 #   sol-h3-studio --kill     force-stop leftovers: server, pipeline workers, Qwen containers (no checks)
 #   sol-h3-studio --help
+#   sol-h3-studio generate|wait|status|cancel|fetch|guide|mcp ...
+#                            the client (bin/sol-h3, see docs/API.md) with this env file's settings
 #
 # Settings come from ${SOLH3_ENV:-~/.config/sol-h3-studio/env}: one KEY=VALUE per line, shell quoting,
 # $VAR and ~ expand (see bin/env.example). Variables already set in the environment win over the file, so a
@@ -29,6 +31,7 @@ case "${1:-}" in
     "") ;;
     --check) MODE="check" ;;
     --kill) MODE="kill" ;;
+    generate|wait|status|cancel|fetch|guide|mcp) MODE="client" ;;
     -h|--help) sed -n '2,/^set -uo pipefail/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
 esac
@@ -58,6 +61,8 @@ load_env_file() {
 }
 ENV_FILE=${SOLH3_ENV:-$HOME/.config/sol-h3-studio/env}
 load_env_file "$ENV_FILE"
+# the client: it finds the studio from SOLH3_URL, or SOLH3_HOST and SOLH3_PORT (the public port under switchboard)
+if [[ "$MODE" == client ]]; then exec python3 "$REPO/bin/sol-h3" "$@"; fi
 
 # defaults: the same as install/env.sh
 export SOLH3_HOME=${SOLH3_HOME:-$HOME/sol-h3}

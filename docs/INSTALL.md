@@ -115,6 +115,16 @@ ssh -L 8190:127.0.0.1:8190 you@spark-xxxx.local
 To reach it from the LAN directly, set `SOLH3_HOST=0.0.0.0`. There is no login, so do that only on a network you
 trust.
 
+Scripts and agents use the same port ([API.md](API.md)). On the Spark, `bin/sol-h3-studio generate ...` (and
+`wait`, `status`, `cancel`, `fetch`, `guide`, `mcp`) runs the client with this env file's settings. On another
+machine the client is one file (Python 3.9 or later), pointed at the studio with `SOLH3_URL`:
+
+```bash
+mkdir -p ~/.local/bin && curl -fsSLo ~/.local/bin/sol-h3 \
+  https://raw.githubusercontent.com/slogonomo/sol-h3-studio/main/bin/sol-h3 && chmod +x ~/.local/bin/sol-h3
+SOLH3_URL=http://<spark-host>:8190 sol-h3 status
+```
+
 The first clip of each new mode, format and length loads the models (5 s clips: 104-113 s for t2va in the studio,
 99 s in the `infer.py` bench; ~115 s for fl2va and ~180 s for ref2va with a video reference, both measured with
 `infer.py`). The very first run of a configuration also compiles its kernels (see
@@ -126,8 +136,9 @@ Other ways to run it: as an NVIDIA Sync custom app ([nvidia-sync.md](nvidia-sync
 (`integrations/systemd/sol-h3-studio.service`), or on demand with
 [spark-switchboard](https://github.com/slogonomo/spark-switchboard): copy
 `integrations/spark-switchboard/sol-h3-studio.toml` into switchboard's `services/` directory. It sets the pidfile
-(`SOLH3_PIDFILE`) through which switchboard finds the studio again after its own restart, and `--kill` as the
-command that removes leftovers.
+(`SOLH3_PIDFILE`) through which switchboard finds the studio again after its own restart, `--kill` as the
+command that removes leftovers, and the paths whose requests never start a stopped studio (`passive_paths`: the
+health check, and the state, clip records, waits and posters that scripts read).
 
 ## Updating
 
@@ -150,8 +161,10 @@ away and run the script again for a fresh clone.
 
 If spark-switchboard runs the studio, bring your copy in switchboard's `services/` directory (whatever you named it)
 up to date when `integrations/spark-switchboard/sol-h3-studio.toml` changes: for 0.3, add `"cancelled"` to its
-`idle_values` (the busy probe must count the new status as idle), or replace its contents with the new file and
-keep its file name and your path edits. Then `spark-switchboard check`, and restart switchboard.
+`idle_values` (the busy probe must count the new status as idle); for 0.4, set its `passive_paths` to `["/health",
+"/api/state", "/api/jobs", "/api/jobs/*", "/poster/*"]` (without it, a script that reads a clip's state or waits
+for it starts a stopped studio). Or replace its contents with the new file and keep its file name and your path edits. Then
+`spark-switchboard check`, and restart switchboard.
 
 A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a released version of the patch is
 found the same way. Any other patch: reverse it with the file you applied (`git -C "$SOLH3_SANA" apply -R <that

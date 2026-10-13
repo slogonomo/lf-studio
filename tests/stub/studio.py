@@ -9,6 +9,7 @@ It stops at once, with a non-zero exit status, if the port is in use, and it exi
 by itself. The tests import StubStudio from here.
 """
 import argparse
+import http.client
 import json
 import os
 import signal
@@ -58,8 +59,10 @@ class StubStudio:
         self.env = dict(os.environ, SOL_H3_SPARK_RUNTIME_ROOT=str(self.runtime),
                         SOLH3_PATHS=str(self.root / "paths-{task}.json"), SOLH3_STATE_DIR=str(self.state_dir),
                         SOLH3_HOST="127.0.0.1", SOLH3_PORT=str(self.port), SOLH3_PRELOAD="1" if preload else "0",
-                        STUB_LOAD_S=str(load_s), STUB_CLIP_S=str(clip_s), PYTHONDONTWRITEBYTECODE="1")
+                        STUB_LOAD_S=str(load_s), STUB_CLIP_S=str(clip_s), PYTHONDONTWRITEBYTECODE="1",
+                        SOLH3_MAX_QUEUED="100")      # some tests queue more clips at once than the default 20
         self.env.pop("SOLH3_PUBLISH_DIR", None)
+        self.env.pop("SOLH3_ALLOWED_HOSTS", None)
         self.env.update(env or {})
         self.proc = None
         self.stdin = None                    # the server's stdin: None for this process's
@@ -108,6 +111,17 @@ class StubStudio:
             self._logf.close()
 
     # ---- HTTP helpers
+    def request(self, method, path, body=None, headers=None, timeout=30):
+        """One request with exactly these headers (http.client adds Host, and Content-Length for a body or a
+        POST, only when they are not given). Any status comes back as is: (status, headers, body bytes)."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        try:
+            conn.request(method, path, body, headers or {})
+            r = conn.getresponse()
+            return r.status, dict(r.headers), r.read()
+        finally:
+            conn.close()
+
     def get(self, path, headers=None):
         with urllib.request.urlopen(urllib.request.Request(self.url + path, headers=headers or {}), timeout=10) as r:
             return r.status, dict(r.headers), r.read()
