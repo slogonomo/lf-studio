@@ -130,14 +130,61 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
     (marked `includes_model_load`). `infer.py --deliver-first` uses it; the web UI always does.
   - The warm-up prompt encoder runs while Stage1 starts. Stage2 starts once Stage1 logs
     `Loaded deferred module transformer`, after Stage1's BF16 load and FP8 conversion, its memory peak.
-  - The resident prompt encoder loads in the background after the first clip.
   - If Stage1 dies before that point, Stage2 is not started, and a failed load joins the half-started workers
     so `close()` can stop them.
+  - The resident prompt encoder loads in the background while the first clip refines, so the next clip doesn't
+    wait for it. It starts once Stage1's first request has returned and Stage2 is built: both load peaks are over.
+    Stage2 releases its idle cache first, as it does before every later clip. If MemAvailable is then below
+    a minimum (32 GiB up to 5 s, 34 GiB for longer clips), the encoder loads after the first clip, as before.
+    `results.json` records the reading and where the encoder started (`resident_qwen`). The warm-up encoder still
+    closes before Stage2 starts. Sessions over 241 output frames load the encoder per request, as before (item 3).
 - **Files.** `runtime/pipeline.py`, `infer.py`, `tests/test_pipeline.py`.
 - **Switch.** `deliver` is opt-in (`infer.py` without `--deliver-first` keeps the separate warm-up). The overlap
-  itself has no switch.
+  itself has no switch. `SOL_H3_RESIDENT_QWEN_EARLY=0` loads the resident encoder after the first clip, as before
+  0.4. `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` sets one minimum for every length instead.
 - **Measured.** First clip 282 → 177 s, lowest MemAvailable 18 GiB. The first overlap attempt fell to 2.4 GiB
   MemAvailable and was stopped by the memory guard; the version in the patch waits for the Stage1 marker.
+- **Resident encoder during the refine (0.4).** Before 0.4 it loaded after the first clip, and the next clip
+  started its prompt encoding 3-11 s late in 17 of 128 warm web-UI clips (studio receipts, 2026-09-23 to 10-12).
+  Measured in the cold-start bench traces before 0.4 (MemAvailable every 0.25 s; t2va 16:9 at 5, 10 and 15 s, fl2va
+  5 s):
+  - Through the first clip's Stage2, denoise and decode alike, MemAvailable stayed at 20-23 GiB (fl2va 26 GiB).
+    At 5 s it was already that low when Stage2 became ready, before the refine.
+  - The release after the MP4 then freed 12-14 GiB, at every length.
+  - Loading the encoder took 17-19 GiB of MemAvailable, more than its 14.6 GiB of weights.
+  - A warm refine with the encoder resident took 4.1-5.7 GiB at 5 s (down to 11.0-12.7 GiB) and ~8 GiB at 15 s.
+
+  So the encoder can't just start during the refine: that would leave ~3-5 GiB, at the memory guard's 5 GiB
+  (inferred). With Stage2's release first, the first refine gets about as low as a warm clip with the encoder
+  resident. Measured on the test lane, 2026-10-13, one run each: `SOL_H3_RESIDENT_QWEN_EARLY=0` → the default (the
+  same branch); MemAvailable every 0.5 s.
+
+  | Load | Next clip's encoding starts after its request | Next clip | MemAvailable at the check | Lowest in the load | Lowest in the next clip |
+  |---|---|---|---|---|---|
+  | t2va 16:9 5 s | 11.1 → 0.16 s | 74.2 → 54.6 s | 34.2 GiB | 14.0 → 10.3 GiB | 12.6 → 11.9 GiB |
+  | fl2va 16:9 10 s | 6.1 → 0.13 s | 124.2 → 118.4 s | 37.0 GiB | 15.4 → 10.3 GiB | 11.2 → 12.2 GiB |
+  | warm-up, t2va 16:9 5 s | 6.2 → 0.16 s | 61.4 → 55.3 s | 35.2 GiB | 16.3 → 12.1 GiB | 12.1 → 11.8 GiB |
+
+  - The load's lowest point is now in the first refine, 23-27 GiB below the reading at the check (the encoder plus a
+    first refine). In two of the three loads it was 1.5-2 GiB below the next clip's. The memory guard never fired.
+  - From the end of Stage1's first request to the MP4, the part of the first clip the change acts on, it took
+    0.7-3.0 s longer: the refine while the encoder loads. One whole first clip was 12.6 s slower, 9.6 s of it
+    before Stage1 returned, where both runs run the same code.
+  - The next clips came out identical for t2va: the encoder's output, Stage1's tensors, decoded audio and video.
+    For fl2va the encoder's output was identical, but Stage1 differed. Each run had compiled that prompt length's
+    Stage1 graphs anew, and autotuning picked another reduction kernel in one of them. A second fl2va run of the
+    default, started from the other run's final compile cache, matched it bit for bit in both clips: the encoder's
+    output, Stage1's tensors, decoded audio and video.
+
+  The minimum depends on the length, since a longer first refine needs more. Measured, the encoder plus a first
+  refine took 23.1-23.8 GiB at t2va 5 s and 26.7 GiB at fl2va 10 s. So the minimum is 32 GiB up to 121 output
+  frames (5 s) and 34 GiB above: at the minimum, ~8-9 GiB would be left at 5 s and ~7 GiB at 10 s, above the memory
+  guard's 5 GiB. After the release, the bench traces had 34-39 GiB in every setting and the test lane 34.2-37.0 GiB,
+  so the check passes in a normal session. It is there for a box with less free memory. `results.json` records the
+  minimum that applied (`resident_qwen.min_gib`, `min_from`).
+  With a cold compile cache (the first run of a format and length), Stage2's first refine also compiles and
+  benchmarks kernels (max-autotune) while the encoder loads. That first clip is then likely slower than it would be
+  without the load, and the kernel choices saved in the cache are timed under it (inferred, not measured).
 
 ### 5. O_DIRECT weight loading (`runtime/fastload.py`)
 
@@ -309,12 +356,14 @@ and identity are unchanged, and the image is 5-11% sharper.
     them. To H3's transformer they are the fixed markers it saw around every dialogue line in training.
 - **How the setting reaches the worker.** The Qwen worker runs in Docker with a fixed environment (`qwen_python.sh`),
   so the host reads `SOL_H3_PROMPT_TOKENS` in `runtime/config.py` and passes the mode to the worker in the recipe, as
-  `stage1.prompt_tokens`. A value other than `plain` or `minimax` (any case) fails when the pipeline is created,
-  before any worker loads; the studio and `bin/sol-h3-studio --check` refuse to start with it. They also refuse
-  `minimax`, set or by default, when the Sana checkout still carries an older patch, which would ignore the setting
-  and tokenize as `plain`: "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one
-  applied in ...; run install/10-sana.sh". So after a `git pull`, run `install/10-sana.sh`. (Likewise
-  `SOL_H3_STAGE2_AUDIO=frozen` with a patch older than 0.3, which refines as `joint`.)
+  `stage1.prompt_tokens`. Every Qwen worker gets that recipe: the warm-up one, the resident one (also when it starts
+  during the first clip, see 4) and those loaded per request. A value other than `plain` or `minimax` (any case)
+  fails when the pipeline is created, before any worker loads; the studio and `bin/sol-h3-studio --check` refuse to
+  start with it. They also refuse `minimax`, set or by default, when the Sana checkout still carries an older patch,
+  which would ignore the setting and tokenize as `plain`: "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4)
+  needs a newer patch than the one applied in ...; run install/10-sana.sh". So after a `git pull`, run
+  `install/10-sana.sh`. (Likewise `SOL_H3_STAGE2_AUDIO=frozen` with a patch older than 0.3, which refines as
+  `joint`.)
 - **Older clips.** Up to 0.3 every prompt was encoded `plain`. A dialogue prompt now encodes differently, so a
   dialogue clip made with 0.3 doesn't come back from its seed unless `SOL_H3_PROMPT_TOKENS=plain`. A prompt without
   any of the 7 tokens gets the same ids in both modes, and its clips came out bit-identical (measured; see below).
@@ -363,8 +412,8 @@ and identity are unchanged, and the image is 5-11% sharper.
 ### 17. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
-deliver-first, the background prompt encoder, the new `Pipeline` arguments and the compile-cache location (it
-also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
+deliver-first, when the resident prompt encoder starts, the new `Pipeline` arguments and the compile-cache
+location (it also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
 older LTX-2), `tests/test_pipeline.py` its check before any worker starts.
@@ -374,8 +423,9 @@ stand-ins for ComfyUI, torch and the checkpoint). With `SOL_H3_SPARK_COMFY_ROOT`
 Qwen tokenizer files: the 7 ids, the 19 ids of the example above, and unchanged ids for prompts without the tokens. Its
 test of ComfyUI's own `MiniMaxH3Tokenizer` needs ComfyUI's packages: it is skipped in the Stage1 environment and runs in
 the Qwen image ([Apply, test, revert](#apply-test-revert)). `tests/test_pipeline.py` checks the setting before any
-worker starts and that the default, the setting or the `Pipeline` argument reaches every worker;
-`tests/test_qwen_media.py` checks the receipt fields.
+worker starts and that the default, the setting or the `Pipeline` argument reaches every worker, the resident
+prompt encoder too, whether it starts during the first clip or after it; `tests/test_qwen_media.py` checks the
+receipt fields.
 87 tests in total (upstream: 65).
 
 ## All switches
@@ -385,6 +435,8 @@ worker starts and that the default, the setting or the `Pipeline` argument reach
 | `SOL_H3_ORIENTATION` | landscape | `infer.py` default for `--orientation` (the web server ignores it) |
 | `SOL_H3_SECONDS` | unset (5 s) | `infer.py` default for `--seconds` (the web server ignores it) |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer outputs load the prompt encoder per request |
+| `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
+| `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip |
 | `SPARK_FAST_SAFETENSORS` | 1 | 0 = upstream safetensors loading |
 | `SPARK_DIRECT_IO` | 1 | 0 = no O_DIRECT reads |
 | `SPARK_DIRECT_AHEAD` | 1 | 0 = no read-ahead of the next O_DIRECT window |
