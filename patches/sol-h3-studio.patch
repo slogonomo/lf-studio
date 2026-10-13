@@ -1844,7 +1844,7 @@ index 0000000..087bed3
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..5c55768 100644
+index 6c20301..e717205 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -1865,7 +1865,7 @@ index 6c20301..5c55768 100644
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -59,31 +62,211 @@ class FakeWorker:
+@@ -59,31 +62,212 @@ class FakeWorker:
          self.events.append(("close", self.name))
  
  
@@ -2056,7 +2056,8 @@ index 6c20301..5c55768 100644
 +                    ("setting", "Plain", None, "plain", 64.0, "first_refine"),
 +                    ("argument", "plain", "minimax", "minimax", 64.0, "first_refine"),
 +                    ("default-late", None, None, "minimax", 20.0, "after_first_clip"),
-+                    ("setting-late", "Plain", None, "plain", 20.0, "after_first_clip")):
++                    ("setting-late", "Plain", None, "plain", 20.0, "after_first_clip"),
++                    ("argument-late", "plain", "minimax", "minimax", 20.0, "after_first_clip")):
 +                made.clear()
 +                FakeWorker.events = []
 +                worker = Stage2WaitsForQwen if spawn == "first_refine" else FakeWorker
@@ -2089,7 +2090,7 @@ index 6c20301..5c55768 100644
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +379,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +380,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -2098,7 +2099,7 @@ index 6c20301..5c55768 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +408,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +409,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -2108,7 +2109,7 @@ index 6c20301..5c55768 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +444,26 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +445,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
