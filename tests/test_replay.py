@@ -560,7 +560,7 @@ class ReportTests(Fixture):
         studio = Path(d["dir"]) / d["studio"]["mp4"]
         out = self.tmp / "run"
         p = plan.build([d], plan.parse_arms("baseline:2,preview:1", 2), package=self.pkg, geometry=self.geometry,
-                       paths_template=self.paths_template, out=out)
+                       paths_template=self.paths_template, out=out, info=plan.package_info(self.pkg, self.sana, REPO))
         out.mkdir()
         (out / "plan.json").write_text(json.dumps(p))
         first = tiny_mp4(out / "r0.mp4", color="blue")
@@ -585,6 +585,8 @@ class ReportTests(Fixture):
             rows = list(csv.DictReader(f))
         by = {(r["arm"], r["repeat"]): r for r in rows}
         self.assertEqual(by[("baseline", "1")]["same_as_baseline"], "ref")
+        self.assertEqual(by[("baseline", "1")]["patch_sha256"], "")          # no applied copy without git
+        self.assertEqual(len(by[("baseline", "1")]["stage2_code_sha256"]), 64)
         self.assertEqual(by[("baseline", "2")]["same_as_baseline"], "yes")
         self.assertEqual(by[("preview", "1")]["same_as_baseline"], "no")
         self.assertEqual(by[("baseline", "1")]["same_as_studio"], "yes")
@@ -653,6 +655,18 @@ class SyncnetTests(Fixture):
                          ["R:0-1.5", "detected on the baseline output"])
         given = {r["given"] for r in json.loads((self.tmp / "sync" / "talk.json").read_text())}
         self.assertEqual(given, {"R:0-1.5"})
+
+    def test_a_failing_scorer_leaves_the_draft_missing(self):
+        scorer = self.tmp / "fails.py"
+        scorer.write_text("import sys\nsys.exit('fewer speech units than prior turns; pass --turns')\n")
+        clip = tiny_mp4(self.tmp / "clip.mp4")
+        self.add("solo", dialogue=True)
+        d = {"solo": drafts.load(self.store, "solo")}
+        rows, done = syncnet.score(f"{sys.executable} {scorer}", self.tmp / "sync",
+                                   {"solo": {"baseline": str(clip), "preview": str(clip)}}, d)
+        self.assertFalse(done)
+        self.assertTrue(all(r["status"].startswith("missing: SyncNet scorer failed") for r in rows))
+        self.assertIn("INCOMPLETE", (self.tmp / "sync" / "syncnet.md").read_text())
 
 
 if __name__ == "__main__":

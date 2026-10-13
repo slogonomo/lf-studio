@@ -55,7 +55,9 @@ def table(results, manifest):
     for path, (draft, arm) in manifest.items():
         r = by_file.get(str(path)) or by_file.get(os.path.realpath(str(path)))
         if r is None:
-            rows.append({"draft": draft, "arm": arm, "face": "", "status": "missing: no result from the scorer"})
+            error = Path(path).parent / "error.txt"
+            why = error.read_text().strip()[:200] if error.is_file() else "no result from the scorer"
+            rows.append({"draft": draft, "arm": arm, "face": "", "status": f"missing: {why}"})
             continue
         faces = r.get("faces") or {}
         if not faces:
@@ -117,6 +119,7 @@ def score(command, work, picks, drafts):
         d = drafts[name]
         folder = work / name
         folder.mkdir(exist_ok=True)
+        (folder / "error.txt").unlink(missing_ok=True)
         files = {}
         for arm, mp4 in arms.items():
             link = folder / f"{name}__{arm}.mp4"
@@ -127,15 +130,18 @@ def score(command, work, picks, drafts):
             manifest[str(link)] = (name, arm)
         spec = d.get("turns")
         source = "stored with the draft"
-        if not spec:
-            if "baseline" not in files:
-                raise RuntimeError(f"{name} has no stored turns and no baseline output to detect them on")
-            detected = run_scorer(command, [files["baseline"]], folder / "turns-detect.json", log=log)
-            spec = turns_spec(detected[0].get("turns") or [])
-            parse_turns(spec)
-            source = "detected on the baseline output"
-        (folder / "turns.txt").write_text(f"{spec}\n{source}\n")
-        results += run_scorer(command, list(files.values()), work / f"{name}.json", turns=spec, log=log)
+        try:
+            if not spec:
+                if "baseline" not in files:
+                    raise RuntimeError("no stored turns and no baseline output to detect them on")
+                detected = run_scorer(command, [files["baseline"]], folder / "turns-detect.json", log=log)
+                spec = turns_spec(detected[0].get("turns") or [])
+                parse_turns(spec)
+                source = "detected on the baseline output"
+            (folder / "turns.txt").write_text(f"{spec}\n{source}\n")
+            results += run_scorer(command, list(files.values()), work / f"{name}.json", turns=spec, log=log)
+        except (RuntimeError, ValueError) as error:       # this draft stays unscored ("missing"); the others go on
+            (folder / "error.txt").write_text(f"{error}\n")
     rows = table(results, manifest)
     (work / "syncnet.json").write_text(json.dumps({"rows": rows, "manifest": manifest}, indent=1))
     (work / "syncnet.md").write_text(markdown(rows, manifest))

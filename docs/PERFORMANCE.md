@@ -236,7 +236,7 @@ the replay. `add` records which kind each clip was.
 | Memory | torch peak allocated and reserved; lowest MemAvailable, sampled every 0.5 s during the run | `runs.csv` |
 | Settings | each run's sigmas, steps, output size, decoder tiles and upscale factor; the runtime checks it relaxes | `runs.jsonl` |
 | Arm took effect | the receipt shows the arm's step count, Sol-call count, output size, frames and tiles, or the run fails | `status` |
-| Patch | SHA-256 of the patch applied to the package (the copy `install/10-sana.sh` keeps) and of the Stage-2 code it runs | `plan.json` |
+| Patch | SHA-256 of the patch applied to the package (the copy `install/10-sana.sh` keeps) and of the Stage-2 code it runs | `runs.csv` |
 | Output | SHA-256 of the MP4, and MD5 of its decoded video frames and of its decoded audio | `runs.csv` |
 | Same as baseline | decoded video and audio equal to the same draft's first warm baseline run | `runs.csv` |
 | Same as studio | baseline runs: the MP4 equal to the studio's clip of that draft, warm run against warm clip | `runs.csv` |

@@ -65,7 +65,7 @@ def pairs(plan, chosen, first):
 def lpips_pair(python, ref, test, size):
     script = Path(__file__).with_name("lpips_score.py")
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS="4")
-    r = subprocess.run([python, "-I", str(script), "--size", f"{size[0]}x{size[1]}", ref, test],
+    r = subprocess.run([python, str(script), "--size", f"{size[0]}x{size[1]}", ref, test],
                        capture_output=True, text=True, env=env)
     if r.returncode != 0:
         raise RuntimeError(f"lpips_score.py failed: {r.stderr.strip()[-400:]}")

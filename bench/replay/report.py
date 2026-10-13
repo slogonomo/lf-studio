@@ -21,8 +21,9 @@ PHASES = {"upscale_s": "h3_latent_upscale_s", "adapter_s": "h3_ltx_adapter_s", "
           "decode_s": "official_video_vae_decode_s", "mux_s": "h264_encode_mux_s", "verify_s": "output_verify_s"}
 CSV_FIELDS = ["group", "draft", "arm", "repeat", "request_index", "first_in_process", "status", "stage2_s", "wall_s",
               *PHASES, "other_s", "step_s", "peak_alloc_gib", "peak_reserved_gib", "min_memavail_gib", "output_size",
-              "sigmas", "steps", "tiles", "relaxed_checks", "stage2_audio", "output", "output_sha256", "video_md5",
-              "audio_md5", "same_as_baseline", "same_as_studio", "started", "error"]
+              "sigmas", "steps", "tiles", "relaxed_checks", "stage2_audio", "patch_sha256", "stage2_code_sha256",
+              "output", "output_sha256", "video_md5", "audio_md5", "same_as_baseline", "same_as_studio", "started",
+              "error"]
 
 
 def load_rows(out):
@@ -297,6 +298,9 @@ def report(out):
     rows = load_rows(out)
     hashes = hash_outputs(out, rows, plan)
     facts = compare(rows, plan, hashes)
+    pi = plan.get("package_info") or {}
+    for r in rows:
+        r.update(patch_sha256=pi.get("patch_sha256"), stage2_code_sha256=pi.get("stage2_code_sha256"))
     write_csv(out, rows)
     text = summarize(out, plan, rows, facts)
     (out / "summary.md").write_text(text)
