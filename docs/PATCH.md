@@ -4,7 +4,7 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 23 files, 18 modified and 5 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 89 CPU tests pass
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 93 CPU tests pass
   (2 skipped).
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
@@ -24,7 +24,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests # Ran 89 tests ... OK (skipped=2)
+CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests # Ran 93 tests ... OK (skipped=2)
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -296,37 +296,60 @@ and identity are unchanged, and the image is 5-11% sharper.
 - **Same file.** The same frames reach the same encoder, in the same order, with the same settings. The decoder
   runs on the same thread and CUDA stream, with the same tiles, decoder calls, random draws and blending.
   `runtime/stage2_ops/decode_ahead.py` wraps LTX-2 and copies none of its code:
-  - while `encode_video` runs, LTX-2's encode module builds its queue with room for 8 views instead of 1;
+  - for one `encode_video` call, LTX-2's encode module builds its queue with room for 8 views instead of 1. A
+    clip of one temporal tile (5 s and shorter) keeps LTX-2's queue: its one chunk follows the whole decode anyway;
   - between two temporal groups the decoder gets an empty marker group that spans their overlap. LTX-2's own
     generator blends it like any group and so yields the previous chunk one group earlier. The marker's empty
     chunks are dropped. Adding the marker's zeros can only turn -0.0 into +0.0 in the overlap, and `to_rgb`
     (x + 1) removes that.
 
-  Both hooks first check the source hashes of the LTX-2 code they rely on (LTX-2 `d151147`). With another LTX-2
-  version, Stage 2 keeps LTX-2's own order, and the receipt says so (`eager_decoder: false`,
-  `encoder_queue.hooked: false`).
-- **Receipts** (`stage2_result.json`). `decode_ahead`; `decode_done_to_mp4_s`, from the last decoded frame to the
-  finished MP4; `timing_notes`, which says what the writer's timings mean. `writer_chunking` adds
-  `decoder_done_monotonic_ns`, `cuda_peak_allocated_bytes` and `cuda_peak_reserved_bytes` (decode and encode), and
-  `encoder_queue`: `decoder_blocked_s` (the decoder waited for room), `encoder_waited_s` (the encoder waited for
-  frames) and `max_queued_views`. `h264_encode_mux_s` keeps its formula, decode-and-mux time minus decoder time.
-  It is now the part of the encode that is not hidden behind the decode. The encode itself takes as long as
-  before. `e2e_s` and `stage2_request_s` still end at the finished MP4.
+  Each hook first checks the source hashes of the LTX-2 code it relies on (LTX-2 `d151147`): `encode_video` and
+  `_encode_chunks_threaded` for the queue; `ConvVideoDecoder.tiled_decode`, `decode_video`,
+  `_accumulate_temporal_group_into_buffer` and `ltx_core.tiling.group_tiles_by_temporal_slice` for the decoder.
+  With another LTX-2 version, Stage 2 keeps LTX-2's own order, and the receipt says so (`eager_decoder: false`,
+  `encoder_queue.hooked: false` with the reason). Each hook swaps one module global (the encode module's `Queue`,
+  the decoder module's `group_tiles_by_temporal_slice`) for its first use only, puts it back on that use and again
+  at the end of the call, also after an error.
+- **Receipts** (`stage2_result.json`). `decode_ahead`; `timing_notes`, which says what the writer's timings mean;
+  `decode_done_to_mp4_s`, from the GPU finishing the last temporal group's decoder calls to the finished MP4. That
+  moment comes from CUDA events recorded after each group, in both modes, so the number compares across them.
+  `writer_chunking` adds:
+  - `decode_done_monotonic_ns` (that moment), `frames_queued_monotonic_ns` (the decoder iterator ended: every frame
+    converted and queued), and `cuda_peak_allocated_bytes` / `cuda_peak_reserved_bytes` of decode and encode;
+  - `encoder_queue`, when hooked: `decoder_blocked_s` (the decoder waited for room for a frame), `end_marker_wait_s`
+    (the wait to queue the end-of-stream marker, i.e. for the encoder to take the last views), `encoder_waited_s`
+    (the encoder waited for frames), `encoder_busy_s` (the encoder thread's time on frames, without the flush) and
+    `max_queued_views`.
+
+  `h264_encode_mux_s` keeps its formula, decode-and-mux time minus decoder time. It is now the part of the encode
+  that is not hidden behind the decode. The encode itself is expected to take as long as before (inferred;
+  `encoder_busy_s` records it with decode-ahead on). `e2e_s` and `stage2_request_s` still end at the finished MP4.
+- **Memory** (inferred). The queue holds at most one chunk of CPU frames, about 200 MB. On the GPU, a marker buffer
+  (one overlap, about 0.15 GB) is held while the next group decodes. In LTX-2's order the chunk before the previous
+  one is still referenced by the writer during a decode; with decode-ahead it is not. At 10 s the largest decode
+  is the second group's, where the marker adds about 0.15 GB. At 15 s the third group's decode holds about 0.6 GB
+  less. The receipts' CUDA peak shows it.
 - **Files.** `runtime/stage2_ops/decode_ahead.py` (new), `runtime/stage2.py`, `runtime/stage2_ops/writer_chunking.py`,
-  `runtime/config.py`, `tests/test_decode_ahead.py` (new).
-- **Switch.** `SOL_H3_DECODE_AHEAD=0` restores LTX-2's order and one-view queue. The queue's wait times are still
-  recorded.
+  `runtime/config.py`, `runtime/pipeline.py`, `tests/test_decode_ahead.py` (new).
+- **Switch.** `SOL_H3_DECODE_AHEAD`: `1` (default) or `0`, which restores LTX-2's order and leaves `encode_video`'s
+  module untouched (only the decoder's timing events remain). Any other value is refused when a pipeline is made,
+  and by `bin/sol-h3-studio --check` and the server at start, as for `SOL_H3_STAGE2_AUDIO`.
 - **Measured before.** Stage-2 receipts of warm t2va 16:9 clips on one DGX Spark (studio and bench runs, medians):
   decoder 7.1 / 17.4 / 25.4 s and `h264_encode_mux_s` 1.50 / 2.76 / 2.13 s at 5 / 10 / 15 s (46, 12 and 3
   clips). Expected after (inferred): about 1 s of `h264_encode_mux_s` left at 10 and 15 s, so 1-2 s less per
   clip; no change at 5 s.
-- **Tests.** `tests/test_decode_ahead.py` uses stand-ins: a decoder generator, a module with `encode_video`'s
-  one-slot queue to an encoder thread, and a tiled decoder with LTX-2's yield and blend rule. It checks the same
-  frames in the same order, that the decoder runs one chunk ahead and no further, that errors from either side
-  reach the caller and undo the hooks, the same chunks (values, shapes, strides, random draws) one group earlier,
-  the version check and the Stage-2 glue. With `SOL_H3_TEST_LTX_ROOT` set and the Stage-2 Python, it also runs
-  LTX-2's own tiled decoder (equal chunks, complementary and weighted blending) and its `encode_video` with PyAV
-  and libx264 (byte-identical MP4) on the CPU.
+- **Tests.** `tests/test_decode_ahead.py` uses stand-ins, independent models of LTX-2's behaviour: a decoder
+  generator, a module with `encode_video`'s one-slot queue to an encoder thread, and a tiled decoder with LTX-2's
+  yield and blend rule. It checks:
+  - the same frames in the same order, and that the decoder runs one chunk ahead and no further;
+  - that errors from either side reach the caller and undo the hooks, and that both hooks are one-shot;
+  - the same chunks (values, shapes, strides, random draws) one group earlier, with the clock alone too;
+  - the version checks, including an encode module with another bounded queue, which is left alone;
+  - the setting, the Stage-2 glue (off leaves the encode module alone; a single tile keeps LTX-2's queue).
+
+  With `SOL_H3_TEST_LTX_ROOT` set and the Stage-2 Python, it also runs LTX-2's own code on the CPU, with its real
+  hashes: the tiled decoder (equal chunks, complementary and weighted blending) and `encode_video` with PyAV and
+  libx264 (byte-identical MP4).
 
 ### 17. Tests
 
@@ -336,8 +359,8 @@ also points the cache at a temp directory, so running the tests writes nothing u
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
 older LTX-2), `tests/test_pipeline.py` its check before any worker starts. `tests/test_decode_ahead.py` (new) covers
-decoding ahead of the encoder ([16](#16-decode-ahead-of-the-h264-encoder)); 2 of its tests run only with the
-Stage-2 Python and `SOL_H3_TEST_LTX_ROOT`. 89 tests in total, 2 skipped with the Stage1 Python (upstream: 65).
+decoding ahead of the encoder ([16](#16-decode-ahead-of-the-h264-encoder)); 2 of its tests run only with
+`SOL_H3_TEST_LTX_ROOT` set (and the Stage-2 Python). 93 tests in total, 2 skipped otherwise (upstream: 65).
 
 ## All switches
 
@@ -356,7 +379,7 @@ Stage-2 Python and `SOL_H3_TEST_LTX_ROOT`. 89 tests in total, 2 skipped with the
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
-| `SOL_H3_DECODE_AHEAD` | 1 | 0 = LTX-2's order: the decoder waits for the H.264 encoder ([16](#16-decode-ahead-of-the-h264-encoder)) |
+| `SOL_H3_DECODE_AHEAD` | 1 | 0 = LTX-2's order: the decoder waits for the H.264 encoder ([16](#16-decode-ahead-of-the-h264-encoder)); other values are refused |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.
