@@ -36,8 +36,9 @@ non-zero exit status) if the port is in use or its server stops by itself, so no
 port. Add a test there for every server change.
 
 `tests/test_replay.py` covers the Stage-2 replay bench (`bench/replay.sh`, `bench/replay/`) on the CPU: the draft
-store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch, the report and the SyncNet table.
-It takes `runtime/geometry.py` from the patch itself.
+store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch, a `run` with a stand-in Stage-2
+process, stopping it under `bench/memguard-run.sh`, the report, the quality step and the SyncNet table. It takes
+`runtime/geometry.py` from the patch itself.
 
 The patch has its own 74 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 
