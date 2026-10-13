@@ -140,11 +140,17 @@ lengths in one session, no failure.
 
 Stage 2 ends with the VAE decode and the H.264/AAC encode of the MP4. In the Stage-2 receipts of warm t2va 16:9
 clips (studio and bench runs, medians of 46, 12 and 3 clips) the decoder took 7.1 s at 5 s, 17.4 s at 10 s and
-25.4 s at 15 s. The encode added 1.50 s, 2.76 s and 2.13 s on top (`h264_encode_mux_s`), because the decoder and
-the encoder took turns. Now the decoder runs one chunk ahead of the encoder, and the MP4 is the same file as
-before ([PATCH.md](PATCH.md#16-decode-ahead-of-the-h264-encoder)). The expected effect is 1-2 s less per 10 or 15 s
-clip and none at 5 s (inferred, not yet measured): a 5 s clip is one decoder chunk, so its whole encode still
-follows the decode.
+25.4 s at 15 s. The writer added 1.50 s, 2.76 s and 2.13 s on top (`h264_encode_mux_s`).
+
+That time is not the x264 encode. In a lane run on 2026-10-13, libx264's thread was busy 0.85 s per 10 s clip
+(3-3.5 ms per frame) and waited 12 s for frames. Most of the writer's time is about 0.18 s per 16-frame view on the
+decoder's thread: LTX-2's colour conversion on the GPU and the copy of the 25 MB I420 view to the CPU. The figure
+holds in 232 earlier receipts, at every request index. Which part dominates was not measured. Writing 25 MB into
+fresh pages costs 9.3 ms on this CPU (1.4 ms into pages in use), so the CPU side alone does not explain it.
+
+Letting the decoder run one chunk ahead of the encoder ([PATCH.md](PATCH.md#16-decode-ahead-of-the-h264-encoder))
+gave the same MP4 but saved no time (+0.3 s at 10 s, -0.3 s at 15 s, within noise), because it only reordered that
+work.
 
 ## Known costs, not fixed
 

@@ -282,17 +282,16 @@ and identity are unchanged, and the image is 5-11% sharper.
 ### 16. Decode ahead of the H.264 encoder
 
 - **Purpose.** Stage 2 ends by streaming LTX-2's tiled VAE decoder into LTX-2's `encode_video` (libx264 `veryfast`,
-  CRF 19, 8 threads). The GPU decoder and the CPU encoder used to take turns. The decoder made a temporal chunk
-  (96-104 frames), waited while the encoder took all but two of its 16-frame views, then decoded the next chunk
-  while the encoder sat idle. There were two reasons:
+  CRF 19, 8 threads). Issue #43 assumed that the GPU decoder and the CPU encoder took turns, for two reasons:
   - `encode_video` hands frames to its encoder thread through a one-slot queue;
   - the decoder yields chunk k only after it has decoded group k+1, although chunk k's frames are final after
     group k (group k+1 only adds into the overlap, and chunk k does not include it).
 
-  Now the queue holds one decoder chunk (8 views, about 200 MB of I420 frames at 1344×768). The decoder yields each
-  chunk before it decodes the next group, so the encoder works on chunk k while the GPU decodes group k+1. After
-  the last decoded frame, only the last chunk (41 frames at 10 s, 57 at 15 s), the flush, the AAC track and the
-  mux remain. A 5 s clip is a single chunk, so nothing changes there.
+  This change lets the queue hold one decoder chunk (8 views, about 200 MB of I420 frames at 1344×768). It also
+  makes the decoder yield each chunk before it decodes the next group. After the last decoded frame, only the last
+  chunk (41 frames at 10 s, 57 at 15 s), the flush, the AAC track and the mux remain. Measured, the first reason did
+  not hold: the encoder was faster than the colour conversion of each view, so it never held the decoder back, and
+  the change saved no time (see "Measured").
 - **Same file.** The same frames reach the same encoder, in the same order, with the same settings. The decoder
   runs on the same thread and CUDA stream, with the same tiles, decoder calls, random draws and blending.
   `runtime/stage2_ops/decode_ahead.py` wraps LTX-2 and copies none of its code:
@@ -324,20 +323,35 @@ and identity are unchanged, and the image is 5-11% sharper.
   `h264_encode_mux_s` keeps its formula, decode-and-mux time minus decoder time. It is now the part of the encode
   that is not hidden behind the decode. The encode itself is expected to take as long as before (inferred;
   `encoder_busy_s` records it with decode-ahead on). `e2e_s` and `stage2_request_s` still end at the finished MP4.
-- **Memory** (inferred). The queue holds at most one chunk of CPU frames, about 200 MB. On the GPU, a marker buffer
-  (one overlap, about 0.15 GB) is held while the next group decodes. In LTX-2's order the chunk before the previous
-  one is still referenced by the writer during a decode; with decode-ahead it is not. At 10 s the largest decode
-  is the second group's, where the marker adds about 0.15 GB. At 15 s the third group's decode holds about 0.6 GB
-  less. The receipts' CUDA peak shows it.
+- **Memory.** The queue holds at most one chunk of CPU frames, about 200 MB (inferred). On the GPU a marker buffer
+  (one overlap, about 0.15 GB) is held while the next group decodes. Measured CUDA peak of decode + encode: +0.17 GiB
+  at 10 s and +0.15 GiB at 15 s, none at 5 s. Fewer old chunks are held during the later decodes, but that did not
+  lower the peak at 15 s.
 - **Files.** `runtime/stage2_ops/decode_ahead.py` (new), `runtime/stage2.py`, `runtime/stage2_ops/writer_chunking.py`,
   `runtime/config.py`, `runtime/pipeline.py`, `tests/test_decode_ahead.py` (new).
 - **Switch.** `SOL_H3_DECODE_AHEAD`: `1` (default) or `0`, which restores LTX-2's order and leaves `encode_video`'s
   module untouched (only the decoder's timing events remain). Any other value is refused when a pipeline is made,
   and by `bin/sol-h3-studio --check` and the server at start, as for `SOL_H3_STAGE2_AUDIO`.
-- **Measured before.** Stage-2 receipts of warm t2va 16:9 clips on one DGX Spark (studio and bench runs, medians):
-  decoder 7.1 / 17.4 / 25.4 s and `h264_encode_mux_s` 1.50 / 2.76 / 2.13 s at 5 / 10 / 15 s (46, 12 and 3
-  clips). Expected after (inferred): about 1 s of `h264_encode_mux_s` left at 10 and 15 s, so 1-2 s less per
-  clip; no change at 5 s.
+- **Measured: the same MP4, no time saved.** One lane run of the patch on one DGX Spark (2026-10-13), the same
+  warm t2va 16:9 clips with `SOL_H3_DECODE_AHEAD=0` and `1` (medians, 1 warm clip at 5 s, 2 at 10 and 15 s):
+
+  | | 5 s off | 5 s on | 10 s off | 10 s on | 15 s off | 15 s on |
+  |---|---|---|---|---|---|---|
+  | `decode_stream_and_h264_mux_s` | 7.69 | 8.44 | 20.39 | 20.70 | 31.09 | 30.81 |
+  | `official_video_vae_decode_s` | 7.10 | 6.95 | 17.25 | 17.72 | 26.69 | 26.36 |
+  | `h264_encode_mux_s` | 0.58 | 1.49 | 3.14 | 2.98 | 4.40 | 4.45 |
+  | `decode_done_to_mp4_s` | 0.60 | 1.51 | 1.99 | 0.68 | 2.06 | 0.97 |
+  | CUDA peak of decode + encode (GiB) | 39.79 | 39.79 | 40.66 | 40.83 | 41.43 | 41.58 |
+
+  - All warm MP4s of a length were the same file, off and on.
+  - The time from the last decode to the MP4 fell, but decode and encode together took the same time, within run
+    to run noise (+0.3 s at 10 s, -0.3 s at 15 s). Stage 2 and e2e moved with the denoise.
+  - The 5 s off clip was an outlier: 232 earlier receipts give about 1.5 s of `h264_encode_mux_s` at 5 s.
+  - The reason: libx264 was not what held the decoder back. Its thread was busy 0.85 s per 10 s clip (3-3.5 ms per
+    frame) and waited 12 s for frames, and the queue never held more than one view. The writer's time outside the
+    decoder is about 0.18 s per 16-frame view (in 232 earlier receipts too): LTX-2's colour conversion and the copy
+    of the 25 MB view to the CPU. Those run on the decoder's thread, so decode-ahead only reordered them.
+  - Lowest MemAvailable over a phase: 8.8 GiB off, 8.3 GiB on.
 - **Tests.** `tests/test_decode_ahead.py` uses stand-ins, independent models of LTX-2's behaviour: a decoder
   generator, a module with `encode_video`'s one-slot queue to an encoder thread, and a tiled decoder with LTX-2's
   yield and blend rule. It checks:
