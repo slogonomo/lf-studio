@@ -540,7 +540,7 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
-index 9aad551..adac677 100644
+index 9aad551..c2a8fc3 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 @@ -6,8 +6,11 @@ from pathlib import Path
@@ -577,7 +577,7 @@ index 9aad551..adac677 100644
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -120,15 +137,25 @@ class Pipeline:
+@@ -120,15 +137,29 @@ class Pipeline:
      """
  
      def __init__(self, paths, output_root, *, task="t2va", ref_image_match=None,
@@ -599,13 +599,17 @@ index 9aad551..adac677 100644
 +        from . import geometry as _geometry
 +        self.transient_qwen = (_geometry.from_recipe(self.config)["output_frames"]
 +                               > int(os.environ.get("SOL_H3_RESIDENT_QWEN_MAX_FRAMES", "241")))
++        # sol-h3-studio: the resident Qwen loads while start()'s Stage2 refines, so the next clip finds it ready.
++        # SOL_H3_RESIDENT_QWEN_EARLY=0: it loads after start()'s MP4, as before.
++        self.early_qwen = (not self.transient_qwen
++                           and os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY", "1") == "1")
 +        self.started = False
 +        self.qwen_loads = 0
 +        self._qwen_future = None
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -138,32 +165,99 @@ class Pipeline:
+@@ -138,32 +169,110 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -618,7 +622,8 @@ index 9aad551..adac677 100644
 +        row instead of being thrown away - the first clip arrives one whole generation sooner.
 +        sol-h3-studio overlap (same peaks as upstream's sequential order, measured): the warmup Qwen encodes
 +        while Stage1 spawns; Stage2 loads while Stage1 compiles, but only after Stage1's BF16 load and FP8
-+        conversion finished; the resident Qwen loads in the background after the first MP4.
++        conversion finished; the resident Qwen loads in the background once Stage1 has returned and Stage2 is
++        built, while Stage2 refines (after the MP4 with SOL_H3_RESIDENT_QWEN_EARLY=0).
 +        """
          if case.get("task", "t2va") != self.task:
              raise ValueError("The request task must match the pipeline's model family")
@@ -662,6 +667,13 @@ index 9aad551..adac677 100644
 +            stage2 = pool.submit(self._spawn_stage2_when_stage1_resident, response)
 +            s1 = self.stage1.wait(response)
 +            self.stage2 = stage2.result()
++            if self.early_qwen:
++                # sol-h3-studio: both load peaks are over. From its load until the release after the first MP4,
++                # Stage2 holds ~12 GiB that the release frees (MemAvailable +12-14 GiB at that release at 5, 10 and
++                # 15 s, measured). Release it now, as generate() does before each clip, and load the resident Qwen
++                # during this refine.
++                self.stage2.call("release_idle_cache")
++                self._spawn_resident_qwen(pool)
 +            self.stage2.call("prepare", request_id=request_id, output_root=str(request / "stage2"))
 +            s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
 +                                  request_id=request_id)
@@ -679,12 +691,11 @@ index 9aad551..adac677 100644
 +                self.save()
 +            pool.shutdown(wait=False)
 +            raise
-+        if not self.transient_qwen:
-+            self._qwen_future = pool.submit(self.worker_factory, "qwen", self.root / "qwen-worker", self.paths,
-+                                            self.config)
++        if not self.transient_qwen and not self.early_qwen:
++            self._spawn_resident_qwen(pool)
 +        pool.shutdown(wait=False)
 +        self.started = True
-+        self.report.update(status="READY", transient_qwen=self.transient_qwen,
++        self.report.update(status="READY", transient_qwen=self.transient_qwen, early_resident_qwen=self.early_qwen,
 +                           startup_and_warmup_s=(time.monotonic_ns() - started) / 1e9,
 +                           first_request_delivered=deliver,
 +                           warmup={"case_id": case["case_id"], "seed": pass_case["seed"], "output": s2["output"]})
@@ -711,6 +722,10 @@ index 9aad551..adac677 100644
 +            time.sleep(0.5)
 +        return self.worker_factory("stage2", self.root / "stage2-worker", self.paths, self.config)
 +
++    def _spawn_resident_qwen(self, pool):
++        self._qwen_future = pool.submit(self.worker_factory, "qwen", self.root / "qwen-worker", self.paths,
++                                        self.config)
++
 +    def _resident_qwen(self):
 +        if self.qwen is None and self._qwen_future is not None:
 +            future, self._qwen_future = self._qwen_future, None
@@ -723,7 +738,7 @@ index 9aad551..adac677 100644
              raise RuntimeError("Call start() before generate()")
          if case.get("task", "t2va") != self.task:
              raise ValueError("Use a separate pipeline for a different task")
-@@ -175,13 +269,22 @@ class Pipeline:
+@@ -175,13 +284,22 @@ class Pipeline:
          started = time.monotonic_ns()
          row["request_start_monotonic_ns"] = started
          try:
@@ -749,7 +764,7 @@ index 9aad551..adac677 100644
              self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -195,7 +298,8 @@ class Pipeline:
+@@ -195,7 +313,8 @@ class Pipeline:
                         qwen_s=conditioning["request_wall_s"], stage1_s=s1["request_wall_s"],
                         stage2_s=s2["stage2_request_s"],
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
@@ -759,7 +774,7 @@ index 9aad551..adac677 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -213,6 +317,11 @@ class Pipeline:
+@@ -213,6 +332,11 @@ class Pipeline:
  
      def close(self):
          try:
@@ -1604,7 +1619,7 @@ index 0000000..087bed3
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..4f6d4e2 100644
+index 6c20301..f82001c 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -1625,32 +1640,122 @@ index 6c20301..4f6d4e2 100644
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -84,6 +87,42 @@ class PipelineTests(unittest.TestCase):
-             finally:
-                 pipeline.close()
+@@ -59,31 +62,120 @@ class FakeWorker:
+         self.events.append(("close", self.name))
  
+ 
++class Stage2WaitsForQwen(FakeWorker):
++    """The resident Qwen's start shows in the events in the order the pipeline asked for it, whatever the timing of
++    its loading thread: before its first refine, Stage2's cache release takes 0.1 s (a Qwen spawned before the
++    release starts within that time), and its run waits (at most 5 s) for a Qwen worker started after Stage2."""
++
++    def call(self, op="run", **kwargs):
++        if self.name == "stage2" and ("call", "stage2", "run") not in self.events:
++            if op == "release_idle_cache":
++                time.sleep(0.1)
++            elif op == "run":
++                deadline = time.monotonic() + 5
++                while (("start", "qwen") not in self.events[self.events.index(("start", "stage2")):]
++                       and time.monotonic() < deadline):
++                    time.sleep(0.01)
++        return super().call(op, **kwargs)
++
++
+ class PipelineTests(unittest.TestCase):
+     def test_residency_order_and_real_endpoint(self):
+-        FakeWorker.events = []
+         case = {"case_id": "example", "prompt": "A bird glides over a mountain lake.", "seed": 42}
++        # sol-h3-studio: SOL_H3_RESIDENT_QWEN_EARLY unset (default) and 0, and a 15 s clip (Qwen per request)
++        for early, seconds in ((None, None), ("0", None), (None, 15)):
++            loads_early = early is None and seconds is None
++            FakeWorker.events = []
++            with self.subTest(early=early, seconds=seconds), tempfile.TemporaryDirectory() as directory, \
++                 mock.patch.dict(os.environ):
++                os.environ.pop("SOL_H3_RESIDENT_QWEN_EARLY", None)
++                if early is not None:
++                    os.environ["SOL_H3_RESIDENT_QWEN_EARLY"] = early
++                pipeline = Pipeline({}, Path(directory) / "run", seconds=seconds,
++                                    worker_factory=Stage2WaitsForQwen if loads_early else FakeWorker)
++                try:
++                    pipeline.start(case)
++                    row = pipeline.generate(case)
++                    pipeline.finish()
++                    self.assertEqual(pipeline.report["status"], "PASS")
++                    self.assertEqual(pipeline.report["early_resident_qwen"], loads_early)
++                    self.assertEqual(len(pipeline.report["requests"]), 1)
++                    self.assertFalse(pipeline.report["phase_sum_used"])
++                    self.assertEqual(row["e2e_s"],
++                        (row["final_mp4_complete_monotonic_ns"] - row["request_start_monotonic_ns"]) / 1e9)
++                    events = FakeWorker.events
++                    self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
++                    starts = [index for index, event in enumerate(events) if event == ("start", "qwen")]
++                    self.assertEqual(len(starts), 2)
++                    first_refine = events.index(("call", "stage2", "run"))
++                    release = events.index(("call", "stage2", "release_idle_cache"))
++                    if loads_early:
++                        # once Stage1's first request has returned and Stage2 is built and has released its load
++                        # cache, the resident Qwen starts, and it loads while the first clip refines
++                        self.assertLess(events.index(("call", "stage1", "run")), release)
++                        self.assertLess(events.index(("start", "stage2")), release)
++                        self.assertLess(release, starts[1])
++                        self.assertLess(starts[1], first_refine)
++                    else:
++                        # after the first MP4 and Stage2's release (switch off), or per request (over 10 s)
++                        self.assertLess(first_refine, release)
++                        self.assertLess(release, starts[1])
++                    self.assertEqual(events.count(("start", "stage1")), 1)
++                    self.assertEqual(events.count(("start", "stage2")), 1)
++                finally:
++                    pipeline.close()
++        # a first refine that fails: close() still stops the resident Qwen that start() had started
++        class FailingRefine(FakeWorker):
++            def call(self, op="run", **kwargs):
++                if (self.name, op) == ("stage2", "run"):
++                    raise RuntimeError("Stage2 died")
++                return super().call(op, **kwargs)
++        FakeWorker.events = []
++        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
++            os.environ.pop("SOL_H3_RESIDENT_QWEN_EARLY", None)
++            pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FailingRefine)
++            with self.assertRaisesRegex(RuntimeError, "Stage2 died"):
++                pipeline.start(case, deliver=True)
++            pipeline.close()
++            self.assertEqual(FakeWorker.events.count(("start", "qwen")), 2)
++            self.assertEqual(FakeWorker.events.count(("close", "qwen")), 2)
++
 +    def test_deliver_first_returns_the_first_request_and_reuses_models(self):
 +        FakeWorker.events = []
 +        case = {"case_id": "first", "prompt": "A bird glides over a mountain lake.", "seed": 7}
-+        with tempfile.TemporaryDirectory() as directory:
-+            pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FakeWorker)
-+            try:
+         with tempfile.TemporaryDirectory() as directory:
+             pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FakeWorker)
+             try:
+-                pipeline.start(case)
+-                row = pipeline.generate(case)
 +                row = pipeline.start(case, deliver=True)
 +                self.assertEqual((row["status"], row["seed"], row["case_id"]), ("PASS", 7, "first"))
 +                self.assertTrue(Path(row["output"]).is_file())
 +                self.assertTrue(row["includes_model_load"])
 +                second = pipeline.generate(dict(case, case_id="second"))
-+                pipeline.finish()
+                 pipeline.finish()
+-                self.assertEqual(pipeline.report["status"], "PASS")
+-                self.assertEqual(len(pipeline.report["requests"]), 1)
+-                self.assertFalse(pipeline.report["phase_sum_used"])
+-                self.assertEqual(row["e2e_s"],
+-                    (row["final_mp4_complete_monotonic_ns"] - row["request_start_monotonic_ns"]) / 1e9)
 +                self.assertEqual([r["case_id"] for r in pipeline.report["requests"]], ["first", "second"])
 +                self.assertEqual(second["status"], "PASS")
-+                events = FakeWorker.events
-+                self.assertEqual(events.count(("start", "stage1")), 1)
-+                self.assertEqual(events.count(("start", "stage2")), 1)
+                 events = FakeWorker.events
+-                self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
+-                starts = [index for index, event in enumerate(events) if event == ("start", "qwen")]
+-                self.assertEqual(len(starts), 2)
+-                self.assertGreater(starts[1], events.index(("call", "stage2", "run")))
+                 self.assertEqual(events.count(("start", "stage1")), 1)
+                 self.assertEqual(events.count(("start", "stage2")), 1)
 +                self.assertEqual(events.count(("start", "qwen")), 2)
 +                self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
-+            finally:
-+                pipeline.close()
-+
+             finally:
+                 pipeline.close()
+ 
 +    def test_bad_stage2_audio_setting_fails_before_any_worker(self):
 +        made = []
 +        def factory(*args, **kwargs):
@@ -1668,7 +1773,7 @@ index 6c20301..4f6d4e2 100644
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +235,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +288,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -1677,7 +1782,7 @@ index 6c20301..4f6d4e2 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +264,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +317,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -1687,7 +1792,7 @@ index 6c20301..4f6d4e2 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +300,26 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +353,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
