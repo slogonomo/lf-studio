@@ -24,4 +24,5 @@ if [[ "$1" == run && " $* " != *" --dry "* ]]; then
     export SOLH3_MIN_FREE_GIB=$need
 fi
 [[ "$1" == run ]] || export CUDA_VISIBLE_DEVICES=     # every other command is CPU only
-PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" exec python3 -B -m replay.cli "$@"
+# stdin from /dev/null: nothing here reads it, and a tool that did would eat the input of a caller's `while read` loop
+PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" exec python3 -B -m replay.cli "$@" </dev/null

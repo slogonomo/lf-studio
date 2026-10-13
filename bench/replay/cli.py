@@ -243,7 +243,7 @@ def cmd_run(a):
         if shutil.which("nvidia-smi") and os.environ.get("CUDA_VISIBLE_DEVICES") != "":   # 1 Hz clocks, temperature
             clocks_file = open(out / "gpu_clocks.csv", "w")
             clocks = subprocess.Popen(["nvidia-smi", f"--query-gpu={CLOCKS_QUERY}", "--format=csv", "-l", "1"],
-                                      stdout=clocks_file, stderr=subprocess.DEVNULL)
+                                      stdin=subprocess.DEVNULL, stdout=clocks_file, stderr=subprocess.DEVNULL)
         for g in plan["groups"]:
             if stopping["signal"]:
                 break
@@ -267,7 +267,7 @@ def cmd_run(a):
                     "--module", "replay.stage2", "--plan", str(plan_path), "--group", g["id"]]
             print(f"[replay] process {g['id']}: {len(g['runs'])} runs, ~{g['est_s'] / 60:.1f} min; log "
                   f"{out / 'logs' / (g['id'] + '.log')}", flush=True)
-            p = subprocess.Popen(cmd, cwd=plan["package"], env=env, start_new_session=True)
+            p = subprocess.Popen(cmd, cwd=plan["package"], env=env, start_new_session=True, stdin=subprocess.DEVNULL)
             current["pid"] = p.pid
             if stopping["signal"]:                  # a signal between Popen and the line above
                 stop_tree(p.pid)

@@ -39,7 +39,9 @@ def run_scorer(command, files, json_out, turns=None, log=None):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
     Path(json_out).unlink(missing_ok=True)              # never read an earlier run's results
     with open(log or os.devnull, "a") as stream:
-        r = subprocess.run(cmd, stdout=stream, stderr=subprocess.STDOUT, env=env)
+        # stdin from /dev/null: a scorer's ffmpeg without -nostdin otherwise reads the caller's stdin (on the
+        # 2026-10-13 GPU check it ate the rest of a `while read` loop's list of run directories)
+        r = subprocess.run(cmd, stdout=stream, stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL)
     if r.returncode != 0 or not Path(json_out).is_file():
         raise RuntimeError(f"SyncNet scorer failed (exit {r.returncode}); see {log}")
     return json.loads(Path(json_out).read_text())

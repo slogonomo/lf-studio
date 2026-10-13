@@ -17,7 +17,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ""
 def frames(path, width, height, np):
     raw = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-threads", "2", "-i", path, "-vf",
                           f"scale={width}:{height}:flags=lanczos", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                         capture_output=True, check=True).stdout
+                         capture_output=True, check=True, stdin=subprocess.DEVNULL).stdout
     return np.frombuffer(raw, np.uint8).reshape(-1, height, width, 3)
 
 

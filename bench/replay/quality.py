@@ -68,7 +68,7 @@ def lpips_pair(python, ref, test, size):
     script = Path(__file__).with_name("lpips_score.py")
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS="4")
     r = subprocess.run([python, str(script), "--size", f"{size[0]}x{size[1]}", ref, test],
-                       capture_output=True, text=True, env=env)
+                       capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
     if r.returncode != 0:
         raise RuntimeError(f"lpips_score.py failed: {r.stderr.strip()[-400:]}")
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -85,7 +85,7 @@ def label(text):
 
 def ffmpeg(*args):
     r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-threads", media.FFMPEG_THREADS, *args],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg: {r.stderr.strip()[-400:]}")
 

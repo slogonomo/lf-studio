@@ -787,6 +787,33 @@ class QualityRobustnessTests(Fixture):
             self.assertIn("| talk | steps2_from_0725 | baseline |", text)
             self.assertIn("INCOMPLETE", text, body)
 
+    def test_quality_in_a_read_loop_leaves_the_loop_its_input(self):
+        """A scorer whose ffmpeg reads stdin (no -nostdin) ate the rest of a `while read` loop's run list on the
+        2026-10-13 GPU check, so the second run got no quality step. The bench gives every tool /dev/null."""
+        first = self.make_run()
+        second = self.tmp / "run2"
+        shutil.copytree(first, second)
+        scorer = self.tmp / "greedy-scorer.py"
+        scorer.write_text("import json, sys\nsys.stdin.read()\na = sys.argv[1:]\n"
+                          "files = [x for x in a if x.endswith('.mp4')]\n"
+                          "face = {'det_rate': 1.0, 'speaking': {'offset': -1, 'lse_d': 8.0, 'lse_c': 7.0}}\n"
+                          "json.dump([{'file': f, 'turns': [], 'faces': {'R': face}} for f in files],"
+                          " open(a[a.index('--json') + 1], 'w'))\n")
+        listing = self.tmp / "run_dirs.txt"
+        listing.write_text(f"{first}\n{second}\n")
+        empty_env = self.tmp / "empty-env"
+        empty_env.write_text("")
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOLH3_", "SOL_H3_"))}
+        env.update(SOLH3_ENV=str(empty_env), SOL_H3_SPARK_RUNTIME_ROOT=str(self.rt))
+        loop = (f'while read -r d; do echo "start $d"; bash {REPO / "bench" / "replay.sh"} quality "$d" '
+                f'--syncnet "{sys.executable} {scorer}" > /dev/null 2>&1; echo "end $d $?"; done < {listing}')
+        r = subprocess.run(["bash", "-c", loop], capture_output=True, text=True, env=env, timeout=300)
+        self.assertEqual(r.stdout.splitlines(), [f"start {first}", f"end {first} 0", f"start {second}",
+                                                 f"end {second} 0"], r.stderr)
+        for run in (first, second):
+            self.assertTrue((run / "quality" / "sheets" / "talk_overview.jpg").is_file())
+            self.assertIn("Complete: every dialogue draft", (run / "quality" / "quality.md").read_text())
+
     def test_a_missing_output_is_reported_not_fatal(self):
         out = self.make_run(missing_output=True)
         qdir, complete = quality.quality(out, log=lambda *a: None)

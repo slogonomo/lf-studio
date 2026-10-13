@@ -20,7 +20,8 @@ def probe(path):
     """{width, height, frames, fps, duration_s, audio} of a video file (frames counted from the packets)."""
     out = subprocess.run(["ffprobe", "-v", "error", "-count_packets", "-show_entries",
                           "stream=codec_type,width,height,r_frame_rate,nb_read_packets:format=duration",
-                          "-of", "json", str(path)], capture_output=True, text=True, check=True).stdout
+                          "-of", "json", str(path)], capture_output=True, text=True, check=True,
+                         stdin=subprocess.DEVNULL).stdout
     info = json.loads(out)
     video = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
     if video is None:
@@ -36,7 +37,8 @@ def stream_md5(path, kind):
     """MD5 of the decoded video frames (kind "v") or audio samples ("a"), as ffmpeg's md5 muxer prints it.
     Two files with the same value decode to the same pictures (or sound), whatever their container bytes."""
     r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-threads", FFMPEG_THREADS, "-i", str(path),
-                        "-map", f"0:{kind}:0", "-f", "md5", "-"], capture_output=True, text=True)
+                        "-map", f"0:{kind}:0", "-f", "md5", "-"], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg md5 of {path} ({kind}): {r.stderr.strip()[-300:]}")
     return r.stdout.strip().removeprefix("MD5=")
@@ -56,7 +58,8 @@ def psnr_ssim(ref, test, size):
              f"[1:v]scale={w}:{h}:flags=lanczos,format=yuv420p,split[r1][r2];[t1][r1]psnr[p];[t2][r2]ssim[s]")
     r = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin", "-threads", FFMPEG_THREADS, "-i", str(test),
                         "-i", str(ref), "-filter_complex", graph, "-map", "[p]", "-f", "null", "-",
-                        "-map", "[s]", "-f", "null", "-"], capture_output=True, text=True)
+                        "-map", "[s]", "-f", "null", "-"], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg psnr/ssim: {r.stderr.strip()[-300:]}")
     p = re.search(r"PSNR .* average:([\d.]+|inf)", r.stderr)

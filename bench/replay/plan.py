@@ -64,7 +64,7 @@ def jsonable(geo):
 
 def git(*args):
     try:
-        r = subprocess.run(["git", *args], capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["git", *args], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout.strip() if r.returncode == 0 else None
