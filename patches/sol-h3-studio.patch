@@ -51,21 +51,21 @@ index be0076a..ef2447e 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/config.py b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
-index 03804f7..27a8051 100644
+index 03804f7..e2b4e71 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 @@ -6,6 +6,10 @@ import os
  from pathlib import Path
  import re
  
-+# Modified by sol-h3-studio: portrait orientation, clip length, the persistent compile-cache location and the Stage-2
-+# audio setting.
++# Modified by sol-h3-studio: portrait orientation, clip length, the persistent compile-cache location, the Stage-2
++# audio setting and the prompt-token setting.
 +from .geometry import ORIENTATIONS, orient_recipe
 +
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,54 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,74 @@ REQUIRED_PATHS = (
  )
  
  
@@ -100,7 +100,25 @@ index 03804f7..27a8051 100644
 +    return mode
 +
 +
-+def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None, orientation=None, seconds=None):
++# sol-h3-studio: MiniMax's prompt tokens (runtime/qwen_ops/prompt_tokens.py). "minimax" (default since 0.4): the 7
++# tokens of MiniMax's tokenizer_config.json are added, so each tag is one token as in H3's training; "plain": the
++# pinned ComfyUI's Qwen tokenizer splits <d> and </d> into ordinary text tokens, as up to 0.3. The Qwen worker runs
++# in Docker with a fixed environment, so the host reads the setting here and passes it in the recipe
++# (stage1.prompt_tokens).
++PROMPT_TOKEN_MODES = ("plain", "minimax")
++
++
++def prompt_tokens_mode(value=None):
++    """SOL_H3_PROMPT_TOKENS (or value), default "minimax" (case-insensitive)."""
++    raw = os.environ.get("SOL_H3_PROMPT_TOKENS", "") if value is None else value
++    mode = str(raw).strip().lower() or "minimax"
++    if mode not in PROMPT_TOKEN_MODES:
++        raise ValueError(f"SOL_H3_PROMPT_TOKENS must be one of {PROMPT_TOKEN_MODES}, not {raw!r}")
++    return mode
++
++
++def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None, orientation=None, seconds=None,
++                prompt_tokens=None):
      recipe = json.loads((PACKAGE / "configs/default.json").read_text())
      # This is a record of the implemented recipe, not an ablation interface.
      canonical = json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()
@@ -118,6 +136,8 @@ index 03804f7..27a8051 100644
 +        frames = frame_geometry(draft_frames_for_seconds(seconds))
 +        recipe["stage1"]["frames"], recipe["output"]["frames"] = frames["draft_frames"], frames["output_frames"]
 +        recipe["duration_s"] = round(frames["output_frames"] / 24, 2)
++    # sol-h3-studio: the prompt-token mode for the Qwen worker, derived after the hash check; a bad value fails here.
++    recipe["stage1"]["prompt_tokens"] = prompt_tokens_mode(prompt_tokens)
      if task not in TASKS:
          raise ValueError(f"task must be one of {TASKS}")
      if task != "ref2va" and (ref_image_match is not None or ref_stage1_attn is not None):
@@ -540,7 +560,7 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
-index 9aad551..adac677 100644
+index 9aad551..4dab3c8 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 @@ -6,8 +6,11 @@ from pathlib import Path
@@ -548,7 +568,7 @@ index 9aad551..adac677 100644
  import subprocess
  import time
 +# Modified by sol-h3-studio: overlapped loading, deliver-first start(), transient Qwen for long clips,
-+# persistent compile caches and the mimalloc purge setting for workers.
++# persistent compile caches, the mimalloc purge setting for workers and the prompt-token setting.
 +from concurrent.futures import ThreadPoolExecutor
  
 -from .config import PACKAGE, load_recipe
@@ -556,7 +576,31 @@ index 9aad551..adac677 100644
  from .worker import write_json
  
  
-@@ -45,6 +48,20 @@ def worker_environment(name, paths):
+@@ -25,6 +28,23 @@ def await_json(path, process, timeout=1800):
+     return receipt
+ 
+ 
++# sol-h3-studio: MemAvailable can show a cache release a moment after the release has answered (bench trace: +6.6 GiB
++# between two 0.25 s samples around the answer), so the check before the early resident Qwen reads it for up to 1 s.
++MEM_SETTLE_S = 1.0
++
++
++def mem_available_gib():
++    """sol-h3-studio: MemAvailable from /proc/meminfo in GiB, or None where it can't be read."""
++    try:
++        with open("/proc/meminfo") as meminfo:
++            for line in meminfo:
++                if line.startswith("MemAvailable:"):
++                    return int(line.split()[1]) / 1048576
++    except (OSError, ValueError, IndexError):
++        pass
++    return None
++
++
+ def worker_environment(name, paths):
+     env = os.environ.copy()
+     env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
+@@ -45,6 +65,20 @@ def worker_environment(name, paths):
          env.pop("LD_LIBRARY_PATH", None)
      elif name == "stage2":
          env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -577,18 +621,27 @@ index 9aad551..adac677 100644
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -120,15 +137,25 @@ class Pipeline:
+@@ -115,20 +149,47 @@ class Worker:
+ class Pipeline:
+     """Reuse three isolated runtime environments and the same models for a batch.
+ 
+-    A full warmup precedes permanent Qwen residency to bound Stage2's initial
+-    loading peak. It is reported separately; the first formal request counts.
++    sol-h3-studio: a full warmup pass loads the models. The resident Qwen starts during its Stage2 refine, after
++    Stage2's initial loading peak, if memory allows (start()). The warmup is reported separately; the first formal
++    request counts.
      """
  
      def __init__(self, paths, output_root, *, task="t2va", ref_image_match=None,
 -                 ref_stage1_attn=None, worker_factory=Worker):
-+                 ref_stage1_attn=None, orientation=None, seconds=None, worker_factory=Worker):
++                 ref_stage1_attn=None, orientation=None, seconds=None, prompt_tokens=None, worker_factory=Worker):
          self.paths = paths
          self.task = task
++        # sol-h3-studio: a bad SOL_H3_PROMPT_TOKENS (or prompt_tokens) fails in load_recipe, before any worker loads
          self.config = load_recipe(task, ref_image_match=ref_image_match,
 -                                  ref_stage1_attn=ref_stage1_attn)
 +                                  ref_stage1_attn=ref_stage1_attn, orientation=orientation,
-+                                  seconds=seconds)
++                                  seconds=seconds, prompt_tokens=prompt_tokens)
 +        stage2_audio_mode()     # sol-h3-studio: a bad SOL_H3_STAGE2_AUDIO fails here, before any worker loads
          self.root = Path(output_root).resolve()
          self.root.mkdir(parents=True, exist_ok=False)
@@ -597,15 +650,30 @@ index 9aad551..adac677 100644
 +        # sol-h3-studio: clips longer than 10 s don't fit with Qwen resident next to Stage1+Stage2 on one Spark
 +        # (15 s hit MemAvailable 4 GiB in the Stage2 refine). Those sessions load Qwen per request instead.
 +        from . import geometry as _geometry
-+        self.transient_qwen = (_geometry.from_recipe(self.config)["output_frames"]
-+                               > int(os.environ.get("SOL_H3_RESIDENT_QWEN_MAX_FRAMES", "241")))
++        frames = _geometry.from_recipe(self.config)["output_frames"]
++        self.transient_qwen = frames > int(os.environ.get("SOL_H3_RESIDENT_QWEN_MAX_FRAMES", "241"))
++        # sol-h3-studio: the resident Qwen loads while start()'s Stage2 refines, so the next clip finds it ready, if
++        # MemAvailable after Stage2's cache release is at least a minimum: 32 GiB up to 121 output frames (5 s),
++        # 34 GiB above (test lane: Qwen plus a first refine took 23.1-23.8 GiB at 5 s, 26.7 GiB at fl2va 10 s; so
++        # ~7-9 GiB would be left at the minimum, above memguard's 5 GiB). SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB sets
++        # one minimum for every length. Otherwise, and with SOL_H3_RESIDENT_QWEN_EARLY=0, it loads after start()'s
++        # MP4, as before.
++        self.early_qwen = (not self.transient_qwen
++                           and os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY", "1") == "1")
++        explicit = os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB")
++        self.early_qwen_min_gib = float(explicit) if explicit else 32.0 if frames <= 121 else 34.0
++        self.early_qwen_min_from = ("SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB" if explicit else
++                                    f"default for {'up to' if frames <= 121 else 'over'} 121 output frames")
++        self.resident_qwen = ({"spawn": "per_request"} if self.transient_qwen else
++                              {"spawn": "after_first_clip", "reason": "SOL_H3_RESIDENT_QWEN_EARLY=0"}
++                              if not self.early_qwen else {"spawn": "first_refine"})
 +        self.started = False
 +        self.qwen_loads = 0
 +        self._qwen_future = None
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -138,32 +165,99 @@ class Pipeline:
+@@ -138,32 +199,132 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -618,7 +686,8 @@ index 9aad551..adac677 100644
 +        row instead of being thrown away - the first clip arrives one whole generation sooner.
 +        sol-h3-studio overlap (same peaks as upstream's sequential order, measured): the warmup Qwen encodes
 +        while Stage1 spawns; Stage2 loads while Stage1 compiles, but only after Stage1's BF16 load and FP8
-+        conversion finished; the resident Qwen loads in the background after the first MP4.
++        conversion finished; the resident Qwen loads in the background once Stage1 has returned and Stage2 is
++        built, while Stage2 refines (after the MP4 with SOL_H3_RESIDENT_QWEN_EARLY=0).
 +        """
          if case.get("task", "t2va") != self.task:
              raise ValueError("The request task must match the pipeline's model family")
@@ -662,6 +731,14 @@ index 9aad551..adac677 100644
 +            stage2 = pool.submit(self._spawn_stage2_when_stage1_resident, response)
 +            s1 = self.stage1.wait(response)
 +            self.stage2 = stage2.result()
++            if self.early_qwen:
++                # sol-h3-studio: both load peaks are over. From its load until the release after the first MP4,
++                # Stage2 holds ~12 GiB that the release frees (MemAvailable +12-14 GiB at that release at 5, 10 and
++                # 15 s, measured). Release it now, as generate() does before each clip, and load the resident Qwen
++                # during this refine if there is room for it.
++                self.stage2.call("release_idle_cache")
++                if self._room_for_early_qwen():
++                    self._spawn_resident_qwen(pool)
 +            self.stage2.call("prepare", request_id=request_id, output_root=str(request / "stage2"))
 +            s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
 +                                  request_id=request_id)
@@ -679,12 +756,11 @@ index 9aad551..adac677 100644
 +                self.save()
 +            pool.shutdown(wait=False)
 +            raise
-+        if not self.transient_qwen:
-+            self._qwen_future = pool.submit(self.worker_factory, "qwen", self.root / "qwen-worker", self.paths,
-+                                            self.config)
++        if not self.transient_qwen and self._qwen_future is None:
++            self._spawn_resident_qwen(pool)
 +        pool.shutdown(wait=False)
 +        self.started = True
-+        self.report.update(status="READY", transient_qwen=self.transient_qwen,
++        self.report.update(status="READY", transient_qwen=self.transient_qwen, resident_qwen=self.resident_qwen,
 +                           startup_and_warmup_s=(time.monotonic_ns() - started) / 1e9,
 +                           first_request_delivered=deliver,
 +                           warmup={"case_id": case["case_id"], "seed": pass_case["seed"], "output": s2["output"]})
@@ -711,6 +787,31 @@ index 9aad551..adac677 100644
 +            time.sleep(0.5)
 +        return self.worker_factory("stage2", self.root / "stage2-worker", self.paths, self.config)
 +
++    def _room_for_early_qwen(self):
++        """sol-h3-studio: MemAvailable after Stage2's release is at least the minimum for loading the resident Qwen
++        during the first refine. Records the reading (and why not) in results.json."""
++        deadline = time.monotonic() + MEM_SETTLE_S
++        while True:
++            gib = mem_available_gib()
++            if gib is not None and gib >= self.early_qwen_min_gib or time.monotonic() >= deadline:
++                break
++            time.sleep(0.1)
++        room = gib is not None and gib >= self.early_qwen_min_gib
++        self.resident_qwen = {"spawn": "first_refine" if room else "after_first_clip",
++                              "mem_available_gib": None if gib is None else round(gib, 2),
++                              "min_gib": self.early_qwen_min_gib, "min_from": self.early_qwen_min_from}
++        if not room:
++            self.resident_qwen["reason"] = ("MemAvailable unknown" if gib is None else
++                                            f"MemAvailable {gib:.1f} GiB after Stage2's release, below the "
++                                            f"{self.early_qwen_min_gib:g} GiB minimum ({self.early_qwen_min_from})")
++            print(f"[sol-h3-studio] the resident Qwen loads after the first clip: {self.resident_qwen['reason']}",
++                  flush=True)
++        return room
++
++    def _spawn_resident_qwen(self, pool):
++        self._qwen_future = pool.submit(self.worker_factory, "qwen", self.root / "qwen-worker", self.paths,
++                                        self.config)
++
 +    def _resident_qwen(self):
 +        if self.qwen is None and self._qwen_future is not None:
 +            future, self._qwen_future = self._qwen_future, None
@@ -723,7 +824,7 @@ index 9aad551..adac677 100644
              raise RuntimeError("Call start() before generate()")
          if case.get("task", "t2va") != self.task:
              raise ValueError("Use a separate pipeline for a different task")
-@@ -175,13 +269,22 @@ class Pipeline:
+@@ -175,13 +336,22 @@ class Pipeline:
          started = time.monotonic_ns()
          row["request_start_monotonic_ns"] = started
          try:
@@ -749,7 +850,7 @@ index 9aad551..adac677 100644
              self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -195,7 +298,8 @@ class Pipeline:
+@@ -195,7 +365,8 @@ class Pipeline:
                         qwen_s=conditioning["request_wall_s"], stage1_s=s1["request_wall_s"],
                         stage2_s=s2["stage2_request_s"],
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
@@ -759,7 +860,7 @@ index 9aad551..adac677 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -213,6 +317,11 @@ class Pipeline:
+@@ -213,6 +384,11 @@ class Pipeline:
  
      def close(self):
          try:
@@ -772,20 +873,51 @@ index 9aad551..adac677 100644
                  self.qwen.close()
          finally:
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
-index a3ba15c..dc8d5b6 100644
+index a3ba15c..fcf708f 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
-@@ -142,6 +142,9 @@ def load_resident_checkpoint(checkpoint, torch):
+@@ -9,6 +9,9 @@ from pathlib import Path
+ import time
+ 
+ from .qwen_ops.media import input_spec, prepare_inputs, reference_target_area
++# Modified by sol-h3-studio: the keyframe/reference-video canvas follows the draft size, and MiniMax's prompt tokens
++# (SOL_H3_PROMPT_TOKENS, see qwen_ops/prompt_tokens.py).
++from .qwen_ops.prompt_tokens import apply_prompt_tokens, recipe_mode, request_counts
+ 
+ 
+ def atomic_json(path, value):
+@@ -142,6 +145,11 @@ def load_resident_checkpoint(checkpoint, torch):
  class Session:
      def __init__(self, paths: dict, work_dir: str, config: dict):
          self.reference_target_area = reference_target_area(config)
-+        # Modified by sol-h3-studio: the keyframe/reference-video canvas follows the (possibly portrait) draft size.
++        # sol-h3-studio: the keyframe/reference-video canvas follows the (possibly portrait) draft size.
 +        stage1 = config.get('stage1', {})
 +        self.canvas = (int(stage1.get('height', 384)), int(stage1.get('width', 672)))
++        # sol-h3-studio: the prompt-token mode the host read (SOL_H3_PROMPT_TOKENS); a bad value fails before loading.
++        self.prompt_tokens_mode = recipe_mode(config)
          checkpoint = Path(paths['qwen_checkpoint']).expanduser().resolve(strict=True)
          comfy_root = Path(paths['comfy_root']).expanduser().resolve(strict=True)
          self.work_dir = Path(work_dir).resolve()
-@@ -252,7 +255,8 @@ class Session:
+@@ -182,6 +190,9 @@ class Session:
+         finally:
+             utils.load_torch_file = original_load
+         self.clip = self.owner.clip
++        # sol-h3-studio: add MiniMax's 7 prompt tokens (minimax) or check they are absent (plain).
++        self.prompt_tokens = apply_prompt_tokens(self.clip.tokenizer.qwen3vl_32b, self.prompt_tokens_mode)
++        print(f'[sol-h3-studio] prompt tokens: {self.prompt_tokens}', flush=True)
+         import comfy.model_management as management
+         management.load_models_gpu([self.clip.patcher], force_full_load=True)
+         self.clip.cond_stage_model.eval().requires_grad_(False)
+@@ -222,7 +233,7 @@ class Session:
+             'checkpoint_page_cache_advice': self.checkpoint_page_cache_advice,
+             'startup_checkpoint_reads': self.startup_checkpoint_reads,
+             'startup_reader': self.startup_reader,
+-            'weight_residency': self.weight_info}
++            'weight_residency': self.weight_info, 'prompt_tokens': self.prompt_tokens}
+ 
+     def release_idle_cache(self):
+         """Protocol name reused for metadata-only residency evidence; no offload."""
+@@ -252,7 +263,8 @@ class Session:
          try:
              before = self.release_idle_cache()
              torch.cuda.reset_peak_memory_stats()
@@ -795,6 +927,15 @@ index a3ba15c..dc8d5b6 100644
              identity = {'task': case.get('task', 't2va'), 'external_anchor_used': False,
                  'input_conditioned': case.get('task', 't2va') != 't2va',
                  'input_spec': input_spec(case), 'prepared_media': prepared_media}
+@@ -275,6 +287,8 @@ class Session:
+                 'prompt': case['prompt'], 'case_id': case['case_id'], 'seed': case['seed'],
+                 'payload': str(path), 'payload_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                 'shape': list(value.cond.shape), 'dtype': str(value.cond.dtype),
++                # sol-h3-studio: the prompt-token mode, the text positions and how many of them are MiniMax tokens
++                'prompt_tokens': self.prompt_tokens_mode, **request_counts(tokens, value.minimax_token_tags),
+                 'producer_mode': 'resident', 'model_load_count': self.model_load_count,
+                 'request_index': self.completed_requests, 'residency_before': before,
+                 'residency_after': after, 'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py
 index 39080d4..554c8de 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py
@@ -874,6 +1015,105 @@ index 39080d4..554c8de 100644
              indices, timestamps = reference_video_samples(len(frames))
              if has_audio:
                  items.append({"type": "audio"})
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py
+new file mode 100644
+index 0000000..fd693b7
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py
+@@ -0,0 +1,93 @@
++"""MiniMax's prompt tokens for the pinned ComfyUI Qwen tokenizer (SOL_H3_PROMPT_TOKENS). Imports no GPU framework.
++
++Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-Spark package.
++
++H3 was trained with the tokenizer files of the MiniMaxAI/MiniMax-H3 repository. Their tokenizer_config.json adds 7
++special tokens after Qwen2.5's vocabulary; transformers gives them ids 151669-151675. ComfyUI v0.30.0, which
++Sol-H3-Spark pins, tokenizes MiniMax prompts with Qwen2.5's tokenizer files only, so a dialogue tag such as <d> is
++split into ordinary text tokens ("Ġ<", "d", ">[") that H3 never saw. ComfyUI added the tokens in 924743af
++("Minimax-H3: Add missing special tokens", first released in v0.34.0) with the call used here.
++
++Modes (runtime/config.py prompt_tokens_mode, passed to the Qwen worker as recipe["stage1"]["prompt_tokens"]):
++  minimax  (default) the 7 tokens added, so prompts tokenize as with MiniMax's own tokenizer
++  plain    the pinned tokenizer as it is (the behaviour up to sol-h3-studio 0.3; a dialogue clip made then
++           reproduces from its seed only in this mode)
++A prompt without any of the 7 tokens gets the same ids in both modes.
++"""
++from __future__ import annotations
++
++# Same table as ComfyUI 924743af (MINIMAX_EXTRA_TOKENS) and MiniMax's tokenizer_config.json, in id order.
++MINIMAX_EXTRA_TOKENS = {"<d>": 151669, "</d>": 151670, "<|cutoff|>": 151671,
++                        "<|lyrics_start|>": 151672, "<|lyrics_end|>": 151673,
++                        "<|caption_start|>": 151674, "<|caption_end|>": 151675}
++MINIMAX_EXTRA_IDS = frozenset(MINIMAX_EXTRA_TOKENS.values())
++
++
++def recipe_mode(config):
++    """The mode the host put in the recipe. A bad value raises ValueError. The host always puts one there; a recipe
++    without one was recorded before the setting existed (0.3 or older), when every prompt was encoded "plain"."""
++    from ..config import prompt_tokens_mode
++    stage1 = config.get("stage1", config) if isinstance(config, dict) else {}
++    return prompt_tokens_mode(stage1.get("prompt_tokens") or "plain")
++
++
++def _present(hf_tokenizer):
++    vocab = hf_tokenizer.get_vocab()
++    return {token: vocab[token] for token in MINIMAX_EXTRA_TOKENS if token in vocab}
++
++
++def _check_single_tokens(hf_tokenizer):
++    """Each of the 7 tokens must come out as one id, also next to other text, as with MiniMax's tokenizer."""
++    text = "x".join(MINIMAX_EXTRA_TOKENS)
++    ids = hf_tokenizer(text, add_special_tokens=False)["input_ids"]
++    expected = []
++    for token, token_id in MINIMAX_EXTRA_TOKENS.items():
++        expected += [token_id, hf_tokenizer.convert_tokens_to_ids("x")]
++    if ids != expected[:-1]:
++        raise RuntimeError(f"MiniMax's prompt tokens do not tokenize as single tokens: {text!r} -> {ids}")
++
++
++def apply_prompt_tokens(sd_tokenizer, mode):
++    """Set up ComfyUI's Qwen tokenizer for `mode` and return what was done (for the receipt and the log).
++
++    sd_tokenizer is ComfyUI's SDTokenizer for the MiniMax text encoder (clip.tokenizer.qwen3vl_32b): .tokenizer is the
++    transformers Qwen2Tokenizer that MiniMaxH3Tokenizer._text_ids calls, .inv_vocab its id -> token map, which
++    924743af rebuilds after adding the tokens.
++    - minimax: add the 7 tokens unless the tokenizer already has all of them; fail unless they have ids
++      151669-151675 and each tokenizes as one id.
++    - plain: fail if the tokenizer already has any of them (a newer ComfyUI), since it could not give the plain ids.
++    """
++    hf = sd_tokenizer.tokenizer
++    present = _present(hf)
++    if mode == "plain":
++        if present:
++            raise RuntimeError(
++                "SOL_H3_PROMPT_TOKENS=plain needs the pinned ComfyUI tokenizer without MiniMax's tokens, but this "
++                f"ComfyUI already has {sorted(present)}; set SOL_H3_PROMPT_TOKENS=minimax (the default)")
++        return {"mode": "plain", "added": 0, "vocab_size": len(hf)}
++    if mode != "minimax":
++        raise ValueError(f"unknown prompt-token mode {mode!r}")
++    if present == MINIMAX_EXTRA_TOKENS:
++        _check_single_tokens(hf)
++        return {"mode": "minimax", "added": 0, "already_present": True, "vocab_size": len(hf)}
++    if present:
++        raise RuntimeError(f"the ComfyUI tokenizer has only some of MiniMax's prompt tokens, or other ids: {present}")
++    hf.add_special_tokens({"additional_special_tokens": list(MINIMAX_EXTRA_TOKENS)})
++    got = _present(hf)
++    if got != MINIMAX_EXTRA_TOKENS:
++        raise RuntimeError(f"MiniMax's prompt tokens got ids {got}, expected {MINIMAX_EXTRA_TOKENS}")
++    _check_single_tokens(hf)
++    if hasattr(sd_tokenizer, "inv_vocab"):
++        sd_tokenizer.inv_vocab = {v: k for k, v in hf.get_vocab().items()}
++    return {"mode": "minimax", "added": len(MINIMAX_EXTRA_TOKENS), "already_present": False, "vocab_size": len(hf)}
++
++
++def request_counts(tokens, token_tags):
++    """Counts for the request receipt: text positions H3 sees (token tag 1) and MiniMax tokens among the ids.
++
++    tokens: CLIP.tokenize() output, {"qwen3vl_32b": [[(id or vision entry, weight), ...]]}.
++    token_tags: the normalized minimax_token_tags, 1 per text position and 0 per vision position.
++    """
++    entries = [entry for batch in tokens.values() for row in batch for entry in row]
++    ids = [entry[0] for entry in entries if isinstance(entry[0], int)]
++    return {"text_tokens": int(token_tags.sum()), "minimax_tokens": sum(1 for i in ids if i in MINIMAX_EXTRA_IDS)}
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
 index 3fec9da..060be8b 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
@@ -1848,7 +2088,7 @@ index 0000000..087bed3
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..4f6d4e2 100644
+index 6c20301..e717205 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -1863,38 +2103,165 @@ index 6c20301..4f6d4e2 100644
  from unittest import mock
  
 -from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS
-+# Modified by sol-h3-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location and
-+# the Stage-2 audio setting.
++# Modified by sol-h3-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location, the
++# Stage-2 audio setting and the prompt-token setting.
 +from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -84,6 +87,42 @@ class PipelineTests(unittest.TestCase):
-             finally:
-                 pipeline.close()
+@@ -59,31 +62,212 @@ class FakeWorker:
+         self.events.append(("close", self.name))
  
+ 
++class Stage2WaitsForQwen(FakeWorker):
++    """The resident Qwen's start shows in the events in the order the pipeline asked for it, whatever the timing of
++    its loading thread: before its first refine, Stage2's cache release takes 0.1 s (a Qwen spawned before the
++    release starts within that time), and its run waits (at most 5 s) for a Qwen worker started after Stage2."""
++
++    def call(self, op="run", **kwargs):
++        if self.name == "stage2" and ("call", "stage2", "run") not in self.events:
++            if op == "release_idle_cache":
++                time.sleep(0.1)
++            elif op == "run":
++                deadline = time.monotonic() + 5
++                while (("start", "qwen") not in self.events[self.events.index(("start", "stage2")):]
++                       and time.monotonic() < deadline):
++                    time.sleep(0.01)
++        return super().call(op, **kwargs)
++
++
++def residency_settings(early=None, mem_gib=64.0, min_gib=None):
++    """sol-h3-studio: the resident-Qwen settings at their defaults (a user's own values would change the order the
++    tests expect), SOL_H3_RESIDENT_QWEN_EARLY and _EARLY_MIN_GIB as given, and MemAvailable after Stage2's release
++    as given."""
++    stack = contextlib.ExitStack()
++    stack.enter_context(mock.patch.dict(os.environ))
++    for name in ("SOL_H3_RESIDENT_QWEN_EARLY", "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB", "SOL_H3_RESIDENT_QWEN_MAX_FRAMES"):
++        os.environ.pop(name, None)
++    if early is not None:
++        os.environ["SOL_H3_RESIDENT_QWEN_EARLY"] = early
++    if min_gib is not None:
++        os.environ["SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB"] = min_gib
++    stack.enter_context(mock.patch("runtime.pipeline.mem_available_gib", return_value=mem_gib))
++    stack.enter_context(mock.patch("runtime.pipeline.MEM_SETTLE_S", 0.05))
++    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))      # its note when Qwen loads after the clip
++    return stack
++
++
+ class PipelineTests(unittest.TestCase):
++    def setUp(self):
++        # sol-h3-studio: start() reads MemAvailable before it loads the resident Qwen early; not this machine's
++        patcher = mock.patch("runtime.pipeline.mem_available_gib", return_value=64.0)
++        patcher.start()
++        self.addCleanup(patcher.stop)
++
+     def test_residency_order_and_real_endpoint(self):
+-        FakeWorker.events = []
+         case = {"case_id": "example", "prompt": "A bird glides over a mountain lake.", "seed": 42}
++        # sol-h3-studio: (SOL_H3_RESIDENT_QWEN_EARLY, clip length, MemAvailable after Stage2's release,
++        # SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB, where the resident Qwen starts, the minimum that applies): 5 s with
++        # enough and with too little memory (32 GiB); 10 s below and above its 34 GiB; 10 s with the setting; the
++        # switch off; 15 s (Qwen per request)
++        for early, seconds, mem_gib, min_set, spawn, minimum in (
++                (None, None, 40.0, None, "first_refine", 32), (None, None, 20.0, None, "after_first_clip", 32),
++                (None, 10, 33.0, None, "after_first_clip", 34), (None, 10, 35.0, None, "first_refine", 34),
++                (None, 10, 33.0, "30", "first_refine", 30), ("0", None, 40.0, None, "after_first_clip", None),
++                (None, 15, 40.0, None, "per_request", None)):
++            FakeWorker.events = []
++            with self.subTest(early=early, seconds=seconds, mem_gib=mem_gib, min_set=min_set), \
++                    tempfile.TemporaryDirectory() as directory, residency_settings(early, mem_gib, min_set):
++                pipeline = Pipeline({}, Path(directory) / "run", seconds=seconds,
++                                    worker_factory=Stage2WaitsForQwen if spawn == "first_refine" else FakeWorker)
++                try:
++                    pipeline.start(case)
++                    row = pipeline.generate(case)
++                    pipeline.finish()
++                    self.assertEqual(pipeline.report["status"], "PASS")
++                    self.assertEqual(pipeline.report["resident_qwen"]["spawn"], spawn)
++                    self.assertEqual(len(pipeline.report["requests"]), 1)
++                    self.assertFalse(pipeline.report["phase_sum_used"])
++                    self.assertEqual(row["e2e_s"],
++                        (row["final_mp4_complete_monotonic_ns"] - row["request_start_monotonic_ns"]) / 1e9)
++                    events = FakeWorker.events
++                    self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
++                    starts = [index for index, event in enumerate(events) if event == ("start", "qwen")]
++                    self.assertEqual(len(starts), 2)
++                    first_refine = events.index(("call", "stage2", "run"))
++                    release = events.index(("call", "stage2", "release_idle_cache"))
++                    if minimum is not None:
++                        # once Stage1's first request has returned and Stage2 is built, Stage2 releases its load
++                        # cache before the first refine; then the resident Qwen starts and loads during the refine,
++                        # if MemAvailable allows it
++                        self.assertLess(events.index(("call", "stage1", "run")), release)
++                        self.assertLess(events.index(("start", "stage2")), release)
++                        self.assertLess(release, first_refine)
++                        self.assertEqual(pipeline.report["resident_qwen"]["mem_available_gib"], mem_gib)
++                        self.assertEqual(pipeline.report["resident_qwen"]["min_gib"], minimum)
++                        self.assertEqual("SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB" in
++                                         pipeline.report["resident_qwen"]["min_from"], min_set is not None)
++                    else:
++                        # the switch off, or Qwen per request (over 10 s): no release before the first refine
++                        self.assertLess(first_refine, release)
++                    if spawn == "first_refine":
++                        self.assertLess(release, starts[1])
++                        self.assertLess(starts[1], first_refine)
++                    else:
++                        # after the first MP4 (switch off, or not enough memory), or per request (over 10 s)
++                        self.assertGreater(starts[1], first_refine)
++                    if minimum is not None and spawn == "after_first_clip":
++                        self.assertIn(f"MemAvailable {mem_gib:.1f} GiB", pipeline.report["resident_qwen"]["reason"])
++                    self.assertEqual(events.count(("start", "stage1")), 1)
++                    self.assertEqual(events.count(("start", "stage2")), 1)
++                finally:
++                    pipeline.close()
++        # a first refine that fails: close() still stops the resident Qwen that start() had started
++        class FailingRefine(FakeWorker):
++            def call(self, op="run", **kwargs):
++                if (self.name, op) == ("stage2", "run"):
++                    raise RuntimeError("Stage2 died")
++                return super().call(op, **kwargs)
++        FakeWorker.events = []
++        with tempfile.TemporaryDirectory() as directory, residency_settings():
++            pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FailingRefine)
++            with self.assertRaisesRegex(RuntimeError, "Stage2 died"):
++                pipeline.start(case, deliver=True)
++            pipeline.close()
++            self.assertEqual(FakeWorker.events.count(("start", "qwen")), 2)
++            self.assertEqual(FakeWorker.events.count(("close", "qwen")), 2)
++
 +    def test_deliver_first_returns_the_first_request_and_reuses_models(self):
 +        FakeWorker.events = []
 +        case = {"case_id": "first", "prompt": "A bird glides over a mountain lake.", "seed": 7}
-+        with tempfile.TemporaryDirectory() as directory:
-+            pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FakeWorker)
-+            try:
+         with tempfile.TemporaryDirectory() as directory:
+             pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FakeWorker)
+             try:
+-                pipeline.start(case)
+-                row = pipeline.generate(case)
 +                row = pipeline.start(case, deliver=True)
 +                self.assertEqual((row["status"], row["seed"], row["case_id"]), ("PASS", 7, "first"))
 +                self.assertTrue(Path(row["output"]).is_file())
 +                self.assertTrue(row["includes_model_load"])
 +                second = pipeline.generate(dict(case, case_id="second"))
-+                pipeline.finish()
+                 pipeline.finish()
+-                self.assertEqual(pipeline.report["status"], "PASS")
+-                self.assertEqual(len(pipeline.report["requests"]), 1)
+-                self.assertFalse(pipeline.report["phase_sum_used"])
+-                self.assertEqual(row["e2e_s"],
+-                    (row["final_mp4_complete_monotonic_ns"] - row["request_start_monotonic_ns"]) / 1e9)
 +                self.assertEqual([r["case_id"] for r in pipeline.report["requests"]], ["first", "second"])
 +                self.assertEqual(second["status"], "PASS")
-+                events = FakeWorker.events
-+                self.assertEqual(events.count(("start", "stage1")), 1)
-+                self.assertEqual(events.count(("start", "stage2")), 1)
+                 events = FakeWorker.events
+-                self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
+-                starts = [index for index, event in enumerate(events) if event == ("start", "qwen")]
+-                self.assertEqual(len(starts), 2)
+-                self.assertGreater(starts[1], events.index(("call", "stage2", "run")))
+                 self.assertEqual(events.count(("start", "stage1")), 1)
+                 self.assertEqual(events.count(("start", "stage2")), 1)
 +                self.assertEqual(events.count(("start", "qwen")), 2)
 +                self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
-+            finally:
-+                pipeline.close()
-+
+             finally:
+                 pipeline.close()
+ 
 +    def test_bad_stage2_audio_setting_fails_before_any_worker(self):
 +        made = []
 +        def factory(*args, **kwargs):
@@ -1909,10 +2276,65 @@ index 6c20301..4f6d4e2 100644
 +            os.environ["SOL_H3_STAGE2_AUDIO"] = "JOINT"
 +            Pipeline({}, Path(directory) / "run", worker_factory=factory)
 +
++    def test_bad_prompt_tokens_setting_fails_before_any_worker(self):
++        from runtime.qwen_ops.prompt_tokens import recipe_mode     # what the Qwen worker's Session reads
++        made = []
++        worker = FakeWorker
++        def factory(*args, **kwargs):
++            made.append(args)
++            return worker(*args, **kwargs)
++        case = {"case_id": "tags", "prompt": "The woman (S1) says: <d>[English] Welcome.</d>", "seed": 1}
++        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "special"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++                Pipeline({}, Path(directory) / "run", worker_factory=factory)
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "minimax"           # a valid setting: the bad argument alone fails
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++                Pipeline({}, Path(directory) / "run", prompt_tokens="both", worker_factory=factory)
++            self.assertFalse((Path(directory) / "run").exists())
++            self.assertEqual(made, [])
++            # the default, the setting (any case), and the argument, which wins over the setting; the resident Qwen
++            # started during the first refine (MemAvailable above the minimum) and after the first clip (below it)
++            for name, setting, argument, mode, mem_gib, spawn in (
++                    ("default", None, None, "minimax", 64.0, "first_refine"),
++                    ("setting", "Plain", None, "plain", 64.0, "first_refine"),
++                    ("argument", "plain", "minimax", "minimax", 64.0, "first_refine"),
++                    ("default-late", None, None, "minimax", 20.0, "after_first_clip"),
++                    ("setting-late", "Plain", None, "plain", 20.0, "after_first_clip"),
++                    ("argument-late", "plain", "minimax", "minimax", 20.0, "after_first_clip")):
++                made.clear()
++                FakeWorker.events = []
++                worker = Stage2WaitsForQwen if spawn == "first_refine" else FakeWorker
++                os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
++                if setting is not None:
++                    os.environ["SOL_H3_PROMPT_TOKENS"] = setting
++                with residency_settings(mem_gib=mem_gib):
++                    pipeline = Pipeline({}, Path(directory) / name, prompt_tokens=argument, worker_factory=factory)
++                    try:
++                        pipeline.start(case, deliver=True)
++                        resident = pipeline._resident_qwen()
++                        # every worker: Stage1, Stage2, the first request's Qwen and the resident Qwen
++                        self.assertEqual(sorted(args[0] for args in made), ["qwen", "qwen", "stage1", "stage2"])
++                        self.assertEqual({args[3]["stage1"]["prompt_tokens"] for args in made}, {mode}, name)
++                        self.assertEqual(pipeline.report["recipe"]["stage1"]["prompt_tokens"], mode)
++                        # the resident Qwen, also when start() spawned it before the first refine, reads the mode
++                        self.assertEqual(pipeline.report["resident_qwen"]["spawn"], spawn, name)
++                        self.assertEqual([Path(args[1]).name for args in made if args[0] == "qwen"],
++                                         ["warmup-qwen-worker", "qwen-worker"])
++                        self.assertEqual(recipe_mode(resident.config), mode, name)
++                        events = FakeWorker.events
++                        resident_start = events.index(("start", "qwen"), events.index(("close", "qwen")))
++                        if spawn == "first_refine":
++                            self.assertLess(resident_start, events.index(("call", "stage2", "run")), name)
++                        else:
++                            self.assertGreater(resident_start, events.index(("call", "stage2", "run")), name)
++                    finally:
++                        pipeline.close()
++
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +235,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +380,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -1921,7 +2343,7 @@ index 6c20301..4f6d4e2 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +264,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +409,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -1931,7 +2353,7 @@ index 6c20301..4f6d4e2 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +300,26 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +445,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -1959,20 +2381,365 @@ index 6c20301..4f6d4e2 100644
  
  if __name__ == "__main__":
      unittest.main()
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py b/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py
+new file mode 100644
+index 0000000..47b58f0
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py
+@@ -0,0 +1,310 @@
++"""sol-h3-studio: CPU tests of MiniMax's prompt tokens, SOL_H3_PROMPT_TOKENS (not part of upstream Sol-H3-Spark).
++
++The tokenizer tests read the pinned ComfyUI's Qwen2.5 tokenizer files ($SOL_H3_SPARK_COMFY_ROOT/comfy/text_encoders/
++qwen25_tokenizer) with transformers' Qwen2Tokenizer, as ComfyUI's Qwen3VLSDTokenizer does, and are skipped without
++them. The last test runs ComfyUI's own MiniMaxH3Tokenizer in a subprocess; it is skipped where ComfyUI cannot be
++imported (the Stage1 environment), and runs in the Qwen image.
++"""
++import contextlib
++import importlib.util
++import io
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import sys
++import tempfile
++from types import SimpleNamespace
++import unittest
++from unittest import mock
++
++from runtime.config import load_recipe, prompt_tokens_mode
++from runtime.qwen_ops.prompt_tokens import (MINIMAX_EXTRA_TOKENS, apply_prompt_tokens, recipe_mode,
++                                            request_counts)
++
++PACKAGE = Path(__file__).resolve().parents[1]
++COMFY_ROOT = os.environ.get("SOL_H3_SPARK_COMFY_ROOT", "")
++TOKENIZER_DIR = Path(COMFY_ROOT, "comfy", "text_encoders", "qwen25_tokenizer") if COMFY_ROOT else None
++
++# The example in sol-h3-studio issue #38: ids from MiniMax's released tokenizer (MiniMaxAI/MiniMax-H3 tokenizer/,
++# transformers 4.57.1 and 5.17.0) and from the pinned ComfyUI v0.30.0 tokenizer as the studio used it up to 0.3.
++EXAMPLE = "The woman (S1) says: <d>[English] Welcome to the garden.</d>"
++EXAMPLE_MINIMAX = [785, 5220, 320, 50, 16, 8, 2727, 25, 220, 151669, 58, 22574, 60, 20166, 311, 279, 13551, 13,
++                   151670]
++EXAMPLE_PLAIN = [785, 5220, 320, 50, 16, 8, 2727, 25, 366, 67, 30768, 22574, 60, 20166, 311, 279, 13551, 3918, 67,
++                 29]
++MIXED = "a man (S2) says: <d>[中文] 你好，欢迎。</d> Then <|cutoff|> [Shot 2] <cutoff> <scenetrans>"
++MIXED_MINIMAX = [64, 883, 320, 50, 17, 8, 2727, 25, 220, 151669, 58, 104811, 60, 220, 108386, 3837, 100437, 1773,
++                 151670, 5005, 220, 151671, 508, 36402, 220, 17, 60, 366, 66, 27440, 29, 366, 2388, 268, 17366, 596,
++                 29]
++# None of the 7 tokens: the same ids in both modes. <cutoff> and <scenetrans> (MiniMax's guides) are not tokens in
++# either tokenizer; <|im_start|> is one of Qwen's own special tokens and must stay one.
++NO_TAGS = ["A bird glides over a mountain lake at dawn.",
++           "Shot 1 <cutoff> Shot 2 <scenetrans> a quiet street, (S1) whispers while his lips remain completely closed.",
++           "<Audio 1>: a man speaks; <Picture 1>: the same man. d> </ <|im_start|> <D> < d>"]
++
++
++class FakeQwen:
++    """The parts of transformers' Qwen2Tokenizer that apply_prompt_tokens uses: Qwen2.5's 151,669 ids, "x" = 87.
++    split=False: added tokens get ids but are not split out of the text (each character is one id instead)."""
++
++    def __init__(self, size=151669, special=None, split=True):
++        self.size, self.vocab, self.special, self.split = size, {"x": 87}, dict(special or {}), split
++
++    def __len__(self):
++        return self.size + sum(1 for i in self.special.values() if i >= self.size)
++
++    def get_vocab(self):
++        return {**self.vocab, **self.special}
++
++    def convert_tokens_to_ids(self, token):
++        return self.get_vocab()[token]
++
++    def add_special_tokens(self, mapping):
++        for token in mapping["additional_special_tokens"]:
++            self.special.setdefault(token, len(self))
++
++    def __call__(self, text, add_special_tokens=False):
++        parts = (re.split("(" + "|".join(map(re.escape, self.special)) + ")", text) if self.special and self.split
++                 else [text])
++        ids = []
++        for part in parts:
++            ids += [self.special[part]] if part in self.special else [self.vocab.get(c, 0) for c in part]
++        return {"input_ids": ids}
++
++
++def sd_tokenizer(hf):
++    """Stand-in for ComfyUI's SDTokenizer: .tokenizer and .inv_vocab, as 924743af uses them."""
++    return SimpleNamespace(tokenizer=hf, inv_vocab={v: k for k, v in hf.get_vocab().items()})
++
++
++class SettingTests(unittest.TestCase):
++    def test_default_values_and_bad_value(self):
++        with mock.patch.dict(os.environ):
++            os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
++            self.assertEqual(prompt_tokens_mode(), "minimax")
++            for value, mode in (("", "minimax"), (" plain ", "plain"), ("MiniMax", "minimax"), ("PLAIN", "plain")):
++                os.environ["SOL_H3_PROMPT_TOKENS"] = value
++                self.assertEqual(prompt_tokens_mode(), mode)
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "special"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS.*'special'"):
++                prompt_tokens_mode()
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++                load_recipe()
++
++    def test_recipe_carries_the_mode_to_the_qwen_worker(self):
++        with mock.patch.dict(os.environ):
++            os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
++            self.assertEqual(load_recipe()["stage1"]["prompt_tokens"], "minimax")      # the default
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "plain"
++            for task in ("t2va", "fl2va", "ref2va"):
++                recipe = load_recipe(task, orientation="portrait", seconds=10)
++                self.assertEqual(recipe["stage1"]["prompt_tokens"], "plain")
++                self.assertEqual(recipe_mode(recipe), "plain")
++            self.assertEqual(load_recipe(prompt_tokens="minimax")["stage1"]["prompt_tokens"], "minimax")
++        self.assertEqual(recipe_mode({"stage1": {}}), "plain")          # a recipe from before the setting
++        with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++            recipe_mode({"stage1": {"prompt_tokens": "both"}})
++
++
++class ApplyTests(unittest.TestCase):
++    """The checks around the ComfyUI call, with a stand-in tokenizer (always run)."""
++
++    def test_minimax_adds_the_tokens_once(self):
++        tokenizer = sd_tokenizer(FakeQwen())
++        info = apply_prompt_tokens(tokenizer, "minimax")
++        self.assertEqual((info["added"], info["vocab_size"]), (7, 151676))
++        self.assertEqual({t: tokenizer.tokenizer.convert_tokens_to_ids(t) for t in MINIMAX_EXTRA_TOKENS},
++                         MINIMAX_EXTRA_TOKENS)
++        self.assertEqual(tokenizer.inv_vocab[151669], "<d>")                 # refreshed, as in 924743af
++        again = apply_prompt_tokens(tokenizer, "minimax")                     # a ComfyUI that already has them
++        self.assertEqual((again["added"], again["already_present"]), (0, True))
++
++    def test_wrong_or_partial_ids_fail(self):
++        with self.assertRaisesRegex(RuntimeError, "got ids"):
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(size=151670)), "minimax")
++        with self.assertRaisesRegex(RuntimeError, "only some"):
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(special={"<d>": 151669})), "minimax")
++        with self.assertRaisesRegex(RuntimeError, "only some"):
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(special=dict(MINIMAX_EXTRA_TOKENS, **{"<d>": 151700}))),
++                                "minimax")
++        with self.assertRaisesRegex(RuntimeError, "do not tokenize as single tokens"):     # right ids, not split out
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(split=False)), "minimax")
++        with self.assertRaisesRegex(RuntimeError, "do not tokenize as single tokens"):     # already there, ditto
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(special=MINIMAX_EXTRA_TOKENS, split=False)), "minimax")
++
++    def test_plain_leaves_the_tokenizer_alone_and_refuses_one_that_has_the_tokens(self):
++        hf = FakeQwen()
++        self.assertEqual(apply_prompt_tokens(sd_tokenizer(hf), "plain"), {"mode": "plain", "added": 0,
++                                                                          "vocab_size": 151669})
++        self.assertEqual(hf.special, {})
++        with self.assertRaisesRegex(RuntimeError, "SOL_H3_PROMPT_TOKENS=minimax"):
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(special=MINIMAX_EXTRA_TOKENS)), "plain")
++
++    def test_request_counts(self):
++        class Tags(list):
++            def sum(self):
++                return sum(self)
++        vision = {"type": "image", "data": None}
++        tokens = {"qwen3vl_32b": [[(27, 1.0), (151652, 1.0), (vision, 1.0), (151653, 1.0), (151669, 1.0),
++                                   (87, 1.0), (151670, 1.0)]]}
++        self.assertEqual(request_counts(tokens, Tags([1, 0, 0, 0, 0, 0, 1, 1, 1])),
++                         {"text_tokens": 4, "minimax_tokens": 2})
++
++
++class SessionTests(unittest.TestCase):
++    """runtime/qwen.py: the Qwen worker's Session applies the recipe's mode to the CLIP's tokenizer when it starts.
++    ComfyUI, torch, CUDA and the checkpoint are stand-ins, so this runs without a GPU or weights."""
++
++    def start(self, directory, recipe, hf):
++        from runtime import qwen
++        directory = Path(directory)
++        checkpoint = directory / "qwen.safetensors"
++        checkpoint.write_bytes(b"")
++        (directory / "comfy").mkdir(exist_ok=True)
++        built = []
++        model = mock.Mock()
++        model.eval.return_value = model
++        clip = SimpleNamespace(tokenizer=SimpleNamespace(qwen3vl_32b=sd_tokenizer(hf)), cond_stage_model=model,
++                               patcher=SimpleNamespace(is_dynamic=lambda: False))
++        utils = SimpleNamespace(load_torch_file=None)
++        memory = SimpleNamespace(read_tensor_file_slice_into=None)
++        management = SimpleNamespace(current_loaded_models=[], load_models_gpu=lambda models, **kwargs: None)
++
++        class Conditioner:                                       # stands in for MiniMaxNVFP4Conditioner
++            def __init__(self, path, root):
++                built.append(path)
++                utils.load_torch_file(str(path))                 # the Session's one-time checkpoint reader
++                self.clip, self.device_contract, self.loader_identity = clip, {}, {}
++
++            def residency_summary(self):
++                return {}
++
++        cuda = SimpleNamespace(device_count=lambda: 1, get_device_capability=lambda: (12, 1),
++                               synchronize=lambda: None, empty_cache=lambda: None)
++        conditioner = SimpleNamespace(MiniMaxNVFP4Conditioner=Conditioner, _import_comfy_sd=lambda root: None,
++                                      normalize_and_validate_conditioning=None)
++        modules = {"torch": SimpleNamespace(cuda=cuda), "runtime.qwen_ops.conditioner": conditioner,
++                   "comfy": SimpleNamespace(utils=utils, memory_management=memory, model_management=management),
++                   "comfy.utils": utils, "comfy.memory_management": memory, "comfy.model_management": management}
++        log = io.StringIO()
++        with mock.patch.dict(sys.modules, modules), contextlib.redirect_stdout(log), \
++                mock.patch.object(qwen, "resource_snapshot", return_value={}), \
++                mock.patch.object(qwen, "load_resident_checkpoint", return_value=({}, {}, {})), \
++                mock.patch.object(qwen, "weight_snapshot", return_value=({}, {})):
++            try:
++                session = qwen.Session({"qwen_checkpoint": str(checkpoint), "comfy_root": str(directory / "comfy")},
++                                       str(directory / "work"), recipe)
++            except ValueError:
++                self.assertEqual(built, [])                      # failed before the model was built
++                raise
++            session.close()
++        self.assertEqual(len(built), 1)
++        return session, log.getvalue()
++
++    def test_the_session_applies_the_recipe_mode(self):
++        with tempfile.TemporaryDirectory() as directory:
++            hf = FakeQwen()
++            session, log = self.start(directory, load_recipe(prompt_tokens="minimax"), hf)
++            self.assertEqual(hf.special, MINIMAX_EXTRA_TOKENS)
++            self.assertEqual(session.prompt_tokens_mode, "minimax")
++            self.assertEqual(session.session_receipt["prompt_tokens"]["added"], 7)
++            self.assertIn("[sol-h3-studio] prompt tokens: {'mode': 'minimax', 'added': 7", log)
++            hf = FakeQwen()
++            session, log = self.start(directory, load_recipe(prompt_tokens="plain"), hf)
++            self.assertEqual(hf.special, {})
++            self.assertEqual(session.session_receipt["prompt_tokens"], {"mode": "plain", "added": 0,
++                                                                        "vocab_size": 151669})
++            recipe = load_recipe()
++            recipe["stage1"]["prompt_tokens"] = "both"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++                self.start(directory, recipe, FakeQwen())
++
++
++@unittest.skipUnless(TOKENIZER_DIR and TOKENIZER_DIR.is_dir() and importlib.util.find_spec("transformers"),
++                     "needs transformers and SOL_H3_SPARK_COMFY_ROOT (the pinned ComfyUI) for its Qwen tokenizer files")
++class ComfyTokenizerFileTests(unittest.TestCase):
++    """The pinned ComfyUI's tokenizer files, loaded with the class ComfyUI uses for them."""
++
++    @classmethod
++    def setUpClass(cls):
++        from transformers import Qwen2Tokenizer
++        cls.plain = sd_tokenizer(Qwen2Tokenizer.from_pretrained(str(TOKENIZER_DIR)))
++        cls.minimax = sd_tokenizer(Qwen2Tokenizer.from_pretrained(str(TOKENIZER_DIR)))
++        cls.plain_info = apply_prompt_tokens(cls.plain, "plain")
++        cls.minimax_info = apply_prompt_tokens(cls.minimax, "minimax")
++
++    @staticmethod
++    def ids(tokenizer, text):
++        return tokenizer.tokenizer(text, add_special_tokens=False)["input_ids"]   # MiniMaxH3Tokenizer._text_ids
++
++    def test_the_seven_tokens_get_minimax_ids(self):
++        self.assertEqual(self.plain_info["vocab_size"], 151669)
++        self.assertEqual((self.minimax_info["added"], self.minimax_info["vocab_size"]), (7, 151676))
++        self.assertEqual({t: self.minimax.tokenizer.convert_tokens_to_ids(t) for t in MINIMAX_EXTRA_TOKENS},
++                         MINIMAX_EXTRA_TOKENS)
++        self.assertEqual([self.minimax.inv_vocab[i] for i in range(151669, 151676)], list(MINIMAX_EXTRA_TOKENS))
++
++    def test_example_prompt_gives_minimax_ids(self):
++        self.assertEqual(self.ids(self.minimax, EXAMPLE), EXAMPLE_MINIMAX)
++        self.assertEqual(self.ids(self.minimax, MIXED), MIXED_MINIMAX)
++        self.assertEqual(self.ids(self.plain, EXAMPLE), EXAMPLE_PLAIN)      # what the studio sent up to 0.3
++
++    def test_prompts_without_the_tokens_are_unchanged(self):
++        for text in NO_TAGS:
++            with self.subTest(text=text):
++                ids = self.ids(self.plain, text)
++                self.assertEqual(self.ids(self.minimax, text), ids)
++                self.assertFalse(set(ids) & set(MINIMAX_EXTRA_TOKENS.values()))
++        self.assertIn(151644, self.ids(self.minimax, NO_TAGS[2]))            # <|im_start|> is still one token
++
++    def test_a_second_apply_finds_them(self):
++        info = apply_prompt_tokens(self.minimax, "minimax")
++        self.assertEqual((info["added"], info["already_present"]), (0, True))
++        with self.assertRaisesRegex(RuntimeError, "plain"):
++            apply_prompt_tokens(self.minimax, "plain")
++
++
++COMFY_SCRIPT = r"""
++import json, sys
++package, comfy_root, mode, text = sys.argv[1:5]
++sys.argv = [sys.argv[0], "--cpu"]
++sys.path[:0] = [comfy_root, package]
++try:
++    import comfy.options
++    comfy.options.enable_args_parsing()
++    import comfy.text_encoders.minimax as minimax
++except ImportError as error:
++    print(f"cannot import ComfyUI: {error}", file=sys.stderr)
++    sys.exit(77)
++from runtime.qwen_ops.prompt_tokens import apply_prompt_tokens
++tokenizer = minimax.MiniMaxH3Tokenizer()
++info = apply_prompt_tokens(tokenizer.qwen3vl_32b, mode)
++ids = [entry[0] for entry in tokenizer.tokenize_with_weights(text)["qwen3vl_32b"][0]]
++print(json.dumps({"info": info, "ids": ids}))
++"""
++
++
++@unittest.skipUnless(COMFY_ROOT and Path(COMFY_ROOT, "comfy", "sd.py").is_file(),
++                     "set SOL_H3_SPARK_COMFY_ROOT to the pinned ComfyUI to test MiniMaxH3Tokenizer")
++class ComfyMiniMaxTokenizerTests(unittest.TestCase):
++    """ComfyUI's MiniMaxH3Tokenizer itself (the path runtime/qwen.py uses), in a subprocess."""
++
++    def tokenize(self, mode, text):
++        result = subprocess.run([sys.executable, "-B", "-c", COMFY_SCRIPT, str(PACKAGE), COMFY_ROOT, mode, text],
++                                capture_output=True, text=True, timeout=600,
++                                env=dict(os.environ, CUDA_VISIBLE_DEVICES=""))
++        if result.returncode == 77:
++            self.skipTest(result.stderr.strip().splitlines()[-1])
++        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
++        return json.loads(result.stdout.strip().splitlines()[-1])
++
++    def test_minimax_h3_tokenizer(self):
++        minimax = self.tokenize("minimax", EXAMPLE)
++        self.assertEqual((minimax["info"]["added"], minimax["ids"]), (7, EXAMPLE_MINIMAX))
++        self.assertEqual(self.tokenize("plain", EXAMPLE)["ids"], EXAMPLE_PLAIN)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py b/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
-index 4af9048..840b1da 100644
+index 4af9048..7d821d8 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
-@@ -92,7 +92,7 @@ class QwenMediaContracts(unittest.TestCase):
+@@ -21,7 +21,9 @@ class FakeComfyClip:
+         self.check = check
+         self.tags = np.array([1, 0, 0, 1], dtype=np.int64)
+         self.cond = np.zeros((1, 4, 5120), dtype=np.float32)
+-        self.tokens = object()
++        # Modified by sol-h3-studio: CLIP.tokenize's shape ({name: [[(id or vision entry, weight), ...]]}), which the
++        # receipt's prompt-token counts read; 151669 is MiniMax's <d>.
++        self.tokens = {"qwen3vl_32b": [[(785, 1.0), (151652, 1.0), ({"type": "image"}, 1.0), (151669, 1.0)]]}
+ 
+     def tokenize(self, prompt, **kwargs):
+         self.check(prompt, kwargs)
+@@ -92,7 +94,7 @@ class QwenMediaContracts(unittest.TestCase):
          frames = np.arange(126, dtype=np.uint8)[:, None, None, None] * np.ones((126, 1, 1, 3), dtype=np.uint8)
          with patch.object(media, "resolve_canvas_size", return_value=(2, 2)) as canvas:
              prepared = media.prepare_reference_frames(frames)
 -        canvas.assert_called_once_with(1, 1)
-+        canvas.assert_called_once_with(1, 1, 768, 768 * 1344)   # Modified by sol-h3-studio: canvas arguments
++        canvas.assert_called_once_with(1, 1, 768, 768 * 1344)   # sol-h3-studio: canvas arguments
          self.assertEqual(prepared.shape, (124, 2, 2, 3))
          np.testing.assert_array_equal(prepared[:, 0, 0, 0], np.arange(124))
  
-@@ -201,7 +201,7 @@ class QwenMediaContracts(unittest.TestCase):
+@@ -130,6 +132,7 @@ class QwenMediaContracts(unittest.TestCase):
+         session.completed_requests = 0
+         session.model_load_count = 1
+         session.reference_target_area = target_area
++        session.prompt_tokens_mode = "minimax"                  # sol-h3-studio: SOL_H3_PROMPT_TOKENS from the recipe
+         session.clip = FakeComfyClip(check)
+         session.normalize = lambda encoded: SimpleNamespace(
+             cond=encoded["cond"], minimax_token_tags=encoded["minimax_token_tags"])
+@@ -151,6 +154,9 @@ class QwenMediaContracts(unittest.TestCase):
+         for key in ("task", "external_anchor_used", "input_conditioned", "input_spec", "prepared_media"):
+             self.assertEqual(payload[key], receipt[key])
+         self.assertEqual(json.loads((output / "conditioning.json").read_text()), receipt)
++        # sol-h3-studio: the mode, the text positions (tag 1) and the MiniMax token ids among them
++        self.assertEqual((receipt["prompt_tokens"], receipt["text_tokens"], receipt["minimax_tokens"]),
++                         ("minimax", 2, 1))
+         return receipt
+ 
+     def test_t2va_keeps_native_empty_images_call(self):
+@@ -201,7 +207,7 @@ class QwenMediaContracts(unittest.TestCase):
              np.testing.assert_array_equal(items[2]["data"][:, 0, 0, 0], np.array([0, 12, 24], dtype=np.float32) / 255)
              self.assertEqual(items[3]["data"].shape, (1, 2048, 4096, 3))
          with patch.object(media, "decode_reference_video", side_effect=[(frames, 24, True), (frames, 24, False)]), \
