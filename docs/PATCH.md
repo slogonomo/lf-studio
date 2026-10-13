@@ -4,13 +4,13 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 23 files, 19 modified and 4 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 93 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 97 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
 - 18 of the 19 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
-  tagged `sol-h3-studio:`. The 3 new files say they are part of sol-h3-studio.
+  tagged `sol-h3-studio:`. The 4 new files say they are part of sol-h3-studio.
 
 ## Apply, test, revert
 
@@ -23,7 +23,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 93 tests ... OK
+CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 97 tests ... OK
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -51,7 +51,7 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
 | A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It is meant to give the same output as a fresh session at that shape; that is not yet checked on the GPU. See [16](#16-reshape-another-length-or-orientation-without-a-reload). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
-| Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: after a shape change a worker compiles a static graph, not one with dynamic sizes. A worker's first shape compiles as upstream. | on | `SOL_H3_STATIC_SHAPES=0` |
+| Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change. This changes Stage 1 from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). Output may differ from 0.4; not yet measured on the GPU. See [16](#16-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
 
@@ -298,17 +298,25 @@ and identity are unchanged, and the image is 5-11% sharper.
     tiles (validated against the new pixel shape) and the spatial route. The next request runs under the
     compile warm-up timeout, as a fresh worker's first request does.
   - Prompt encoder: the keyframe canvas. Above `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` the resident encoder closes and
-    each request loads its own, as before. Back below, the resident encoder loads again in the background.
-  - If a worker fails the command, the reshape fails, and the pipeline refuses requests until it is closed.
+    each request loads its own, as before. Back below, the resident encoder loads again in the background if
+    MemAvailable is at least `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` (default 32 GiB); otherwise the next clip loads its
+    own encoder and the resident one loads after that clip.
+  - If a worker fails the command, the reshape fails, and the pipeline refuses requests until it is closed. A
+    pipeline that is closing refuses a reshape, and starts no resident encoder after its close began.
 - **Static compiles.** Graphs for a new shape compile on its first request. Stage 1's regions and Stage 2's blocks
   now compile with `dynamic=False` (Stage 1 sets `torch._dynamo.config.automatic_dynamic_shapes = False` in its
-  worker, which does the same for every compile there). Upstream's `dynamic=None` compiles a worker's first shape
-  statically; after a shape change Dynamo may compile a graph with dynamic sizes, which can use other kernels (a
-  CPU test shows it for a small function with the Stage 1 torch, 2.12). With `dynamic=False` each shape gets the
-  static graph that a fresh worker compiles for it, so a worker's output does not depend on the shapes it ran
-  before. This also applies to Stage 1's prompt-length recompiles (item 13): each new prompt length gets its own
-  static graph. The compile-cache keys don't include this setting (read in torch's source), so existing caches stay
-  valid (inferred).
+  worker, which does the same for every compile there). With upstream's `dynamic=None`, Dynamo compiles a graph
+  statically the first time and, when a size changes, may compile it again with that size dynamic, which can use
+  other kernels (a CPU test shows it for a small function with the Stage 1 torch, 2.12). That happens already in a
+  fresh worker's first request: the AdaLN lookup has 1 timestep row in the first update and 2 in the next three, so
+  Stage 1's regions for updates 2-4 get a dynamic size (inferred from the code). It happens again after a prompt
+  length or clip shape change. With `dynamic=False` every graph is static, and each shape gets the graph a fresh
+  worker compiles for it, so a worker's output does not depend on what it ran before. Consequences:
+  - Stage 1's output may differ from 0.4 for every clip, not only after a reshape; the GPU check measures it.
+  - Each new prompt length also compiles the two text-refiner regions statically (about 1-2 s, inferred); before,
+    their dynamic graph served later lengths.
+  - The compile-cache keys don't include the setting (read in torch's source), but the graphs change: each prompt
+    length and shape that Stage 1 compiled before compiles once more after the upgrade (inferred).
 - **Files.** `runtime/pipeline.py`, `runtime/worker.py`, `runtime/config.py`, `runtime/stage1.py`,
   `runtime/stage1_ops/{capture,vsa}.py`, `runtime/stage2.py`, `runtime/stage2_ops/models.py`, `runtime/qwen.py`,
   `tests/test_reshape.py` (new).
@@ -328,8 +336,9 @@ BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen
 older LTX-2), `tests/test_pipeline.py` its check before any worker starts. `tests/test_reshape.py` (new) covers
 reshape: stand-in workers check that Stage 1, Stage 2 and the prompt encoder each see the shape of every request;
 the Stage 2 globals are compared with the shared module's own import code for every length and orientation; it also
-covers the capture's shape check and PCM trim, the BSA self-check per shape, the keyframe canvas and the static
-compiles. 93 tests in total (upstream: 65).
+covers the capture's shape check and PCM trim, the BSA self-check per shape, the keyframe canvas, the static
+compiles, and a pipeline that is closing, failed a reshape or is short of memory for the resident encoder. 97 tests in
+total (upstream: 65).
 
 ## All switches
 
@@ -348,7 +357,8 @@ compiles. 93 tests in total (upstream: 65).
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
-| `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)`: after a shape change a graph may get dynamic sizes |
+| `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)`: after a size change a graph may get dynamic sizes |
+| `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 | MemAvailable needed to load the resident prompt encoder right after a reshape back to 10 s or less; below it, the next clip loads its own encoder first |
 | `SOLH3_RESHAPE` (studio) | 1 | 0 = another length or orientation closes the session and loads the models again |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 

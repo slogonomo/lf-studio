@@ -134,7 +134,10 @@ comparable side by side.
 Stage 1's transformer is compiled with static shapes, so each new prompt length (in text tokens) compiles new
 graphs. FastVideo caps recompiles at 16; the 4th distinct prompt length in a session hit the limit, killed the
 worker and forced a full reload. The limit is raised (1,024; 65,536 accumulated). Tested: 7 distinct prompt
-lengths in one session, no failure.
+lengths in one session, no failure. Since 0.4 a session can also change its clip length and format, and every graph
+is static, so each pair of prompt length and clip shape compiles its own graphs, up to 4 per region (one per update,
+inferred). The limit then covers about 200-250 such pairs in one session (inferred); past it the worker fails and the
+clip reloads the models.
 
 ## Changing length or format
 
@@ -155,13 +158,17 @@ Now the session keeps its models for another length or format of the same mode a
 ([PATCH.md](PATCH.md#16-reshape-another-length-or-orientation-without-a-reload)). The first two rows and the weights
 go away; the first clip at a shape the session has not run compiles its graphs (from the compile cache when that
 shape ran before). Expected: about 5-25 s over a warm clip, and about warm speed back at a shape the session already
-ran (estimates, not measured yet). A change of mode still reloads. `SOLH3_RESHAPE=0` reloads for any change.
+ran (estimates, not measured yet). Above 10 s the prompt encoder still loads per request; after a change back to
+10 s or less the resident encoder loads again in the background (with at least 32 GiB MemAvailable, else after the
+next clip), so the first clip after such a change may wait for it. A change of mode still reloads. `SOLH3_RESHAPE=0`
+reloads for any change.
 
 ## Known costs, not fixed
 
-- A new prompt length on a warm session adds 9-10 s (Stage 1 17.6 → 26.2 s). Reusing a prompt, or editing it
-  without changing its token count, avoids it. The failing guards are in FastVideo's H3 sparse-attention metadata
-  and tiling (`total_seq_length`), so a fix needs that dimension made dynamic.
+- A new prompt length on a warm session adds 9-10 s (Stage 1 17.6 → 26.2 s, measured before 0.4). With static
+  compiles (0.4) the two text-refiner regions also compile once per new length, about 1-2 s more (inferred). Reusing
+  a prompt, or editing it without changing its token count, avoids it. The failing guards are in FastVideo's H3
+  sparse-attention metadata and tiling (`total_seq_length`), so a fix needs that dimension made dynamic.
 - Cold vs warm overhead (~55 s), measured before the last fix: Stage 2 first compile 15-20 s, Stage 1 LoRA merge
   + FP8 ~7 s, Stage 1 first-denoise compile ~11 s, audio VAE 6 s.
 - The numbers above assume the compile cache is warm from an earlier run of the same mode, format and length.
@@ -181,6 +188,7 @@ ran (estimates, not measured yet). A change of mode still reloads. `SOLH3_RESHAP
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer clips load the prompt encoder per request |
 | `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)` |
+| `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 | MemAvailable needed to load the resident prompt encoder right after a reshape |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 | `SOLH3_RESHAPE` (web UI) | 1 | 0 = another length or format closes the session and loads the models again |
 
