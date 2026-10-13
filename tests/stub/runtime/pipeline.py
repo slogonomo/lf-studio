@@ -18,7 +18,8 @@ with a tone, with the requested format and length.
   A prompt containing STUB_FAIL makes the request fail as if a worker died; STUB_FAIL_ONCE does that only the first
   time a clip runs (a .failed-once file next to the session directories remembers it), so the server's retry runs.
   reshape() (another length or orientation, models kept) is a `sleep` of STUB_RESHAPE_S (default 0.2) and appends a
-  line to RESHAPES in the root; STUB_RESHAPE_FAIL=1 makes it fail like a dead worker.
+  line to RESHAPES in the root; STUB_RESHAPE_FAIL=1 makes it fail like a dead worker. Like the real pipeline, close()
+  first marks the pipeline as closing, and reshape() and generate() refuse a closing one.
 """
 import json
 import os
@@ -38,7 +39,7 @@ class Pipeline:
         self.seconds = seconds or 5
         self.root = Path(output_root).resolve()
         self.root.mkdir(parents=True, exist_ok=False)
-        self.started = self.broken = False
+        self.started = self.broken = self.closing = False
         (self.root / "results.json").write_text(json.dumps({"status": "STARTING", "task": task}))
 
     def _work(self, seconds, check=True):
@@ -106,6 +107,8 @@ class Pipeline:
     def generate(self, case):
         if not self.started:
             raise RuntimeError("start() first")
+        if self.closing:
+            raise RuntimeError("The pipeline is closing")
         started = time.time()
         request = self.root / case["case_id"]
         request.mkdir()
@@ -113,6 +116,8 @@ class Pipeline:
         return self._row(case, request, started)
 
     def reshape(self, *, orientation=None, seconds=None):
+        if self.closing:
+            raise RuntimeError("The pipeline is closing")
         before = {"orientation": self.orientation, "seconds": self.seconds}
         after = {"orientation": orientation or "landscape", "seconds": seconds or 5}
         if after == before:
@@ -129,6 +134,7 @@ class Pipeline:
         return {"from": before, "to": after, "changed": True, "reshape_s": time.time() - started}
 
     def close(self):
+        self.closing = True
         time.sleep(float(os.environ.get("STUB_CLOSE_S", "0")))
         self.started = False
         (self.root / "CLOSED").touch()

@@ -365,7 +365,7 @@ class ReshapeLabel(PageTest):
     reshape = True
 
     def seed(self):
-        self.studio.env["SOLH3_RESHAPE"] = "1" if self.reshape else "0"
+        self.studio.env.update(SOLH3_RESHAPE="1" if self.reshape else "0", STUB_RESHAPE_S="3")
 
     def test_labels(self):
         jid = self.studio.generate()[1]["id"]
@@ -375,7 +375,7 @@ class ReshapeLabel(PageTest):
         self.pick("orientation", "portrait")
         self.pick("seconds", "10")
         if self.reshape:
-            self.assertIn("same models", self.go_text())
+            self.assertIn("same models · a bit over", self.go_text())     # its first clip compiles
             self.assertNotIn("load", self.go_text())
             self.assertFalse(self.page.is_visible("#reloadnote"))
             self.assertNotIn("reload", self.page.get_attribute("#go", "class") or "")
@@ -386,6 +386,10 @@ class ReshapeLabel(PageTest):
             self.assertIn("Changing any of them reloads", self.page.inner_text(".foot"))
         self.pick("task", "fl2va")                                           # another mode reloads either way
         self.assertIn("reloads the models first", self.go_text())
+        if self.reshape:                                                     # a requested change of length/format
+            self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "portrait", "seconds": 10})
+            self.page.wait_for_function(
+                "document.getElementById('loaded').textContent.startsWith('changing to Text · 9:16 · 10 s')")
 
 
 class ReshapeLabelOff(ReshapeLabel):

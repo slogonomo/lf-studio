@@ -2,9 +2,10 @@
 """Sol-H3 Studio: a small web front end for NVIDIA Research's Sol-H3-Spark pipeline (unofficial).
 
 - One job at a time (FIFO queue). Models stay loaded between jobs with the same task (one Pipeline session). A
-  clip with another length or orientation changes the loaded session's shape in place (Pipeline.reshape: no model
-  loads; the first clip at a shape the session has not run compiles for it). Another task closes the session and
-  loads the models again. SOLH3_RESHAPE=0 closes and reloads for any change, as before 0.4.
+  clip with another length or orientation changes the loaded session's shape in place (Pipeline.reshape: Stage 1
+  and Stage 2 keep their models; only the prompt encoder closes or loads again when a clip crosses 10 s; the first
+  clip at a shape the session has not run compiles for it). Another task closes the session and loads the models
+  again. SOLH3_RESHAPE=0 closes and reloads for any change, as before 0.4.
 - Tasks: t2va (text), fl2va (first and/or last frame), ref2va (reference images, videos, audio).
 - Output: 1344x768 (landscape) or 768x1344 (portrait), 24 fps, 3-15 s, with audio.
 - POST /api/cancel {"id": ...}: a queued clip leaves the queue at once; a running one is stopped (its pipeline
@@ -568,12 +569,20 @@ def reshape_args(key):
     return {"orientation": key[1], "seconds": None if key[2] == 5 else key[2]}
 
 
+def loaded_pipeline():
+    """The session's pipeline, or None while it is being closed (Unload, a failed clip): a closing pipeline is not
+    loaded any more, so nothing reshapes it or renders with it. Call it without holding `lock`."""
+    with lock:
+        p = session["pipeline"]
+        return p if p is not None and session.get("state") != "unloading" and not close_lock.locked() else None
+
+
 def reshape_session(key, reason):
     """Give the loaded session the length and orientation of `key` (same task), without a clip ("Load selected now").
     A failure closes the session. Call it without holding `lock`."""
     p, old = session["pipeline"], session["key"]
     log("reshaping session", old, "->", key, "-", reason)
-    session.update(state="loading", since=time.time(), loading_key=key)
+    session.update(state="reshaping", since=time.time(), loading_key=key)
     try:
         p.reshape(**reshape_args(key))
     except Exception:
@@ -646,11 +655,12 @@ def run_job(job):
         if job.get(k):
             case[k] = job[k]
     case = normalize_case(case)
-    if session["key"] != key and session["pipeline"] is not None and same_models(session["key"], key):
+    loaded = loaded_pipeline()             # None while an Unload or a failed clip closes the session
+    if loaded is not None and session["key"] != key and same_models(session["key"], key):
         # same task, another length or orientation: the loaded session changes its shape, then renders the clip
         if job.get("cancel_requested"):    # nothing ran: the models stay loaded
             raise Cancelled("cancelled before it started")
-        p, old = session["pipeline"], session["key"]
+        p, old = loaded, session["key"]
         job["status"] = "generating"
         job["phase_since"] = time.time()
         job["reshaped_from"] = list(old)
@@ -665,8 +675,10 @@ def run_job(job):
             return p.generate(case)
         row = pipeline_call(job, reshape_and_generate, "length/format change failed")
         session["state"] = "ready"         # not a warm time: the first clip at a shape compiles for it
-    elif session["key"] != key:
-        close_session(f"switching to {key}")
+    elif session["key"] != key or loaded is None:
+        job.pop("reshaped_from", None)     # a retry after a failed length/format change loads the models
+        job.pop("reshape_s", None)
+        close_session(f"switching to {key}")   # (waits for a close in progress)
         if job.get("cancel_requested"):    # cancelled while the old models were closed: nothing of its own ran
             raise Cancelled("cancelled before it started")
         job["status"] = "loading models + generating"
@@ -919,7 +931,7 @@ def worker_loop():
             pending, preload["pending"] = preload["pending"], None
         if pending:
             if session["pipeline"] is not None and session["key"] != pending[0]:
-                if same_models(session["key"], pending[0]):
+                if loaded_pipeline() is not None and same_models(session["key"], pending[0]):
                     reshape_session(pending[0], "as asked")         # keeps the models: no warm-up pass
                 else:
                     close_session(f"loading {pending[0]} as asked")

@@ -1248,6 +1248,8 @@ class Reshape(StudioTest):
         job = self.studio.wait([self.generate(seconds=8)], timeout=60)[0]
         self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
         self.assertIn("STUB_RESHAPE_FAIL", job["first_error"])
+        self.assertNotIn("reshaped_from", job)                                # the retry loaded the models
+        self.assertNotIn("reshape_s", job)
         self.assertEqual(len(self.sessions()), 2)
         self.assertIn("closing session ('t2va', 'landscape', 5) - length/format change failed",
                       self.studio.log.read_text())
@@ -1272,6 +1274,32 @@ class Reshape(StudioTest):
         self.assertEqual((c["status"], c["includes_model_load"]), ("done", True))
 
 
+class ReshapeDuringUnload(StudioTest):
+    """From the review: a clip at another length queued while Unload closes the session must not change the shape of
+    the pipeline being closed (on the real runtime that could start a resident prompt encoder next to the next load);
+    it waits for the close and loads its own models."""
+    load_s, clip_s = 2, 1
+
+    def seed(self):
+        self.studio.env["STUB_CLOSE_S"] = "3"
+
+    def test_unload_then_another_length(self):
+        import threading
+        self.studio.wait([self.generate()], timeout=30)
+        unload = threading.Thread(target=self.studio.post, args=("/api/unload",))
+        unload.start()
+        self.studio.wait_for(lambda st: st["session"]["state"] == "unloading", timeout=10)
+        job = self.studio.wait([self.generate(seconds=8, seed=2)], timeout=60)[0]
+        unload.join(30)
+        self.assertEqual((job["status"], job.get("includes_model_load")), ("done", True))
+        self.assertNotIn("reshaped_from", job)
+        self.assertNotIn("first_error", job)                                 # it never touched the closing pipeline
+        self.assertNotIn("reshaping session", self.studio.log.read_text())
+        roots = sorted((self.studio.runtime / "outputs" / "webui").iterdir())
+        self.assertEqual([(r / "STARTED").exists() and not (r / "CLOSED").exists() for r in roots], [False, True])
+        self.assertEqual(self.studio.state()["session"]["key"], ["t2va", "landscape", 8])
+
+
 class ReshapeOff(StudioTest):
     """SOLH3_RESHAPE=0: any other task, length or orientation closes the session and loads the models again."""
 
@@ -1294,6 +1322,7 @@ class ReshapeLoadSelected(StudioTest):
     load_s, clip_s, preload = 2, 1, True
 
     def seed(self):
+        self.studio.env["STUB_RESHAPE_S"] = "2"
         self.write_state([finished_job()])
 
     def test_changes_the_shape_only(self):
@@ -1301,6 +1330,8 @@ class ReshapeLoadSelected(StudioTest):
                              and st["session"]["state"] == "ready", timeout=30)
         self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "portrait",
                                                                   "seconds": 10}), (200, {"ok": True}))
+        st = self.studio.wait_for(lambda st: st["session"]["state"] == "reshaping", timeout=10)   # not "loading"
+        self.assertEqual(st["session"]["loading_key"], ["t2va", "portrait", 10])
         st = self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "portrait", 10]
                                   and st["session"]["state"] == "ready", timeout=30)
         self.assertIsNone(st["session"]["switching_to"])
