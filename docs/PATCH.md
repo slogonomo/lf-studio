@@ -457,15 +457,19 @@ and identity are unchanged, and the image is 5-11% sharper.
   activation scaling (a maximum and elementwise steps) and the residual adds. The norms, RoPE and SwiGLU are
   FastVideo's own Triton kernels, and the matmuls are cuBLAS calls of the same sizes. None of these results depends
   on how a kernel is tuned for a symbolic length (inferred).
-- **A session's first clip, with or without the setting.** In the same run, the first fl2va clip differed from its
-  own repeat later in the session with the setting on (SSIM 0.88 at 672×384); all other first clips matched. The
-  cause is the text refiner, which the setting doesn't change. It compiles a graph for the session's first length,
-  then a dynamic one at the second length (13), and the repeat ran on the dynamic one. Inductor picks between two
-  configurations of a reduction by timing it when it first compiles a kernel, and keeps the choice in the compile
-  cache. Here the refiner's residual-add + RMSNorm kernel for that first length (the same source in both runs) got
-  the looped configuration without the setting and the persistent one with it. Only the looped one rounds like the
-  dynamic graph. So the first clip of a session at a length new to the compile cache can differ from a later
-  re-render of the same prompt and seed, with or without the setting.
+- **A session's first clip, with or without the setting.** In the same run, with the setting on, the first fl2va
+  clip's Stage-1 output differed from its own repeat later in the session (payload hash). Its MP4 against the
+  setting-off run's first fl2va clip: SSIM 0.88 at 672×384. The other first clips matched their repeats at Stage 1
+  (payload and native hashes) and in audio. The Stage-1 difference comes from the text refiner, which the setting
+  doesn't change. It compiles a graph for the session's first length, then a dynamic one at the second length (13),
+  and the repeat ran on the dynamic one. Inductor picks between two configurations of a reduction by timing it when
+  it first compiles a kernel, and keeps the choice in the compile cache. Here the refiner's residual-add + RMSNorm
+  kernel for that first length (the same source in both runs) got the looped configuration without the setting and
+  the persistent one with it. Only the looped one rounds like the dynamic graph. So the first clip of a session at a
+  length new to the compile cache can differ from a later re-render of the same prompt and seed, with or without the
+  setting. Separately, in both runs the MP4 video of every session's first clip differed from its repeats, also where
+  Stage 1 and the audio matched. That difference comes after Stage 1 (perhaps from Stage 2's first run in a session;
+  inferred, not examined). Later clips matched their repeats in video too.
 - **Files.** `runtime/stage1_ops/regional.py`, `runtime/stage1.py` (comment; the Sol route's receipt),
   `tests/test_regional_length.py` (new).
 - **Switch.** `SOL_H3_DYNAMIC_TEXT_LENGTH`: `0` (default) as before, `1` on. Another value stops Stage 1 when it
