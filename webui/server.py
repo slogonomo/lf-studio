@@ -31,7 +31,7 @@ Environment:
   SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
 
 SOL_H3_STAGE2_AUDIO (a patch setting, frozen or joint; see docs/PATCH.md) is checked at start: another value stops
-the server with a message.
+the server with a message. So is SOL_H3_DECODE_AHEAD (a patch setting, 0 or 1).
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
@@ -85,6 +85,15 @@ except ImportError:        # an older patch: it has no such setting
 if stage2_audio_mode:
     try:
         stage2_audio_mode()
+    except ValueError as error:
+        fail(str(error))
+try:                       # the decode-ahead switch (patch 0.4+): the same, 0 or 1
+    from runtime.config import decode_ahead_enabled  # noqa: E402
+except ImportError:
+    decode_ahead_enabled = None
+if decode_ahead_enabled:
+    try:
+        decode_ahead_enabled()
     except ValueError as error:
         fail(str(error))
 

@@ -182,15 +182,17 @@ run_checks() {
     [[ -f "$SERVER" ]] || refuse "server not found: $SERVER"
     [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-Spark package at $PKG (SOLH3_SANA must be the patched Sana checkout; install/10-sana.sh)"
     [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio.patch"
-    # the patch's own settings check (0.3+: SOL_H3_STAGE2_AUDIO); an older patch has none. A bad value exits 3 with
-    # the message; any other error exits non-zero with Python's traceback, whose last line names it
+    # the patch's own settings checks (0.3+: SOL_H3_STAGE2_AUDIO; 0.4+: SOL_H3_DECODE_AHEAD); an older patch has none.
+    # A bad value exits 3 with the message; any other error exits non-zero with Python's traceback, whose last line
+    # names it
     f=$(cd "$PKG" && "$SOLH3_PYTHON" -B -c 'import sys
 try:
-    from runtime.config import stage2_audio_mode
+    import runtime.config as config
 except ImportError:
     sys.exit(0)
 try:
-    stage2_audio_mode()
+    for name in ("stage2_audio_mode", "decode_ahead_enabled"):
+        getattr(config, name, lambda: None)()
 except ValueError as error:
     print(error)
     sys.exit(3)' 2>&1)

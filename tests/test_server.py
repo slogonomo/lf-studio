@@ -1043,6 +1043,18 @@ class BadStage2Audio(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_decode_ahead_refused_at_start(self):
+        """SOL_H3_DECODE_AHEAD (a patch setting, 0 or 1) the same way."""
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        try:
+            with self.assertRaises(RuntimeError) as e:
+                StubStudio(d / "a", env={"SOL_H3_DECODE_AHEAD": "yes"}).start()
+            self.assertIn("SOL_H3_DECODE_AHEAD must be 0 or 1, not 'yes'", str(e.exception))
+            studio = StubStudio(d / "b", env={"SOL_H3_DECODE_AHEAD": "0"}).start()
+            studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
 
 class TrashPurge(Delete):
     env = {"SOLH3_TRASH_DAYS": "0.00001"}                                  # under a second

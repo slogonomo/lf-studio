@@ -17,6 +17,15 @@ def stage2_audio_mode():
     return mode
 
 
+def decode_ahead_enabled():
+    """The patch's SOL_H3_DECODE_AHEAD check (runtime/config.py), same rules."""
+    import os
+    value = os.environ.get("SOL_H3_DECODE_AHEAD", "").strip() or "1"
+    if value not in ("0", "1"):
+        raise ValueError(f"SOL_H3_DECODE_AHEAD must be 0 or 1, not {os.environ.get('SOL_H3_DECODE_AHEAD')!r}")
+    return value == "1"
+
+
 def load_paths(filename, *, task="t2va"):
     if task not in TASKS:
         raise ValueError(f"task must be one of {TASKS}")
