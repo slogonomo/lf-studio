@@ -118,14 +118,31 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
     (marked `includes_model_load`). `infer.py --deliver-first` uses it; the web UI always does.
   - The warm-up prompt encoder runs while Stage1 starts. Stage2 starts once Stage1 logs
     `Loaded deferred module transformer`, after Stage1's BF16 load and FP8 conversion, its memory peak.
-  - The resident prompt encoder loads in the background after the first clip.
   - If Stage1 dies before that point, Stage2 is not started, and a failed load joins the half-started workers
     so `close()` can stop them.
+  - The resident prompt encoder loads in the background while the first clip refines, so the next clip doesn't
+    wait for it. It starts once Stage1's first request has returned and Stage2 is built: both load peaks are over.
+    Stage2 releases its idle cache first, as it does before every later clip. The warm-up encoder still closes
+    before Stage2 starts. Sessions over 241 output frames load the encoder per request, as before (item 3).
 - **Files.** `runtime/pipeline.py`, `infer.py`, `tests/test_pipeline.py`.
 - **Switch.** `deliver` is opt-in (`infer.py` without `--deliver-first` keeps the separate warm-up). The overlap
-  itself has no switch.
+  itself has no switch. `SOL_H3_RESIDENT_QWEN_EARLY=0` loads the resident encoder after the first clip, as before
+  0.4.
 - **Measured.** First clip 282 → 177 s, lowest MemAvailable 18 GiB. The first overlap attempt fell to 2.4 GiB
   MemAvailable and was stopped by the memory guard; the version in the patch waits for the Stage1 marker.
+- **Resident encoder during the refine (0.4).** Before 0.4 it loaded after the first clip, and the next clip
+  started its prompt encoding 3-11 s late in 17 of 128 warm web-UI clips (studio receipts, 2026-09-23 to 10-12).
+  Measured in the cold-start bench traces before 0.4 (MemAvailable every 0.25 s; t2va 16:9 at 5, 10 and 15 s, fl2va
+  5 s):
+  - Through the first clip's Stage2, denoise and decode alike, MemAvailable stayed at 20-23 GiB (fl2va 26 GiB).
+    At 5 s it was already that low when Stage2 became ready, before the refine.
+  - The release after the MP4 then freed 12-14 GiB, at every length.
+  - Loading the encoder took 17-19 GiB of MemAvailable, more than its 14.6 GiB of weights.
+  - A warm 5 s clip with the encoder resident refined at 11.0-12.7 GiB.
+
+  So the encoder can't just start during the refine: that would leave ~3-5 GiB, at the memory guard's 5 GiB
+  (inferred). With Stage2's release first, the first refine should get about as low as a warm clip with the
+  encoder resident: ~9-13 GiB at 5 s (inferred, not yet measured).
 
 ### 5. O_DIRECT weight loading (`runtime/fastload.py`)
 
@@ -281,8 +298,8 @@ and identity are unchanged, and the image is 5-11% sharper.
 ### 16. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
-deliver-first, the background prompt encoder, the new `Pipeline` arguments and the compile-cache location (it
-also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
+deliver-first, when the resident prompt encoder starts, the new `Pipeline` arguments and the compile-cache
+location (it also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
 older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 tests in total (upstream: 65).
@@ -294,6 +311,7 @@ older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 te
 | `SOL_H3_ORIENTATION` | landscape | `infer.py` default for `--orientation` (the web server ignores it) |
 | `SOL_H3_SECONDS` | unset (5 s) | `infer.py` default for `--seconds` (the web server ignores it) |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer outputs load the prompt encoder per request |
+| `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
 | `SPARK_FAST_SAFETENSORS` | 1 | 0 = upstream safetensors loading |
 | `SPARK_DIRECT_IO` | 1 | 0 = no O_DIRECT reads |
 | `SPARK_DIRECT_AHEAD` | 1 | 0 = no read-ahead of the next O_DIRECT window |

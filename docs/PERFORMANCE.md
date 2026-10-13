@@ -125,7 +125,10 @@ comparable side by side.
   RSS after freeing 3.55 → 0.47 GiB; fl2va lowest free memory 9.3 → 19.8 GiB.
 - Clips over 10 s load the prompt encoder per request. With it resident, a 15 s refine fell to 4 GiB free.
   Keeping it resident saved nothing (192.9 vs 190.8 s per clip).
-- Lowest MemAvailable: 15-18 GiB for a 5 s first clip (upstream flow: 13 GiB); 12 GiB for 15 s.
+- Lowest MemAvailable: 15-18 GiB for a 5 s first clip (upstream flow: 13 GiB); 12 GiB for 15 s. Measured before
+  0.4, when the resident prompt encoder loaded after the first clip. It now loads during the first clip's refine,
+  so the next clip doesn't wait for it. That should take a 5 s first clip down to ~9-13 GiB, as low as a warm clip
+  with the encoder resident (inferred, not yet measured; [PATCH.md](PATCH.md) item 4).
 - Read-ahead into the page cache made the cold start slower (177 → 195 s): 54 GB of Stage 2 read-ahead competed
   with Stage 1's compile for disk and memory.
 
@@ -159,6 +162,7 @@ lengths in one session, no failure.
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer clips load the prompt encoder per request |
+| `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 
 The warm-up at launch (`SOLH3_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled
