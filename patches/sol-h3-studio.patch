@@ -2047,7 +2047,7 @@ index 7f691fa..3b80f2a 100644
      sparse.triton_block_sparse_attn_forward = counted_sparse
      original_mask = native._build_block_mask
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-index 8f1a36c..aa72989 100644
+index 8f1a36c..dc312f5 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 @@ -3,25 +3,57 @@
@@ -2195,7 +2195,7 @@ index 8f1a36c..aa72989 100644
                      crf=19, preset="veryfast", thread_count=8)
                  if not temporary.is_file() or temporary.stat().st_size == 0:
                      raise RuntimeError("video encoder produced no output")
-@@ -133,6 +185,81 @@ def _refiner_class(base, compat, session):
+@@ -133,6 +185,92 @@ def _refiner_class(base, compat, session):
      return SparkRefiner
  
  
@@ -2208,6 +2208,13 @@ index 8f1a36c..aa72989 100644
 +    process therefore re-ran coordinate-descent tuning for the same 11 Stage2 kernels (~3-4 s) and re-saved the
 +    same .best_config. After an upstream miss, read the entry with the kernel's own AutotuneCache (same key =
 +    kernel source hash + torch version, same configs_hash that save() used), then do what upstream does on a hit.
++
++    That includes the cache info (issue #51): torch skips its run-time R0_BLOCK halving (_dynamic_scale_rblock) only
++    when autotune_cache_state is exactly "hit". With another label, a reduction read through the fallback got
++    halved-R0_BLOCK candidates, was benchmarked by timing again, and the winner overwrote the stored result, so the
++    next process could pick another block size and round differently. The info is now the dict check_autotune_cache
++    builds on a hit, plus spark_fallback=True, which keeps the fallback visible in the SPARK_DEBUG_AUTOTUNE lines
++    without changing what torch reads.
 +    """
 +    from torch._inductor.runtime import triton_heuristics as th
 +    original = th.CachingAutotuner.recheck_autotune_cache
@@ -2232,7 +2239,8 @@ index 8f1a36c..aa72989 100644
 +            if self_.fn.fn is None:
 +                self_.fn = reload_kernel_from_src().fn
 +            self_.compile_results = [self_._precompile_config(best)]
-+        info["autotune_cache_state"] = "hit (spark fallback)"
++        # exactly what check_autotune_cache sets on a hit (best_config, "hit"); the fallback is marked separately
++        self_.autotune_cache_info = {"best_config": wanted, "autotune_cache_state": "hit", "spark_fallback": True}
 +        if debug:
 +            print(f"[sol-h3-studio] fallback hit {Path(self_.filename).name[:14]} -> {wanted}", flush=True)
 +
@@ -2252,8 +2260,11 @@ index 8f1a36c..aa72989 100644
 +        return (getattr(self_, "inductor_meta", None) or {}).get("kernel_name") or Path(self_.filename or "?").name[:14]
 +
 +    def state(self_):
-+        return ((getattr(self_, "autotune_cache_info", None) or {}).get("autotune_cache_state"),
-+                getattr(self_, "save_cache_hook", None) is not None)
++        info = getattr(self_, "autotune_cache_info", None) or {}
++        label = info.get("autotune_cache_state")
++        if info.get("spark_fallback"):          # torch sees "hit"; these lines name the fallback
++            label = f"{label} (spark fallback)"
++        return label, getattr(self_, "save_cache_hook", None) is not None
 +
 +    def wrap(cls, attribute, report):
 +        original = getattr(cls, attribute, None)
@@ -2277,7 +2288,7 @@ index 8f1a36c..aa72989 100644
  class Session:
      """Construct once, prepare/run sequential requests, then close the worker."""
  
-@@ -143,9 +270,13 @@ class Session:
+@@ -143,9 +281,13 @@ class Session:
          self.closed = self.failed = False
          self.prepared = self.current_capture = self.payload = None
          self.completed_requests = 0
@@ -2291,7 +2302,7 @@ index 8f1a36c..aa72989 100644
          config = config.get("stage2", config)
          self.compile_enabled = config.get("compile", True)
          self.fixed_prompt = config.get("fixed_prompt", FIXED_PROMPT)
-@@ -159,11 +290,22 @@ class Session:
+@@ -159,11 +301,22 @@ class Session:
              if not path.is_file() or not path.stat().st_size:
                  raise FileNotFoundError(path)
          self.work_dir = Path(work_dir).resolve()
@@ -2315,7 +2326,7 @@ index 8f1a36c..aa72989 100644
          try:
              self._construct()
          except BaseException:
-@@ -185,8 +327,14 @@ class Session:
+@@ -185,8 +338,14 @@ class Session:
              self._owns_dist = True
          if dist.get_world_size() != 1:
              raise RuntimeError("Spark requires one distributed rank")
@@ -2331,7 +2342,7 @@ index 8f1a36c..aa72989 100644
          with torch.inference_mode():
              self.models = _refiner_class(base, compat, self)()
          self.conv_layout_receipt = self.stack.enter_context(installed_direct_upsample_nhwc(torch_module=torch))
-@@ -195,6 +343,7 @@ class Session:
+@@ -195,6 +354,7 @@ class Session:
              "session_started_monotonic_ns": self.started_ns, "session_ready_monotonic_ns": self.ready_ns,
              "session_initialization_s": (self.ready_ns - self.started_ns) / 1e9,
              "refiner_recipe": {"sigmas": list(SIGMAS), "updates": 3, "lora_strength": 0.8,
@@ -2339,7 +2350,7 @@ index 8f1a36c..aa72989 100644
                                 "joint_audio_video": True, "expected_sol_backend": "triton"},
              "spatial_route": self.models.h3_spatial_route, "conv_actual_tiling": asdict(self.models.tiling_config),
              "actual_parameter_dtypes": self.models.parameter_dtypes,
-@@ -225,18 +374,22 @@ class Session:
+@@ -225,18 +385,22 @@ class Session:
          if (self.closed or self.failed or self.current_capture is not None or self.prepared is None
                  or self.prepared["request_id"] != request_id or self.prepared["output_root"] != str(root)):
              raise RuntimeError("run requires the matching completed prepare identity and output root")
@@ -2364,7 +2375,7 @@ index 8f1a36c..aa72989 100644
              record = {"prompt_id": row["case_id"], "prompt": self.fixed_prompt, "seed": row["seed"],
                        "source_index": row["source_index"], "index": 0, "_source_path": "/dev/null"}
              with self.torch.inference_mode():
-@@ -265,9 +418,11 @@ class Session:
+@@ -265,9 +429,11 @@ class Session:
              write_new(root / "final_file_manifest.json", {key: receipt[key] for key in (
                  "status", "request_id", "case_id", "output", "output_sha256", "output_bytes",
                  "stage2_started_monotonic_ns", "final_mp4_complete_monotonic_ns", "stage2_request_s")})
@@ -2377,7 +2388,7 @@ index 8f1a36c..aa72989 100644
              return receipt
          except BaseException as error:
              self.failed = True
-@@ -277,6 +432,45 @@ class Session:
+@@ -277,6 +443,45 @@ class Session:
              self.current_capture = self.payload = self.prepared = None
              write_new(root / "stage2_result.json", receipt)
  
@@ -3954,10 +3965,10 @@ index 0000000..6658e47
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
 new file mode 100644
-index 0000000..7848ec4
+index 0000000..70090d4
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
-@@ -0,0 +1,776 @@
+@@ -0,0 +1,782 @@
 +"""sol-h3-studio: CPU tests of reshape, another clip length or orientation in a running session (not part of upstream
 +Sol-H3-Spark). Stand-in workers check that every worker sees the shape of each request; the shape state each real
 +worker rebinds is checked against what a fresh worker for that shape has."""
@@ -4686,13 +4697,19 @@ index 0000000..7848ec4
 +            tuner._coordinate_descent_tuning(SimpleNamespace(config=Config(16)))
 +            self.assertEqual(Cache().save(Config(8), 1), "saved")
 +            stage2._install_autotune_cache_fix(debug=True)          # installed once
++            fallback = Autotuner()      # read through the fallback (#51): torch sees "hit", the lines name the fallback
++            fallback.autotune_cache_info = {"best_config": "num_warps=16", "autotune_cache_state": "hit",
++                                            "spark_fallback": True}
++            fallback.autotune_to_one_config()
 +        lines = out.getvalue().splitlines()
 +        self.assertEqual(lines, [
 +            "[sol-h3-studio] tuned at run time triton_red_fused_rms_norm_8 -> num_warps=16 (cache, save hook: "
 +            "('miss', False))",
 +            "[sol-h3-studio] coordinate descent triton_red_fused_rms_norm_8: num_warps=16 -> num_warps=8 (cache, "
 +            "save hook: ('miss', False))",
-+            "[sol-h3-studio] tuning result stored cj/8b5d.best_config: num_warps=8"])
++            "[sol-h3-studio] tuning result stored cj/8b5d.best_config: num_warps=8",
++            "[sol-h3-studio] tuned at run time triton_red_fused_rms_norm_8 -> num_warps=16 (cache, save hook: "
++            "('hit (spark fallback)', False))"])
 +
 +
 +class StaticCompileTests(unittest.TestCase):
@@ -4764,19 +4781,20 @@ index 052502f..e4a87c4 100644
          missing = copy.deepcopy(second)
          missing["layer_calls"][13] -= 1
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py b/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
-index e233052..b214849 100644
+index e233052..f402b43 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
-@@ -1,5 +1,8 @@
+@@ -1,5 +1,9 @@
  """CPU-only handoff, normalization and offline-conditioning behavior checks."""
-+# Modified by sol-h3-studio: Stage-2 audio policy tests (Stage2AudioPolicyTests).
++# Modified by sol-h3-studio: Stage-2 audio policy tests (Stage2AudioPolicyTests), autotune-cache fallback tests
++# (AutotuneCacheFallbackTests).
  import copy
 +from dataclasses import dataclass
 +import os
  import json
  import math
  from pathlib import Path
-@@ -146,5 +149,76 @@ class Stage2ContractTests(unittest.TestCase):
+@@ -146,5 +150,254 @@ class Stage2ContractTests(unittest.TestCase):
          self.assertEqual(model.encode_highres_first_frame(None), [])
  
  
@@ -4849,6 +4867,184 @@ index e233052..b214849 100644
 +        with self.assertRaisesRegex(RuntimeError, "SOL_H3_STAGE2_AUDIO=joint"):
 +            stage2.check_frozen_states(OlderState)          # what Stage 2 checks at start, on the LatentState type
 +        stage2.check_frozen_states(AudioState)
++
++
++# sol-h3-studio: the Inductor autotune-cache fallback (docs/PATCH.md item 8, issue #51)
++class AutotuneCacheFallbackTests(unittest.TestCase):
++    """A Stage-2 reduction loaded from the FX graph cache with its compile results pruned to one config (R0_BLOCK
++    1024): torch's recheck hashes that one config and misses, and the fallback reads the stored result through the
++    kernel's own cache. The stand-in CachingAutotuner keeps what torch 2.13 does next (StaticAutotunerFuture.result:
++    recheck, precompile, then run): _dynamic_scale_rblock adds a halved-R0_BLOCK candidate unless autotune_cache_state
++    is exactly "hit" (here always, as for the three 15 s kernels of #51), more than one launcher is benchmarked by
++    timing and the winner saved, and a launcher not marked found_by_coordesc is tuned by coordinate descent, which
++    saves its result too. A halved candidate is a copy, and Triton's Config drops found_by_coordesc when copied, so a
++    halved winner goes on to coordinate descent. The recheck, check_autotune_cache, the configs, their copies and
++    hashes are torch's and Triton's own."""
++
++    FILENAME = "/cache/cj/cjviewxyz8rms.py"
++
++    def setUp(self):
++        import triton
++        from torch._inductor.runtime import triton_heuristics
++        self.th, self.events = triton_heuristics, []
++        self.candidates = [triton.Config({"XBLOCK": 1, "R0_BLOCK": block}, num_warps=8, num_stages=1)
++                           for block in (1024, 2048)]
++        self.configs_hash = triton_heuristics.hash_configs(self.candidates)    # what the compile-time save used
++        # the .best_config a previous process wrote: coordinate descent's result, under that configs hash
++        self.disk = {self.configs_hash: (copy.deepcopy(self.candidates[0]), True)}
++        self.meta = {"kernel_name": "triton_red_fused_rms_norm_view_8", "coordinate_descent_tuning": True}
++
++    def stored_block(self):
++        return self.disk[self.configs_hash][0].kwargs["R0_BLOCK"]
++
++    def stand_ins(self):
++        events, disk, th, filename = self.events, self.disk, self.th, self.FILENAME
++
++        class Cache:
++            local_cache = (None, "cj/view8.best_config")
++
++            def __init__(self, configs_hash):
++                self.configs_hash = configs_hash
++
++            @staticmethod
++            def create(inductor_meta, filename, configs_hash):
++                return Cache(configs_hash)
++
++            def read_best(self, inductor_meta, configs):     # as torch's _load_cached_autotuning, for these entries
++                if self.configs_hash not in disk:
++                    return None
++                stored, found_by_coordesc = disk[self.configs_hash]
++                config = copy.deepcopy(stored)
++                if found_by_coordesc and inductor_meta.get("coordinate_descent_tuning"):
++                    config.found_by_coordesc = True
++                return config
++
++            def save(self, config, time_taken_ns, found_by_coordesc=False, triton_cache_hash=None):
++                events.append(("stored", config.kwargs["R0_BLOCK"]))
++                disk[self.configs_hash] = (copy.deepcopy(config), found_by_coordesc)
++
++        class Autotuner:
++            recheck_autotune_cache = th.CachingAutotuner.recheck_autotune_cache     # torch's own (this torch)
++
++            def __init__(self, config, cache, meta):
++                self.filename, self.inductor_meta, self.save_cache_hook = filename, meta, cache.save
++                self.compile_results, self.launchers = [SimpleNamespace(config=config)], []
++                self.autotune_cache_info, self.fn = None, SimpleNamespace(fn=object())
++
++            def is_statically_launchable(self):
++                return True
++
++            def _precompile_config(self, config):
++                events.append(("compiled", config.kwargs["R0_BLOCK"]))
++                return SimpleNamespace(config=config)
++
++            def _make_launchers(self):
++                if len(self.launchers) != len(self.compile_results):
++                    self.launchers = [SimpleNamespace(config=result.config) for result in self.compile_results]
++
++            def precompile(self):
++                self._make_launchers()
++                self._dynamic_scale_rblock()
++
++            def _dynamic_scale_rblock(self):            # torch 2.13's gate, then one halving per config
++                if (
++                    self.autotune_cache_info
++                    and self.autotune_cache_info.get("autotune_cache_state") == "hit"
++                ):
++                    return
++                for result in list(self.compile_results):
++                    halved = copy.deepcopy(result.config)
++                    halved.kwargs["R0_BLOCK"] //= 2
++                    self.compile_results.append(self._precompile_config(halved))
++                self._make_launchers()
++
++            def autotune_to_one_config(self, *args):
++                events.append(("benchmarked", [launcher.config.kwargs["R0_BLOCK"] for launcher in self.launchers]))
++                best = self.launchers[-1]                # timing picks the halved block (view_8: 1024 -> 512)
++                self.launchers = [best]
++                self.compile_results = [result for result in self.compile_results if result.config is best.config]
++                self.save_cache_hook(best.config, 1,
++                                     found_by_coordesc=self.inductor_meta.get("coordinate_descent_tuning", False))
++
++            def coordinate_descent_tuning(self, launcher, *args):
++                return self._coordinate_descent_tuning(launcher, *args)
++
++            def _coordinate_descent_tuning(self, launcher, *args):
++                events.append(("coordinate descent", launcher.config.kwargs["R0_BLOCK"]))
++                best = copy.deepcopy(launcher.config)
++                best.found_by_coordesc = True
++                self.save_cache_hook(best, 1, found_by_coordesc=True)
++                return SimpleNamespace(config=best)
++
++            def run(self, *args):
++                if len(self.launchers) != 1:
++                    if len(self.launchers) == 0:
++                        self.precompile()
++                    if len(self.launchers) > 1:
++                        self.autotune_to_one_config(*args)
++                if not getattr(self.launchers[0].config, "found_by_coordesc", False) and self.inductor_meta.get(
++                        "coordinate_descent_tuning", False):
++                    self.launchers = [self.coordinate_descent_tuning(self.launchers[0], *args)]
++                events.append(("ran", self.launchers[0].config.kwargs["R0_BLOCK"]))
++        return Cache, Autotuner
++
++    def load(self, fix, debug=False, label=None):
++        """Load the kernel as a new Stage-2 process does and run two requests. Returns the cache info after the
++        recheck, torch's own cache info for a hit on the stored result, and what was printed."""
++        import contextlib
++        import io
++        import types
++        import torch._inductor.runtime as runtime
++        Cache, Autotuner = self.stand_ins()
++        heuristics = types.ModuleType("torch._inductor.runtime.triton_heuristics")
++        heuristics.CachingAutotuner, heuristics.triton_config_to_hashable = Autotuner, self.th.triton_config_to_hashable
++        caches = types.ModuleType("torch._inductor.runtime.autotune_cache")
++        caches.AutotuneCache = Cache
++        with patch.object(self.th, "AutotuneCache", Cache), \
++             patch.object(runtime, "triton_heuristics", heuristics), \
++             patch.dict(sys.modules, {"torch._inductor.runtime.triton_heuristics": heuristics,
++                                      "torch._inductor.runtime.autotune_cache": caches}), \
++             contextlib.redirect_stdout(io.StringIO()) as out:
++            # torch's check on the original candidate list (the compile-time lookup): a real hit
++            upstream_hit = self.th.check_autotune_cache(copy.deepcopy(self.candidates), self.FILENAME,
++                                                        dict(self.meta))[2]
++            if fix:
++                stage2._install_autotune_cache_fix(debug=debug)
++            tuner = Autotuner(copy.deepcopy(self.candidates[0]), Cache(self.configs_hash), dict(self.meta))
++            tuner.recheck_autotune_cache(lambda: self.fail("the stored config is the compiled one: no reload"))
++            info = dict(tuner.autotune_cache_info)
++            if label is not None:
++                tuner.autotune_cache_info["autotune_cache_state"] = label
++            tuner.precompile()
++            tuner.run()
++            tuner.run()                                  # the next request
++        return info, upstream_hit, out.getvalue().splitlines()
++
++    RETUNED = [("compiled", 512), ("benchmarked", [1024, 512]), ("stored", 512), ("coordinate descent", 512),
++               ("stored", 512), ("ran", 512), ("ran", 512)]
++
++    def test_a_fallback_hit_is_torchs_hit_and_nothing_is_tuned_again(self):
++        stored = self.th.triton_config_to_hashable(self.disk[self.configs_hash][0])
++        info, upstream_hit, lines = self.load(fix=True, debug=True)
++        self.assertEqual(upstream_hit, {"best_config": stored, "autotune_cache_state": "hit"})
++        self.assertEqual(info, dict(upstream_hit, spark_fallback=True))
++        self.assertEqual(self.events, [("ran", 1024), ("ran", 1024)])   # no halving, timing, descent or store
++        self.assertEqual(lines, [f"[sol-h3-studio] fallback hit cjviewxyz8rms. -> {stored}"])
++        self.assertEqual(self.stored_block(), 1024)
++
++    def test_the_label_before_51_was_tuned_again(self):
++        # "hit (spark fallback)": the stored config was read, then halved, benchmarked and replaced (the 15 s re-tuning)
++        info, _, _ = self.load(fix=True, label="hit (spark fallback)")
++        self.assertTrue(info["spark_fallback"])
++        self.assertEqual(self.events, self.RETUNED)
++        self.assertEqual(self.stored_block(), 512)
++
++    def test_without_the_fix_torch_misses_and_tunes_again(self):
++        # SPARK_AUTOTUNE_CACHE_FIX=0: torch misses, halves, benchmarks and runs coordinate descent (item 8)
++        info, _, _ = self.load(fix=False)
++        self.assertEqual(info["autotune_cache_state"], "miss")
++        self.assertEqual(self.events, self.RETUNED)
++        self.assertEqual(self.stored_block(), 512)
 +
 +
  if __name__ == "__main__":
