@@ -302,7 +302,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
   <button type="submit" id="go">Generate</button>
   <div id="reloadnote" hidden><span id="reloadtext"></span> <button type="button" class="linkbtn" id="loadnow" hidden title="Start loading these settings now, while you finish the prompt">Load selected now</button></div>
   <div id="err" role="alert"></div>
-  <p class="foot">If mode, format and length match what's loaded, the clip starts right away. Changing any of them reloads the models first.
+  <p class="foot"><span id="loadrule">If the mode matches what's loaded, the clip starts right away: another format or length keeps the models loaded, and its first clip takes a little longer. Another mode reloads the models first.</span>
   Times shown are <b>measured on a DGX Spark</b> with nothing else running.</p>
 </form>
 
@@ -431,28 +431,31 @@ function effectiveKey(){const q=state.jobs.filter(j=>active(j)&&!j.cancel_reques
   return state.session.switching_to||(state.session.preloading?state.session.loading_key:state.session.key);}
 function updateGo(){const k=effectiveKey(),want=[val('task'),val('orientation'),+val('seconds')],go=$('go');
   const same=!!k&&k[0]===want[0]&&k[1]===want[1]&&(k[2]||5)===want[2],eta=ETA[want[2]]||60;
-  go.classList.toggle('reload',!same);
-  const warm=same&&state.session.preloading&&!state.jobs.some(active);
+  // #45: the same mode with another format or length keeps the models loaded (the server changes the session's
+  // shape), unless the server reloads for any change (SOLH3_RESHAPE=0)
+  const keep=!same&&!!k&&k[0]===want[0]&&!!state.reshape;
+  go.classList.toggle('reload',!same&&!keep);
+  const warm=(same||keep)&&state.session.preloading&&!state.jobs.some(active);
   // early in the warm-up a job for the same settings takes its place: it stops the warm-up and loads the models
   // itself, which is then faster than waiting (server: takeover_until); later it waits for the warm-up. Either way
   // nothing is lost, so the label says when the clip would be ready. A job for other settings stops the warm-up
   // unless a queued job waits for it.
-  const s=state.session,L=s.load_eta||240,W=s.warm_s||eta,takeover=warm&&now()<(s.takeover_until||0);
+  const s=state.session,L=s.load_eta||240,W=(same&&s.warm_s)||eta,takeover=warm&&now()<(s.takeover_until||0);
   const ready=takeover?L+5:Math.max(0,s.since+L-now())+W;
   // while models are closed for a requested load (switching_to, ~40 s) a clip replaces that request and loads its
   // own settings right after the close
   const switching=!!s.switching_to&&!state.jobs.some(active);
   const html=switching?`Generate <span class="eta">· ${same?'loads these models':'replaces the requested load, loads the models'} first</span>`
-    :warm?`Generate <span class="eta">· ${takeover?'replaces the warm-up':'after the warm-up'} · ready in ~${fmtS(ready)}</span>`:same?`Generate <span class="eta">· ~${fmtS(eta)}</span>`:`Generate <span class="eta">· ${k?(state.session.preloading&&!state.jobs.some(active)?'stops the warm-up, loads':'reloads'):'loads'} the models first</span>`;
+    :warm?`Generate <span class="eta">· ${takeover?'replaces the warm-up':'after the warm-up'} · ready in ~${fmtS(ready)}</span>`:same?`Generate <span class="eta">· ~${fmtS(eta)}</span>`:keep?`Generate <span class="eta">· same models · ~${fmtS(eta)}</span>`:`Generate <span class="eta">· ${k?(state.session.preloading&&!state.jobs.some(active)?'stops the warm-up, loads':'reloads'):'loads'} the models first</span>`;
   if(go.innerHTML!==html)go.innerHTML=html;
   setText($('lenout'),`~${fmtS(eta)} per clip`);
   const noManifest=Array.isArray(state.tasks_ready)&&!state.tasks_ready.includes(want[0]),busy=state.jobs.some(active);
   // "Load selected now" (#3): only on request, never on a selection change alone (clicking through the options
   // would start and stop loads); not while clips are queued or running, and only for modes the server can warm up
-  const canLoad=!noManifest&&!same&&!busy&&(state.warmable||[]).includes(want[0])&&now()>loadAsked;
+  const canLoad=!noManifest&&!same&&!keep&&!busy&&(state.warmable||[]).includes(want[0])&&now()>loadAsked;
   if(loadAsked&&s.switching_to)loadAsked=0;      // the server shows the request: the link follows the state again
   const note=noManifest?`The server has no path manifest for ${TASK[want[0]]} mode (run install/70-manifests.sh).`
-    :same?'':!k?(canLoad?'Models not loaded.':'')
+    :same||keep?'':!k?(canLoad?'Models not loaded.':'')
     :`${switching?'Switching to':state.session.preloading&&!busy?'Warming up':'Loaded'}${busy?' after the queue':''}: ${keyText(k)}. Selected: ${keyText(want)}.`;
   setText($('reloadtext'),note);$('loadnow').hidden=!canLoad||!note;$('reloadnote').hidden=!note;}
 $('loadnow').onclick=async()=>{const want={task:val('task'),orientation:val('orientation'),seconds:+val('seconds')};
@@ -649,6 +652,7 @@ function update(d,j,queue,s,t){
                            :`Generating · usually ~${fmtS(eta)}`);
       const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}}
 function render(){const s=state.session,k=s.key,t=now();
+  if(state.reshape===false)setText($('loadrule'),"If mode, format and length match what's loaded, the clip starts right away. Changing any of them reloads the models first.");
   const sState=s.state||'idle',st=$('status');if(st.dataset.s!==sState)st.dataset.s=sState;
   setText($('loaded'),s.switching_to&&sState!=='loading'?`switching to ${keyText(s.switching_to)}`
     :sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));

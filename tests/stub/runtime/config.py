@@ -17,6 +17,15 @@ def stage2_audio_mode():
     return mode
 
 
+def compile_dynamic():
+    """The patch's SOL_H3_STATIC_SHAPES check (runtime/config.py), same rules."""
+    import os
+    value = os.environ.get("SOL_H3_STATIC_SHAPES", "1").strip()
+    if value not in ("0", "1"):
+        raise ValueError(f"SOL_H3_STATIC_SHAPES must be 1 or 0, not {value!r}")
+    return False if value == "1" else None
+
+
 def load_paths(filename, *, task="t2va"):
     if task not in TASKS:
         raise ValueError(f"task must be one of {TASKS}")
