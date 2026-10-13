@@ -8,6 +8,9 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   Python and the working directory set to the patched Sol-H3-Spark package, from which it imports `runtime.*`.
 - `webui/index.html`: the whole page in one file: no framework, no build step, no requests to other sites. The
   server reads it on every request, so edits show up on reload.
+- `bin/sol-h3`: the client for agents and scripts, a CLI and an MCP server (`sol-h3 mcp`) in one file. People copy
+  it to other machines, so it stays standard-library only, Python 3.9 syntax, and reads no other file of this repo.
+  `docs/API.md` documents it and the HTTP API.
 - `bin/sol-h3-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/sol-h3-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
@@ -17,13 +20,16 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
 None of these needs the GPU:
 
 ```bash
-python3 -m unittest discover -s tests -v       # server and page against the stub runtime (needs ffmpeg)
+python3 -m unittest discover -s tests -v       # server, client and page against the stub runtime (needs ffmpeg)
 python3 tests/stub/studio.py                   # a stub studio on http://127.0.0.1:18299/ to click through
 python3 tests/ui_test.py http://127.0.0.1:18299/   # a general check of the page against any studio
 ```
 
-`tests/test_server.py` drives the server over HTTP; `tests/test_page.py` drives the page in WebKit and is skipped
-without Playwright (`pip install playwright && playwright install webkit`). One touch test uses Chromium
+`tests/test_server.py` drives the server over HTTP, and `tests/test_api.py` its API for programs (JSON submit,
+`/api/jobs/<id>?wait=`, labels, limits). `tests/test_cli.py` and `tests/test_mcp.py` run `bin/sol-h3` as a CLI and
+as an MCP server against the stub and against small fake spark-switchboard servers (ports 18820-18839), and check
+that it stays a lone Python 3.9 file. `tests/test_page.py` drives the page in WebKit and is skipped without
+Playwright (`pip install playwright && playwright install webkit`). One touch test uses Chromium
 (`playwright install chromium`) and is skipped without it.
 
 `tests/stub/runtime/` stands in for the patched `runtime` package: loading and generating are `sleep` processes
@@ -35,7 +41,12 @@ gives each run its own runtime root, state directory and port under a temp direc
 non-zero exit status) if the port is in use or its server stops by itself, so nothing goes to another studio on that
 port. Add a test there for every server change.
 
-The patch has its own 74 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
+`tests/test_replay.py` covers the Stage-2 replay bench (`bench/replay.sh`, `bench/replay/`) on the CPU: the draft
+store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch, a `run` with a stand-in Stage-2
+process, stopping it under `bench/memguard-run.sh`, the report, the quality step and the SyncNet table. It takes
+`runtime/geometry.py` from the patch itself.
+
+The patch has its own 87 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A
 second studio next to an installed one needs its own env file (`SOLH3_ENV=<file> bin/sol-h3-studio`) with its own
@@ -46,6 +57,9 @@ the other studio's clip history and files.
 
 - The server stays standard-library only, the page a single file.
 - A new setting goes into `bin/env.example` with a comment, and into the server's docstring.
+- A change to an endpoint, or to what `bin/sol-h3` does, goes into `docs/API.md`. The prompt guide lives twice, in
+  `docs/API.md` (between its `prompt-guide` markers) and as `GUIDE` in `bin/sol-h3`; `tests/test_cli.py` checks
+  that they are the same.
 - Keep the docs in step with the behaviour: `README.md` and `docs/*.md` describe what the studio does, with
   measured numbers where there are any (say where and how they were measured).
 - Never commit generated clips or screenshots that show them (see the model terms in the README), model weights,

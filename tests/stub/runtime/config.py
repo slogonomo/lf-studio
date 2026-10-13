@@ -17,6 +17,19 @@ def stage2_audio_mode():
     return mode
 
 
+PROMPT_TOKEN_MODES = ("plain", "minimax")
+
+
+def prompt_tokens_mode(value=None):
+    """The patch's SOL_H3_PROMPT_TOKENS check (runtime/config.py), same rules."""
+    import os
+    raw = os.environ.get("SOL_H3_PROMPT_TOKENS", "") if value is None else value
+    mode = str(raw).strip().lower() or "minimax"
+    if mode not in PROMPT_TOKEN_MODES:
+        raise ValueError(f"SOL_H3_PROMPT_TOKENS must be one of {PROMPT_TOKEN_MODES}, not {raw!r}")
+    return mode
+
+
 def load_paths(filename, *, task="t2va"):
     if task not in TASKS:
         raise ValueError(f"task must be one of {TASKS}")

@@ -19,6 +19,11 @@ memory guard later.
 NVIDIA Sync, use switchboard's `delegate.sh` then, see [nvidia-sync.md](nvidia-sync.md)). Stop it or set
 `SOLH3_PORT`.
 
+**`REFUSED - SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...`**
+(or the same for `SOL_H3_STAGE2_AUDIO`). The repo was updated, but the Sana checkout still carries the patch of an
+older release, which would ignore that setting. Run `install/10-sana.sh`, then start again
+([updating](INSTALL.md#updating)).
+
 **`cannot talk to docker as <user>`, or `permission denied while trying to connect to the Docker daemon socket`.**
 Add yourself to the group (`sudo usermod -aG docker $USER`) and log in again. A login session started before
 that change keeps its old groups. NVIDIA Sync keeps one SSH login open for a long time, so this happens there
@@ -155,6 +160,62 @@ are copied to and from another filesystem under a temporary name, so a share nev
 waits up to 60 s for a Delete or Undo that is moving files, and a delete cut short (the server killed) is put back
 at the next start. Anything else left in the trash (from a delete or
 restore that failed half-way) is removed after the same number of days.
+
+## Agents and scripts
+
+The API, the CLI (`bin/sol-h3`) and the MCP server are in [API.md](API.md); its [Errors](API.md#errors) table lists
+every status code.
+
+**411 `Content-Length required (chunked uploads are not supported)`.** The client streamed the upload without a
+length (chunked), which the studio can't read. Send the body with a `Content-Length`: curl's `-F` and
+`--data-binary @file` (also `@-`, from a pipe) do; `-T -` and a `Transfer-Encoding: chunked` header don't.
+
+**413 `upload too large (200 MB max)`, or the connection closes during an upload.** The request is over 200 MB. The
+studio answers before it reads the body, so a client still sending may see a broken connection instead of the
+answer. With JSON, base64 makes files a third larger, so they can total about 150 MB. `bin/sol-h3` checks the size
+before it uploads.
+
+**421 `unknown host name <name>; add it to SOLH3_ALLOWED_HOSTS`.** You reach the studio by a name it doesn't
+answer to by default, such as a domain of your own. Add the name to `SOLH3_ALLOWED_HOSTS` in the env file and
+restart the studio ([API.md](API.md#access) says what the check is for).
+
+**429 `the queue is full`.** `SOLH3_MAX_QUEUED` clips (default 20) are waiting. Wait until one has started
+(`Retry-After: 60`), or raise the setting.
+
+**400 `the studio does not fetch URLs`.** A JSON submit named a file by its URL. Send the file itself as base64, or
+use `bin/sol-h3` (CLI or MCP), which downloads URLs on its own machine and uploads the files.
+
+**503 from spark-switchboard** (`{"error": {"code": ...}, "switchboard": ...}`; ask with `Accept:
+application/json` to get JSON). A POST that got it was not passed on, so no clip was made, and sending it again is
+safe:
+
+- `waiting`: the studio starts once another app's work or quiet period is over. Send it again after `Retry-After`,
+  or let switchboard hold the request longer with `X-Switchboard-Wait: <seconds>` (up to 3600; `bin/sol-h3` sends
+  900).
+- `no_memory`: something switchboard doesn't manage holds the memory. Stop it, or see the dashboard.
+- `stopped`, on a status read or a wait (`/api/state`, `/api/jobs/...`, `/poster/...`): the studio is stopped, and
+  those reads never start it. A clip that was running when you last looked has most likely finished: switchboard
+  stops the studio only when no clip is queued or running.
+- `paused`, `failed`: as the message says; switchboard's dashboard has more.
+
+**"spark-switchboard stopped the studio while waiting for clip <id>; the clip most likely finished first".** The
+studio was stopped between two polls of a wait, usually because another app wanted the memory right after the clip
+ended. Get the clip with `sol-h3 fetch <id> --wake` (MCP: `fetch` with `wake: true`), or `GET /video/<id>`; that
+starts the studio again (about 110 GiB). If instead the studio itself stopped while the clip was still running
+(`the studio is shutting down ...`, or "the studio stopped while clip <id> was ..."), the clip reads `failed` with
+`server restarted` after the restart: make it again.
+
+**A script's status check or wait starts the studio (and pushes another app out).** Your copy of the integration
+file in switchboard's `services/` directory is older than this version: add the API's paths to its
+`passive_paths` ([INSTALL.md](INSTALL.md#updating)). `bin/sol-h3` asks switchboard first and never starts a stopped
+studio for `status`, `wait` or `fetch` (only `fetch --wake` does).
+
+**An MCP call says the clip is still running, or the host stops the call.** Each host limits how long a tool call
+may run. Set `SOLH3_MCP_WAIT_S` below that limit and let the agent call `wait` with the id
+([API.md](API.md#waiting-values-per-client)). A stopped call never cancels the clip.
+
+**MCP: `out must be inside SOLH3_OUT_DIR ... or the working directory`.** The MCP server saves only there, unless
+its environment has `SOLH3_MCP_OUT_ANYWHERE=1`. Point `SOLH3_OUT_DIR` at the folder you want.
 
 ## Stopping
 
