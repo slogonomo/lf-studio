@@ -172,8 +172,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
     returned, where both runs run the same code.
   - The next clips came out identical for t2va: the encoder's output, Stage1's tensors, decoded audio and video.
     For fl2va the encoder's output was identical, but Stage1 differed. Each run had compiled that prompt length's
-    Stage1 graphs anew, and autotuning picked another reduction kernel in one of them. A check from one shared
-    compile cache is pending.
+    Stage1 graphs anew, and autotuning picked another reduction kernel in one of them. A second fl2va run of the
+    default, started from the other run's final compile cache, matched it bit for bit in both clips: the encoder's
+    output, Stage1's tensors, decoded audio and video.
 
   The minimum depends on the length, since a longer first refine needs more. Measured, the encoder plus a first
   refine took 23.1-23.8 GiB at t2va 5 s and 26.7 GiB at fl2va 10 s. So the minimum is 32 GiB up to 121 output
@@ -355,12 +356,14 @@ and identity are unchanged, and the image is 5-11% sharper.
     them. To H3's transformer they are the fixed markers it saw around every dialogue line in training.
 - **How the setting reaches the worker.** The Qwen worker runs in Docker with a fixed environment (`qwen_python.sh`),
   so the host reads `SOL_H3_PROMPT_TOKENS` in `runtime/config.py` and passes the mode to the worker in the recipe, as
-  `stage1.prompt_tokens`. A value other than `plain` or `minimax` (any case) fails when the pipeline is created,
-  before any worker loads; the studio and `bin/sol-h3-studio --check` refuse to start with it. They also refuse
-  `minimax`, set or by default, when the Sana checkout still carries an older patch, which would ignore the setting
-  and tokenize as `plain`: "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one
-  applied in ...; run install/10-sana.sh". So after a `git pull`, run `install/10-sana.sh`. (Likewise
-  `SOL_H3_STAGE2_AUDIO=frozen` with a patch older than 0.3, which refines as `joint`.)
+  `stage1.prompt_tokens`. Every Qwen worker gets that recipe: the warm-up one, the resident one (also when it starts
+  during the first clip, see 4) and those loaded per request. A value other than `plain` or `minimax` (any case)
+  fails when the pipeline is created, before any worker loads; the studio and `bin/sol-h3-studio --check` refuse to
+  start with it. They also refuse `minimax`, set or by default, when the Sana checkout still carries an older patch,
+  which would ignore the setting and tokenize as `plain`: "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4)
+  needs a newer patch than the one applied in ...; run install/10-sana.sh". So after a `git pull`, run
+  `install/10-sana.sh`. (Likewise `SOL_H3_STAGE2_AUDIO=frozen` with a patch older than 0.3, which refines as
+  `joint`.)
 - **Older clips.** Up to 0.3 every prompt was encoded `plain`. A dialogue prompt now encodes differently, so a
   dialogue clip made with 0.3 doesn't come back from its seed unless `SOL_H3_PROMPT_TOKENS=plain`. A prompt without
   any of the 7 tokens gets the same ids in both modes, and its clips came out bit-identical (measured; see below).
@@ -420,8 +423,9 @@ stand-ins for ComfyUI, torch and the checkpoint). With `SOL_H3_SPARK_COMFY_ROOT`
 Qwen tokenizer files: the 7 ids, the 19 ids of the example above, and unchanged ids for prompts without the tokens. Its
 test of ComfyUI's own `MiniMaxH3Tokenizer` needs ComfyUI's packages: it is skipped in the Stage1 environment and runs in
 the Qwen image ([Apply, test, revert](#apply-test-revert)). `tests/test_pipeline.py` checks the setting before any
-worker starts and that the default, the setting or the `Pipeline` argument reaches every worker;
-`tests/test_qwen_media.py` checks the receipt fields.
+worker starts and that the default, the setting or the `Pipeline` argument reaches every worker, the resident
+prompt encoder too, whether it starts during the first clip or after it; `tests/test_qwen_media.py` checks the
+receipt fields.
 87 tests in total (upstream: 65).
 
 ## All switches

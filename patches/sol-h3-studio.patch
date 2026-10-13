@@ -1844,7 +1844,7 @@ index 0000000..087bed3
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..db6d7f6 100644
+index 6c20301..5c55768 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -1865,7 +1865,7 @@ index 6c20301..db6d7f6 100644
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -59,31 +62,191 @@ class FakeWorker:
+@@ -59,31 +62,211 @@ class FakeWorker:
          self.events.append(("close", self.name))
  
  
@@ -2033,10 +2033,12 @@ index 6c20301..db6d7f6 100644
 +            Pipeline({}, Path(directory) / "run", worker_factory=factory)
 +
 +    def test_bad_prompt_tokens_setting_fails_before_any_worker(self):
++        from runtime.qwen_ops.prompt_tokens import recipe_mode     # what the Qwen worker's Session reads
 +        made = []
++        worker = FakeWorker
 +        def factory(*args, **kwargs):
 +            made.append(args)
-+            return FakeWorker(*args, **kwargs)
++            return worker(*args, **kwargs)
 +        case = {"case_id": "tags", "prompt": "The woman (S1) says: <d>[English] Welcome.</d>", "seed": 1}
 +        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
 +            os.environ["SOL_H3_PROMPT_TOKENS"] = "special"
@@ -2047,29 +2049,47 @@ index 6c20301..db6d7f6 100644
 +                Pipeline({}, Path(directory) / "run", prompt_tokens="both", worker_factory=factory)
 +            self.assertFalse((Path(directory) / "run").exists())
 +            self.assertEqual(made, [])
-+            # the default, the setting (any case), and the argument, which wins over the setting
-+            for name, setting, argument, mode in (("default", None, None, "minimax"),
-+                                                  ("setting", "Plain", None, "plain"),
-+                                                  ("argument", "plain", "minimax", "minimax")):
++            # the default, the setting (any case), and the argument, which wins over the setting; the resident Qwen
++            # started during the first refine (MemAvailable above the minimum) and after the first clip (below it)
++            for name, setting, argument, mode, mem_gib, spawn in (
++                    ("default", None, None, "minimax", 64.0, "first_refine"),
++                    ("setting", "Plain", None, "plain", 64.0, "first_refine"),
++                    ("argument", "plain", "minimax", "minimax", 64.0, "first_refine"),
++                    ("default-late", None, None, "minimax", 20.0, "after_first_clip"),
++                    ("setting-late", "Plain", None, "plain", 20.0, "after_first_clip")):
 +                made.clear()
++                FakeWorker.events = []
++                worker = Stage2WaitsForQwen if spawn == "first_refine" else FakeWorker
 +                os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
 +                if setting is not None:
 +                    os.environ["SOL_H3_PROMPT_TOKENS"] = setting
-+                pipeline = Pipeline({}, Path(directory) / name, prompt_tokens=argument, worker_factory=factory)
-+                try:
-+                    pipeline.start(case, deliver=True)
-+                    pipeline._resident_qwen()
-+                    # every worker: Stage1, Stage2, the first request's Qwen and the resident Qwen
-+                    self.assertEqual(sorted(args[0] for args in made), ["qwen", "qwen", "stage1", "stage2"])
-+                    self.assertEqual({args[3]["stage1"]["prompt_tokens"] for args in made}, {mode}, name)
-+                    self.assertEqual(pipeline.report["recipe"]["stage1"]["prompt_tokens"], mode)
-+                finally:
-+                    pipeline.close()
++                with residency_settings(mem_gib=mem_gib):
++                    pipeline = Pipeline({}, Path(directory) / name, prompt_tokens=argument, worker_factory=factory)
++                    try:
++                        pipeline.start(case, deliver=True)
++                        resident = pipeline._resident_qwen()
++                        # every worker: Stage1, Stage2, the first request's Qwen and the resident Qwen
++                        self.assertEqual(sorted(args[0] for args in made), ["qwen", "qwen", "stage1", "stage2"])
++                        self.assertEqual({args[3]["stage1"]["prompt_tokens"] for args in made}, {mode}, name)
++                        self.assertEqual(pipeline.report["recipe"]["stage1"]["prompt_tokens"], mode)
++                        # the resident Qwen, also when start() spawned it before the first refine, reads the mode
++                        self.assertEqual(pipeline.report["resident_qwen"]["spawn"], spawn, name)
++                        self.assertEqual([Path(args[1]).name for args in made if args[0] == "qwen"],
++                                         ["warmup-qwen-worker", "qwen-worker"])
++                        self.assertEqual(recipe_mode(resident.config), mode, name)
++                        events = FakeWorker.events
++                        resident_start = events.index(("start", "qwen"), events.index(("close", "qwen")))
++                        if spawn == "first_refine":
++                            self.assertLess(resident_start, events.index(("call", "stage2", "run")), name)
++                        else:
++                            self.assertGreater(resident_start, events.index(("call", "stage2", "run")), name)
++                    finally:
++                        pipeline.close()
 +
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +359,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +379,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -2078,7 +2098,7 @@ index 6c20301..db6d7f6 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +388,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +408,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -2088,7 +2108,7 @@ index 6c20301..db6d7f6 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +424,26 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +444,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
