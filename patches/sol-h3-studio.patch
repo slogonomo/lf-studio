@@ -2047,7 +2047,7 @@ index 7f691fa..3b80f2a 100644
      sparse.triton_block_sparse_attn_forward = counted_sparse
      original_mask = native._build_block_mask
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-index 8f1a36c..0ffa256 100644
+index 8f1a36c..dc312f5 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 @@ -3,25 +3,57 @@
@@ -2213,8 +2213,8 @@ index 8f1a36c..0ffa256 100644
 +    when autotune_cache_state is exactly "hit". With another label, a reduction read through the fallback got
 +    halved-R0_BLOCK candidates, was benchmarked by timing again, and the winner overwrote the stored result, so the
 +    next process could pick another block size and round differently. The info is now the dict check_autotune_cache
-+    builds on a hit, plus spark_fallback=True, which keeps the fallback visible (SPARK_DEBUG_AUTOTUNE, torch's
-+    triton_kernel_info trace) without changing what torch reads.
++    builds on a hit, plus spark_fallback=True, which keeps the fallback visible in the SPARK_DEBUG_AUTOTUNE lines
++    without changing what torch reads.
 +    """
 +    from torch._inductor.runtime import triton_heuristics as th
 +    original = th.CachingAutotuner.recheck_autotune_cache
