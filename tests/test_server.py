@@ -192,6 +192,68 @@ class Basics(StudioTest):
         self.assertEqual(e.exception.code, 403)
 
 
+class HostCheck(StudioTest):
+    """#29: a request for a host name the studio does not answer to gets 421, whatever the method: a web page on a
+    name of its own that resolves to the studio's address (DNS rebinding) gets nothing. IP addresses, localhost, names
+    without a dot and local suffixes pass; SOLH3_ALLOWED_HOSTS adds names, or turns the check off with *."""
+    load_s, clip_s = 1, 0.5
+
+    def ask(self, host, method="GET", path="/api/state", **headers):
+        body = json.dumps({"id": "f" * 32}).encode() if method == "POST" else None
+        code, _, data = self.studio.request(method, path, body, dict(headers, Host=host))
+        return code, data
+
+    def refused(self, host, method="GET", path="/api/state", **headers):
+        code, data = self.ask(host, method, path, **headers)
+        self.assertEqual(code, 421, (host, method, path, data))
+        if method != "HEAD":
+            self.assertIn(b"add it to SOLH3_ALLOWED_HOSTS", data)
+        return json.loads(data or b"{}").get("error")
+
+    def test_unknown_names_refused_for_every_method(self):
+        self.assertEqual(self.refused("Evil.Example:8190"),
+                         "unknown host name evil.example; add it to SOLH3_ALLOWED_HOSTS")
+        self.refused("evil.example", "HEAD")
+        self.refused("evil.example", "GET", "/")
+        self.refused("evil.example", "GET", f"/video/{'f' * 32}")
+        self.refused("evil.example", "POST", "/api/cancel")
+        self.refused("studio.lan.evil.example", "POST", "/api/unload")
+        self.refused("ts.net")                                               # a suffix, not a name of its own
+        b = "hostcheck7MA4"
+        form = (f'--{b}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\na clip\r\n--{b}--\r\n').encode()
+        code, _, data = self.studio.request("POST", "/api/generate", form,
+                                            {"Host": "evil.example", "Content-Type": f"multipart/form-data; boundary={b}"})
+        self.assertEqual(code, 421, data)
+        self.assertEqual(self.studio.state()["jobs"], [])                     # nothing queued
+        self.refused(f"127.0.0.1:{self.studio.port}", **{"X-Forwarded-Host": "evil.example"})
+        self.refused(f"127.0.0.1:{self.studio.port}", **{"X-Forwarded-Host": "spark:8190, evil.example"})
+
+    def test_addresses_local_names_and_the_busy_probe_pass(self):
+        port = self.studio.port
+        for host in (f"127.0.0.1:{port}", "127.0.0.1", f"[::1]:{port}", "[::1]", f"localhost:{port}", "LOCALHOST",
+                     "localhost.", "10.1.2.3:8190", "100.101.102.103", "[fd7a:115c:a1e0::1]:8190", "spark:8190",
+                     "spark-box", "spark.tail1234.ts.net:8190", "studio.local", "box.lan", "box.home",
+                     "box.home.arpa", "gpu.internal:8190"):
+            self.assertEqual(self.ask(host)[0], 200, host)
+        self.assertEqual(self.ask("spark:8190", "POST", "/api/cancel")[0], 404)         # past the check: no such clip
+        self.assertEqual(self.ask(f"127.0.0.1:{port}", **{"X-Forwarded-Host": "spark.tail1234.ts.net:8190"})[0], 200)
+
+    def test_allowed_hosts_setting(self):
+        self.studio.stop()
+        self.studio.env["SOLH3_ALLOWED_HOSTS"] = " Studio.Example.com:8443 , other.example"
+        self.studio.start()
+        for host in ("studio.example.com", "STUDIO.example.com:8190", "other.example:80"):
+            self.assertEqual(self.ask(host)[0], 200, host)
+        self.assertEqual(self.ask(f"127.0.0.1:{self.studio.port}", **{"X-Forwarded-Host": "other.example"})[0], 200)
+        self.refused("evil.example")
+        self.refused("example.com")
+        self.studio.stop()
+        self.studio.env["SOLH3_ALLOWED_HOSTS"] = "*"
+        self.studio.start()
+        self.assertEqual(self.ask("evil.example")[0], 200)
+        self.assertEqual(self.ask("evil.example", "POST", "/api/cancel")[0], 404)
+
+
 def mp4(seconds=3):
     """A small test video with sound (reference videos must be at least 2 s)."""
     out = Path(tempfile.mkdtemp(prefix="sol-h3-mp4-")) / "ref.mp4"
@@ -1046,6 +1108,130 @@ class BadStage2Audio(unittest.TestCase):
             self.assertIn("SOL_H3_STATIC_SHAPES must be 1 or 0", str(e.exception))
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+def older_patch_package(directory, version):
+    """The stub runtime as an older patch has it. 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS or
+    SOL_H3_STATIC_SHAPES; 0.2's has none of them. Such a patch tokenizes as plain does and compiles as
+    SOL_H3_STATIC_SHAPES=0 does, and 0.2's refines as joint does."""
+    package = Path(directory) / f"package-{version}"
+    shutil.copytree(Path(__file__).resolve().parent / "stub" / "runtime", package / "runtime",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    missing = {"0.3": "prompt_tokens_mode, compile_dynamic",
+               "0.2": "stage2_audio_mode, prompt_tokens_mode, compile_dynamic"}[version]
+    with (package / "runtime" / "config.py").open("a") as f:
+        f.write(f"\ndel {missing}   # the patch of {version} has no such setting\n")
+    return package
+
+
+# What an older patch is asked for, and how the studio and the launcher answer: None = starts; otherwise the start of
+# the refusal, which ends "needs a newer patch than the one applied in <package>; run install/10-sana.sh". An empty
+# value is the default, as unset.
+OLDER_PATCH_CASES = (
+    ("0.3", {}, "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4)"),        # a git pull without install/10-sana.sh
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": "minimax"}, "SOL_H3_PROMPT_TOKENS=minimax"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain"}, "SOL_H3_STATIC_SHAPES=1 (the default since 0.4)"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "1"}, "SOL_H3_STATIC_SHAPES=1"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain", "SOL_H3_STATIC_SHAPES": " 0"}, None),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0"},
+     "SOL_H3_STAGE2_AUDIO=frozen (the default since 0.3)"),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_STAGE2_AUDIO": "frozen"},
+     "SOL_H3_STAGE2_AUDIO=frozen"),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_STAGE2_AUDIO": "JOINT"}, None),
+)
+
+
+def older_patch_settings(settings):
+    return {"SOL_H3_PROMPT_TOKENS": "", "SOL_H3_STAGE2_AUDIO": "", "SOL_H3_STATIC_SHAPES": "", **settings}
+
+
+class BadPromptTokens(unittest.TestCase):
+    """SOL_H3_PROMPT_TOKENS (a patch setting, #38) is checked at start like SOL_H3_STAGE2_AUDIO."""
+
+    def test_older_patch(self):
+        """A checkout with an older patch would ignore the setting: the studio refuses any value but what that
+        patch does anyway, the default (minimax) included. Without this, a git pull without install/10-sana.sh
+        started fine and every clip came out plain (#38)."""
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-old-"))
+        try:
+            packages = {version: older_patch_package(d, version) for version in ("0.3", "0.2")}
+            for i, (version, settings, refused) in enumerate(OLDER_PATCH_CASES):
+                package = packages[version]
+                studio = StubStudio(d / f"case-{i}", env=older_patch_settings(settings), package=package)
+                if refused is None:
+                    studio.start()
+                    studio.stop()
+                    continue
+                with self.assertRaises(RuntimeError) as e:
+                    studio.start()
+                self.assertIn(f"{refused} needs a newer patch than the one applied in {package.resolve()}; "
+                              "run install/10-sana.sh", str(e.exception))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        try:
+            with self.assertRaises(RuntimeError) as e:
+                StubStudio(d / "a", env={"SOL_H3_PROMPT_TOKENS": "special"}).start()
+            self.assertIn("SOL_H3_PROMPT_TOKENS must be one of", str(e.exception))
+            for i, value in enumerate(("MiniMax", "plain", "")):
+                studio = StubStudio(d / f"b{i}", env={"SOL_H3_PROMPT_TOKENS": value}).start()
+                studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class LauncherSettingsCheck(unittest.TestCase):
+    """bin/sol-h3-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS,
+    SOL_H3_STATIC_SHAPES) in the package, here the stub runtime, and refuses a bad value with its message, or a value
+    an older patch can't give (#38)."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="sol-h3-check-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        (self.d / "sana/models/minimax_h3").mkdir(parents=True)
+        (self.d / "sana/models/minimax_h3/Sol-H3-Spark").symlink_to(Path(__file__).resolve().parent / "stub")
+        for task in ("t2va", "fl2va", "ref2va"):
+            (self.d / f"paths-{task}.json").write_text("{}")
+
+    def check(self, **settings):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "SOLH3_"))}
+        env.update(SOLH3_ENV=str(self.d / "no-env-file"), SOLH3_SANA=str(self.d / "sana"), SOLH3_PYTHON=sys.executable,
+                   SOLH3_PATHS=str(self.d / "paths-{task}.json"), SOL_H3_SPARK_RUNTIME_ROOT=str(self.d / "runtime"),
+                   SOLH3_STATE_DIR=str(self.d / "state"), SOLH3_HOST="127.0.0.1", SOLH3_PORT=str(free_port()),
+                   SOLH3_TEST_SKIP_DOCKER="1", SOLH3_MIN_FREE_GIB="0", PYTHONDONTWRITEBYTECODE="1")
+        env.update(settings)
+        run = subprocess.run(["bash", str(Path(__file__).resolve().parents[1] / "bin/sol-h3-studio"), "--check"],
+                             env=env, capture_output=True, text=True, timeout=120)
+        return run.returncode, run.stdout + run.stderr
+
+    def test_settings(self):
+        self.assertEqual(self.check()[0], 0)
+        self.assertEqual(self.check(SOL_H3_PROMPT_TOKENS="Plain", SOL_H3_STAGE2_AUDIO="joint")[0], 0)
+        for name, value in (("SOL_H3_PROMPT_TOKENS", "special"), ("SOL_H3_STAGE2_AUDIO", "noised")):
+            code, out = self.check(**{name: value})
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - {name} must be one of", out)
+        self.assertEqual(self.check(SOL_H3_STATIC_SHAPES="0")[0], 0)
+        code, out = self.check(SOL_H3_STATIC_SHAPES="yes")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - SOL_H3_STATIC_SHAPES must be 1 or 0", out)
+
+    def test_older_patch(self):
+        """A checkout with an older patch (no settings checks, or one of them) passes only when every setting, set or
+        the default, asks for what that patch does anyway."""
+        for i, (version, settings, refused) in enumerate(OLDER_PATCH_CASES):
+            sana = self.d / f"sana-{i}"
+            (sana / "models/minimax_h3").mkdir(parents=True)
+            (sana / "models/minimax_h3/Sol-H3-Spark").symlink_to(older_patch_package(sana, version))
+            code, out = self.check(SOLH3_SANA=str(sana), **older_patch_settings(settings))
+            if refused is None:
+                self.assertEqual(code, 0, out)
+                continue
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - {refused} needs a newer patch than the one applied in", out)
+            self.assertIn("run install/10-sana.sh", out)
 
 
 class TrashPurge(Delete):

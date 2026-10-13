@@ -14,8 +14,8 @@ the measurements in [PERFORMANCE.md](PERFORMANCE.md) came from. Step 80 built a 
 one the measurements used. On that install the first clip (t2va, 16:9, 5 s) took 213 s, including the one-time
 kernel compile; the next clip 65 s; after a restart, a cold start with the filled compile cache 104 s. That run
 reused weights already on the box (step 20 only verified them) and Docker's build cache for NVIDIA's base image.
-0.3 changed `install/10-sana.sh` and the patch (now 74 tests); its update path was checked in scratch clones, not by
-a fresh install on hardware.
+0.3 changed `install/10-sana.sh` and the patch (74 tests then), and 0.4 changes the patch again (123 tests). Their
+update paths were checked in scratch clones, not by a fresh install on hardware.
 <!-- /validation-status -->
 
 NVIDIA notes that a clean installation of Sol-H3-Spark has not been validated upstream; the pins here are the
@@ -82,7 +82,7 @@ for a mode whose weights were not downloaded.
 | Step | What it does | Time / size measured |
 |---|---|---|
 | `install/00-check.sh` | Checks aarch64, GB10, driver, CUDA 13, python3.12, git, curl, ffmpeg, docker, disk, HF access to LTX-2.5. Changes nothing. | - |
-| `install/10-sana.sh` | Clones NVlabs/Sana `sol-engine` at `patches/BASE_COMMIT`, applies the patch (and keeps a copy for [updates](#updating)), runs the 98 CPU tests once the Stage1 env exists. | - |
+| `install/10-sana.sh` | Clones NVlabs/Sana `sol-engine` at `patches/BASE_COMMIT`, applies the patch (and keeps a copy for [updates](#updating)), runs the 123 CPU tests once the Stage1 env exists. | - |
 | `install/20-weights.sh` | Downloads the pinned weights for t2va, fl2va and ref2va with NVIDIA's `download_checkpoints.py --include-offline --verify-sha256`. `SOLH3_TASKS` limits it (see above). Resumable. | ~48 min at ~80 MB/s, ~224 GB |
 | `install/30-sources.sh` | Fetches the pinned source trees with `prepare.py --fetch-sources`. It ends with "Missing required inputs", which is expected; the script checks the revisions itself. | ~12 s, ~0.5-0.8 GB |
 | `install/40-stage1.sh` | Stage1 venv (torch 2.12+cu130, FastVideo, fastvideo-kernel built for SM121, cuDNN 9.20) and the isolated FA4 target. | 5-22 min (5.5 min on a fast connection, 22 min in the first install), ~7.6 GB with FA4 |
@@ -115,6 +115,16 @@ ssh -L 8190:127.0.0.1:8190 you@spark-xxxx.local
 To reach it from the LAN directly, set `SOLH3_HOST=0.0.0.0`. There is no login, so do that only on a network you
 trust.
 
+Scripts and agents use the same port ([API.md](API.md)). On the Spark, `bin/sol-h3-studio generate ...` (and
+`wait`, `status`, `cancel`, `fetch`, `guide`, `mcp`) runs the client with this env file's settings. On another
+machine the client is one file (Python 3.9 or later), pointed at the studio with `SOLH3_URL`:
+
+```bash
+mkdir -p ~/.local/bin && curl -fsSLo ~/.local/bin/sol-h3 \
+  https://raw.githubusercontent.com/slogonomo/sol-h3-studio/main/bin/sol-h3 && chmod +x ~/.local/bin/sol-h3
+SOLH3_URL=http://<spark-host>:8190 sol-h3 status
+```
+
 The first clip of each new mode, format and length loads the models (5 s clips: 104-113 s for t2va in the studio,
 99 s in the `infer.py` bench; ~115 s for fl2va and ~180 s for ref2va with a video reference, both measured with
 `infer.py`). The very first run of a configuration also compiles its kernels (see
@@ -126,8 +136,9 @@ Other ways to run it: as an NVIDIA Sync custom app ([nvidia-sync.md](nvidia-sync
 (`integrations/systemd/sol-h3-studio.service`), or on demand with
 [spark-switchboard](https://github.com/slogonomo/spark-switchboard): copy
 `integrations/spark-switchboard/sol-h3-studio.toml` into switchboard's `services/` directory. It sets the pidfile
-(`SOLH3_PIDFILE`) through which switchboard finds the studio again after its own restart, and `--kill` as the
-command that removes leftovers.
+(`SOLH3_PIDFILE`) through which switchboard finds the studio again after its own restart, `--kill` as the
+command that removes leftovers, and the paths whose requests never start a stopped studio (`passive_paths`: the
+health check, and the state, clip records, waits and posters that scripts read).
 
 ## Updating
 
@@ -150,8 +161,10 @@ away and run the script again for a fresh clone.
 
 If spark-switchboard runs the studio, bring your copy in switchboard's `services/` directory (whatever you named it)
 up to date when `integrations/spark-switchboard/sol-h3-studio.toml` changes: for 0.3, add `"cancelled"` to its
-`idle_values` (the busy probe must count the new status as idle), or replace its contents with the new file and
-keep its file name and your path edits. Then `spark-switchboard check`, and restart switchboard.
+`idle_values` (the busy probe must count the new status as idle); for 0.4, set its `passive_paths` to `["/health",
+"/api/state", "/api/jobs", "/api/jobs/*", "/poster/*"]` (without it, a script that reads a clip's state or waits
+for it starts a stopped studio). Or replace its contents with the new file and keep its file name and your path edits. Then
+`spark-switchboard check`, and restart switchboard.
 
 A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a released version of the patch is
 found the same way. Any other patch: reverse it with the file you applied (`git -C "$SOLH3_SANA" apply -R <that
@@ -159,6 +172,15 @@ patch>`), or re-clone as above.
 
 The compile cache is keyed on code and versions, so it stays valid; delete `$SOL_H3_SPARK_RUNTIME_ROOT/cache` to
 start clean.
+
+From 0.3 to 0.4: the patch changed, so run `install/10-sana.sh` after the pull. Until then the studio refuses to start
+with "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...; run
+install/10-sana.sh": the old patch would ignore the new setting. With `minimax` the prompt encoder reads the dialogue
+tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does. A dialogue prompt therefore encodes differently
+from 0.3, and a 0.3 dialogue clip doesn't come back from its seed unless you set `SOL_H3_PROMPT_TOKENS=plain`. Prompts
+without these tags encode as before ([PATCH.md](PATCH.md#16-minimaxs-prompt-tokens)). Stage 1 now compiles every
+graph statically ([PATCH.md](PATCH.md#18-reshape-another-length-or-orientation-without-a-reload)), so the first clip of
+each prompt length and shape compiles Stage 1 once more after the update (inferred).
 
 From 0.1 to 0.2: the first start imports the clip history (`jobs.json`) into `jobs.db` in the same directory
 (see "Where the clip history is" in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#while-it-runs)). Back up

@@ -51,7 +51,7 @@ index be0076a..ef2447e 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/config.py b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
-index 03804f7..783a0fb 100644
+index 03804f7..60f17cb 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 @@ -6,6 +6,10 @@ import os
@@ -59,13 +59,13 @@ index 03804f7..783a0fb 100644
  import re
  
 +# Modified by sol-h3-studio: portrait orientation, clip length, the persistent compile-cache location, the Stage-2
-+# audio setting and static-shape compiles.
++# audio setting, the prompt-token setting and static-shape compiles.
 +from .geometry import ORIENTATIONS, orient_recipe
 +
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,68 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,89 @@ REQUIRED_PATHS = (
  )
  
  
@@ -100,21 +100,40 @@ index 03804f7..783a0fb 100644
 +    return mode
 +
 +
++# sol-h3-studio: MiniMax's prompt tokens (runtime/qwen_ops/prompt_tokens.py). "minimax" (default since 0.4): the 7
++# tokens of MiniMax's tokenizer_config.json are added, so each tag is one token as in H3's training; "plain": the
++# pinned ComfyUI's Qwen tokenizer splits <d> and </d> into ordinary text tokens, as up to 0.3. The Qwen worker runs
++# in Docker with a fixed environment, so the host reads the setting here and passes it in the recipe
++# (stage1.prompt_tokens).
++PROMPT_TOKEN_MODES = ("plain", "minimax")
++
++
++def prompt_tokens_mode(value=None):
++    """SOL_H3_PROMPT_TOKENS (or value), default "minimax" (case-insensitive)."""
++    raw = os.environ.get("SOL_H3_PROMPT_TOKENS", "") if value is None else value
++    mode = str(raw).strip().lower() or "minimax"
++    if mode not in PROMPT_TOKEN_MODES:
++        raise ValueError(f"SOL_H3_PROMPT_TOKENS must be one of {PROMPT_TOKEN_MODES}, not {raw!r}")
++    return mode
++
++
 +def compile_dynamic():
 +    """sol-h3-studio: the torch.compile `dynamic` flag for Stage1's regions and Stage2's blocks.
 +
 +    False (default): a new shape (prompt length, clip length, orientation) compiles its own static graph, the graph a
 +    fresh worker compiles for that shape, so a worker's output does not depend on the shapes it ran before. With
 +    None (upstream, SOL_H3_STATIC_SHAPES=0) Dynamo compiles the first shape statically and, after a shape change,
-+    may compile a graph with dynamic sizes and other kernels.
++    may compile a graph with dynamic sizes and other kernels. An empty value is the default, as unset.
 +    """
-+    value = os.environ.get("SOL_H3_STATIC_SHAPES", "1").strip()
++    raw = os.environ.get("SOL_H3_STATIC_SHAPES", "")
++    value = raw.strip() or "1"
 +    if value not in ("0", "1"):
-+        raise ValueError(f"SOL_H3_STATIC_SHAPES must be 1 or 0, not {value!r}")
++        raise ValueError(f"SOL_H3_STATIC_SHAPES must be 1 or 0, not {raw!r}")
 +    return False if value == "1" else None
 +
 +
-+def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None, orientation=None, seconds=None):
++def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None, orientation=None, seconds=None,
++                prompt_tokens=None):
      recipe = json.loads((PACKAGE / "configs/default.json").read_text())
      # This is a record of the implemented recipe, not an ablation interface.
      canonical = json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()
@@ -132,6 +151,8 @@ index 03804f7..783a0fb 100644
 +        frames = frame_geometry(draft_frames_for_seconds(seconds))
 +        recipe["stage1"]["frames"], recipe["output"]["frames"] = frames["draft_frames"], frames["output_frames"]
 +        recipe["duration_s"] = round(frames["output_frames"] / 24, 2)
++    # sol-h3-studio: the prompt-token mode for the Qwen worker, derived after the hash check; a bad value fails here.
++    recipe["stage1"]["prompt_tokens"] = prompt_tokens_mode(prompt_tokens)
      if task not in TASKS:
          raise ValueError(f"task must be one of {TASKS}")
      if task != "ref2va" and (ref_image_match is not None or ref_stage1_attn is not None):
@@ -554,7 +575,7 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
-index 9aad551..edbfcd1 100644
+index 9aad551..3e6af91 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 @@ -6,9 +6,14 @@ from pathlib import Path
@@ -562,8 +583,8 @@ index 9aad551..edbfcd1 100644
  import subprocess
  import time
 +# Modified by sol-h3-studio: overlapped loading, deliver-first start(), transient Qwen for long clips,
-+# persistent compile caches, the mimalloc purge setting for workers and reshape() (clip length and orientation
-+# changed in place).
++# persistent compile caches, the mimalloc purge setting for workers, the prompt-token setting and reshape() (clip
++# length and orientation changed in place).
 +from concurrent.futures import ThreadPoolExecutor
 +import threading
  
@@ -574,12 +595,13 @@ index 9aad551..edbfcd1 100644
  
  
  def await_json(path, process, timeout=1800):
-@@ -25,6 +30,23 @@ def await_json(path, process, timeout=1800):
+@@ -25,6 +30,24 @@ def await_json(path, process, timeout=1800):
      return receipt
  
  
-+# sol-h3-studio: MemAvailable can show a cache release a moment after the release has answered, so the check before
-+# a resident Qwen load reads it for up to 1 s.
++# sol-h3-studio: MemAvailable can show a cache release a moment after the release has answered (bench trace: +6.6 GiB
++# between two 0.25 s samples around the answer), so the check before an early resident Qwen (start(), reshape())
++# reads it for up to 1 s.
 +MEM_SETTLE_S = 1.0
 +
 +
@@ -598,7 +620,7 @@ index 9aad551..edbfcd1 100644
  def worker_environment(name, paths):
      env = os.environ.copy()
      env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
-@@ -45,6 +67,20 @@ def worker_environment(name, paths):
+@@ -45,6 +68,20 @@ def worker_environment(name, paths):
          env.pop("LD_LIBRARY_PATH", None)
      elif name == "stage2":
          env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -619,7 +641,7 @@ index 9aad551..edbfcd1 100644
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -77,7 +113,7 @@ class Worker:
+@@ -77,7 +114,7 @@ class Worker:
              raise
  
      def submit(self, op="run", **kwargs):
@@ -628,28 +650,39 @@ index 9aad551..edbfcd1 100644
              raise ValueError("Unsupported session operation")
          self.sequence += 1
          response = self.root / f"response-{self.sequence:05d}.json"
-@@ -120,15 +156,31 @@ class Pipeline:
+@@ -115,20 +152,40 @@ class Worker:
+ class Pipeline:
+     """Reuse three isolated runtime environments and the same models for a batch.
+ 
+-    A full warmup precedes permanent Qwen residency to bound Stage2's initial
+-    loading peak. It is reported separately; the first formal request counts.
++    sol-h3-studio: a full warmup pass loads the models. The resident Qwen starts during its Stage2 refine, after
++    Stage2's initial loading peak, if memory allows (start()). The warmup is reported separately; the first formal
++    request counts.
      """
  
      def __init__(self, paths, output_root, *, task="t2va", ref_image_match=None,
 -                 ref_stage1_attn=None, worker_factory=Worker):
-+                 ref_stage1_attn=None, orientation=None, seconds=None, worker_factory=Worker):
++                 ref_stage1_attn=None, orientation=None, seconds=None, prompt_tokens=None, worker_factory=Worker):
          self.paths = paths
          self.task = task
-+        self.ref_options = {"ref_image_match": ref_image_match, "ref_stage1_attn": ref_stage1_attn}
++        # sol-h3-studio: a bad SOL_H3_PROMPT_TOKENS (or prompt_tokens) fails in load_recipe, before any worker loads
          self.config = load_recipe(task, ref_image_match=ref_image_match,
 -                                  ref_stage1_attn=ref_stage1_attn)
 +                                  ref_stage1_attn=ref_stage1_attn, orientation=orientation,
-+                                  seconds=seconds)
++                                  seconds=seconds, prompt_tokens=prompt_tokens)
++        # sol-h3-studio (reshape): what stays when the shape changes; the prompt-token mode as resolved here, so a
++        # Qwen worker started after a reshape gets this session's mode
++        self.recipe_options = {"ref_image_match": ref_image_match, "ref_stage1_attn": ref_stage1_attn,
++                               "prompt_tokens": self.config["stage1"]["prompt_tokens"]}
 +        stage2_audio_mode()     # sol-h3-studio: a bad SOL_H3_STAGE2_AUDIO fails here, before any worker loads
 +        compile_dynamic()       # sol-h3-studio: the same for SOL_H3_STATIC_SHAPES
-+        # sol-h3-studio (reshape): MemAvailable needed to load the resident Qwen right after a reshape
-+        self.resident_qwen_min_gib = float(os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB") or "32")
          self.root = Path(output_root).resolve()
          self.root.mkdir(parents=True, exist_ok=False)
          self.worker_factory = worker_factory
          self.stage1 = self.stage2 = self.qwen = None
 +        self.transient_qwen = self._transient(self.config)
++        self._plan_resident_qwen()      # sol-h3-studio; a bad SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB fails here
 +        self.started = False
 +        # sol-h3-studio (reshape): a failed reshape leaves the workers in mixed shapes; close() sets `closing` first,
 +        # under the lock that reshape's resident-Qwen start also takes, so nothing starts on a closing pipeline.
@@ -662,7 +695,7 @@ index 9aad551..edbfcd1 100644
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -138,50 +190,243 @@ class Pipeline:
+@@ -138,50 +195,298 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -674,6 +707,32 @@ index 9aad551..edbfcd1 100644
 +        from . import geometry as _geometry
 +        return (_geometry.from_recipe(config)["output_frames"]
 +                > int(os.environ.get("SOL_H3_RESIDENT_QWEN_MAX_FRAMES", "241")))
++
++    def _plan_resident_qwen(self):
++        """sol-h3-studio: where start() loads the resident Qwen, for the current recipe. It loads while start()'s
++        Stage2 refines, so the next clip finds it ready, if MemAvailable after Stage2's cache release is at least the
++        minimum (_early_qwen_minimum). Otherwise, and with SOL_H3_RESIDENT_QWEN_EARLY=0, it loads after start()'s
++        MP4, as before. Sessions over SOL_H3_RESIDENT_QWEN_MAX_FRAMES load it per request (_transient)."""
++        self.early_qwen = (not self.transient_qwen
++                           and os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY", "1") == "1")
++        self.early_qwen_min_gib, self.early_qwen_min_from = self._early_qwen_minimum()
++        self.resident_qwen = ({"spawn": "per_request"} if self.transient_qwen else
++                              {"spawn": "after_first_clip", "reason": "SOL_H3_RESIDENT_QWEN_EARLY=0"}
++                              if not self.early_qwen else {"spawn": "first_refine"})
++
++    def _early_qwen_minimum(self, config=None):
++        """sol-h3-studio: the MemAvailable minimum for loading the resident Qwen while other workers hold their
++        caches (during start()'s refine, or right after a reshape back to a resident length), and where it comes
++        from: 32 GiB up to 121 output frames (5 s), 34 GiB above (test lane: Qwen plus a first refine took
++        23.1-23.8 GiB at 5 s, 26.7 GiB at fl2va 10 s; so ~7-9 GiB would be left at the minimum, above memguard's
++        5 GiB). SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB sets one minimum for every length."""
++        from . import geometry as _geometry
++        explicit = os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB")
++        if explicit:
++            return float(explicit), "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB"
++        frames = _geometry.from_recipe(config or self.config)["output_frames"]
++        return (32.0, "default for up to 121 output frames") if frames <= 121 else (
++            34.0, "default for over 121 output frames")
 +
 +    def _shape(self, config=None):
 +        """sol-h3-studio: the clip shape of a recipe (default: the current one), for results.json."""
@@ -690,7 +749,8 @@ index 9aad551..edbfcd1 100644
 +        row instead of being thrown away - the first clip arrives one whole generation sooner.
 +        sol-h3-studio overlap (same peaks as upstream's sequential order, measured): the warmup Qwen encodes
 +        while Stage1 spawns; Stage2 loads while Stage1 compiles, but only after Stage1's BF16 load and FP8
-+        conversion finished; the resident Qwen loads in the background after the first MP4.
++        conversion finished; the resident Qwen loads in the background once Stage1 has returned and Stage2 is
++        built, while Stage2 refines (after the MP4 with SOL_H3_RESIDENT_QWEN_EARLY=0).
 +        """
          if case.get("task", "t2va") != self.task:
              raise ValueError("The request task must match the pipeline's model family")
@@ -735,6 +795,19 @@ index 9aad551..edbfcd1 100644
 +            stage2 = pool.submit(self._spawn_stage2_when_stage1_resident, response)
 +            s1 = self.stage1.wait(response)
 +            self.stage2 = stage2.result()
++            if self.early_qwen:
++                # sol-h3-studio: both load peaks are over. From its load until the release after the first MP4,
++                # Stage2 holds ~12 GiB that the release frees (MemAvailable +12-14 GiB at that release at 5, 10 and
++                # 15 s, measured). Release it now, as generate() does before each clip, and load the resident Qwen
++                # during this refine if there is room for it.
++                self.stage2.call("release_idle_cache")
++                room, reading = self._room_for_early_qwen(after="after Stage2's release")
++                self.resident_qwen = dict(spawn="first_refine" if room else "after_first_clip", **reading)
++                if room:
++                    self._spawn_resident_qwen(pool=pool)
++                else:
++                    print(f"[sol-h3-studio] the resident Qwen loads after the first clip: {reading['reason']}",
++                          flush=True)
 +            self.stage2.call("prepare", request_id=request_id, output_root=str(request / "stage2"))
 +            s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
 +                                  request_id=request_id)
@@ -752,12 +825,11 @@ index 9aad551..edbfcd1 100644
 +                self.save()
 +            pool.shutdown(wait=False)
 +            raise
-+        if not self.transient_qwen:
-+            self._qwen_future = pool.submit(self.worker_factory, "qwen", self.root / "qwen-worker", self.paths,
-+                                            self.config)
++        if not self.transient_qwen and self._qwen_future is None:
++            self._spawn_resident_qwen(pool=pool)
 +        pool.shutdown(wait=False)
 +        self.started = True
-+        self.report.update(status="READY", transient_qwen=self.transient_qwen,
++        self.report.update(status="READY", transient_qwen=self.transient_qwen, resident_qwen=self.resident_qwen,
 +                           startup_and_warmup_s=(time.monotonic_ns() - started) / 1e9,
 +                           first_request_delivered=deliver,
 +                           warmup={"case_id": case["case_id"], "seed": pass_case["seed"], "output": s2["output"]})
@@ -784,6 +856,25 @@ index 9aad551..edbfcd1 100644
 +            time.sleep(0.5)
 +        return self.worker_factory("stage2", self.root / "stage2-worker", self.paths, self.config)
 +
++    def _room_for_early_qwen(self, config=None, *, after):
++        """sol-h3-studio: whether MemAvailable is at least the minimum (_early_qwen_minimum, for config's length) for
++        loading the resident Qwen now: in start() after Stage2's release, in reshape() after the workers released
++        the previous shape's caches. Reads it for up to MEM_SETTLE_S. Returns (room, the reading for results.json)."""
++        minimum, source = self._early_qwen_minimum(config)
++        deadline = time.monotonic() + MEM_SETTLE_S
++        while True:
++            gib = mem_available_gib()
++            if gib is not None and gib >= minimum or time.monotonic() >= deadline:
++                break
++            time.sleep(0.1)
++        room = gib is not None and gib >= minimum
++        reading = {"mem_available_gib": None if gib is None else round(gib, 2), "min_gib": minimum,
++                   "min_from": source}
++        if not room:
++            reading["reason"] = ("MemAvailable unknown" if gib is None else
++                                 f"MemAvailable {gib:.1f} GiB {after}, below the {minimum:g} GiB minimum ({source})")
++        return room, reading
++
 +    def _resident_qwen(self):
 +        if self.qwen is None and self._qwen_future is not None:
 +            future, self._qwen_future = self._qwen_future, None
@@ -801,27 +892,23 @@ index 9aad551..edbfcd1 100644
 +        if qwen is not None:
 +            qwen.close()
 +
-+    def _spawn_resident_qwen(self, config):
-+        """sol-h3-studio: load the resident Qwen in the background, unless the pipeline is closing."""
++    def _spawn_resident_qwen(self, config=None, *, pool=None):
++        """sol-h3-studio: load the resident Qwen in the background, unless the pipeline is closing: on start()'s pool
++        (qwen-worker), or on its own after a reshape (qwen-worker-r1, -r2, ...)."""
 +        with self._lock:
 +            if self.closing:
 +                return False
-+            self.qwen_restarts += 1
-+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sol-h3-qwen")
-+            self._qwen_future = pool.submit(self.worker_factory, "qwen",
-+                                            self.root / f"qwen-worker-r{self.qwen_restarts}", self.paths, config)
-+            pool.shutdown(wait=False)
++            if pool is None:
++                self.qwen_restarts += 1
++                root = self.root / f"qwen-worker-r{self.qwen_restarts}"
++                own = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sol-h3-qwen")
++            else:
++                root, own = self.root / "qwen-worker", None
++            self._qwen_future = (pool or own).submit(self.worker_factory, "qwen", root, self.paths,
++                                                     config or self.config)
++            if own is not None:
++                own.shutdown(wait=False)
 +            return True
-+
-+    def _room_for_resident_qwen(self):
-+        """sol-h3-studio: MemAvailable is at least SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB (default 32) for loading the
-+        resident Qwen right after a reshape. Returns (room, GiB read)."""
-+        deadline = time.monotonic() + MEM_SETTLE_S
-+        while True:
-+            gib = mem_available_gib()
-+            if gib is not None and gib >= self.resident_qwen_min_gib or time.monotonic() >= deadline:
-+                return gib is not None and gib >= self.resident_qwen_min_gib, gib
-+            time.sleep(0.1)
 +
 +    def reshape(self, *, orientation=None, seconds=None):
 +        """sol-h3-studio: another clip length and orientation for the same task, with every model kept loaded.
@@ -831,16 +918,17 @@ index 9aad551..edbfcd1 100644
 +        new shape; Stage2: the shared module's frame/shape globals, latent tools, decoder tiles; Qwen: the keyframe
 +        canvas). Graphs for a shape the workers have not run compile on its first request, statically, as in a
 +        fresh pipeline. Crossing SOL_H3_RESIDENT_QWEN_MAX_FRAMES closes the resident Qwen (longer clips load it per
-+        request); back below, it loads again in the background if MemAvailable is at least
-+        SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB, else the next clip loads its own and the resident one loads after it.
-+        Before start() only the recipe changes. Raises if a worker fails (the pipeline then refuses requests: close
++        request); back below, it loads again in the background if MemAvailable is at least the minimum start()
++        uses for the new length (_early_qwen_minimum), else the next clip loads its own and the resident one loads
++        after it. A restarted Qwen gets the new recipe, with the session's prompt-token mode. Before start() only
++        the recipe changes. Raises if a worker fails (the pipeline then refuses requests: close
 +        it), or if the pipeline is closing or a reshape failed before. Returns the record added to results.json.
 +        """
 +        if self.closing:
 +            raise RuntimeError("The pipeline is closing")
 +        if self.reshape_error:
 +            raise RuntimeError(f"A reshape failed ({self.reshape_error}); close this pipeline")
-+        config = load_recipe(self.task, orientation=orientation, seconds=seconds, **self.ref_options)
++        config = load_recipe(self.task, orientation=orientation, seconds=seconds, **self.recipe_options)
 +        started = time.monotonic_ns()
 +        record = {"from": self._shape(), "to": self._shape(config), "started_monotonic_ns": started}
 +        if config == self.config:
@@ -863,21 +951,21 @@ index 9aad551..edbfcd1 100644
 +            for name, worker, response in pending:
 +                workers[name] = worker.wait(response)
 +            if back_to_resident:                   # after Stage1/Stage2 released the previous shape's caches
-+                room, gib = self._room_for_resident_qwen()
++                room, reading = self._room_for_early_qwen(config, after="after the reshape")
 +                if room and self._spawn_resident_qwen(config):
-+                    workers["qwen"] = f"resident Qwen loading in the background (MemAvailable {gib:.1f} GiB)"
++                    workers["qwen"] = dict(reading, spawn="after_reshape")
 +                elif self.closing:
 +                    raise RuntimeError("The pipeline is closing")
 +                else:
 +                    self.resident_qwen_after_next_clip = True
-+                    workers["qwen"] = ("the next clip loads its own Qwen, the resident one loads after it: MemAvailable "
-+                                       + ("unknown" if gib is None else f"{gib:.1f} GiB") + ", below "
-+                                       f"SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB={self.resident_qwen_min_gib:g}")
++                    workers["qwen"] = dict(reading, spawn="after_next_clip")
 +        except BaseException as error:
 +            self.reshape_error = f"{type(error).__name__}: {error}"
 +            raise
 +        self.config = config                   # workers started from now on (a per-request Qwen) get it too
 +        self.transient_qwen = transient
++        if not self.started:
++            self._plan_resident_qwen()         # start() follows the new length's residency rule
 +        ended = time.monotonic_ns()
 +        record.update(changed=True, transient_qwen=transient, workers=workers, completed_monotonic_ns=ended,
 +                      reshape_s=(ended - started) / 1e9)
@@ -928,7 +1016,7 @@ index 9aad551..edbfcd1 100644
              self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -195,7 +440,11 @@ class Pipeline:
+@@ -195,7 +500,11 @@ class Pipeline:
                         qwen_s=conditioning["request_wall_s"], stage1_s=s1["request_wall_s"],
                         stage2_s=s2["stage2_request_s"],
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
@@ -941,7 +1029,7 @@ index 9aad551..edbfcd1 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -212,13 +461,17 @@ class Pipeline:
+@@ -212,13 +521,17 @@ class Pipeline:
          self.save()
  
      def close(self):
@@ -964,15 +1052,25 @@ index 9aad551..edbfcd1 100644
 +                finally:
 +                    self._close_resident_qwen()    # sol-h3-studio: one whose start began before `closing` was set
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
-index a3ba15c..ec4a436 100644
+index a3ba15c..48c628b 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/qwen.py
-@@ -139,9 +139,18 @@ def load_resident_checkpoint(checkpoint, torch):
+@@ -9,6 +9,9 @@ from pathlib import Path
+ import time
+ 
+ from .qwen_ops.media import input_spec, prepare_inputs, reference_target_area
++# Modified by sol-h3-studio: the keyframe/reference-video canvas follows the draft size, and MiniMax's prompt tokens
++# (SOL_H3_PROMPT_TOKENS, see qwen_ops/prompt_tokens.py).
++from .qwen_ops.prompt_tokens import apply_prompt_tokens, recipe_mode, request_counts
+ 
+ 
+ def atomic_json(path, value):
+@@ -139,9 +142,20 @@ def load_resident_checkpoint(checkpoint, torch):
              empty_host_cache()
  
  
-+# Modified by sol-h3-studio: the keyframe/reference-video canvas follows the (possibly portrait) draft size and can
-+# change in a running session (reshape).
++# sol-h3-studio: the keyframe/reference-video canvas follows the (possibly portrait) draft size and can change in a
++# running session (reshape).
 +def draft_canvas(config):
 +    """(height, width) of the draft: the canvas for keyframes and reference videos."""
 +    stage1 = config.get('stage1', {})
@@ -983,18 +1081,42 @@ index a3ba15c..ec4a436 100644
      def __init__(self, paths: dict, work_dir: str, config: dict):
          self.reference_target_area = reference_target_area(config)
 +        self.canvas = draft_canvas(config)        # sol-h3-studio
++        # sol-h3-studio: the prompt-token mode the host read (SOL_H3_PROMPT_TOKENS); a bad value fails before loading.
++        self.prompt_tokens_mode = recipe_mode(config)
          checkpoint = Path(paths['qwen_checkpoint']).expanduser().resolve(strict=True)
          comfy_root = Path(paths['comfy_root']).expanduser().resolve(strict=True)
          self.work_dir = Path(work_dir).resolve()
-@@ -239,6 +248,17 @@ class Session:
+@@ -182,6 +196,9 @@ class Session:
+         finally:
+             utils.load_torch_file = original_load
+         self.clip = self.owner.clip
++        # sol-h3-studio: add MiniMax's 7 prompt tokens (minimax) or check they are absent (plain).
++        self.prompt_tokens = apply_prompt_tokens(self.clip.tokenizer.qwen3vl_32b, self.prompt_tokens_mode)
++        print(f'[sol-h3-studio] prompt tokens: {self.prompt_tokens}', flush=True)
+         import comfy.model_management as management
+         management.load_models_gpu([self.clip.patcher], force_full_load=True)
+         self.clip.cond_stage_model.eval().requires_grad_(False)
+@@ -222,7 +239,7 @@ class Session:
+             'checkpoint_page_cache_advice': self.checkpoint_page_cache_advice,
+             'startup_checkpoint_reads': self.startup_checkpoint_reads,
+             'startup_reader': self.startup_reader,
+-            'weight_residency': self.weight_info}
++            'weight_residency': self.weight_info, 'prompt_tokens': self.prompt_tokens}
+ 
+     def release_idle_cache(self):
+         """Protocol name reused for metadata-only residency evidence; no offload."""
+@@ -239,6 +256,20 @@ class Session:
              'weight_storage_unchanged': True, 'weight_residency': info,
              'resources': resource_snapshot(self.torch)}
  
 +    def reshape(self, config):
 +        """sol-h3-studio: the keyframe/reference-video canvas and reference budget of another clip shape (same task).
-+        Only fl2va/ref2va inputs use them; the text encoding does not depend on the shape."""
++        Only fl2va/ref2va inputs use them; the text encoding does not depend on the shape. The prompt-token mode is
++        the session's: a recipe with another one is refused."""
 +        if self.closed or self.failed:
 +            raise RuntimeError('Qwen resident session is unavailable')
++        if recipe_mode(config) != self.prompt_tokens_mode:
++            raise ValueError('reshape changes only the clip length and orientation, not the prompt-token mode')
 +        previous = list(getattr(self, 'canvas', (384, 672)))
 +        self.canvas = draft_canvas(config)
 +        self.reference_target_area = reference_target_area(config)
@@ -1004,7 +1126,7 @@ index a3ba15c..ec4a436 100644
      def run(self, case, output_root):
          if self.closed or self.failed:
              raise RuntimeError('Qwen resident session is unavailable')
-@@ -252,7 +272,8 @@ class Session:
+@@ -252,7 +283,8 @@ class Session:
          try:
              before = self.release_idle_cache()
              torch.cuda.reset_peak_memory_stats()
@@ -1014,6 +1136,15 @@ index a3ba15c..ec4a436 100644
              identity = {'task': case.get('task', 't2va'), 'external_anchor_used': False,
                  'input_conditioned': case.get('task', 't2va') != 't2va',
                  'input_spec': input_spec(case), 'prepared_media': prepared_media}
+@@ -275,6 +307,8 @@ class Session:
+                 'prompt': case['prompt'], 'case_id': case['case_id'], 'seed': case['seed'],
+                 'payload': str(path), 'payload_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                 'shape': list(value.cond.shape), 'dtype': str(value.cond.dtype),
++                # sol-h3-studio: the prompt-token mode, the text positions and how many of them are MiniMax tokens
++                'prompt_tokens': self.prompt_tokens_mode, **request_counts(tokens, value.minimax_token_tags),
+                 'producer_mode': 'resident', 'model_load_count': self.model_load_count,
+                 'request_index': self.completed_requests, 'residency_before': before,
+                 'residency_after': after, 'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py
 index 39080d4..554c8de 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/media.py
@@ -1093,8 +1224,107 @@ index 39080d4..554c8de 100644
              indices, timestamps = reference_video_samples(len(frames))
              if has_audio:
                  items.append({"type": "audio"})
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py
+new file mode 100644
+index 0000000..fd693b7
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/qwen_ops/prompt_tokens.py
+@@ -0,0 +1,93 @@
++"""MiniMax's prompt tokens for the pinned ComfyUI Qwen tokenizer (SOL_H3_PROMPT_TOKENS). Imports no GPU framework.
++
++Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-Spark package.
++
++H3 was trained with the tokenizer files of the MiniMaxAI/MiniMax-H3 repository. Their tokenizer_config.json adds 7
++special tokens after Qwen2.5's vocabulary; transformers gives them ids 151669-151675. ComfyUI v0.30.0, which
++Sol-H3-Spark pins, tokenizes MiniMax prompts with Qwen2.5's tokenizer files only, so a dialogue tag such as <d> is
++split into ordinary text tokens ("Ġ<", "d", ">[") that H3 never saw. ComfyUI added the tokens in 924743af
++("Minimax-H3: Add missing special tokens", first released in v0.34.0) with the call used here.
++
++Modes (runtime/config.py prompt_tokens_mode, passed to the Qwen worker as recipe["stage1"]["prompt_tokens"]):
++  minimax  (default) the 7 tokens added, so prompts tokenize as with MiniMax's own tokenizer
++  plain    the pinned tokenizer as it is (the behaviour up to sol-h3-studio 0.3; a dialogue clip made then
++           reproduces from its seed only in this mode)
++A prompt without any of the 7 tokens gets the same ids in both modes.
++"""
++from __future__ import annotations
++
++# Same table as ComfyUI 924743af (MINIMAX_EXTRA_TOKENS) and MiniMax's tokenizer_config.json, in id order.
++MINIMAX_EXTRA_TOKENS = {"<d>": 151669, "</d>": 151670, "<|cutoff|>": 151671,
++                        "<|lyrics_start|>": 151672, "<|lyrics_end|>": 151673,
++                        "<|caption_start|>": 151674, "<|caption_end|>": 151675}
++MINIMAX_EXTRA_IDS = frozenset(MINIMAX_EXTRA_TOKENS.values())
++
++
++def recipe_mode(config):
++    """The mode the host put in the recipe. A bad value raises ValueError. The host always puts one there; a recipe
++    without one was recorded before the setting existed (0.3 or older), when every prompt was encoded "plain"."""
++    from ..config import prompt_tokens_mode
++    stage1 = config.get("stage1", config) if isinstance(config, dict) else {}
++    return prompt_tokens_mode(stage1.get("prompt_tokens") or "plain")
++
++
++def _present(hf_tokenizer):
++    vocab = hf_tokenizer.get_vocab()
++    return {token: vocab[token] for token in MINIMAX_EXTRA_TOKENS if token in vocab}
++
++
++def _check_single_tokens(hf_tokenizer):
++    """Each of the 7 tokens must come out as one id, also next to other text, as with MiniMax's tokenizer."""
++    text = "x".join(MINIMAX_EXTRA_TOKENS)
++    ids = hf_tokenizer(text, add_special_tokens=False)["input_ids"]
++    expected = []
++    for token, token_id in MINIMAX_EXTRA_TOKENS.items():
++        expected += [token_id, hf_tokenizer.convert_tokens_to_ids("x")]
++    if ids != expected[:-1]:
++        raise RuntimeError(f"MiniMax's prompt tokens do not tokenize as single tokens: {text!r} -> {ids}")
++
++
++def apply_prompt_tokens(sd_tokenizer, mode):
++    """Set up ComfyUI's Qwen tokenizer for `mode` and return what was done (for the receipt and the log).
++
++    sd_tokenizer is ComfyUI's SDTokenizer for the MiniMax text encoder (clip.tokenizer.qwen3vl_32b): .tokenizer is the
++    transformers Qwen2Tokenizer that MiniMaxH3Tokenizer._text_ids calls, .inv_vocab its id -> token map, which
++    924743af rebuilds after adding the tokens.
++    - minimax: add the 7 tokens unless the tokenizer already has all of them; fail unless they have ids
++      151669-151675 and each tokenizes as one id.
++    - plain: fail if the tokenizer already has any of them (a newer ComfyUI), since it could not give the plain ids.
++    """
++    hf = sd_tokenizer.tokenizer
++    present = _present(hf)
++    if mode == "plain":
++        if present:
++            raise RuntimeError(
++                "SOL_H3_PROMPT_TOKENS=plain needs the pinned ComfyUI tokenizer without MiniMax's tokens, but this "
++                f"ComfyUI already has {sorted(present)}; set SOL_H3_PROMPT_TOKENS=minimax (the default)")
++        return {"mode": "plain", "added": 0, "vocab_size": len(hf)}
++    if mode != "minimax":
++        raise ValueError(f"unknown prompt-token mode {mode!r}")
++    if present == MINIMAX_EXTRA_TOKENS:
++        _check_single_tokens(hf)
++        return {"mode": "minimax", "added": 0, "already_present": True, "vocab_size": len(hf)}
++    if present:
++        raise RuntimeError(f"the ComfyUI tokenizer has only some of MiniMax's prompt tokens, or other ids: {present}")
++    hf.add_special_tokens({"additional_special_tokens": list(MINIMAX_EXTRA_TOKENS)})
++    got = _present(hf)
++    if got != MINIMAX_EXTRA_TOKENS:
++        raise RuntimeError(f"MiniMax's prompt tokens got ids {got}, expected {MINIMAX_EXTRA_TOKENS}")
++    _check_single_tokens(hf)
++    if hasattr(sd_tokenizer, "inv_vocab"):
++        sd_tokenizer.inv_vocab = {v: k for k, v in hf.get_vocab().items()}
++    return {"mode": "minimax", "added": len(MINIMAX_EXTRA_TOKENS), "already_present": False, "vocab_size": len(hf)}
++
++
++def request_counts(tokens, token_tags):
++    """Counts for the request receipt: text positions H3 sees (token tag 1) and MiniMax tokens among the ids.
++
++    tokens: CLIP.tokenize() output, {"qwen3vl_32b": [[(id or vision entry, weight), ...]]}.
++    token_tags: the normalized minimax_token_tags, 1 per text position and 0 per vision position.
++    """
++    entries = [entry for batch in tokens.values() for row in batch for entry in row]
++    ids = [entry[0] for entry in entries if isinstance(entry[0], int)]
++    return {"text_tokens": int(token_tags.sum()), "minimax_tokens": sum(1 for i in ids if i in MINIMAX_EXTRA_IDS)}
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
-index 3fec9da..0958c8e 100644
+index 3fec9da..2c9ba85 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
 @@ -13,6 +13,11 @@ from .stage1_ops.lookup import install_exact_t2va_lookup, quantized_linear_name
@@ -1109,7 +1339,7 @@ index 3fec9da..0958c8e 100644
  
  
  def install_reference_image_size(reference_module, target_area):
-@@ -37,26 +42,71 @@ def validate_native_attention(before, after, *, require_calls=True):
+@@ -37,26 +42,75 @@ def validate_native_attention(before, after, *, require_calls=True):
               "resolved_precision_scope": "original constructor config; actual DiT converted to FP8 afterwards; Qwen external NVFP4"}]
  
  
@@ -1119,10 +1349,14 @@ index 3fec9da..0958c8e 100644
 +    Every new prompt length (text tokens) recompiles the fullgraph DiT regions; FastVideo caps recompiles at 16
 +    (layers/lora/linear.py), so a long-lived web-UI session died after ~4 distinct prompt lengths ('Dynamo recompile
 +    limit exceeded'). Allow many shapes; each new length still costs ~8-10 s once.
++    SOL_H3_DYNAMIC_TEXT_LENGTH=1 (off by default) compiles the 50 body regions for any length instead (2 graphs per
++    session, none per new length; stage1_ops/regional.py). Not on the Ref2VA Sol route.
 +    Static shapes (runtime/config.py compile_dynamic): what torch.compile(dynamic=False) sets, for every compile in
 +    this worker (the 52 regions of each task). A graph compiled after a shape change (prompt length, clip length,
 +    orientation) is then static, the graph a fresh worker compiles for that shape, not one with dynamic sizes and
-+    possibly other kernels.
++    possibly other kernels. Dimensions marked dynamic explicitly stay dynamic (Dynamo honours a mark without
++    automatic dynamic shapes): with both settings on, the body regions keep their 2 graphs per session, and the two
++    text-refiner regions compile once per prompt length instead of once more at a session's second length.
 +    """
 +    config.recompile_limit = max(config.recompile_limit, 1024)
 +    config.accumulated_recompile_limit = max(config.accumulated_recompile_limit, 65536)
@@ -1187,7 +1421,18 @@ index 3fec9da..0958c8e 100644
      sol_route = sol.RequestRoute(state) if attention == sol.POLICY else None
      if not is_lazy_module(pipe.modules["transformer"]) or not is_lazy_module(pipe.modules["text_encoder"]):
          raise RuntimeError("existing native lazy construction required")
-@@ -155,6 +205,26 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -150,11 +204,37 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+                 regional.install_dense(model, state)
+             else:
+                 sol.install(model, state, sol_route)
++                # sol-h3-studio: the Sol route keeps its per-length graphs; SOL_H3_DYNAMIC_TEXT_LENGTH does not apply.
++                ignored = regional.dynamic_text_length()
++                state["sol_regional_compile"]["text_length"] = ("per_length (setting ignored)" if ignored
++                                                                 else "per_length")
++                if ignored:
++                    print("[sol-h3-studio] SOL_H3_DYNAMIC_TEXT_LENGTH=1 is ignored on the Ref2VA Sol route", flush=True)
+         else:
+             vsa.install_model(model, state)
              regional.install(model, state)
          return model
      pipe.modules["transformer"].set_materialize_transform(quantize_after_merge)
@@ -1214,7 +1459,7 @@ index 3fec9da..0958c8e 100644
      control.install_fa4_audit(worker)  # Native FA4 handles the two text-refiner blocks.
      original_post_init = pipe.post_init
      def post_init():
-@@ -192,13 +262,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -192,13 +272,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
          keep = {id(pipe.modules[name]) for name in ("transformer", "vae", "audio_vae")}
          for stage in pipe._stages:
              stage._lazy_modules_to_release = tuple(m for m in stage._lazy_modules_to_release if id(m) not in keep)
@@ -1283,7 +1528,7 @@ index 3fec9da..0958c8e 100644
  def arm_worker(worker, case, conditioning_path, outputdir):
      import torch
      from .stage1_ops import capture, vsa
-@@ -271,8 +395,10 @@ class Session:
+@@ -271,8 +405,10 @@ class Session:
          self.task = task_of(config.get("stage1", config))
          self.attention = config.get("stage1", config).get("attention")
          self.reference_area = reference_target_area(config)
@@ -1294,7 +1539,7 @@ index 3fec9da..0958c8e 100644
          if self.attention == sol.POLICY and self.task != "ref2va":
              raise ValueError("this fixed Sol policy is Ref2VA only")
          self.basic = native.load_official_entry(
-@@ -280,8 +406,9 @@ class Session:
+@@ -280,8 +416,9 @@ class Session:
          profile = self.basic.parse_args([
              "--model-path", str(Path(paths["h3_model"]).expanduser().resolve(strict=True)),
              "--prompt", "session", "--output", str(self.root), "--num-gpus", "1",
@@ -1306,7 +1551,7 @@ index 3fec9da..0958c8e 100644
              "--no-warmup", "--repeats", "1"])
          if self.task == "ref2va":
              profile.vsa = False
-@@ -325,7 +452,9 @@ class Session:
+@@ -325,7 +462,9 @@ class Session:
          try:
              self.rpc(functools.partial(install_worker, task=self.task, attention=self.attention,
                                        reference_area=self.reference_area,
@@ -1317,7 +1562,7 @@ index 3fec9da..0958c8e 100644
          except BaseException:
              self.generator.shutdown()
              self.closed = True
-@@ -391,17 +520,49 @@ class Session:
+@@ -391,17 +530,49 @@ class Session:
                  "request_transformer_forwards": forwards,
                  "request_attention_calls": attention_calls,
                  "first_request_compile_included": not bool(before["transformer_forwards"]),
@@ -1446,6 +1691,240 @@ index 81e37ba..b232ea5 100644
  def arm_capture(worker, target):
      state = worker._sol_h3_capture
      if state["target"] is not None or "native_normalized" in state:
+diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/regional.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/regional.py
+index 0221149..e74f2cd 100644
+--- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/regional.py
++++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/regional.py
+@@ -1,11 +1,30 @@
+ """Compile 52 native H3 regions around opaque SM121 VSA attention."""
++# Modified by sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH=1 compiles the 50 body regions once for any prompt length
++# instead of once per length (see the "sol-h3-studio:" notes below).
++import inspect
++import os
+ from types import MethodType, SimpleNamespace
+ from typing import Optional
+ 
++# sol-h3-studio: the setting, and the FastVideo signatures the length wrappers rely on.
++DYNAMIC_TEXT_LENGTH = "SOL_H3_DYNAMIC_TEXT_LENGTH"
++BODY_REGION_ARGS = ("self", "hidden_states", "temb", "adaln_indices", "rotary_emb", "original_seq_len")
++ATTENTION_ARGS = ("self", "q", "k", "v", "original_seq_len")
++
++
++def dynamic_text_length(environ=None):
++    """sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH. "0" (default): Stage-1 graphs per prompt length; "1": one set."""
++    raw = (os.environ if environ is None else environ).get(DYNAMIC_TEXT_LENGTH, "")
++    value = raw.strip() or "0"
++    if value not in ("0", "1"):
++        raise ValueError(f"{DYNAMIC_TEXT_LENGTH} must be 0 or 1, not {raw!r}")
++    return value == "1"
++
+ 
+ def install_dense(model, state):
+     """Use native fullgraph regions for the Ref2VA dense FA4 transformer."""
+     from fastvideo.models.loader import fsdp_load
++    dynamic = dynamic_text_length()   # sol-h3-studio
+     attention = [module for module in model.modules() if type(module).__name__ == "MiniMaxH3Attention"]
+     if len(attention) != 52 or any(module.to_gate_compress is not None for module in attention):
+         raise RuntimeError("Ref2VA requires 52 native dense attention modules and no VSA gates")
+@@ -16,7 +35,12 @@ def install_dense(model, state):
+     if (enabled, compiled) != (52, 52):
+         raise RuntimeError("native Ref2VA regional compile did not cover all 52 regions")
+     state["dense_regional_compile"] = {"regions_wrapped": compiled, "attention_modules_enabled": enabled,
+-                                       "fullgraph": True, "attention_backend": "FA4_dense"}
++                                       "fullgraph": True, "attention_backend": "FA4_dense",
++                                       "text_length": "dynamic_body" if dynamic else "per_length"}   # sol-h3-studio
++    if dynamic:
++        import torch
++        _require_one_gpu()
++        state["dense_regional_compile"]["length_regions"] = mark_length_dynamic(torch, model, tiles=False)
+ 
+ 
+ def _layer_number(tensor, count):
+@@ -41,6 +65,7 @@ def install(model, state, compile_kwargs=None):
+     from fastvideo.attention.layer import _attention_compile_explicitly_disabled
+     from . import vsa as policy
+ 
++    dynamic = dynamic_text_length()   # sol-h3-studio
+     audit = state.get("official_vsa", {})
+     backend = audit.get("selected_attention_backend")
+     if (audit.get("fastvideo_commit") != policy.FASTVIDEO_COMMIT
+@@ -74,7 +99,8 @@ def install(model, state, compile_kwargs=None):
+         "sparse_math_changed": False, "compression_gates_retained": 50,
+         "layer_identity": "CPU int64 scalar Tensor; no GPU scalar read",
+         "body_runtime_calls": 0, "text_runtime_calls": 0,
+-        "inner_vsa_compiled": False, "fullgraph": True}
++        "inner_vsa_compiled": False, "fullgraph": True,
++        "text_length": "dynamic_body" if dynamic else "per_length"}   # sol-h3-studio
+ 
+     @torch.library.custom_op("sol_h3_spark_vsa::body", mutates_args=(), device_types="cuda")
+     def body_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, gate: torch.Tensor,
+@@ -116,10 +142,15 @@ def install(model, state, compile_kwargs=None):
+         return text_op(query, key, value, self._sol_h3_cpu_layer,
+             getattr(attn_metadata, "attn_mask", None), getattr(attn_metadata, "is_causal", False))
+ 
++    body_preprocess = None
++    if dynamic:   # sol-h3-studio: same opaque attention, no length-dependent Python value in the graph
++        body_preprocess, body_forward = length_free_body(torch, body_originals, receipt)
+     for entries, forward in ((bodies, body_forward), (texts, text_forward)):
+         for index, impl in enumerate(entries):
+             impl._sol_h3_cpu_layer = torch.tensor(index, device="cpu", dtype=torch.int64)
+             impl.forward = MethodType(forward, impl)
++            if body_preprocess is not None and entries is bodies:
++                impl.preprocess_qkv = MethodType(body_preprocess, impl)
+     # Deliberately not prepare_for_regional_compile(): that hook probes SM100a.
+     model.prepare_for_compile()
+     enabled = fsdp_load._enable_regional_attention_compile(model)
+@@ -127,6 +158,150 @@ def install(model, state, compile_kwargs=None):
+     if (enabled, compiled) != (52, 52):
+         raise RuntimeError(f"expected native 52 attention modules/regions, got {(enabled, compiled)}")
+     receipt.update(attention_modules_enabled=enabled, regions_wrapped=compiled)
++    if dynamic:   # sol-h3-studio; the BSA route takes BF16 q/k/v/gate only (vsa.py), so the tile buffer is BF16
++        _require_one_gpu()
++        receipt["length_regions"] = mark_length_dynamic(torch, model, tile_dtype=torch.bfloat16)
+     state["vsa_regional_compile"] = receipt
+     audit["compile_policy"] = "explicit SM121 opaque VSA + original 52 fullgraph regions; runtime gate required"
+     return receipt
++
++
++# ---- sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH=1 ---------------------------------------------------------------------
++# With static shapes every new prompt length compiled new body-block graphs, 5 per length. Dynamo always specializes
++# ints it reads from a global, here FastVideo's forward context: total_seq_length (the length check in FastVideo's
++# tile()), num_prefix_tiles, num_video_tiles and current_timestep (passed to the opaque op above), and it branches on
++# the tile-buffer holder's state (tile()'s bookkeeping). The functions below keep all of these out of the graph and
++# mark the packed-sequence dimensions dynamic. The body regions then compile 2 graphs per session (the AdaLN table has
++# fewer rows in the first denoise step than in the others) and none per new length. The graph keeps the same opaque
++# attention, FastVideo's scatter into its zero-padded tile buffer and its gather back, and the same projections and
++# fused norms; only their sizes are symbolic. The two text-refiner regions are left as they are: Dynamo's automatic
++# dynamic shapes compile them for any length from a session's second prompt length on, or, with SOL_H3_STATIC_SHAPES=1
++# (the default; stage1.py configure_dynamo turns automatic dynamic shapes off), once per prompt length, statically.
++# The marks hold either way: Dynamo keeps a dimension marked dynamic without automatic dynamic shapes.
++
++def length_free_body(torch, body_originals, receipt, forward_context=None, *, namespace="sol_h3_spark_vsa",
++                     device_types="cuda"):
++    """Body attention for regions compiled once for any length. Returns (preprocess_qkv, forward) for a VSA impl.
++
++    The opaque op reads the tile counts and the denoise step from FastVideo's forward context when it runs (as
++    sol.py's op reads its step), instead of taking them as Python ints that Dynamo would specialize. preprocess_qkv
++    keeps only the scatter of FastVideo's tile() (scatter_into_tile_buf) in the graph; prepare_tiles() does tile()'s
++    length check and buffer bookkeeping before each region call.
++    """
++    if forward_context is None:
++        from fastvideo.forward_context import get_forward_context as forward_context
++
++    @torch.library.custom_op(f"{namespace}::body_any_length", mutates_args=(), device_types=device_types)
++    def body_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, gate: torch.Tensor,
++                variable_sizes: torch.Tensor, layer: torch.Tensor) -> torch.Tensor:
++        current = forward_context().attn_metadata
++        metadata = SimpleNamespace(variable_block_sizes=variable_sizes,
++            num_prefix_tiles=current.num_prefix_tiles, num_video_tiles=current.num_video_tiles,
++            VSA_sparsity=0.9, tile_elems=64, exempt=True, dense_layers=(), current_timestep=current.current_timestep)
++        result = body_originals[_layer_number(layer, len(body_originals))](q, k, v, gate, metadata)
++        receipt["body_runtime_calls"] += 1
++        return result.contiguous()
++
++    @body_op.register_fake
++    def body_fake(q, k, v, gate, variable_sizes, layer):
++        return q.new_empty((*q.shape[:-1], v.shape[-1]))
++
++    def preprocess_qkv(self, qkvg, attn_metadata):
++        buffer = attn_metadata.tile_buf_holder.buffer
++        buffer[:, attn_metadata.untile_combined_index] = qkvg
++        return buffer
++
++    def forward(self, query, key, value, gate_compress, attn_metadata):
++        if (attn_metadata.VSA_sparsity != 0.9 or attn_metadata.tile_elems != 64
++                or attn_metadata.exempt is not True or attn_metadata.dense_layers
++                or gate_compress is None):
++            raise RuntimeError("regional integration cannot change official tile64/prefix/sparsity/compression policy")
++        return body_op(query, key, value, gate_compress, attn_metadata.variable_block_sizes, self._sol_h3_cpu_layer)
++
++    return preprocess_qkv, forward
++
++
++def prepare_tiles(torch, metadata, hidden_states, heads, head_dim, dtype):
++    """FastVideo's tile() bookkeeping (video_sparse_attn_h3.py), done before a body region instead of in its graph.
++
++    The same rules: the packed length must match the metadata; the builder-owned buffer (q, k, v and gate stacked, in
++    the attention's dtype) is allocated with zeros when missing or of another shape, dtype or device, and cleared once
++    when it is reused for another tile geometry. All 50 blocks of a denoise step share it. SM100a partner tiles do not
++    apply on SM121. A dtype other than the attention's makes the scatter in the graph fail, not convert.
++    """
++    rows = hidden_states.shape[1]
++    if metadata.total_seq_length != rows:
++        raise ValueError(f"VSA-H3 metadata was built for sequence length {metadata.total_seq_length}, got {rows}")
++    holder = metadata.tile_buf_holder
++    if holder is None:
++        raise RuntimeError("VSA-H3 metadata has no builder-owned tile buffer holder")
++    shape = (4 * hidden_states.shape[0], metadata.variable_block_sizes.numel() * metadata.tile_elems, heads, head_dim)
++    buffer = holder.buffer
++    if buffer is None or tuple(buffer.shape) != shape or buffer.dtype != dtype or buffer.device != hidden_states.device:
++        holder.buffer = torch.zeros(shape, device=hidden_states.device, dtype=dtype)
++    elif holder.untile_geometry is not metadata.untile_combined_index:
++        buffer.zero_()
++    holder.untile_geometry = metadata.untile_combined_index
++    return holder.buffer
++
++
++def _require_one_gpu():
++    # The attention wrapper below passes the query's row count as original_seq_len: the same value on one GPU only.
++    from fastvideo.distributed.parallel_state import get_sp_world_size, model_parallel_is_initialized
++    if model_parallel_is_initialized() and get_sp_world_size() != 1:
++        raise RuntimeError(f"{DYNAMIC_TEXT_LENGTH}=1 supports one GPU without sequence parallelism")
++
++
++def _check_signature(function, expected, what):
++    names = tuple(inspect.signature(function).parameters)[:len(expected)]
++    if names != expected:
++        raise RuntimeError(f"{what}{names} is not the signature the length wrapper expects")
++
++
++def mark_length_dynamic(torch, model, forward_context=None, *, tiles=True, tile_dtype=None):
++    """Wrap the 50 compiled body regions so that they compile once for any prompt length.
++
++    Call after _compile_model_regions. Before each call the wrapper marks the packed-row dimension of the block inputs
++    (hidden states, AdaLN rows, RoPE cos/sin) dynamic and, with tiles=True (VSA), runs prepare_tiles() and marks the
++    tile metadata the graph reads (untile index, tile sizes, tile buffer) too; tile_dtype is the dtype of the
++    attention's q/k/v/gate (default: the hidden states'). The block's original_seq_len int reaches only its attention,
++    whose forward gets the row count of its own query instead (the same value on one GPU), so Dynamo never sees that
++    int. The text-refiner regions are not wrapped. The AdaLN table (temb) is not marked: its row count changes from the
++    first denoise step to the others (1 then 2 in t2va), so each session compiles 2 body graphs, none per new length.
++    """
++    mark = torch._dynamo.maybe_mark_dynamic
++    if tiles and forward_context is None:
++        from fastvideo.forward_context import get_forward_context as forward_context
++
++    def body_region(compiled, heads, head_dim):
++        def forward(hidden_states, temb, adaln_indices, rotary_emb, original_seq_len):
++            dims = [(hidden_states, 1), (adaln_indices, 0), (rotary_emb[0], 0), (rotary_emb[1], 0)]
++            if tiles:
++                metadata = forward_context().attn_metadata
++                buffer = prepare_tiles(torch, metadata, hidden_states, heads, head_dim,
++                                       tile_dtype or hidden_states.dtype)
++                dims += [(metadata.untile_combined_index, 0), (metadata.variable_block_sizes, 0), (buffer, 1)]
++            for tensor, dim in dims:
++                mark(tensor, dim)
++            return compiled(hidden_states, temb, adaln_indices, rotary_emb, original_seq_len)
++        return forward
++
++    def query_rows(attention):
++        original = type(attention).forward
++
++        def forward(q, k, v, original_seq_len=None, **kwargs):
++            return original(attention, q, k, v, q.shape[1], **kwargs)
++        return forward
++
++    blocks = list(model.transformer_blocks)
++    for block in blocks:
++        _check_signature(type(block).forward, BODY_REGION_ARGS, f"{type(block).__name__}.forward")
++        attention = block.attn.distributed_attention
++        _check_signature(type(attention).forward, ATTENTION_ARGS, f"{type(attention).__name__}.forward")
++        attention.forward = query_rows(attention)
++        block.forward = body_region(block.forward, block.attn.num_attention_heads, block.attn.attention_head_dim)
++    text = ("unchanged (automatic dynamic from the 2nd length)" if torch._dynamo.config.automatic_dynamic_shapes
++            else "unchanged (static, a graph per length: SOL_H3_STATIC_SHAPES=1)")
++    return {"body_regions": len(blocks), "text_regions": text,
++            "tile_metadata": tiles,
++            "dynamic": "packed rows (hidden states, AdaLN rows, RoPE, untile index), tile count, tile buffer rows"}
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/vsa.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/vsa.py
 index 7f691fa..3b80f2a 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/vsa.py
@@ -2257,7 +2736,7 @@ index 0000000..087bed3
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..4f6d4e2 100644
+index 6c20301..e717205 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -2272,38 +2751,165 @@ index 6c20301..4f6d4e2 100644
  from unittest import mock
  
 -from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS
-+# Modified by sol-h3-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location and
-+# the Stage-2 audio setting.
++# Modified by sol-h3-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location, the
++# Stage-2 audio setting and the prompt-token setting.
 +from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -84,6 +87,42 @@ class PipelineTests(unittest.TestCase):
-             finally:
-                 pipeline.close()
+@@ -59,31 +62,212 @@ class FakeWorker:
+         self.events.append(("close", self.name))
  
+ 
++class Stage2WaitsForQwen(FakeWorker):
++    """The resident Qwen's start shows in the events in the order the pipeline asked for it, whatever the timing of
++    its loading thread: before its first refine, Stage2's cache release takes 0.1 s (a Qwen spawned before the
++    release starts within that time), and its run waits (at most 5 s) for a Qwen worker started after Stage2."""
++
++    def call(self, op="run", **kwargs):
++        if self.name == "stage2" and ("call", "stage2", "run") not in self.events:
++            if op == "release_idle_cache":
++                time.sleep(0.1)
++            elif op == "run":
++                deadline = time.monotonic() + 5
++                while (("start", "qwen") not in self.events[self.events.index(("start", "stage2")):]
++                       and time.monotonic() < deadline):
++                    time.sleep(0.01)
++        return super().call(op, **kwargs)
++
++
++def residency_settings(early=None, mem_gib=64.0, min_gib=None):
++    """sol-h3-studio: the resident-Qwen settings at their defaults (a user's own values would change the order the
++    tests expect), SOL_H3_RESIDENT_QWEN_EARLY and _EARLY_MIN_GIB as given, and MemAvailable after Stage2's release
++    as given."""
++    stack = contextlib.ExitStack()
++    stack.enter_context(mock.patch.dict(os.environ))
++    for name in ("SOL_H3_RESIDENT_QWEN_EARLY", "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB", "SOL_H3_RESIDENT_QWEN_MAX_FRAMES"):
++        os.environ.pop(name, None)
++    if early is not None:
++        os.environ["SOL_H3_RESIDENT_QWEN_EARLY"] = early
++    if min_gib is not None:
++        os.environ["SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB"] = min_gib
++    stack.enter_context(mock.patch("runtime.pipeline.mem_available_gib", return_value=mem_gib))
++    stack.enter_context(mock.patch("runtime.pipeline.MEM_SETTLE_S", 0.05))
++    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))      # its note when Qwen loads after the clip
++    return stack
++
++
+ class PipelineTests(unittest.TestCase):
++    def setUp(self):
++        # sol-h3-studio: start() reads MemAvailable before it loads the resident Qwen early; not this machine's
++        patcher = mock.patch("runtime.pipeline.mem_available_gib", return_value=64.0)
++        patcher.start()
++        self.addCleanup(patcher.stop)
++
+     def test_residency_order_and_real_endpoint(self):
+-        FakeWorker.events = []
+         case = {"case_id": "example", "prompt": "A bird glides over a mountain lake.", "seed": 42}
++        # sol-h3-studio: (SOL_H3_RESIDENT_QWEN_EARLY, clip length, MemAvailable after Stage2's release,
++        # SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB, where the resident Qwen starts, the minimum that applies): 5 s with
++        # enough and with too little memory (32 GiB); 10 s below and above its 34 GiB; 10 s with the setting; the
++        # switch off; 15 s (Qwen per request)
++        for early, seconds, mem_gib, min_set, spawn, minimum in (
++                (None, None, 40.0, None, "first_refine", 32), (None, None, 20.0, None, "after_first_clip", 32),
++                (None, 10, 33.0, None, "after_first_clip", 34), (None, 10, 35.0, None, "first_refine", 34),
++                (None, 10, 33.0, "30", "first_refine", 30), ("0", None, 40.0, None, "after_first_clip", None),
++                (None, 15, 40.0, None, "per_request", None)):
++            FakeWorker.events = []
++            with self.subTest(early=early, seconds=seconds, mem_gib=mem_gib, min_set=min_set), \
++                    tempfile.TemporaryDirectory() as directory, residency_settings(early, mem_gib, min_set):
++                pipeline = Pipeline({}, Path(directory) / "run", seconds=seconds,
++                                    worker_factory=Stage2WaitsForQwen if spawn == "first_refine" else FakeWorker)
++                try:
++                    pipeline.start(case)
++                    row = pipeline.generate(case)
++                    pipeline.finish()
++                    self.assertEqual(pipeline.report["status"], "PASS")
++                    self.assertEqual(pipeline.report["resident_qwen"]["spawn"], spawn)
++                    self.assertEqual(len(pipeline.report["requests"]), 1)
++                    self.assertFalse(pipeline.report["phase_sum_used"])
++                    self.assertEqual(row["e2e_s"],
++                        (row["final_mp4_complete_monotonic_ns"] - row["request_start_monotonic_ns"]) / 1e9)
++                    events = FakeWorker.events
++                    self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
++                    starts = [index for index, event in enumerate(events) if event == ("start", "qwen")]
++                    self.assertEqual(len(starts), 2)
++                    first_refine = events.index(("call", "stage2", "run"))
++                    release = events.index(("call", "stage2", "release_idle_cache"))
++                    if minimum is not None:
++                        # once Stage1's first request has returned and Stage2 is built, Stage2 releases its load
++                        # cache before the first refine; then the resident Qwen starts and loads during the refine,
++                        # if MemAvailable allows it
++                        self.assertLess(events.index(("call", "stage1", "run")), release)
++                        self.assertLess(events.index(("start", "stage2")), release)
++                        self.assertLess(release, first_refine)
++                        self.assertEqual(pipeline.report["resident_qwen"]["mem_available_gib"], mem_gib)
++                        self.assertEqual(pipeline.report["resident_qwen"]["min_gib"], minimum)
++                        self.assertEqual("SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB" in
++                                         pipeline.report["resident_qwen"]["min_from"], min_set is not None)
++                    else:
++                        # the switch off, or Qwen per request (over 10 s): no release before the first refine
++                        self.assertLess(first_refine, release)
++                    if spawn == "first_refine":
++                        self.assertLess(release, starts[1])
++                        self.assertLess(starts[1], first_refine)
++                    else:
++                        # after the first MP4 (switch off, or not enough memory), or per request (over 10 s)
++                        self.assertGreater(starts[1], first_refine)
++                    if minimum is not None and spawn == "after_first_clip":
++                        self.assertIn(f"MemAvailable {mem_gib:.1f} GiB", pipeline.report["resident_qwen"]["reason"])
++                    self.assertEqual(events.count(("start", "stage1")), 1)
++                    self.assertEqual(events.count(("start", "stage2")), 1)
++                finally:
++                    pipeline.close()
++        # a first refine that fails: close() still stops the resident Qwen that start() had started
++        class FailingRefine(FakeWorker):
++            def call(self, op="run", **kwargs):
++                if (self.name, op) == ("stage2", "run"):
++                    raise RuntimeError("Stage2 died")
++                return super().call(op, **kwargs)
++        FakeWorker.events = []
++        with tempfile.TemporaryDirectory() as directory, residency_settings():
++            pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FailingRefine)
++            with self.assertRaisesRegex(RuntimeError, "Stage2 died"):
++                pipeline.start(case, deliver=True)
++            pipeline.close()
++            self.assertEqual(FakeWorker.events.count(("start", "qwen")), 2)
++            self.assertEqual(FakeWorker.events.count(("close", "qwen")), 2)
++
 +    def test_deliver_first_returns_the_first_request_and_reuses_models(self):
 +        FakeWorker.events = []
 +        case = {"case_id": "first", "prompt": "A bird glides over a mountain lake.", "seed": 7}
-+        with tempfile.TemporaryDirectory() as directory:
-+            pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FakeWorker)
-+            try:
+         with tempfile.TemporaryDirectory() as directory:
+             pipeline = Pipeline({}, Path(directory) / "run", worker_factory=FakeWorker)
+             try:
+-                pipeline.start(case)
+-                row = pipeline.generate(case)
 +                row = pipeline.start(case, deliver=True)
 +                self.assertEqual((row["status"], row["seed"], row["case_id"]), ("PASS", 7, "first"))
 +                self.assertTrue(Path(row["output"]).is_file())
 +                self.assertTrue(row["includes_model_load"])
 +                second = pipeline.generate(dict(case, case_id="second"))
-+                pipeline.finish()
+                 pipeline.finish()
+-                self.assertEqual(pipeline.report["status"], "PASS")
+-                self.assertEqual(len(pipeline.report["requests"]), 1)
+-                self.assertFalse(pipeline.report["phase_sum_used"])
+-                self.assertEqual(row["e2e_s"],
+-                    (row["final_mp4_complete_monotonic_ns"] - row["request_start_monotonic_ns"]) / 1e9)
 +                self.assertEqual([r["case_id"] for r in pipeline.report["requests"]], ["first", "second"])
 +                self.assertEqual(second["status"], "PASS")
-+                events = FakeWorker.events
-+                self.assertEqual(events.count(("start", "stage1")), 1)
-+                self.assertEqual(events.count(("start", "stage2")), 1)
+                 events = FakeWorker.events
+-                self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
+-                starts = [index for index, event in enumerate(events) if event == ("start", "qwen")]
+-                self.assertEqual(len(starts), 2)
+-                self.assertGreater(starts[1], events.index(("call", "stage2", "run")))
+                 self.assertEqual(events.count(("start", "stage1")), 1)
+                 self.assertEqual(events.count(("start", "stage2")), 1)
 +                self.assertEqual(events.count(("start", "qwen")), 2)
 +                self.assertLess(events.index(("close", "qwen")), events.index(("start", "stage2")))
-+            finally:
-+                pipeline.close()
-+
+             finally:
+                 pipeline.close()
+ 
 +    def test_bad_stage2_audio_setting_fails_before_any_worker(self):
 +        made = []
 +        def factory(*args, **kwargs):
@@ -2318,10 +2924,65 @@ index 6c20301..4f6d4e2 100644
 +            os.environ["SOL_H3_STAGE2_AUDIO"] = "JOINT"
 +            Pipeline({}, Path(directory) / "run", worker_factory=factory)
 +
++    def test_bad_prompt_tokens_setting_fails_before_any_worker(self):
++        from runtime.qwen_ops.prompt_tokens import recipe_mode     # what the Qwen worker's Session reads
++        made = []
++        worker = FakeWorker
++        def factory(*args, **kwargs):
++            made.append(args)
++            return worker(*args, **kwargs)
++        case = {"case_id": "tags", "prompt": "The woman (S1) says: <d>[English] Welcome.</d>", "seed": 1}
++        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "special"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++                Pipeline({}, Path(directory) / "run", worker_factory=factory)
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "minimax"           # a valid setting: the bad argument alone fails
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++                Pipeline({}, Path(directory) / "run", prompt_tokens="both", worker_factory=factory)
++            self.assertFalse((Path(directory) / "run").exists())
++            self.assertEqual(made, [])
++            # the default, the setting (any case), and the argument, which wins over the setting; the resident Qwen
++            # started during the first refine (MemAvailable above the minimum) and after the first clip (below it)
++            for name, setting, argument, mode, mem_gib, spawn in (
++                    ("default", None, None, "minimax", 64.0, "first_refine"),
++                    ("setting", "Plain", None, "plain", 64.0, "first_refine"),
++                    ("argument", "plain", "minimax", "minimax", 64.0, "first_refine"),
++                    ("default-late", None, None, "minimax", 20.0, "after_first_clip"),
++                    ("setting-late", "Plain", None, "plain", 20.0, "after_first_clip"),
++                    ("argument-late", "plain", "minimax", "minimax", 20.0, "after_first_clip")):
++                made.clear()
++                FakeWorker.events = []
++                worker = Stage2WaitsForQwen if spawn == "first_refine" else FakeWorker
++                os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
++                if setting is not None:
++                    os.environ["SOL_H3_PROMPT_TOKENS"] = setting
++                with residency_settings(mem_gib=mem_gib):
++                    pipeline = Pipeline({}, Path(directory) / name, prompt_tokens=argument, worker_factory=factory)
++                    try:
++                        pipeline.start(case, deliver=True)
++                        resident = pipeline._resident_qwen()
++                        # every worker: Stage1, Stage2, the first request's Qwen and the resident Qwen
++                        self.assertEqual(sorted(args[0] for args in made), ["qwen", "qwen", "stage1", "stage2"])
++                        self.assertEqual({args[3]["stage1"]["prompt_tokens"] for args in made}, {mode}, name)
++                        self.assertEqual(pipeline.report["recipe"]["stage1"]["prompt_tokens"], mode)
++                        # the resident Qwen, also when start() spawned it before the first refine, reads the mode
++                        self.assertEqual(pipeline.report["resident_qwen"]["spawn"], spawn, name)
++                        self.assertEqual([Path(args[1]).name for args in made if args[0] == "qwen"],
++                                         ["warmup-qwen-worker", "qwen-worker"])
++                        self.assertEqual(recipe_mode(resident.config), mode, name)
++                        events = FakeWorker.events
++                        resident_start = events.index(("start", "qwen"), events.index(("close", "qwen")))
++                        if spawn == "first_refine":
++                            self.assertLess(resident_start, events.index(("call", "stage2", "run")), name)
++                        else:
++                            self.assertGreater(resident_start, events.index(("call", "stage2", "run")), name)
++                    finally:
++                        pipeline.close()
++
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +235,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +380,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -2330,7 +2991,7 @@ index 6c20301..4f6d4e2 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +264,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +409,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -2340,7 +3001,7 @@ index 6c20301..4f6d4e2 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +300,26 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +445,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -2368,20 +3029,365 @@ index 6c20301..4f6d4e2 100644
  
  if __name__ == "__main__":
      unittest.main()
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py b/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py
+new file mode 100644
+index 0000000..47b58f0
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_prompt_tokens.py
+@@ -0,0 +1,310 @@
++"""sol-h3-studio: CPU tests of MiniMax's prompt tokens, SOL_H3_PROMPT_TOKENS (not part of upstream Sol-H3-Spark).
++
++The tokenizer tests read the pinned ComfyUI's Qwen2.5 tokenizer files ($SOL_H3_SPARK_COMFY_ROOT/comfy/text_encoders/
++qwen25_tokenizer) with transformers' Qwen2Tokenizer, as ComfyUI's Qwen3VLSDTokenizer does, and are skipped without
++them. The last test runs ComfyUI's own MiniMaxH3Tokenizer in a subprocess; it is skipped where ComfyUI cannot be
++imported (the Stage1 environment), and runs in the Qwen image.
++"""
++import contextlib
++import importlib.util
++import io
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import sys
++import tempfile
++from types import SimpleNamespace
++import unittest
++from unittest import mock
++
++from runtime.config import load_recipe, prompt_tokens_mode
++from runtime.qwen_ops.prompt_tokens import (MINIMAX_EXTRA_TOKENS, apply_prompt_tokens, recipe_mode,
++                                            request_counts)
++
++PACKAGE = Path(__file__).resolve().parents[1]
++COMFY_ROOT = os.environ.get("SOL_H3_SPARK_COMFY_ROOT", "")
++TOKENIZER_DIR = Path(COMFY_ROOT, "comfy", "text_encoders", "qwen25_tokenizer") if COMFY_ROOT else None
++
++# The example in sol-h3-studio issue #38: ids from MiniMax's released tokenizer (MiniMaxAI/MiniMax-H3 tokenizer/,
++# transformers 4.57.1 and 5.17.0) and from the pinned ComfyUI v0.30.0 tokenizer as the studio used it up to 0.3.
++EXAMPLE = "The woman (S1) says: <d>[English] Welcome to the garden.</d>"
++EXAMPLE_MINIMAX = [785, 5220, 320, 50, 16, 8, 2727, 25, 220, 151669, 58, 22574, 60, 20166, 311, 279, 13551, 13,
++                   151670]
++EXAMPLE_PLAIN = [785, 5220, 320, 50, 16, 8, 2727, 25, 366, 67, 30768, 22574, 60, 20166, 311, 279, 13551, 3918, 67,
++                 29]
++MIXED = "a man (S2) says: <d>[中文] 你好，欢迎。</d> Then <|cutoff|> [Shot 2] <cutoff> <scenetrans>"
++MIXED_MINIMAX = [64, 883, 320, 50, 17, 8, 2727, 25, 220, 151669, 58, 104811, 60, 220, 108386, 3837, 100437, 1773,
++                 151670, 5005, 220, 151671, 508, 36402, 220, 17, 60, 366, 66, 27440, 29, 366, 2388, 268, 17366, 596,
++                 29]
++# None of the 7 tokens: the same ids in both modes. <cutoff> and <scenetrans> (MiniMax's guides) are not tokens in
++# either tokenizer; <|im_start|> is one of Qwen's own special tokens and must stay one.
++NO_TAGS = ["A bird glides over a mountain lake at dawn.",
++           "Shot 1 <cutoff> Shot 2 <scenetrans> a quiet street, (S1) whispers while his lips remain completely closed.",
++           "<Audio 1>: a man speaks; <Picture 1>: the same man. d> </ <|im_start|> <D> < d>"]
++
++
++class FakeQwen:
++    """The parts of transformers' Qwen2Tokenizer that apply_prompt_tokens uses: Qwen2.5's 151,669 ids, "x" = 87.
++    split=False: added tokens get ids but are not split out of the text (each character is one id instead)."""
++
++    def __init__(self, size=151669, special=None, split=True):
++        self.size, self.vocab, self.special, self.split = size, {"x": 87}, dict(special or {}), split
++
++    def __len__(self):
++        return self.size + sum(1 for i in self.special.values() if i >= self.size)
++
++    def get_vocab(self):
++        return {**self.vocab, **self.special}
++
++    def convert_tokens_to_ids(self, token):
++        return self.get_vocab()[token]
++
++    def add_special_tokens(self, mapping):
++        for token in mapping["additional_special_tokens"]:
++            self.special.setdefault(token, len(self))
++
++    def __call__(self, text, add_special_tokens=False):
++        parts = (re.split("(" + "|".join(map(re.escape, self.special)) + ")", text) if self.special and self.split
++                 else [text])
++        ids = []
++        for part in parts:
++            ids += [self.special[part]] if part in self.special else [self.vocab.get(c, 0) for c in part]
++        return {"input_ids": ids}
++
++
++def sd_tokenizer(hf):
++    """Stand-in for ComfyUI's SDTokenizer: .tokenizer and .inv_vocab, as 924743af uses them."""
++    return SimpleNamespace(tokenizer=hf, inv_vocab={v: k for k, v in hf.get_vocab().items()})
++
++
++class SettingTests(unittest.TestCase):
++    def test_default_values_and_bad_value(self):
++        with mock.patch.dict(os.environ):
++            os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
++            self.assertEqual(prompt_tokens_mode(), "minimax")
++            for value, mode in (("", "minimax"), (" plain ", "plain"), ("MiniMax", "minimax"), ("PLAIN", "plain")):
++                os.environ["SOL_H3_PROMPT_TOKENS"] = value
++                self.assertEqual(prompt_tokens_mode(), mode)
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "special"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS.*'special'"):
++                prompt_tokens_mode()
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++                load_recipe()
++
++    def test_recipe_carries_the_mode_to_the_qwen_worker(self):
++        with mock.patch.dict(os.environ):
++            os.environ.pop("SOL_H3_PROMPT_TOKENS", None)
++            self.assertEqual(load_recipe()["stage1"]["prompt_tokens"], "minimax")      # the default
++            os.environ["SOL_H3_PROMPT_TOKENS"] = "plain"
++            for task in ("t2va", "fl2va", "ref2va"):
++                recipe = load_recipe(task, orientation="portrait", seconds=10)
++                self.assertEqual(recipe["stage1"]["prompt_tokens"], "plain")
++                self.assertEqual(recipe_mode(recipe), "plain")
++            self.assertEqual(load_recipe(prompt_tokens="minimax")["stage1"]["prompt_tokens"], "minimax")
++        self.assertEqual(recipe_mode({"stage1": {}}), "plain")          # a recipe from before the setting
++        with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++            recipe_mode({"stage1": {"prompt_tokens": "both"}})
++
++
++class ApplyTests(unittest.TestCase):
++    """The checks around the ComfyUI call, with a stand-in tokenizer (always run)."""
++
++    def test_minimax_adds_the_tokens_once(self):
++        tokenizer = sd_tokenizer(FakeQwen())
++        info = apply_prompt_tokens(tokenizer, "minimax")
++        self.assertEqual((info["added"], info["vocab_size"]), (7, 151676))
++        self.assertEqual({t: tokenizer.tokenizer.convert_tokens_to_ids(t) for t in MINIMAX_EXTRA_TOKENS},
++                         MINIMAX_EXTRA_TOKENS)
++        self.assertEqual(tokenizer.inv_vocab[151669], "<d>")                 # refreshed, as in 924743af
++        again = apply_prompt_tokens(tokenizer, "minimax")                     # a ComfyUI that already has them
++        self.assertEqual((again["added"], again["already_present"]), (0, True))
++
++    def test_wrong_or_partial_ids_fail(self):
++        with self.assertRaisesRegex(RuntimeError, "got ids"):
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(size=151670)), "minimax")
++        with self.assertRaisesRegex(RuntimeError, "only some"):
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(special={"<d>": 151669})), "minimax")
++        with self.assertRaisesRegex(RuntimeError, "only some"):
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(special=dict(MINIMAX_EXTRA_TOKENS, **{"<d>": 151700}))),
++                                "minimax")
++        with self.assertRaisesRegex(RuntimeError, "do not tokenize as single tokens"):     # right ids, not split out
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(split=False)), "minimax")
++        with self.assertRaisesRegex(RuntimeError, "do not tokenize as single tokens"):     # already there, ditto
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(special=MINIMAX_EXTRA_TOKENS, split=False)), "minimax")
++
++    def test_plain_leaves_the_tokenizer_alone_and_refuses_one_that_has_the_tokens(self):
++        hf = FakeQwen()
++        self.assertEqual(apply_prompt_tokens(sd_tokenizer(hf), "plain"), {"mode": "plain", "added": 0,
++                                                                          "vocab_size": 151669})
++        self.assertEqual(hf.special, {})
++        with self.assertRaisesRegex(RuntimeError, "SOL_H3_PROMPT_TOKENS=minimax"):
++            apply_prompt_tokens(sd_tokenizer(FakeQwen(special=MINIMAX_EXTRA_TOKENS)), "plain")
++
++    def test_request_counts(self):
++        class Tags(list):
++            def sum(self):
++                return sum(self)
++        vision = {"type": "image", "data": None}
++        tokens = {"qwen3vl_32b": [[(27, 1.0), (151652, 1.0), (vision, 1.0), (151653, 1.0), (151669, 1.0),
++                                   (87, 1.0), (151670, 1.0)]]}
++        self.assertEqual(request_counts(tokens, Tags([1, 0, 0, 0, 0, 0, 1, 1, 1])),
++                         {"text_tokens": 4, "minimax_tokens": 2})
++
++
++class SessionTests(unittest.TestCase):
++    """runtime/qwen.py: the Qwen worker's Session applies the recipe's mode to the CLIP's tokenizer when it starts.
++    ComfyUI, torch, CUDA and the checkpoint are stand-ins, so this runs without a GPU or weights."""
++
++    def start(self, directory, recipe, hf):
++        from runtime import qwen
++        directory = Path(directory)
++        checkpoint = directory / "qwen.safetensors"
++        checkpoint.write_bytes(b"")
++        (directory / "comfy").mkdir(exist_ok=True)
++        built = []
++        model = mock.Mock()
++        model.eval.return_value = model
++        clip = SimpleNamespace(tokenizer=SimpleNamespace(qwen3vl_32b=sd_tokenizer(hf)), cond_stage_model=model,
++                               patcher=SimpleNamespace(is_dynamic=lambda: False))
++        utils = SimpleNamespace(load_torch_file=None)
++        memory = SimpleNamespace(read_tensor_file_slice_into=None)
++        management = SimpleNamespace(current_loaded_models=[], load_models_gpu=lambda models, **kwargs: None)
++
++        class Conditioner:                                       # stands in for MiniMaxNVFP4Conditioner
++            def __init__(self, path, root):
++                built.append(path)
++                utils.load_torch_file(str(path))                 # the Session's one-time checkpoint reader
++                self.clip, self.device_contract, self.loader_identity = clip, {}, {}
++
++            def residency_summary(self):
++                return {}
++
++        cuda = SimpleNamespace(device_count=lambda: 1, get_device_capability=lambda: (12, 1),
++                               synchronize=lambda: None, empty_cache=lambda: None)
++        conditioner = SimpleNamespace(MiniMaxNVFP4Conditioner=Conditioner, _import_comfy_sd=lambda root: None,
++                                      normalize_and_validate_conditioning=None)
++        modules = {"torch": SimpleNamespace(cuda=cuda), "runtime.qwen_ops.conditioner": conditioner,
++                   "comfy": SimpleNamespace(utils=utils, memory_management=memory, model_management=management),
++                   "comfy.utils": utils, "comfy.memory_management": memory, "comfy.model_management": management}
++        log = io.StringIO()
++        with mock.patch.dict(sys.modules, modules), contextlib.redirect_stdout(log), \
++                mock.patch.object(qwen, "resource_snapshot", return_value={}), \
++                mock.patch.object(qwen, "load_resident_checkpoint", return_value=({}, {}, {})), \
++                mock.patch.object(qwen, "weight_snapshot", return_value=({}, {})):
++            try:
++                session = qwen.Session({"qwen_checkpoint": str(checkpoint), "comfy_root": str(directory / "comfy")},
++                                       str(directory / "work"), recipe)
++            except ValueError:
++                self.assertEqual(built, [])                      # failed before the model was built
++                raise
++            session.close()
++        self.assertEqual(len(built), 1)
++        return session, log.getvalue()
++
++    def test_the_session_applies_the_recipe_mode(self):
++        with tempfile.TemporaryDirectory() as directory:
++            hf = FakeQwen()
++            session, log = self.start(directory, load_recipe(prompt_tokens="minimax"), hf)
++            self.assertEqual(hf.special, MINIMAX_EXTRA_TOKENS)
++            self.assertEqual(session.prompt_tokens_mode, "minimax")
++            self.assertEqual(session.session_receipt["prompt_tokens"]["added"], 7)
++            self.assertIn("[sol-h3-studio] prompt tokens: {'mode': 'minimax', 'added': 7", log)
++            hf = FakeQwen()
++            session, log = self.start(directory, load_recipe(prompt_tokens="plain"), hf)
++            self.assertEqual(hf.special, {})
++            self.assertEqual(session.session_receipt["prompt_tokens"], {"mode": "plain", "added": 0,
++                                                                        "vocab_size": 151669})
++            recipe = load_recipe()
++            recipe["stage1"]["prompt_tokens"] = "both"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_PROMPT_TOKENS"):
++                self.start(directory, recipe, FakeQwen())
++
++
++@unittest.skipUnless(TOKENIZER_DIR and TOKENIZER_DIR.is_dir() and importlib.util.find_spec("transformers"),
++                     "needs transformers and SOL_H3_SPARK_COMFY_ROOT (the pinned ComfyUI) for its Qwen tokenizer files")
++class ComfyTokenizerFileTests(unittest.TestCase):
++    """The pinned ComfyUI's tokenizer files, loaded with the class ComfyUI uses for them."""
++
++    @classmethod
++    def setUpClass(cls):
++        from transformers import Qwen2Tokenizer
++        cls.plain = sd_tokenizer(Qwen2Tokenizer.from_pretrained(str(TOKENIZER_DIR)))
++        cls.minimax = sd_tokenizer(Qwen2Tokenizer.from_pretrained(str(TOKENIZER_DIR)))
++        cls.plain_info = apply_prompt_tokens(cls.plain, "plain")
++        cls.minimax_info = apply_prompt_tokens(cls.minimax, "minimax")
++
++    @staticmethod
++    def ids(tokenizer, text):
++        return tokenizer.tokenizer(text, add_special_tokens=False)["input_ids"]   # MiniMaxH3Tokenizer._text_ids
++
++    def test_the_seven_tokens_get_minimax_ids(self):
++        self.assertEqual(self.plain_info["vocab_size"], 151669)
++        self.assertEqual((self.minimax_info["added"], self.minimax_info["vocab_size"]), (7, 151676))
++        self.assertEqual({t: self.minimax.tokenizer.convert_tokens_to_ids(t) for t in MINIMAX_EXTRA_TOKENS},
++                         MINIMAX_EXTRA_TOKENS)
++        self.assertEqual([self.minimax.inv_vocab[i] for i in range(151669, 151676)], list(MINIMAX_EXTRA_TOKENS))
++
++    def test_example_prompt_gives_minimax_ids(self):
++        self.assertEqual(self.ids(self.minimax, EXAMPLE), EXAMPLE_MINIMAX)
++        self.assertEqual(self.ids(self.minimax, MIXED), MIXED_MINIMAX)
++        self.assertEqual(self.ids(self.plain, EXAMPLE), EXAMPLE_PLAIN)      # what the studio sent up to 0.3
++
++    def test_prompts_without_the_tokens_are_unchanged(self):
++        for text in NO_TAGS:
++            with self.subTest(text=text):
++                ids = self.ids(self.plain, text)
++                self.assertEqual(self.ids(self.minimax, text), ids)
++                self.assertFalse(set(ids) & set(MINIMAX_EXTRA_TOKENS.values()))
++        self.assertIn(151644, self.ids(self.minimax, NO_TAGS[2]))            # <|im_start|> is still one token
++
++    def test_a_second_apply_finds_them(self):
++        info = apply_prompt_tokens(self.minimax, "minimax")
++        self.assertEqual((info["added"], info["already_present"]), (0, True))
++        with self.assertRaisesRegex(RuntimeError, "plain"):
++            apply_prompt_tokens(self.minimax, "plain")
++
++
++COMFY_SCRIPT = r"""
++import json, sys
++package, comfy_root, mode, text = sys.argv[1:5]
++sys.argv = [sys.argv[0], "--cpu"]
++sys.path[:0] = [comfy_root, package]
++try:
++    import comfy.options
++    comfy.options.enable_args_parsing()
++    import comfy.text_encoders.minimax as minimax
++except ImportError as error:
++    print(f"cannot import ComfyUI: {error}", file=sys.stderr)
++    sys.exit(77)
++from runtime.qwen_ops.prompt_tokens import apply_prompt_tokens
++tokenizer = minimax.MiniMaxH3Tokenizer()
++info = apply_prompt_tokens(tokenizer.qwen3vl_32b, mode)
++ids = [entry[0] for entry in tokenizer.tokenize_with_weights(text)["qwen3vl_32b"][0]]
++print(json.dumps({"info": info, "ids": ids}))
++"""
++
++
++@unittest.skipUnless(COMFY_ROOT and Path(COMFY_ROOT, "comfy", "sd.py").is_file(),
++                     "set SOL_H3_SPARK_COMFY_ROOT to the pinned ComfyUI to test MiniMaxH3Tokenizer")
++class ComfyMiniMaxTokenizerTests(unittest.TestCase):
++    """ComfyUI's MiniMaxH3Tokenizer itself (the path runtime/qwen.py uses), in a subprocess."""
++
++    def tokenize(self, mode, text):
++        result = subprocess.run([sys.executable, "-B", "-c", COMFY_SCRIPT, str(PACKAGE), COMFY_ROOT, mode, text],
++                                capture_output=True, text=True, timeout=600,
++                                env=dict(os.environ, CUDA_VISIBLE_DEVICES=""))
++        if result.returncode == 77:
++            self.skipTest(result.stderr.strip().splitlines()[-1])
++        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
++        return json.loads(result.stdout.strip().splitlines()[-1])
++
++    def test_minimax_h3_tokenizer(self):
++        minimax = self.tokenize("minimax", EXAMPLE)
++        self.assertEqual((minimax["info"]["added"], minimax["ids"]), (7, EXAMPLE_MINIMAX))
++        self.assertEqual(self.tokenize("plain", EXAMPLE)["ids"], EXAMPLE_PLAIN)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py b/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
-index 4af9048..840b1da 100644
+index 4af9048..7d821d8 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_qwen_media.py
-@@ -92,7 +92,7 @@ class QwenMediaContracts(unittest.TestCase):
+@@ -21,7 +21,9 @@ class FakeComfyClip:
+         self.check = check
+         self.tags = np.array([1, 0, 0, 1], dtype=np.int64)
+         self.cond = np.zeros((1, 4, 5120), dtype=np.float32)
+-        self.tokens = object()
++        # Modified by sol-h3-studio: CLIP.tokenize's shape ({name: [[(id or vision entry, weight), ...]]}), which the
++        # receipt's prompt-token counts read; 151669 is MiniMax's <d>.
++        self.tokens = {"qwen3vl_32b": [[(785, 1.0), (151652, 1.0), ({"type": "image"}, 1.0), (151669, 1.0)]]}
+ 
+     def tokenize(self, prompt, **kwargs):
+         self.check(prompt, kwargs)
+@@ -92,7 +94,7 @@ class QwenMediaContracts(unittest.TestCase):
          frames = np.arange(126, dtype=np.uint8)[:, None, None, None] * np.ones((126, 1, 1, 3), dtype=np.uint8)
          with patch.object(media, "resolve_canvas_size", return_value=(2, 2)) as canvas:
              prepared = media.prepare_reference_frames(frames)
 -        canvas.assert_called_once_with(1, 1)
-+        canvas.assert_called_once_with(1, 1, 768, 768 * 1344)   # Modified by sol-h3-studio: canvas arguments
++        canvas.assert_called_once_with(1, 1, 768, 768 * 1344)   # sol-h3-studio: canvas arguments
          self.assertEqual(prepared.shape, (124, 2, 2, 3))
          np.testing.assert_array_equal(prepared[:, 0, 0, 0], np.arange(124))
  
-@@ -201,7 +201,7 @@ class QwenMediaContracts(unittest.TestCase):
+@@ -130,6 +132,7 @@ class QwenMediaContracts(unittest.TestCase):
+         session.completed_requests = 0
+         session.model_load_count = 1
+         session.reference_target_area = target_area
++        session.prompt_tokens_mode = "minimax"                  # sol-h3-studio: SOL_H3_PROMPT_TOKENS from the recipe
+         session.clip = FakeComfyClip(check)
+         session.normalize = lambda encoded: SimpleNamespace(
+             cond=encoded["cond"], minimax_token_tags=encoded["minimax_token_tags"])
+@@ -151,6 +154,9 @@ class QwenMediaContracts(unittest.TestCase):
+         for key in ("task", "external_anchor_used", "input_conditioned", "input_spec", "prepared_media"):
+             self.assertEqual(payload[key], receipt[key])
+         self.assertEqual(json.loads((output / "conditioning.json").read_text()), receipt)
++        # sol-h3-studio: the mode, the text positions (tag 1) and the MiniMax token ids among them
++        self.assertEqual((receipt["prompt_tokens"], receipt["text_tokens"], receipt["minimax_tokens"]),
++                         ("minimax", 2, 1))
+         return receipt
+ 
+     def test_t2va_keeps_native_empty_images_call(self):
+@@ -201,7 +207,7 @@ class QwenMediaContracts(unittest.TestCase):
              np.testing.assert_array_equal(items[2]["data"][:, 0, 0, 0], np.array([0, 12, 24], dtype=np.float32) / 255)
              self.assertEqual(items[3]["data"].shape, (1, 2048, 4096, 3))
          with patch.object(media, "decode_reference_video", side_effect=[(frames, 24, True), (frames, 24, False)]), \
@@ -2390,12 +3396,568 @@ index 4af9048..840b1da 100644
              receipt = self._run_fake_session(case, check)
          self.assertEqual(receipt["input_spec"], {"task": "ref2va", "first_frame": None,
                                                "last_frame": None, "references": refs})
+diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_regional_length.py b/models/minimax_h3/Sol-H3-Spark/tests/test_regional_length.py
+new file mode 100644
+index 0000000..6658e47
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-Spark/tests/test_regional_length.py
+@@ -0,0 +1,550 @@
++"""CPU checks for SOL_H3_DYNAMIC_TEXT_LENGTH: Stage-1 body regions compiled per session, not per prompt length.
++
++Part of sol-h3-studio. The model here is a small stand-in with the shape of FastVideo's H3 regions: a block forward
++with FastVideo's signature whose attention follows DistributedAttention_VSA at one GPU (stack q/k/v/gate, trim,
++preprocess_qkv, chunk, attention forward, postprocess_output, pad) and reads FastVideo-style VSA metadata from a
++global forward context, and a text-refiner forward. The AdaLN table has 1 row in the first denoise step and 2 in the
++others, as Stage 1's exact t2va lookup. The opaque attention is a CPU custom op. torch.compile runs with a counting
++eager backend, so these tests check Dynamo's graphs and guards, not Inductor kernels. InstallWiringTests run
++regional.install() and install_dense() on FastVideo's own H3 blocks in a subprocess, with fastvideo_kernel stubbed
++(it needs a GPU driver to import), and skip when FastVideo is not importable.
++"""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import textwrap
++from types import MethodType, SimpleNamespace
++import unittest
++from unittest.mock import patch
++
++import torch
++import torch._dynamo
++
++from runtime.stage1_ops import regional
++
++HEADS, HEAD_DIM, AUDIO, VIDEO = 2, 8, 20, 192
++ADALN_ROWS = (1, 2, 2, 2)      # rows of the AdaLN table per denoise step (Stage 1's exact t2va lookup)
++HIDDEN = HEADS * HEAD_DIM
++CONTEXT = SimpleNamespace(attn_metadata=None)    # stands in for FastVideo's global forward context
++
++
++def forward_context():
++    return CONTEXT
++
++
++class Holder:
++    """FastVideo's builder-owned tile buffer holder (one per request)."""
++
++    def __init__(self):
++        self.buffer = None
++        self.untile_geometry = None
++
++
++def request_geometry(text):
++    """Tile sizes and untile index like FastVideo's VSA-H3 builder: 64-row prefix tiles per segment, then video."""
++    sizes = []
++    for segment in (text, AUDIO):
++        sizes += [64] * (segment // 64) + ([segment % 64] if segment % 64 else [])
++    prefix = len(sizes)
++    sizes += [64] * (VIDEO // 64)
++    untile = torch.cat([torch.arange(size) + 64 * index for index, size in enumerate(sizes)])
++    return torch.tensor(sizes), untile, prefix
++
++
++def metadata(text, step, geometry, holder):
++    sizes, untile, prefix = geometry
++    return SimpleNamespace(total_seq_length=text + AUDIO + VIDEO, num_prefix_tiles=prefix,
++                           num_video_tiles=VIDEO // 64, variable_block_sizes=sizes, untile_combined_index=untile,
++                           tile_elems=64, VSA_sparsity=0.9, exempt=True, dense_layers=(), current_timestep=step,
++                           tile_buf_holder=holder)
++
++
++def sparse_attention(calls):
++    """The 'original' VSA forward the opaque op calls: position-mixing, and it uses every metadata int it gets."""
++    def forward(q, k, v, gate, md):
++        calls.append((md.current_timestep, md.num_prefix_tiles, md.num_video_tiles, int(md.variable_block_sizes.sum())))
++        return (q * 0.5 + k * torch.roll(v, 1, dims=1) + gate * 0.25
++                + md.current_timestep * 0.01 + md.num_prefix_tiles * 0.001 + md.num_video_tiles * 0.0001)
++    return forward
++
++
++class TileImpl:
++    """FastVideo's MiniMaxH3VSAImpl surface: tile() with its length check and holder bookkeeping, and the untile."""
++
++    def __init__(self, layer):
++        self._sol_h3_cpu_layer = torch.tensor(layer)
++
++    def preprocess_qkv(self, x, md):
++        if x.shape[1] != md.total_seq_length:
++            raise ValueError("length")
++        holder = md.tile_buf_holder
++        target = (x.shape[0], md.variable_block_sizes.numel() * md.tile_elems, x.shape[2], x.shape[3])
++        matches = holder.buffer is not None and holder.buffer.shape == target and holder.buffer.dtype == x.dtype
++        if matches and holder.untile_geometry is not md.untile_combined_index:
++            holder.buffer.zero_()
++        if not matches:
++            holder.buffer = torch.zeros(target, dtype=x.dtype)
++        holder.buffer[:, md.untile_combined_index] = x
++        holder.untile_geometry = md.untile_combined_index
++        return holder.buffer
++
++    def postprocess_output(self, output, md):
++        return output[:, md.untile_combined_index]
++
++
++class Attention(torch.nn.Module):
++    """DistributedAttention_VSA.forward at sequence-parallel size 1."""
++
++    def __init__(self, impl):
++        super().__init__()
++        self.impl = impl
++        self.dtype = torch.float32
++
++    def forward(self, q, k, v, original_seq_len, gate_compress):
++        md = forward_context().attn_metadata
++        qkvg = torch.cat([q, k, v, gate_compress], dim=0)
++        pad = qkvg.shape[1] - original_seq_len
++        qkvg = self.impl.preprocess_qkv(qkvg[:, :original_seq_len], md)
++        q, k, v, gate = qkvg.chunk(4, dim=0)
++        output = self.impl.postprocess_output(self.impl.forward(q, k, v, gate, md), md)
++        return torch.nn.functional.pad(output, (0, 0, 0, 0, 0, pad))
++
++
++class DenseAttention(torch.nn.Module):
++    """DistributedAttention.forward (Ref2VA's dense FA4 route) at sequence-parallel size 1, without metadata."""
++
++    def forward(self, q, k, v, original_seq_len=None, gate_compress=None):
++        qkv = torch.cat([q, k, v], dim=0)
++        original_seq_len = original_seq_len or qkv.shape[1]
++        pad = qkv.shape[1] - original_seq_len
++        q, k, v = qkv[:, :original_seq_len].chunk(3, dim=0)
++        output = torch.softmax(torch.einsum("bshd,bthd->bhst", q, k), dim=-1)
++        output = torch.einsum("bhst,bthd->bshd", output, v)
++        return torch.nn.functional.pad(output, (0, 0, 0, 0, 0, pad))
++
++
++class AttentionModule(torch.nn.Module):
++    def __init__(self, impl, dense=False):
++        super().__init__()
++        self.num_attention_heads, self.attention_head_dim = HEADS, HEAD_DIM
++        self.distributed_attention = DenseAttention() if dense else Attention(impl)
++        self.to_qkvg = torch.nn.Linear(HIDDEN, 4 * HIDDEN, bias=False)
++
++
++class Block(torch.nn.Module):
++    """FastVideo's MiniMaxH3TransformerBlock.forward signature, with modulation, RoPE-like scaling and a residual."""
++
++    def __init__(self, layer, dense=False):
++        super().__init__()
++        self.attn = AttentionModule(TileImpl(layer), dense)
++        self.norm = torch.nn.RMSNorm(HIDDEN)
++        self.out = torch.nn.Linear(HIDDEN, HIDDEN)
++
++    def forward(self, hidden_states, temb, adaln_indices, rotary_emb, original_seq_len):
++        x = self.norm(hidden_states) * (1 + temb.index_select(0, adaln_indices))
++        q, k, v, gate = self.attn.to_qkvg(x).unflatten(-1, (4 * HEADS, HEAD_DIM)).chunk(4, dim=2)
++        q = q * rotary_emb[0][None, :, None, :] + q * rotary_emb[1][None, :, None, :]
++        output = self.attn.distributed_attention(q, k, v, original_seq_len, gate_compress=gate)
++        return hidden_states + self.out(output.flatten(2))
++
++
++class Refiner(torch.nn.Module):
++    """FastVideo's MiniMaxH3TokenRefinerBlock.forward signature; its attention trims by original_seq_len."""
++
++    def __init__(self):
++        super().__init__()
++        self.norm = torch.nn.RMSNorm(HIDDEN)
++        self.proj = torch.nn.Linear(HIDDEN, HIDDEN)
++
++    def forward(self, hidden_states, original_seq_len):
++        x = self.proj(self.norm(hidden_states))[:, :original_seq_len]
++        return hidden_states + torch.softmax(x @ x.transpose(1, 2), dim=-1) @ x
++
++
++class Model(torch.nn.Module):
++    def __init__(self, blocks=2, dense=False):
++        super().__init__()
++        torch.manual_seed(0)
++        self.transformer_blocks = torch.nn.ModuleList(Block(layer, dense) for layer in range(blocks))
++        self.token_refiner = torch.nn.Module()
++        self.token_refiner.refiner_blocks = torch.nn.ModuleList(Refiner() for _ in range(2))
++
++
++def run_request(model, text, seed=0, steps=4):
++    """One request as FastVideo runs it: a new metadata builder (tile-buffer holder) per request, the refiner once
++    (its output is cached), then every block once per denoise step."""
++    generator = torch.Generator().manual_seed(seed + text)
++    rows = text + AUDIO + VIDEO
++    geometry, holder = request_geometry(text), Holder()
++    tokens = torch.randn(1, text, HIDDEN, generator=generator)
++    hidden = torch.randn(1, rows, HIDDEN, generator=generator)
++    rotary = (torch.randn(rows, HEAD_DIM, generator=generator), torch.randn(rows, HEAD_DIM, generator=generator))
++    outputs = []
++    for refiner in model.token_refiner.refiner_blocks:
++        tokens = refiner(tokens, text)
++    outputs.append(tokens)
++    for step in range(steps):
++        CONTEXT.attn_metadata = metadata(text, step, geometry, holder)
++        temb = torch.randn(ADALN_ROWS[step], HIDDEN, generator=generator)
++        adaln = torch.randint(0, ADALN_ROWS[step], (rows,), generator=generator)
++        state = hidden
++        for block in model.transformer_blocks:
++            state = block(state, temb, adaln, rotary, rows)
++        outputs.append(state)
++        hidden = hidden + 0.01 * state
++    CONTEXT.attn_metadata = None
++    return outputs
++
++
++class GraphCounter:
++    def __init__(self):
++        self.graphs = 0
++
++    def __call__(self, graph_module, example_inputs):
++        self.graphs += 1
++        return graph_module.forward
++
++
++def compile_regions(model, blocks, refiners):
++    # FastVideo's _compile_model_regions: replace each region's forward with a fullgraph torch.compile of it.
++    for block in model.transformer_blocks:
++        block.forward = torch.compile(block.forward, fullgraph=True, backend=blocks)
++    for block in model.token_refiner.refiner_blocks:
++        block.forward = torch.compile(block.forward, fullgraph=True, backend=refiners)
++
++
++class RegionalLengthTests(unittest.TestCase):
++    def setUp(self):
++        torch._dynamo.reset()
++        self.addCleanup(torch._dynamo.reset)
++
++    def test_setting_values(self):
++        self.assertFalse(regional.dynamic_text_length({}))
++        self.assertFalse(regional.dynamic_text_length({regional.DYNAMIC_TEXT_LENGTH: " 0 "}))
++        self.assertTrue(regional.dynamic_text_length({regional.DYNAMIC_TEXT_LENGTH: "1"}))
++        for bad in ("true", "2", "on"):
++            with self.assertRaisesRegex(ValueError, "SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1"):
++                regional.dynamic_text_length({regional.DYNAMIC_TEXT_LENGTH: bad})
++
++    def test_prepare_tiles_follows_fastvideo_tile_bookkeeping(self):
++        holder = Holder()
++        first, second = request_geometry(100), request_geometry(110)       # same tile count, other geometry
++        hidden = torch.zeros(1, 100 + AUDIO + VIDEO, HIDDEN)
++        def prepare(md, hidden, dtype=torch.float32):
++            return regional.prepare_tiles(torch, md, hidden, HEADS, HEAD_DIM, dtype)
++        buffer = prepare(metadata(100, 0, first, holder), hidden)
++        self.assertEqual(tuple(buffer.shape), (4, first[0].numel() * 64, HEADS, HEAD_DIM))
++        self.assertTrue(bool((buffer == 0).all()))
++        self.assertIs(holder.untile_geometry, first[1])
++        buffer.fill_(1)
++        self.assertIs(prepare(metadata(100, 1, first, holder), hidden), buffer)
++        self.assertTrue(bool((buffer == 1).all()))                          # same geometry: reused as it is
++        hidden = torch.zeros(1, 110 + AUDIO + VIDEO, HIDDEN)
++        self.assertIs(prepare(metadata(110, 0, second, holder), hidden), buffer)
++        self.assertTrue(bool((buffer == 0).all()))                          # other geometry: cleared once
++        third = request_geometry(200)                                       # more tiles: a new zero buffer
++        hidden = torch.zeros(1, 200 + AUDIO + VIDEO, HIDDEN)
++        bigger = prepare(metadata(200, 0, third, holder), hidden)
++        self.assertIsNot(bigger, buffer)
++        self.assertEqual(bigger.shape[1], third[0].numel() * 64)
++        self.assertIsNot(prepare(metadata(200, 1, third, holder), hidden, torch.bfloat16), bigger)   # attention dtype
++        self.assertEqual(holder.buffer.dtype, torch.bfloat16)
++        with self.assertRaisesRegex(ValueError, "built for sequence length"):
++            prepare(metadata(201, 0, third, holder), hidden)
++
++    def install_today(self, model, namespace, calls):
++        """The body attention as regional.install() wires it with the setting off (ints passed to the op)."""
++        original = sparse_attention(calls)
++
++        @torch.library.custom_op(f"{namespace}::body", mutates_args=(), device_types="cpu")
++        def body_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, gate: torch.Tensor,
++                    variable_sizes: torch.Tensor, layer: torch.Tensor,
++                    prefix_tiles: int, video_tiles: int, step: int) -> torch.Tensor:
++            md = SimpleNamespace(variable_block_sizes=variable_sizes, num_prefix_tiles=prefix_tiles,
++                                 num_video_tiles=video_tiles, current_timestep=step)
++            return original(q, k, v, gate, md).contiguous()
++
++        @body_op.register_fake
++        def body_fake(q, k, v, gate, variable_sizes, layer, prefix_tiles, video_tiles, step):
++            return torch.empty_like(q)
++
++        def body_forward(self, query, key, value, gate, md):
++            return body_op(query, key, value, gate, md.variable_block_sizes, self._sol_h3_cpu_layer,
++                           md.num_prefix_tiles, md.num_video_tiles, md.current_timestep)
++
++        for block in model.transformer_blocks:
++            impl = block.attn.distributed_attention.impl
++            impl.forward = MethodType(body_forward, impl)
++
++    def install_any_length(self, model, namespace, calls):
++        receipt = {"body_runtime_calls": 0}
++        originals = [sparse_attention(calls)] * len(model.transformer_blocks)
++        preprocess, forward = regional.length_free_body(torch, originals, receipt, forward_context,
++                                                        namespace=namespace, device_types="cpu")
++        for block in model.transformer_blocks:
++            impl = block.attn.distributed_attention.impl
++            impl.forward = MethodType(forward, impl)
++            impl.preprocess_qkv = MethodType(preprocess, impl)
++        return receipt
++
++    def reference(self, lengths):
++        """Eager, uncompiled: FastVideo's tile() inside the attention and the original forward called directly."""
++        model, calls = Model(), []
++        original = sparse_attention(calls)
++        for block in model.transformer_blocks:
++            impl = block.attn.distributed_attention.impl
++            impl.forward = lambda q, k, v, gate, md: original(q, k, v, gate, md)
++        with torch.no_grad():
++            return [run_request(model, text) for text in lengths], calls
++
++    def test_today_recompiles_for_each_length_and_step(self):
++        limit = patch.object(torch._dynamo.config, "recompile_limit", 64)   # raised in the worker too (stage1.py)
++        limit.start()
++        self.addCleanup(limit.stop)
++        model, blocks, refiners, calls = Model(), GraphCounter(), GraphCounter(), []
++        self.install_today(model, "sol_h3_test_regional_today", calls)
++        compile_regions(model, blocks, refiners)
++        graphs = []
++        with torch.no_grad():
++            for text in (100, 110, 120):
++                run_request(model, text)
++                graphs.append((blocks.graphs, refiners.graphs))
++        # Block: a graph per denoise step (step ints) and one for the request's first call (empty tile-buffer holder),
++        # again for every new length (total_seq_length). Refiner: automatic dynamic shapes from the 2nd length on.
++        # The AdaLN rows (1, then 2) add nothing: the steps already have graphs of their own.
++        self.assertEqual(graphs, [(5, 1), (10, 2), (15, 2)])
++
++    def test_any_length_compiles_per_session_and_matches_eager(self):
++        lengths = (100, 110, 128, 129, 150, 300)          # same and different tile counts, a full last text tile
++        expected, expected_calls = self.reference(lengths)
++        model, blocks, refiners, calls = Model(), GraphCounter(), GraphCounter(), []
++        receipt = self.install_any_length(model, "sol_h3_test_regional_any", calls)
++        compile_regions(model, blocks, refiners)
++        self.assertEqual(regional.mark_length_dynamic(torch, model, forward_context)["body_regions"], 2)
++        graphs = []
++        with torch.no_grad():
++            for text, want in zip(lengths, expected):
++                got = run_request(model, text)
++                graphs.append((blocks.graphs, refiners.graphs))
++                for a, b in zip(got, want):
++                    self.assertTrue(torch.equal(a, b), f"text length {text}: output differs from eager")
++        # Two block graphs per session (the AdaLN table: 1 row in the first step, 2 after), none per new length; the
++        # refiner, left as it is, recompiles once (2nd length).
++        self.assertEqual(graphs, [(2, 1)] + [(2, 2)] * (len(lengths) - 1))
++        self.assertEqual(calls, expected_calls)            # steps and tile counts read when the op runs
++        self.assertEqual(receipt["body_runtime_calls"], len(lengths) * 4 * 2)
++
++    def test_marks_hold_with_static_shapes(self):
++        """SOL_H3_STATIC_SHAPES=1 (stage1.py configure_dynamo) turns Dynamo's automatic dynamic shapes off. The marked
++        body dimensions stay dynamic: 2 block graphs per session, none per new length. The text refiner, not marked,
++        compiles a static graph per prompt length instead of a dynamic one at the 2nd length."""
++        lengths = (100, 110, 128, 129, 150, 300)
++        expected, _ = self.reference(lengths)
++        static = patch.object(torch._dynamo.config, "automatic_dynamic_shapes", False)
++        static.start()
++        self.addCleanup(static.stop)
++        model, blocks, refiners, calls = Model(), GraphCounter(), GraphCounter(), []
++        self.install_any_length(model, "sol_h3_test_regional_static", calls)
++        compile_regions(model, blocks, refiners)
++        receipt = regional.mark_length_dynamic(torch, model, forward_context)
++        self.assertIn("SOL_H3_STATIC_SHAPES=1", receipt["text_regions"])
++        graphs = []
++        with torch.no_grad():
++            for text, want in zip(lengths, expected):
++                got = run_request(model, text)
++                graphs.append((blocks.graphs, refiners.graphs))
++                for a, b in zip(got, want):
++                    self.assertTrue(torch.equal(a, b), f"text length {text}: output differs from eager")
++        self.assertEqual(graphs, [(2, count) for count in range(1, len(lengths) + 1)])
++
++    def test_dense_route_compiles_per_session(self):
++        """Ref2VA (install_dense): no VSA metadata, only the packed-row dims and the attention's length int."""
++        lengths = (100, 129, 300)
++        reference = Model(dense=True)
++        with torch.no_grad():
++            expected = [run_request(reference, text) for text in lengths]
++        model, blocks, refiners = Model(dense=True), GraphCounter(), GraphCounter()
++        compile_regions(model, blocks, refiners)
++        regional.mark_length_dynamic(torch, model, tiles=False)
++        graphs = []
++        with torch.no_grad():
++            for text, want in zip(lengths, expected):
++                got = run_request(model, text)
++                graphs.append((blocks.graphs, refiners.graphs))
++                self.assertTrue(all(torch.equal(a, b) for a, b in zip(got, want)), f"text length {text}")
++        self.assertEqual(graphs, [(2, 1), (2, 2), (2, 2)])
++
++    def test_wrapper_refuses_other_fastvideo_signatures(self):
++        def block_forward(self, hidden_states, temb, adaln_indices, rotary_emb):
++            return hidden_states
++
++        def attention_forward(self, q, k, v, gate_compress, original_seq_len):
++            return q
++        for cls, forward in ((Block, block_forward), (Attention, attention_forward)):
++            with patch.object(cls, "forward", forward), self.assertRaisesRegex(RuntimeError, "signature"):
++                regional.mark_length_dynamic(torch, Model(), forward_context)
++
++
++# Runs in a subprocess (python -c): build 50 + 2 of FastVideo's own tiny H3 blocks, run regional.install() (VSA) and
++# install_dense() (Ref2VA) as the Stage-1 worker does, and print what got wrapped as JSON. Compiling is lazy; no
++# forward runs (the opaque ops are CUDA-only).
++WIRING = textwrap.dedent("""
++    import importlib.machinery, importlib.util, json, os, sys, types
++    if importlib.util.find_spec("fastvideo") is None:
++        print(json.dumps({"skip": "FastVideo is not importable"}))
++        sys.exit(0)
++
++    class _Stub(types.ModuleType):          # fastvideo_kernel needs a GPU driver to import
++        def __getattr__(self, name):
++            if name.startswith("__"):
++                raise AttributeError(name)
++            return lambda *args, **kwargs: None
++
++    class _Finder:
++        def find_spec(self, name, path=None, target=None):
++            if name == "fastvideo_kernel" or name.startswith("fastvideo_kernel."):
++                return importlib.machinery.ModuleSpec(name, self, is_package=True)
++        def create_module(self, spec):
++            module = _Stub(spec.name)
++            module.__path__ = []
++            return module
++        def exec_module(self, module):
++            pass
++
++    sys.meta_path.insert(0, _Finder())
++    from unittest.mock import patch
++    import torch
++    import fastvideo.attention.layer as layer
++    import fastvideo.models.dits.minimax_h3 as h3
++    from fastvideo.attention.backends import video_sparse_attn_h3 as vsa_h3
++    from fastvideo.attention.backends.abstract import AttentionBackend, AttentionImpl
++    from fastvideo.configs.models.dits.minimax_h3 import _is_minimax_h3_block
++    from fastvideo.platforms import AttentionBackendEnum as E
++    from runtime.stage1_ops import regional, vsa
++
++    class TextImpl(AttentionImpl):
++        def __init__(self, *args, **kwargs):
++            pass
++        def forward(self, q, k, v, attn_metadata):
++            return q
++
++    class TextBackend(AttentionBackend):
++        get_name = staticmethod(lambda: "FLASH_ATTN")
++        get_impl_cls = staticmethod(lambda: TextImpl)
++
++    def backend(head_size, dtype, supported_attention_backends=None, **kwargs):
++        sparse = E.VIDEO_SPARSE_ATTN_H3 in (supported_attention_backends or ())
++        return vsa_h3.MiniMaxH3VSABackend if sparse else TextBackend
++    h3.get_attn_backend = layer.get_attn_backend = backend
++
++    class Model(torch.nn.Module):          # the attributes regional.py and FastVideo's helpers use
++        _compile_conditions = [_is_minimax_h3_block]
++        enabled_fusions = frozenset()
++        prepare_for_compile = h3.MiniMaxH3Transformer3DModel.prepare_for_compile
++        _compile_setup_device = h3.MiniMaxH3Transformer3DModel.__dict__["_compile_setup_device"]
++
++        def __init__(self, sparse):
++            super().__init__()
++            body = (E.VIDEO_SPARSE_ATTN_H3,) if sparse else (E.FLASH_ATTN,)
++            self.transformer_blocks = torch.nn.ModuleList(h3.MiniMaxH3TransformerBlock(
++                128, 2, 64, 256, 32, 1e-6, 1e-6, body, None, prefix=f"transformer_blocks.{i}") for i in range(50))
++            self.token_refiner = torch.nn.Module()
++            self.token_refiner.refiner_blocks = torch.nn.ModuleList(h3.MiniMaxH3TokenRefinerBlock(
++                128, 2, 64, 256, 1e-6, 1e-6, (E.FLASH_ATTN,), None, prefix=f"token_refiner.refiner_blocks.{i}")
++                for i in range(2))
++            with torch.no_grad():
++                for parameter in self.parameters():
++                    parameter.normal_()
++            for block in self.transformer_blocks:
++                block.attn._resolve_gate_compress_for_compile()    # vsa.install_model does this in the worker
++
++    def compiled(fn):
++        return hasattr(fn, "_torchdynamo_orig_callable")
++
++    def wiring(model):
++        blocks, refiners = list(model.transformer_blocks), list(model.token_refiner.refiner_blocks)
++        cells = lambda fn: [c.cell_contents for c in (getattr(fn, "__closure__", None) or ())]
++        impl = lambda block: block.attn.distributed_attention.attn_impl
++        return {
++            "body_wrapped_after_compile": sum("body_region" in b.forward.__qualname__
++                                              and any(compiled(c) for c in cells(b.forward)) for b in blocks),
++            "body_compiled_unwrapped": sum(compiled(b.forward) for b in blocks),
++            "body_attention_rows": sum("query_rows" in getattr(vars(b.attn.distributed_attention).get("forward"),
++                                                               "__qualname__", "") for b in blocks),
++            "body_preprocess": sum("length_free_body" in getattr(vars(impl(b)).get("preprocess_qkv"),
++                                                                 "__qualname__", "") for b in blocks),
++            "body_forward": sorted({getattr(vars(impl(b)).get("forward"), "__qualname__", "-") for b in blocks}),
++            "text_compiled_unwrapped": sum(compiled(b.forward) for b in refiners),
++            "text_attention_untouched": sum("forward" not in vars(b.attn.distributed_attention) for b in refiners),
++            "text_no_preprocess": sum("preprocess_qkv" not in vars(impl(b)) for b in refiners),
++            "text_forward": sorted({getattr(vars(impl(b)).get("forward"), "__qualname__", "-") for b in refiners}),
++        }
++
++    state = {"official_vsa": {"fastvideo_commit": vsa.FASTVIDEO_COMMIT, "vsa_source_sha256": vsa.VSA_SOURCE_SHA,
++                              "selected_attention_backend": "cudnn_bsa", "active_compression_gates": 50,
++                              "vsa_forward_calls": 0}}
++    out = {}
++    with patch.object(torch.cuda, "get_device_capability", return_value=(12, 1)):
++        model = Model(sparse=True)
++        receipt = regional.install(model, state)
++        out["vsa"] = {**wiring(model), "text_length": receipt["text_length"],
++                      "regions_wrapped": receipt["regions_wrapped"],
++                      "length_regions": receipt.get("length_regions", {}).get("body_regions"),
++                      "any_length_op": hasattr(torch.ops.sol_h3_spark_vsa, "body_any_length")}
++    dense, dense_state = Model(sparse=False), {}
++    regional.install_dense(dense, dense_state)
++    out["dense"] = {**wiring(dense), "text_length": dense_state["dense_regional_compile"]["text_length"]}
++    print(json.dumps(out))
++""")
++
++
++def run_wiring(setting):
++    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", SOL_H3_DYNAMIC_TEXT_LENGTH=setting)
++    package = Path(__file__).resolve().parents[1]
++    result = subprocess.run([sys.executable, "-B", "-c", WIRING], cwd=package, env=env, capture_output=True,
++                            text=True, timeout=600)
++    if result.returncode != 0:
++        raise AssertionError(f"wiring subprocess failed:\n{result.stderr[-3000:]}")
++    return json.loads(result.stdout.strip().splitlines()[-1])
++
++
++class InstallWiringTests(unittest.TestCase):
++    """regional.install() and install_dense() on FastVideo's own H3 blocks, with the setting on and off."""
++
++    def test_setting_on_wraps_the_compiled_body_regions_only(self):
++        out = run_wiring("1")
++        if "skip" in out:
++            self.skipTest(out["skip"])
++        vsa, dense = out["vsa"], out["dense"]
++        self.assertEqual((vsa["text_length"], vsa["regions_wrapped"], vsa["length_regions"], vsa["any_length_op"]),
++                         ("dynamic_body", 52, 50, True))
++        self.assertEqual((vsa["body_wrapped_after_compile"], vsa["body_compiled_unwrapped"],
++                          vsa["body_attention_rows"], vsa["body_preprocess"]), (50, 0, 50, 50))
++        self.assertEqual(len(vsa["body_forward"]), 1)
++        self.assertIn("length_free_body", vsa["body_forward"][0])
++        self.assertEqual((vsa["text_compiled_unwrapped"], vsa["text_attention_untouched"], vsa["text_no_preprocess"]),
++                         (2, 2, 2))
++        self.assertEqual(len(vsa["text_forward"]), 1)
++        self.assertIn("text_forward", vsa["text_forward"][0])
++        self.assertEqual((dense["text_length"], dense["body_wrapped_after_compile"], dense["body_attention_rows"],
++                          dense["body_preprocess"], dense["text_compiled_unwrapped"],
++                          dense["text_attention_untouched"]), ("dynamic_body", 50, 50, 0, 2, 2))
++
++    def test_setting_off_changes_nothing(self):
++        out = run_wiring("0")
++        if "skip" in out:
++            self.skipTest(out["skip"])
++        vsa, dense = out["vsa"], out["dense"]
++        self.assertEqual((vsa["text_length"], vsa["length_regions"], vsa["any_length_op"]),
++                         ("per_length", None, False))
++        self.assertEqual((vsa["body_wrapped_after_compile"], vsa["body_compiled_unwrapped"],
++                          vsa["body_attention_rows"], vsa["body_preprocess"]), (0, 50, 0, 0))
++        self.assertTrue(vsa["body_forward"][0].startswith("install.<locals>.body_forward"))
++        self.assertEqual((dense["text_length"], dense["body_wrapped_after_compile"], dense["body_compiled_unwrapped"],
++                          dense["body_attention_rows"]), ("per_length", 0, 50, 0))
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
 new file mode 100644
-index 0000000..067f62f
+index 0000000..7848ec4
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
-@@ -0,0 +1,710 @@
+@@ -0,0 +1,776 @@
 +"""sol-h3-studio: CPU tests of reshape, another clip length or orientation in a running session (not part of upstream
 +Sol-H3-Spark). Stand-in workers check that every worker sees the shape of each request; the shape state each real
 +worker rebinds is checked against what a fresh worker for that shape has."""
@@ -2577,9 +4139,11 @@ index 0000000..067f62f
 +        case = {"case_id": "c0", "prompt": "A fox.", "seed": 1}
 +        pipeline.start(case, deliver=True)
 +        pipeline.reshape(seconds=15)
-+        self.mem_gib = 20.0                                  # below the 32 GiB a resident Qwen load needs here
++        self.mem_gib = 20.0                                  # below the 34 GiB a resident Qwen load needs at 10 s
 +        record = pipeline.reshape(seconds=10)
-+        self.assertIn("MemAvailable 20.0 GiB, below SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB=32", record["workers"]["qwen"])
++        self.assertEqual(record["workers"]["qwen"]["spawn"], "after_next_clip")
++        self.assertIn("MemAvailable 20.0 GiB after the reshape, below the 34 GiB minimum",
++                      record["workers"]["qwen"]["reason"])
 +        self.assertIsNone(pipeline._qwen_future)
 +        loads = pipeline.qwen_loads
 +        pipeline.generate(dict(case, case_id="next"))        # loads its own encoder, with the 10 s recipe
@@ -2589,6 +4153,46 @@ index 0000000..067f62f
 +        self.assertEqual(pipeline._resident_qwen().root.name, "qwen-worker-r1")   # and the resident one after it
 +        pipeline.generate(dict(case, case_id="after"))
 +        self.assertEqual(pipeline.qwen_loads, loads + 1)
++
++    def test_the_encoder_restart_uses_the_rule_of_the_early_load(self):
++        """Back from 15 s, the resident Qwen restarts under the minimum start() uses for its early load: 32 GiB up to
++        121 output frames, 34 GiB above, or SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB for every length."""
++        pipeline = self.pipeline()
++        pipeline.start({"case_id": "c0", "prompt": "A fox.", "seed": 1}, deliver=True)
++        self.mem_gib = 33.0
++        for seconds, setting, spawn, minimum in ((None, "", "after_reshape", 32.0),
++                                                 (10, "", "after_next_clip", 34.0),
++                                                 (10, "30", "after_reshape", 30.0),
++                                                 (None, "40", "after_next_clip", 40.0)):
++            with self.subTest(seconds=seconds, setting=setting), \
++                    mock.patch.dict(os.environ, {"SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB": setting}):
++                pipeline.reshape(seconds=15)
++                qwen = pipeline.reshape(seconds=seconds)["workers"]["qwen"]
++                self.assertEqual((qwen["spawn"], qwen["min_gib"], qwen["mem_available_gib"]), (spawn, minimum, 33.0))
++                self.assertEqual(qwen["min_from"] == "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB", bool(setting))
++                self.assertEqual(pipeline._qwen_future is not None, spawn == "after_reshape")
++
++    def test_an_encoder_started_after_a_reshape_keeps_the_prompt_token_mode(self):
++        """The session's prompt-token mode reaches every Qwen worker it starts, the setting changed meanwhile."""
++        modes = []
++
++        class Recording(GeometryWorker):
++            def __init__(self, name, root, paths, config):
++                super().__init__(name, root, paths, config)
++                modes.append((name, self.root.name, config["stage1"]["prompt_tokens"]))
++        pipeline = Pipeline({}, Path(self.directory.name) / "plain", worker_factory=Recording, prompt_tokens="plain")
++        self.addCleanup(pipeline.close)
++        case = {"case_id": "c0", "prompt": "A fox.", "seed": 1}
++        pipeline.start(case, deliver=True)
++        with mock.patch.dict(os.environ, {"SOL_H3_PROMPT_TOKENS": "minimax"}):
++            pipeline.reshape(seconds=15)
++            pipeline.generate(dict(case, case_id="long"))          # a per-request encoder
++            pipeline.reshape(orientation="portrait")                # the resident one again, restarted
++            pipeline._resident_qwen()
++        self.assertEqual([root for name, root, mode in modes if name == "qwen"],
++                         ["warmup-qwen-worker", "qwen-worker", "qwen-worker-1", "qwen-worker-r1"])
++        self.assertEqual({mode for name, root, mode in modes}, {"plain"})
++        self.assertEqual(pipeline.config["stage1"]["prompt_tokens"], "plain")
 +
 +    def test_a_closing_or_failed_pipeline_refuses_a_reshape(self):
 +        pipeline = self.pipeline()
@@ -2658,9 +4262,17 @@ index 0000000..067f62f
 +        pipeline.reshape(orientation="portrait", seconds=12)
 +        self.assertEqual(GeometryWorker.events, [])
 +        self.assertTrue(pipeline.transient_qwen)
++        self.assertFalse(pipeline.early_qwen)               # start() follows the 12 s residency rule
 +        pipeline.start({"case_id": "p", "prompt": "A fox.", "seed": 1}, deliver=True)
 +        self.assertEqual({event[3] for event in self.starts("stage1") + self.starts("stage2")},
 +                         {shape_of(load_recipe(orientation="portrait", seconds=12))})
++        self.assertEqual([event[2] for event in self.starts("qwen")], ["warmup-qwen-worker"])   # no resident one
++        self.assertEqual(pipeline.report["resident_qwen"], {"spawn": "per_request"})
++        later = Pipeline({}, Path(self.directory.name) / "run-15s", worker_factory=GeometryWorker, seconds=15)
++        self.addCleanup(later.close)
++        later.reshape(seconds=10)
++        self.assertTrue(later.early_qwen)
++        self.assertEqual((later.early_qwen_min_gib, later.resident_qwen), (34.0, {"spawn": "first_refine"}))
 +
 +    def test_a_failed_worker_command_fails_the_reshape(self):
 +        class Broken(GeometryWorker):
@@ -2768,6 +4380,8 @@ index 0000000..067f62f
 +        base, _ = self.stub_modules(calls)
 +        with mock.patch.dict(os.environ):
 +            os.environ.pop("SOL_H3_STATIC_SHAPES", None)
++            self.assertIs(compile_dynamic(), False)
++            os.environ["SOL_H3_STATIC_SHAPES"] = " "            # empty: the default, as unset
 +            self.assertIs(compile_dynamic(), False)
 +            self.assertIs(models.compilation_config(base, True).kwargs["dynamic"], False)
 +            self.assertIsNone(models.compilation_config(base, False))
@@ -3008,12 +4622,17 @@ index 0000000..067f62f
 +    def test_keyframe_canvas_follows_the_shape(self):
 +        session = object.__new__(qwen.Session)
 +        session.closed = session.failed = False
++        session.prompt_tokens_mode = load_recipe()["stage1"]["prompt_tokens"]
 +        session.canvas, session.reference_target_area = qwen.draft_canvas(load_recipe()), None
 +        result = session.reshape(load_recipe("fl2va", orientation="portrait", seconds=10))
 +        self.assertEqual((result["canvas_before"], result["canvas"]), ([384, 672], [672, 384]))
 +        self.assertEqual(session.canvas, (672, 384))
 +        session.reshape(load_recipe("ref2va", ref_image_match="stage2"))
 +        self.assertEqual((session.canvas, session.reference_target_area), ((384, 672), 1344 * 768))
++        other = "plain" if session.prompt_tokens_mode == "minimax" else "minimax"
++        with self.assertRaisesRegex(ValueError, "prompt-token mode"):
++            session.reshape(load_recipe(seconds=10, prompt_tokens=other))
++        self.assertEqual(session.canvas, (384, 672))
 +        session.closed = True
 +        with self.assertRaises(RuntimeError):
 +            session.reshape(load_recipe())
@@ -3081,7 +4700,7 @@ index 0000000..067f62f
 +    or the Stage1 worker's Dynamo setting) a second shape compiles a second static graph, the one a fresh process
 +    compiles first; with upstream's default a shape change compiles a graph with dynamic sizes instead."""
 +
-+    def graphs(self, dynamic, automatic=True):
++    def graphs(self, dynamic, automatic=True, mark=False):
 +        import torch
 +        import torch._dynamo
 +        seen = []
@@ -3094,7 +4713,10 @@ index 0000000..067f62f
 +        with torch._dynamo.config.patch(automatic_dynamic_shapes=automatic):
 +            compiled = torch.compile(lambda x: (x * 2).sum(-1), backend=backend, dynamic=dynamic, fullgraph=True)
 +            for length in (8, 16, 8, 24):
-+                compiled(torch.ones(2, length))
++                value = torch.ones(2, length)
++                if mark:                     # as SOL_H3_DYNAMIC_TEXT_LENGTH=1 marks the prompt-length dimensions
++                    torch._dynamo.maybe_mark_dynamic(value, 1)
++                compiled(value)
 +        torch._dynamo.reset()
 +        return seen
 +
@@ -3102,6 +4724,12 @@ index 0000000..067f62f
 +        self.assertEqual(self.graphs(False), [False, False, False])              # 8, 16, 24: one static graph each
 +        self.assertEqual(self.graphs(None, automatic=False), [False, False, False])
 +        self.assertEqual(self.graphs(None), [False, True])                      # upstream default: 16 goes dynamic
++
++    def test_a_marked_dimension_stays_dynamic(self):
++        """SOL_H3_DYNAMIC_TEXT_LENGTH=1 with the Stage1 worker's static setting: a dimension marked dynamic stays
++        dynamic without automatic dynamic shapes, one graph for every length (stage1_ops/regional.py)."""
++        self.assertEqual(self.graphs(None, automatic=False, mark=True), [True])
++        self.assertEqual(self.graphs(None, mark=True), [True])
 +
 +
 +if __name__ == "__main__":
