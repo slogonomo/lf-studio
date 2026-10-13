@@ -167,9 +167,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 
   - The load's lowest point is now in the first refine, 23-27 GiB below the reading at the check (the encoder plus a
     first refine). In two of the three loads it was 1.5-2 GiB below the next clip's. The memory guard never fired.
-  - From Stage1's first request to the MP4, the part of the first clip the change acts on, it took 0.7-3.0 s
-    longer: the refine while the encoder loads. One whole first clip was 12.6 s slower, 9.6 s of it before Stage1
-    returned, where both runs run the same code.
+  - From the end of Stage1's first request to the MP4, the part of the first clip the change acts on, it took
+    0.7-3.0 s longer: the refine while the encoder loads. One whole first clip was 12.6 s slower, 9.6 s of it
+    before Stage1 returned, where both runs run the same code.
   - The next clips came out identical for t2va: the encoder's output, Stage1's tensors, decoded audio and video.
     For fl2va the encoder's output was identical, but Stage1 differed. Each run had compiled that prompt length's
     Stage1 graphs anew, and autotuning picked another reduction kernel in one of them. A second fl2va run of the
