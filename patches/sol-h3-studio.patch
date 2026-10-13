@@ -875,7 +875,7 @@ index 39080d4..554c8de 100644
              if has_audio:
                  items.append({"type": "audio"})
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
-index 3fec9da..74caa4d 100644
+index 3fec9da..060be8b 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage1.py
 @@ -13,6 +13,9 @@ from .stage1_ops.lookup import install_exact_t2va_lookup, quantized_linear_name
@@ -888,7 +888,7 @@ index 3fec9da..74caa4d 100644
  
  
  def install_reference_image_size(reference_module, target_area):
-@@ -38,12 +41,47 @@ def validate_native_attention(before, after, *, require_calls=True):
+@@ -38,12 +41,48 @@ def validate_native_attention(before, after, *, require_calls=True):
  
  
  def install_worker(worker, task="t2va", attention=None, reference_area=None,
@@ -903,8 +903,9 @@ index 3fec9da..74caa4d 100644
 +    # sol-h3-studio: every new prompt length (text tokens) recompiles the fullgraph DiT regions; FastVideo caps
 +    # recompiles at 16 (layers/lora/linear.py), so a long-lived web-UI session died after ~4 distinct prompt
 +    # lengths ('Dynamo recompile limit exceeded'). Allow many shapes; each new length still costs ~8-10 s once.
-+    # SOL_H3_DYNAMIC_TEXT_LENGTH=1 (off by default) compiles the 50 body regions once for any length instead; the
-+    # two text-refiner regions then compile once more, at a session's second length (stage1_ops/regional.py).
++    # SOL_H3_DYNAMIC_TEXT_LENGTH=1 (off by default) compiles the 50 body regions for any length instead (2 graphs per
++    # session, none per new length); the two text-refiner regions compile once more, at a session's second length, as
++    # before (stage1_ops/regional.py). Not on the Ref2VA Sol route.
 +    import torch._dynamo
 +    torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 1024)
 +    torch._dynamo.config.accumulated_recompile_limit = max(torch._dynamo.config.accumulated_recompile_limit, 65536)
@@ -937,7 +938,7 @@ index 3fec9da..74caa4d 100644
      from .stage1_ops import native as control, capture, vsa, regional
      pipe = worker.pipeline
      state = {"task": task, "transformer_materializations": 0, "video_vae_materializations": 0,
-@@ -55,6 +93,12 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -55,6 +94,12 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
      if task == "ref2va" and reference_area is not None:
          from fastvideo.pipelines.basic.minimax_h3 import reference
          install_reference_image_size(reference, reference_area)
@@ -950,7 +951,18 @@ index 3fec9da..74caa4d 100644
          state["reference_image_resize"] = {"mode": "match", "pixel_budget": reference_area,
                                             "budget_source": reference_budget_source}
      sol_route = sol.RequestRoute(state) if attention == sol.POLICY else None
-@@ -155,6 +199,26 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -150,11 +195,37 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+                 regional.install_dense(model, state)
+             else:
+                 sol.install(model, state, sol_route)
++                # sol-h3-studio: the Sol route keeps its per-length graphs; SOL_H3_DYNAMIC_TEXT_LENGTH does not apply.
++                ignored = regional.dynamic_text_length()
++                state["sol_regional_compile"]["text_length"] = ("per_length (setting ignored)" if ignored
++                                                                 else "per_length")
++                if ignored:
++                    print("[sol-h3-studio] SOL_H3_DYNAMIC_TEXT_LENGTH=1 is ignored on the Ref2VA Sol route", flush=True)
+         else:
+             vsa.install_model(model, state)
              regional.install(model, state)
          return model
      pipe.modules["transformer"].set_materialize_transform(quantize_after_merge)
@@ -977,7 +989,7 @@ index 3fec9da..74caa4d 100644
      control.install_fa4_audit(worker)  # Native FA4 handles the two text-refiner blocks.
      original_post_init = pipe.post_init
      def post_init():
-@@ -192,7 +256,16 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -192,7 +263,16 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
          keep = {id(pipe.modules[name]) for name in ("transformer", "vae", "audio_vae")}
          for stage in pipe._stages:
              stage._lazy_modules_to_release = tuple(m for m in stage._lazy_modules_to_release if id(m) not in keep)
@@ -995,7 +1007,7 @@ index 3fec9da..74caa4d 100644
          capture.arm_capture(worker, state["case"]["target"])
          pipe.post_init = original_post_init
      pipe.post_init = post_init
-@@ -271,6 +344,7 @@ class Session:
+@@ -271,6 +351,7 @@ class Session:
          self.task = task_of(config.get("stage1", config))
          self.attention = config.get("stage1", config).get("attention")
          self.reference_area = reference_target_area(config)
@@ -1003,7 +1015,7 @@ index 3fec9da..74caa4d 100644
          self.reference_budget_source = config.get("stage1", config).get(
              "reference_image_resize", {}).get("budget_source")
          if self.attention == sol.POLICY and self.task != "ref2va":
-@@ -280,8 +354,9 @@ class Session:
+@@ -280,8 +361,9 @@ class Session:
          profile = self.basic.parse_args([
              "--model-path", str(Path(paths["h3_model"]).expanduser().resolve(strict=True)),
              "--prompt", "session", "--output", str(self.root), "--num-gpus", "1",
@@ -1015,7 +1027,7 @@ index 3fec9da..74caa4d 100644
              "--no-warmup", "--repeats", "1"])
          if self.task == "ref2va":
              profile.vsa = False
-@@ -325,7 +400,9 @@ class Session:
+@@ -325,7 +407,9 @@ class Session:
          try:
              self.rpc(functools.partial(install_worker, task=self.task, attention=self.attention,
                                        reference_area=self.reference_area,
@@ -1075,7 +1087,7 @@ index 81e37ba..d380c78 100644
                  "native_video_shape": None,
                  "latent_only_transfer": True,
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/regional.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/regional.py
-index 0221149..35b5035 100644
+index 0221149..3c88088 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/regional.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage1_ops/regional.py
 @@ -1,11 +1,30 @@
@@ -1157,13 +1169,13 @@ index 0221149..35b5035 100644
      # Deliberately not prepare_for_regional_compile(): that hook probes SM100a.
      model.prepare_for_compile()
      enabled = fsdp_load._enable_regional_attention_compile(model)
-@@ -127,6 +158,142 @@ def install(model, state, compile_kwargs=None):
+@@ -127,6 +158,146 @@ def install(model, state, compile_kwargs=None):
      if (enabled, compiled) != (52, 52):
          raise RuntimeError(f"expected native 52 attention modules/regions, got {(enabled, compiled)}")
      receipt.update(attention_modules_enabled=enabled, regions_wrapped=compiled)
-+    if dynamic:   # sol-h3-studio
++    if dynamic:   # sol-h3-studio; the BSA route takes BF16 q/k/v/gate only (vsa.py), so the tile buffer is BF16
 +        _require_one_gpu()
-+        receipt["length_regions"] = mark_length_dynamic(torch, model)
++        receipt["length_regions"] = mark_length_dynamic(torch, model, tile_dtype=torch.bfloat16)
      state["vsa_regional_compile"] = receipt
      audit["compile_policy"] = "explicit SM121 opaque VSA + original 52 fullgraph regions; runtime gate required"
      return receipt
@@ -1174,7 +1186,8 @@ index 0221149..35b5035 100644
 +# ints it reads from a global, here FastVideo's forward context: total_seq_length (the length check in FastVideo's
 +# tile()), num_prefix_tiles, num_video_tiles and current_timestep (passed to the opaque op above), and it branches on
 +# the tile-buffer holder's state (tile()'s bookkeeping). The functions below keep all of these out of the graph and
-+# mark the packed-sequence dimensions dynamic, so the body regions compile once. The graph keeps the same opaque
++# mark the packed-sequence dimensions dynamic. The body regions then compile 2 graphs per session (the AdaLN table has
++# fewer rows in the first denoise step than in the others) and none per new length. The graph keeps the same opaque
 +# attention, FastVideo's scatter into its zero-padded tile buffer and its gather back, and the same projections and
 +# fused norms; only their sizes are symbolic. The two text-refiner regions are left as they are: Dynamo's automatic
 +# dynamic shapes already compile them for any length from a session's second prompt length on.
@@ -1221,12 +1234,13 @@ index 0221149..35b5035 100644
 +    return preprocess_qkv, forward
 +
 +
-+def prepare_tiles(torch, metadata, hidden_states, heads, head_dim):
++def prepare_tiles(torch, metadata, hidden_states, heads, head_dim, dtype):
 +    """FastVideo's tile() bookkeeping (video_sparse_attn_h3.py), done before a body region instead of in its graph.
 +
-+    The same rules: the packed length must match the metadata; the builder-owned buffer (q, k, v and gate stacked) is
-+    allocated with zeros when missing or of another shape, dtype or device, and cleared once when it is reused for
-+    another tile geometry. All 50 blocks of a denoise step share it. SM100a partner tiles do not apply on SM121.
++    The same rules: the packed length must match the metadata; the builder-owned buffer (q, k, v and gate stacked, in
++    the attention's dtype) is allocated with zeros when missing or of another shape, dtype or device, and cleared once
++    when it is reused for another tile geometry. All 50 blocks of a denoise step share it. SM100a partner tiles do not
++    apply on SM121. A dtype other than the attention's makes the scatter in the graph fail, not convert.
 +    """
 +    rows = hidden_states.shape[1]
 +    if metadata.total_seq_length != rows:
@@ -1236,9 +1250,8 @@ index 0221149..35b5035 100644
 +        raise RuntimeError("VSA-H3 metadata has no builder-owned tile buffer holder")
 +    shape = (4 * hidden_states.shape[0], metadata.variable_block_sizes.numel() * metadata.tile_elems, heads, head_dim)
 +    buffer = holder.buffer
-+    if (buffer is None or tuple(buffer.shape) != shape or buffer.dtype != hidden_states.dtype
-+            or buffer.device != hidden_states.device):
-+        holder.buffer = torch.zeros(shape, device=hidden_states.device, dtype=hidden_states.dtype)
++    if buffer is None or tuple(buffer.shape) != shape or buffer.dtype != dtype or buffer.device != hidden_states.device:
++        holder.buffer = torch.zeros(shape, device=hidden_states.device, dtype=dtype)
 +    elif holder.untile_geometry is not metadata.untile_combined_index:
 +        buffer.zero_()
 +    holder.untile_geometry = metadata.untile_combined_index
@@ -1258,14 +1271,16 @@ index 0221149..35b5035 100644
 +        raise RuntimeError(f"{what}{names} is not the signature the length wrapper expects")
 +
 +
-+def mark_length_dynamic(torch, model, forward_context=None, *, tiles=True):
++def mark_length_dynamic(torch, model, forward_context=None, *, tiles=True, tile_dtype=None):
 +    """Wrap the 50 compiled body regions so that they compile once for any prompt length.
 +
 +    Call after _compile_model_regions. Before each call the wrapper marks the packed-row dimension of the block inputs
 +    (hidden states, AdaLN rows, RoPE cos/sin) dynamic and, with tiles=True (VSA), runs prepare_tiles() and marks the
-+    tile metadata the graph reads (untile index, tile sizes, tile buffer) too. The block's original_seq_len int
-+    reaches only its attention, whose forward gets the row count of its own query instead (the same value on one GPU),
-+    so Dynamo never sees that int. The text-refiner regions are not wrapped.
++    tile metadata the graph reads (untile index, tile sizes, tile buffer) too; tile_dtype is the dtype of the
++    attention's q/k/v/gate (default: the hidden states'). The block's original_seq_len int reaches only its attention,
++    whose forward gets the row count of its own query instead (the same value on one GPU), so Dynamo never sees that
++    int. The text-refiner regions are not wrapped. The AdaLN table (temb) is not marked: its row count changes from the
++    first denoise step to the others (1 then 2 in t2va), so each session compiles 2 body graphs, none per new length.
 +    """
 +    mark = torch._dynamo.maybe_mark_dynamic
 +    if tiles and forward_context is None:
@@ -1276,7 +1291,8 @@ index 0221149..35b5035 100644
 +            dims = [(hidden_states, 1), (adaln_indices, 0), (rotary_emb[0], 0), (rotary_emb[1], 0)]
 +            if tiles:
 +                metadata = forward_context().attn_metadata
-+                buffer = prepare_tiles(torch, metadata, hidden_states, heads, head_dim)
++                buffer = prepare_tiles(torch, metadata, hidden_states, heads, head_dim,
++                                       tile_dtype or hidden_states.dtype)
 +                dims += [(metadata.untile_combined_index, 0), (metadata.variable_block_sizes, 0), (buffer, 1)]
 +            for tensor, dim in dims:
 +                mark(tensor, dim)
@@ -1967,18 +1983,27 @@ index 4af9048..840b1da 100644
                                                "last_frame": None, "references": refs})
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_regional_length.py b/models/minimax_h3/Sol-H3-Spark/tests/test_regional_length.py
 new file mode 100644
-index 0000000..96a1e78
+index 0000000..48a3309
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_regional_length.py
-@@ -0,0 +1,350 @@
-+"""CPU checks for SOL_H3_DYNAMIC_TEXT_LENGTH: Stage-1 regions compiled once for any prompt length.
+@@ -0,0 +1,527 @@
++"""CPU checks for SOL_H3_DYNAMIC_TEXT_LENGTH: Stage-1 body regions compiled per session, not per prompt length.
 +
 +Part of sol-h3-studio. The model here is a small stand-in with the shape of FastVideo's H3 regions: a block forward
 +with FastVideo's signature whose attention follows DistributedAttention_VSA at one GPU (stack q/k/v/gate, trim,
 +preprocess_qkv, chunk, attention forward, postprocess_output, pad) and reads FastVideo-style VSA metadata from a
-+global forward context, and a text-refiner forward. The opaque attention is a CPU custom op. torch.compile runs with
-+a counting eager backend, so these tests check Dynamo's graphs and guards, not Inductor kernels.
++global forward context, and a text-refiner forward. The AdaLN table has 1 row in the first denoise step and 2 in the
++others, as Stage 1's exact t2va lookup. The opaque attention is a CPU custom op. torch.compile runs with a counting
++eager backend, so these tests check Dynamo's graphs and guards, not Inductor kernels. InstallWiringTests run
++regional.install() and install_dense() on FastVideo's own H3 blocks in a subprocess, with fastvideo_kernel stubbed
++(it needs a GPU driver to import), and skip when FastVideo is not importable.
 +"""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import textwrap
 +from types import MethodType, SimpleNamespace
 +import unittest
 +from unittest.mock import patch
@@ -1989,6 +2014,7 @@ index 0000000..96a1e78
 +from runtime.stage1_ops import regional
 +
 +HEADS, HEAD_DIM, AUDIO, VIDEO = 2, 8, 20, 192
++ADALN_ROWS = (1, 2, 2, 2)      # rows of the AdaLN table per denoise step (Stage 1's exact t2va lookup)
 +HIDDEN = HEADS * HEAD_DIM
 +CONTEXT = SimpleNamespace(attn_metadata=None)    # stands in for FastVideo's global forward context
 +
@@ -2063,6 +2089,7 @@ index 0000000..96a1e78
 +    def __init__(self, impl):
 +        super().__init__()
 +        self.impl = impl
++        self.dtype = torch.float32
 +
 +    def forward(self, q, k, v, original_seq_len, gate_compress):
 +        md = forward_context().attn_metadata
@@ -2142,8 +2169,6 @@ index 0000000..96a1e78
 +    geometry, holder = request_geometry(text), Holder()
 +    tokens = torch.randn(1, text, HIDDEN, generator=generator)
 +    hidden = torch.randn(1, rows, HIDDEN, generator=generator)
-+    temb = torch.randn(3, HIDDEN, generator=generator)
-+    adaln = torch.randint(0, 3, (rows,), generator=generator)
 +    rotary = (torch.randn(rows, HEAD_DIM, generator=generator), torch.randn(rows, HEAD_DIM, generator=generator))
 +    outputs = []
 +    for refiner in model.token_refiner.refiner_blocks:
@@ -2151,6 +2176,8 @@ index 0000000..96a1e78
 +    outputs.append(tokens)
 +    for step in range(steps):
 +        CONTEXT.attn_metadata = metadata(text, step, geometry, holder)
++        temb = torch.randn(ADALN_ROWS[step], HIDDEN, generator=generator)
++        adaln = torch.randint(0, ADALN_ROWS[step], (rows,), generator=generator)
 +        state = hidden
 +        for block in model.transformer_blocks:
 +            state = block(state, temb, adaln, rotary, rows)
@@ -2194,22 +2221,27 @@ index 0000000..96a1e78
 +        holder = Holder()
 +        first, second = request_geometry(100), request_geometry(110)       # same tile count, other geometry
 +        hidden = torch.zeros(1, 100 + AUDIO + VIDEO, HIDDEN)
-+        buffer = regional.prepare_tiles(torch, metadata(100, 0, first, holder), hidden, HEADS, HEAD_DIM)
++        def prepare(md, hidden, dtype=torch.float32):
++            return regional.prepare_tiles(torch, md, hidden, HEADS, HEAD_DIM, dtype)
++        buffer = prepare(metadata(100, 0, first, holder), hidden)
 +        self.assertEqual(tuple(buffer.shape), (4, first[0].numel() * 64, HEADS, HEAD_DIM))
 +        self.assertTrue(bool((buffer == 0).all()))
 +        self.assertIs(holder.untile_geometry, first[1])
 +        buffer.fill_(1)
-+        self.assertIs(regional.prepare_tiles(torch, metadata(100, 1, first, holder), hidden, HEADS, HEAD_DIM), buffer)
++        self.assertIs(prepare(metadata(100, 1, first, holder), hidden), buffer)
 +        self.assertTrue(bool((buffer == 1).all()))                          # same geometry: reused as it is
 +        hidden = torch.zeros(1, 110 + AUDIO + VIDEO, HIDDEN)
-+        self.assertIs(regional.prepare_tiles(torch, metadata(110, 0, second, holder), hidden, HEADS, HEAD_DIM), buffer)
++        self.assertIs(prepare(metadata(110, 0, second, holder), hidden), buffer)
 +        self.assertTrue(bool((buffer == 0).all()))                          # other geometry: cleared once
 +        third = request_geometry(200)                                       # more tiles: a new zero buffer
 +        hidden = torch.zeros(1, 200 + AUDIO + VIDEO, HIDDEN)
-+        self.assertIsNot(regional.prepare_tiles(torch, metadata(200, 0, third, holder), hidden, HEADS, HEAD_DIM),
-+                         buffer)
++        bigger = prepare(metadata(200, 0, third, holder), hidden)
++        self.assertIsNot(bigger, buffer)
++        self.assertEqual(bigger.shape[1], third[0].numel() * 64)
++        self.assertIsNot(prepare(metadata(200, 1, third, holder), hidden, torch.bfloat16), bigger)   # attention dtype
++        self.assertEqual(holder.buffer.dtype, torch.bfloat16)
 +        with self.assertRaisesRegex(ValueError, "built for sequence length"):
-+            regional.prepare_tiles(torch, metadata(201, 0, third, holder), hidden, HEADS, HEAD_DIM)
++            prepare(metadata(201, 0, third, holder), hidden)
 +
 +    def install_today(self, model, namespace, calls):
 +        """The body attention as regional.install() wires it with the setting off (ints passed to the op)."""
@@ -2270,9 +2302,10 @@ index 0000000..96a1e78
 +                graphs.append((blocks.graphs, refiners.graphs))
 +        # Block: a graph per denoise step (step ints) and one for the request's first call (empty tile-buffer holder),
 +        # again for every new length (total_seq_length). Refiner: automatic dynamic shapes from the 2nd length on.
++        # The AdaLN rows (1, then 2) add nothing: the steps already have graphs of their own.
 +        self.assertEqual(graphs, [(5, 1), (10, 2), (15, 2)])
 +
-+    def test_any_length_compiles_once_and_matches_eager(self):
++    def test_any_length_compiles_per_session_and_matches_eager(self):
 +        lengths = (100, 110, 128, 129, 150, 300)          # same and different tile counts, a full last text tile
 +        expected, expected_calls = self.reference(lengths)
 +        model, blocks, refiners, calls = Model(), GraphCounter(), GraphCounter(), []
@@ -2286,12 +2319,13 @@ index 0000000..96a1e78
 +                graphs.append((blocks.graphs, refiners.graphs))
 +                for a, b in zip(got, want):
 +                    self.assertTrue(torch.equal(a, b), f"text length {text}: output differs from eager")
-+        # One block graph for every length and step; the refiner, left as it is, recompiles once (2nd length).
-+        self.assertEqual(graphs, [(1, 1)] + [(1, 2)] * (len(lengths) - 1))
++        # Two block graphs per session (the AdaLN table: 1 row in the first step, 2 after), none per new length; the
++        # refiner, left as it is, recompiles once (2nd length).
++        self.assertEqual(graphs, [(2, 1)] + [(2, 2)] * (len(lengths) - 1))
 +        self.assertEqual(calls, expected_calls)            # steps and tile counts read when the op runs
 +        self.assertEqual(receipt["body_runtime_calls"], len(lengths) * 4 * 2)
 +
-+    def test_dense_route_compiles_once(self):
++    def test_dense_route_compiles_per_session(self):
 +        """Ref2VA (install_dense): no VSA metadata, only the packed-row dims and the attention's length int."""
 +        lengths = (100, 129, 300)
 +        reference = Model(dense=True)
@@ -2306,7 +2340,7 @@ index 0000000..96a1e78
 +                got = run_request(model, text)
 +                graphs.append((blocks.graphs, refiners.graphs))
 +                self.assertTrue(all(torch.equal(a, b) for a, b in zip(got, want)), f"text length {text}")
-+        self.assertEqual(graphs, [(1, 1), (1, 2), (1, 2)])
++        self.assertEqual(graphs, [(2, 1), (2, 2), (2, 2)])
 +
 +    def test_wrapper_refuses_other_fastvideo_signatures(self):
 +        def block_forward(self, hidden_states, temb, adaln_indices, rotary_emb):
@@ -2317,6 +2351,165 @@ index 0000000..96a1e78
 +        for cls, forward in ((Block, block_forward), (Attention, attention_forward)):
 +            with patch.object(cls, "forward", forward), self.assertRaisesRegex(RuntimeError, "signature"):
 +                regional.mark_length_dynamic(torch, Model(), forward_context)
++
++
++# Runs in a subprocess (python -c): build 50 + 2 of FastVideo's own tiny H3 blocks, run regional.install() (VSA) and
++# install_dense() (Ref2VA) as the Stage-1 worker does, and print what got wrapped as JSON. Compiling is lazy; no
++# forward runs (the opaque ops are CUDA-only).
++WIRING = textwrap.dedent("""
++    import importlib.machinery, importlib.util, json, os, sys, types
++    if importlib.util.find_spec("fastvideo") is None:
++        print(json.dumps({"skip": "FastVideo is not importable"}))
++        sys.exit(0)
++
++    class _Stub(types.ModuleType):          # fastvideo_kernel needs a GPU driver to import
++        def __getattr__(self, name):
++            if name.startswith("__"):
++                raise AttributeError(name)
++            return lambda *args, **kwargs: None
++
++    class _Finder:
++        def find_spec(self, name, path=None, target=None):
++            if name == "fastvideo_kernel" or name.startswith("fastvideo_kernel."):
++                return importlib.machinery.ModuleSpec(name, self, is_package=True)
++        def create_module(self, spec):
++            module = _Stub(spec.name)
++            module.__path__ = []
++            return module
++        def exec_module(self, module):
++            pass
++
++    sys.meta_path.insert(0, _Finder())
++    from unittest.mock import patch
++    import torch
++    import fastvideo.attention.layer as layer
++    import fastvideo.models.dits.minimax_h3 as h3
++    from fastvideo.attention.backends import video_sparse_attn_h3 as vsa_h3
++    from fastvideo.attention.backends.abstract import AttentionBackend, AttentionImpl
++    from fastvideo.configs.models.dits.minimax_h3 import _is_minimax_h3_block
++    from fastvideo.platforms import AttentionBackendEnum as E
++    from runtime.stage1_ops import regional, vsa
++
++    class TextImpl(AttentionImpl):
++        def __init__(self, *args, **kwargs):
++            pass
++        def forward(self, q, k, v, attn_metadata):
++            return q
++
++    class TextBackend(AttentionBackend):
++        get_name = staticmethod(lambda: "FLASH_ATTN")
++        get_impl_cls = staticmethod(lambda: TextImpl)
++
++    def backend(head_size, dtype, supported_attention_backends=None, **kwargs):
++        sparse = E.VIDEO_SPARSE_ATTN_H3 in (supported_attention_backends or ())
++        return vsa_h3.MiniMaxH3VSABackend if sparse else TextBackend
++    h3.get_attn_backend = layer.get_attn_backend = backend
++
++    class Model(torch.nn.Module):          # the attributes regional.py and FastVideo's helpers use
++        _compile_conditions = [_is_minimax_h3_block]
++        enabled_fusions = frozenset()
++        prepare_for_compile = h3.MiniMaxH3Transformer3DModel.prepare_for_compile
++        _compile_setup_device = h3.MiniMaxH3Transformer3DModel.__dict__["_compile_setup_device"]
++
++        def __init__(self, sparse):
++            super().__init__()
++            body = (E.VIDEO_SPARSE_ATTN_H3,) if sparse else (E.FLASH_ATTN,)
++            self.transformer_blocks = torch.nn.ModuleList(h3.MiniMaxH3TransformerBlock(
++                128, 2, 64, 256, 32, 1e-6, 1e-6, body, None, prefix=f"transformer_blocks.{i}") for i in range(50))
++            self.token_refiner = torch.nn.Module()
++            self.token_refiner.refiner_blocks = torch.nn.ModuleList(h3.MiniMaxH3TokenRefinerBlock(
++                128, 2, 64, 256, 1e-6, 1e-6, (E.FLASH_ATTN,), None, prefix=f"token_refiner.refiner_blocks.{i}")
++                for i in range(2))
++            with torch.no_grad():
++                for parameter in self.parameters():
++                    parameter.normal_()
++            for block in self.transformer_blocks:
++                block.attn._resolve_gate_compress_for_compile()    # vsa.install_model does this in the worker
++
++    def compiled(fn):
++        return hasattr(fn, "_torchdynamo_orig_callable")
++
++    def wiring(model):
++        blocks, refiners = list(model.transformer_blocks), list(model.token_refiner.refiner_blocks)
++        cells = lambda fn: [c.cell_contents for c in (getattr(fn, "__closure__", None) or ())]
++        impl = lambda block: block.attn.distributed_attention.attn_impl
++        return {
++            "body_wrapped_after_compile": sum("body_region" in b.forward.__qualname__
++                                              and any(compiled(c) for c in cells(b.forward)) for b in blocks),
++            "body_compiled_unwrapped": sum(compiled(b.forward) for b in blocks),
++            "body_attention_rows": sum("query_rows" in getattr(vars(b.attn.distributed_attention).get("forward"),
++                                                               "__qualname__", "") for b in blocks),
++            "body_preprocess": sum("length_free_body" in getattr(vars(impl(b)).get("preprocess_qkv"),
++                                                                 "__qualname__", "") for b in blocks),
++            "body_forward": sorted({getattr(vars(impl(b)).get("forward"), "__qualname__", "-") for b in blocks}),
++            "text_compiled_unwrapped": sum(compiled(b.forward) for b in refiners),
++            "text_attention_untouched": sum("forward" not in vars(b.attn.distributed_attention) for b in refiners),
++            "text_no_preprocess": sum("preprocess_qkv" not in vars(impl(b)) for b in refiners),
++            "text_forward": sorted({getattr(vars(impl(b)).get("forward"), "__qualname__", "-") for b in refiners}),
++        }
++
++    state = {"official_vsa": {"fastvideo_commit": vsa.FASTVIDEO_COMMIT, "vsa_source_sha256": vsa.VSA_SOURCE_SHA,
++                              "selected_attention_backend": "cudnn_bsa", "active_compression_gates": 50,
++                              "vsa_forward_calls": 0}}
++    out = {}
++    with patch.object(torch.cuda, "get_device_capability", return_value=(12, 1)):
++        model = Model(sparse=True)
++        receipt = regional.install(model, state)
++        out["vsa"] = {**wiring(model), "text_length": receipt["text_length"],
++                      "regions_wrapped": receipt["regions_wrapped"],
++                      "length_regions": receipt.get("length_regions", {}).get("body_regions"),
++                      "any_length_op": hasattr(torch.ops.sol_h3_spark_vsa, "body_any_length")}
++    dense, dense_state = Model(sparse=False), {}
++    regional.install_dense(dense, dense_state)
++    out["dense"] = {**wiring(dense), "text_length": dense_state["dense_regional_compile"]["text_length"]}
++    print(json.dumps(out))
++""")
++
++
++def run_wiring(setting):
++    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", SOL_H3_DYNAMIC_TEXT_LENGTH=setting)
++    package = Path(__file__).resolve().parents[1]
++    result = subprocess.run([sys.executable, "-B", "-c", WIRING], cwd=package, env=env, capture_output=True,
++                            text=True, timeout=600)
++    if result.returncode != 0:
++        raise AssertionError(f"wiring subprocess failed:\n{result.stderr[-3000:]}")
++    return json.loads(result.stdout.strip().splitlines()[-1])
++
++
++class InstallWiringTests(unittest.TestCase):
++    """regional.install() and install_dense() on FastVideo's own H3 blocks, with the setting on and off."""
++
++    def test_setting_on_wraps_the_compiled_body_regions_only(self):
++        out = run_wiring("1")
++        if "skip" in out:
++            self.skipTest(out["skip"])
++        vsa, dense = out["vsa"], out["dense"]
++        self.assertEqual((vsa["text_length"], vsa["regions_wrapped"], vsa["length_regions"], vsa["any_length_op"]),
++                         ("dynamic_body", 52, 50, True))
++        self.assertEqual((vsa["body_wrapped_after_compile"], vsa["body_compiled_unwrapped"],
++                          vsa["body_attention_rows"], vsa["body_preprocess"]), (50, 0, 50, 50))
++        self.assertEqual(len(vsa["body_forward"]), 1)
++        self.assertIn("length_free_body", vsa["body_forward"][0])
++        self.assertEqual((vsa["text_compiled_unwrapped"], vsa["text_attention_untouched"], vsa["text_no_preprocess"]),
++                         (2, 2, 2))
++        self.assertEqual(len(vsa["text_forward"]), 1)
++        self.assertIn("text_forward", vsa["text_forward"][0])
++        self.assertEqual((dense["text_length"], dense["body_wrapped_after_compile"], dense["body_attention_rows"],
++                          dense["body_preprocess"], dense["text_compiled_unwrapped"],
++                          dense["text_attention_untouched"]), ("dynamic_body", 50, 50, 0, 2, 2))
++
++    def test_setting_off_changes_nothing(self):
++        out = run_wiring("0")
++        if "skip" in out:
++            self.skipTest(out["skip"])
++        vsa, dense = out["vsa"], out["dense"]
++        self.assertEqual((vsa["text_length"], vsa["length_regions"], vsa["any_length_op"]),
++                         ("per_length", None, False))
++        self.assertEqual((vsa["body_wrapped_after_compile"], vsa["body_compiled_unwrapped"],
++                          vsa["body_attention_rows"], vsa["body_preprocess"]), (0, 50, 0, 0))
++        self.assertTrue(vsa["body_forward"][0].startswith("install.<locals>.body_forward"))
++        self.assertEqual((dense["text_length"], dense["body_wrapped_after_compile"], dense["body_compiled_unwrapped"],
++                          dense["body_attention_rows"]), ("per_length", 0, 50, 0))
 +
 +
 +if __name__ == "__main__":

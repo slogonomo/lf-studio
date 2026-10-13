@@ -35,7 +35,7 @@ gives each run its own runtime root, state directory and port under a temp direc
 non-zero exit status) if the port is in use or its server stops by itself, so nothing goes to another studio on that
 port. Add a test there for every server change.
 
-The patch has its own 80 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
+The patch has its own 82 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A
 second studio next to an installed one needs its own env file (`SOLH3_ENV=<file> bin/sol-h3-studio`) with its own

@@ -143,9 +143,10 @@ per-length graphs of the body blocks.
   without changing its token count, avoids it. The body blocks' graphs are tied to the length through FastVideo's H3
   sparse-attention metadata and tiling (`total_seq_length`, the tile counts) and to the denoise step. The setting
   `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (off by default;
-  [PATCH.md, 16](PATCH.md#16-prompt-lengths-without-recompiles-experimental)) compiles them once for any length.
-  The text refiner then compiles once more, at a session's second length. With the setting on, Stage-1 times and
-  output on the GPU have not been measured yet.
+  [PATCH.md, 16](PATCH.md#16-prompt-lengths-without-recompiles-experimental)) compiles them per session (2 graphs:
+  the first denoise step and the rest), not per length. The text refiner still compiles once more, at a session's
+  second length (measured on the CPU, with FastVideo's own blocks). With the setting on, Stage-1 times and output on
+  the GPU have not been measured yet.
 - Cold vs warm overhead (~55 s), measured before the last fix: Stage 2 first compile 15-20 s, Stage 1 LoRA merge
   + FP8 ~7 s, Stage 1 first-denoise compile ~11 s, audio VAE 6 s.
 - The numbers above assume the compile cache is warm from an earlier run of the same mode, format and length.
@@ -164,7 +165,7 @@ per-length graphs of the body blocks.
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_RESIDENT_QWEN_MAX_FRAMES` | 241 | longer clips load the prompt encoder per request |
-| `SOL_H3_DYNAMIC_TEXT_LENGTH` | 0 | 1 = Stage 1's body blocks compile once for any prompt length (experimental) |
+| `SOL_H3_DYNAMIC_TEXT_LENGTH` | 0 | 1 = Stage 1's body blocks compile per session, not per length (experimental) |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 
 The warm-up at launch (`SOLH3_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled
