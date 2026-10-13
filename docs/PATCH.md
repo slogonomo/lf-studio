@@ -2,15 +2,17 @@
 
 `patches/sol-h3-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
-branch `sol-engine`. It is a plain `git diff`: 21 files, 18 modified and 3 new.
+branch `sol-engine`. It is a plain `git diff`: 23 files, 18 modified and 5 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 74 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 87 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
+  The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
+  are unchanged too.
 - 17 of the 18 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
-  tagged `sol-h3-studio:`. The 3 new files say they are part of sol-h3-studio.
+  tagged `sol-h3-studio:`. The 5 new files say they are part of sol-h3-studio.
 
 ## Apply, test, revert
 
@@ -21,9 +23,18 @@ git checkout --detach "$(cat /path/to/sol-h3-studio/patches/BASE_COMMIT)"
 git apply --check /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 
-# CPU tests (no GPU, no weights), with the Stage1 python
+# CPU tests (no GPU, no weights), with the Stage1 python. SOL_H3_SPARK_COMFY_ROOT (the pinned ComfyUI) lets the
+# prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
 cd models/minimax_h3/Sol-H3-Spark
-CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B -m unittest discover -s tests   # Ran 74 tests ... OK
+SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
+    -m unittest discover -s tests   # Ran 87 tests ... OK (skipped=1)
+
+# the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
+# Qwen image, on the CPU (no --gpus)
+COMFY=~/sol-h3/sources/ComfyUI
+docker run --rm --network=none --user "$(id -u):$(id -g)" -e HOME=/tmp -e CUDA_VISIBLE_DEVICES= \
+    -e SOL_H3_SPARK_COMFY_ROOT="$COMFY" -v "$COMFY:$COMFY:ro" -v "$PWD:$PWD:ro" -w "$PWD" \
+    --entrypoint python3 sol-h3-spark-qwen -B -m unittest tests.test_prompt_tokens   # Ran 12 tests ... OK
 
 # undo the whole patch
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
@@ -50,6 +61,7 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Model loading overlaps (see below), so stages load at the same time instead of one after another. | on | no switch; `git apply -R` |
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
+| The prompt encoder tokenizes `<d>`, `</d>` and 5 more tags as single tokens, as MiniMax's tokenizer does, instead of splitting them into text as the pinned ComfyUI does. Compared on clips in an A/B test; see [16](#16-minimaxs-prompt-tokens). | on (since 0.4) | `SOL_H3_PROMPT_TOKENS=plain` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
 
@@ -278,14 +290,93 @@ and identity are unchanged, and the image is 5-11% sharper.
   `tests/test_stage2_contract.py`, `tests/test_pipeline.py`.
 - **Switch.** `SOL_H3_STAGE2_AUDIO=joint` restores upstream's behaviour (older clips then reproduce from their seed).
 
-### 16. Tests
+### 16. MiniMax's prompt tokens
+
+- **Purpose.** H3 was trained with the tokenizer files of MiniMax's H3 repository. Their `tokenizer_config.json` adds
+  7 special tokens after Qwen2.5's vocabulary: `<d>`, `</d>`, `<|cutoff|>`, `<|lyrics_start|>`, `<|lyrics_end|>`,
+  `<|caption_start|>` and `<|caption_end|>`, ids 151669-151675. Sol-H3-Spark's prompt encoder tokenizes with
+  ComfyUI v0.30.0, which has only Qwen2.5's tokens. It splits every dialogue tag into ordinary text tokens, which
+  also merge with the characters next to them: `<d>[English] Welcome to the garden.</d>` becomes `Ġ< d >[ … .</ d >`
+  (20 tokens for the line "The woman (S1) says: …") instead of MiniMax's `Ġ <d> [ … . </d>` (19).
+  - `minimax` (the default since 0.4): the Qwen worker adds the 7 tokens to ComfyUI's tokenizer after the text
+    encoder loads, with the call ComfyUI itself uses since 924743af (first released in v0.34.0). It fails unless they
+    get ids 151669-151675 and each tokenizes as one id. A ComfyUI that already has them is left as it is.
+  - `plain`: the pinned tokenizer, as up to 0.3. It refuses a ComfyUI that already has the tokens, since that could no
+    longer give the plain ids.
+  - A prompt without any of the 7 tokens gets the same ids in both modes. `<cutoff>` and `<scenetrans>` from MiniMax's
+    prompt guides are not tokens in either tokenizer.
+  - H3's text encoder is stock Qwen3-VL-32B, where these 7 embedding rows are untrained, like the unused rows after
+    them. To H3's transformer they are the fixed markers it saw around every dialogue line in training.
+- **How the setting reaches the worker.** The Qwen worker runs in Docker with a fixed environment (`qwen_python.sh`),
+  so the host reads `SOL_H3_PROMPT_TOKENS` in `runtime/config.py` and passes the mode to the worker in the recipe, as
+  `stage1.prompt_tokens`. A value other than `plain` or `minimax` (any case) fails when the pipeline is created,
+  before any worker loads; the studio and `bin/sol-h3-studio --check` refuse to start with it. They also refuse
+  `minimax`, set or by default, when the Sana checkout still carries an older patch, which would ignore the setting
+  and tokenize as `plain`: "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one
+  applied in ...; run install/10-sana.sh". So after a `git pull`, run `install/10-sana.sh`. (Likewise
+  `SOL_H3_STAGE2_AUDIO=frozen` with a patch older than 0.3, which refines as `joint`.)
+- **Older clips.** Up to 0.3 every prompt was encoded `plain`. A dialogue prompt now encodes differently, so a
+  dialogue clip made with 0.3 doesn't come back from its seed unless `SOL_H3_PROMPT_TOKENS=plain`. A prompt without
+  any of the 7 tokens gets the same ids in both modes, and its clips came out bit-identical (measured; see below).
+- **Receipts.** `results.json` has the mode in its recipe. Each request's Qwen receipt (`qwen/conditioning.json`)
+  records `prompt_tokens` (the mode), `text_tokens` (the text positions in the conditioning) and `minimax_tokens` (how
+  many of them are the 7 tokens). The Qwen worker's log has a `[sol-h3-studio] prompt tokens:` line.
+- **Caches.** No cache keeps a prompt encoding between requests, so none needs the mode in its key. Stage 1 takes
+  only the fresh Qwen receipt of its own request. `fixed-prompt.pt` (`runtime/prompt_cache.py`) holds Stage 2's
+  fixed prompt, encoded by Gemma; it never sees the user's prompt. A dialogue prompt has fewer tokens with `minimax`,
+  so its first clip in that mode may compile new Stage-1 graphs (see 13).
+- **Files.** `runtime/qwen_ops/prompt_tokens.py` (new), `runtime/qwen.py`, `runtime/config.py`, `runtime/pipeline.py`,
+  `tests/test_prompt_tokens.py` (new), `tests/test_pipeline.py`, `tests/test_qwen_media.py`.
+- **Switch.** `SOL_H3_PROMPT_TOKENS=minimax|plain`, default `minimax` (`plain` up to 0.3).
+  `Pipeline(..., prompt_tokens=...)` overrides it.
+- **Measured.** On the CPU only, in the `sol-h3-spark-qwen` image (transformers 5.17.0), with the pinned ComfyUI's own
+  `MiniMaxH3Tokenizer`, compared with the tokenizer files of MiniMax's H3 repository:
+  - 40 texts: prompt examples and instructions from MiniMax's two prompt guides, lines of notes about the guides,
+    and the studio page's 3 format hints. 30 contain one of the 7 tokens (29 of them `<d>`). They get MiniMax's ids
+    for 40 of 40 with `minimax` and for 10 of 40 with `plain`: the 10 without any of the 7 tokens, which get the same
+    ids in both modes.
+  - The 6 prompts first planned for the A/B test of issue #38 (t2va, ref2va and the 10 s fl2va scene of #21):
+    MiniMax's ids for 6 of 6 with `minimax`, 1 of 6 with `plain` (the one without dialogue).
+- **Measured on clips.** The A/B test of issue #38 ran on the GPU in two windows (2026-10-12/13, one DGX Spark, a
+  separate test studio). Each prompt was rendered in both modes with the same 4 seeds: t2va 5 s with one English
+  speaker, the same line in Spanish, an off-screen voiceover and no dialogue; ref2va 5 s with a voice reference; two
+  fl2va 10 s two-person scenes and variants of one of them. Measured with Whisper (words, language), SyncNet (LSE-C on
+  the speaking face) and a look at every clip. Details in [PR #40](https://github.com/slogonomo/sol-h3-studio/pull/40).
+  - The 8 clips whose prompts have none of the 7 tokens (5 s without dialogue, and the scene with its lines in
+    quotes) are bit-identical between the modes, decoded audio and video.
+  - Word error rate, language and lip sync tie within `plain`'s spread in every group of the second window. In the
+    first window's two scenes no scripted word was lost and language and lip sync tied too, but `minimax` fell
+    outside `plain`'s spread on the bad side on 8 of the 38 measures taken, each from one or two clips or from the
+    burst below. Over 52 seed pairs of speaking faces in the final clips of both windows, `minimax` scored higher on
+    25 and lower on 27.
+  - Many clips with `<d>` lines started with a short voiced burst at 0 s, before the first word. With `minimax` and a
+    first line that starts with a capital letter it was nearly gone: 1 of 24 clips (6 prompts), against 18 of 20 with
+    `plain` (5 of those prompts). With a lowercase first word it stayed in both modes (16 of 16 `minimax` clips, two
+    scenes). So start each `<d>` line with a capital letter, as MiniMax's guide does (issue #53). Lines in quotes
+    instead of `<d>` tags had no burst (0 of 12 clips).
+  - In the voiceover the lips should stay closed. They moved with the line in 3 of 4 `minimax` clips against 1 of 4
+    `plain`, and in 3 of 4 with the line in quotes (identical in both modes).
+  - Nothing here is significant at n = 4.
+- **Deviation.** With `minimax`, prompts reach H3 as MiniMax's tokenizer gives them, not as NVIDIA's route does (see
+  the table).
+
+### 17. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
 deliver-first, the background prompt encoder, the new `Pipeline` arguments and the compile-cache location (it
 also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
 BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
-older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 tests in total (upstream: 65).
+older LTX-2), `tests/test_pipeline.py` its check before any worker starts.
+`tests/test_prompt_tokens.py` (new) covers the prompt-token setting (default `minimax`) and its recipe entry, the token
+checks with a stand-in tokenizer, and the Qwen worker's session applying the recipe's mode to the CLIP's tokenizer (with
+stand-ins for ComfyUI, torch and the checkpoint). With `SOL_H3_SPARK_COMFY_ROOT` set it also loads the pinned ComfyUI's
+Qwen tokenizer files: the 7 ids, the 19 ids of the example above, and unchanged ids for prompts without the tokens. Its
+test of ComfyUI's own `MiniMaxH3Tokenizer` needs ComfyUI's packages: it is skipped in the Stage1 environment and runs in
+the Qwen image ([Apply, test, revert](#apply-test-revert)). `tests/test_pipeline.py` checks the setting before any
+worker starts and that the default, the setting or the `Pipeline` argument reaches every worker;
+`tests/test_qwen_media.py` checks the receipt fields.
+87 tests in total (upstream: 65).
 
 ## All switches
 
@@ -304,6 +395,7 @@ older LTX-2), `tests/test_pipeline.py` its check before any worker starts. 74 te
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
+| `SOL_H3_PROMPT_TOKENS` | minimax | `plain` = as up to 0.3: the pinned ComfyUI splits MiniMax's 7 prompt tokens (`<d>`, `</d>`, ...) into text tokens; `minimax` reads each as one token, as in H3's training |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.

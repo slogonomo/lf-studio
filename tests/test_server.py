@@ -1106,6 +1106,120 @@ class BadStage2Audio(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+def older_patch_package(directory, version):
+    """The stub runtime as an older patch has it. 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS; 0.2's has
+    neither. Such a patch tokenizes as plain does, and 0.2's refines as joint does."""
+    package = Path(directory) / f"package-{version}"
+    shutil.copytree(Path(__file__).resolve().parent / "stub" / "runtime", package / "runtime",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    missing = {"0.3": "prompt_tokens_mode", "0.2": "stage2_audio_mode, prompt_tokens_mode"}[version]
+    with (package / "runtime" / "config.py").open("a") as f:
+        f.write(f"\ndel {missing}   # the patch of {version} has no such setting\n")
+    return package
+
+
+# What an older patch is asked for, and how the studio and the launcher answer: None = starts; otherwise the start of
+# the refusal, which ends "needs a newer patch than the one applied in <package>; run install/10-sana.sh". An empty
+# value is the default, as unset.
+OLDER_PATCH_CASES = (
+    ("0.3", {}, "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4)"),        # a git pull without install/10-sana.sh
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": "minimax"}, "SOL_H3_PROMPT_TOKENS=minimax"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain"}, None),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain"}, "SOL_H3_STAGE2_AUDIO=frozen (the default since 0.3)"),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STAGE2_AUDIO": "frozen"}, "SOL_H3_STAGE2_AUDIO=frozen"),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STAGE2_AUDIO": "JOINT"}, None),
+)
+
+
+def older_patch_settings(settings):
+    return {"SOL_H3_PROMPT_TOKENS": "", "SOL_H3_STAGE2_AUDIO": "", **settings}
+
+
+class BadPromptTokens(unittest.TestCase):
+    """SOL_H3_PROMPT_TOKENS (a patch setting, #38) is checked at start like SOL_H3_STAGE2_AUDIO."""
+
+    def test_older_patch(self):
+        """A checkout with an older patch would ignore the setting: the studio refuses any value but what that
+        patch does anyway, the default (minimax) included. Without this, a git pull without install/10-sana.sh
+        started fine and every clip came out plain (#38)."""
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-old-"))
+        try:
+            packages = {version: older_patch_package(d, version) for version in ("0.3", "0.2")}
+            for i, (version, settings, refused) in enumerate(OLDER_PATCH_CASES):
+                package = packages[version]
+                studio = StubStudio(d / f"case-{i}", env=older_patch_settings(settings), package=package)
+                if refused is None:
+                    studio.start()
+                    studio.stop()
+                    continue
+                with self.assertRaises(RuntimeError) as e:
+                    studio.start()
+                self.assertIn(f"{refused} needs a newer patch than the one applied in {package.resolve()}; "
+                              "run install/10-sana.sh", str(e.exception))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        try:
+            with self.assertRaises(RuntimeError) as e:
+                StubStudio(d / "a", env={"SOL_H3_PROMPT_TOKENS": "special"}).start()
+            self.assertIn("SOL_H3_PROMPT_TOKENS must be one of", str(e.exception))
+            for i, value in enumerate(("MiniMax", "plain", "")):
+                studio = StubStudio(d / f"b{i}", env={"SOL_H3_PROMPT_TOKENS": value}).start()
+                studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class LauncherSettingsCheck(unittest.TestCase):
+    """bin/sol-h3-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS) in the
+    package, here the stub runtime, and refuses a bad value with its message, or a value an older patch can't give
+    (#38)."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="sol-h3-check-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        (self.d / "sana/models/minimax_h3").mkdir(parents=True)
+        (self.d / "sana/models/minimax_h3/Sol-H3-Spark").symlink_to(Path(__file__).resolve().parent / "stub")
+        for task in ("t2va", "fl2va", "ref2va"):
+            (self.d / f"paths-{task}.json").write_text("{}")
+
+    def check(self, **settings):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "SOLH3_"))}
+        env.update(SOLH3_ENV=str(self.d / "no-env-file"), SOLH3_SANA=str(self.d / "sana"), SOLH3_PYTHON=sys.executable,
+                   SOLH3_PATHS=str(self.d / "paths-{task}.json"), SOL_H3_SPARK_RUNTIME_ROOT=str(self.d / "runtime"),
+                   SOLH3_STATE_DIR=str(self.d / "state"), SOLH3_HOST="127.0.0.1", SOLH3_PORT=str(free_port()),
+                   SOLH3_TEST_SKIP_DOCKER="1", SOLH3_MIN_FREE_GIB="0", PYTHONDONTWRITEBYTECODE="1")
+        env.update(settings)
+        run = subprocess.run(["bash", str(Path(__file__).resolve().parents[1] / "bin/sol-h3-studio"), "--check"],
+                             env=env, capture_output=True, text=True, timeout=120)
+        return run.returncode, run.stdout + run.stderr
+
+    def test_settings(self):
+        self.assertEqual(self.check()[0], 0)
+        self.assertEqual(self.check(SOL_H3_PROMPT_TOKENS="Plain", SOL_H3_STAGE2_AUDIO="joint")[0], 0)
+        for name, value in (("SOL_H3_PROMPT_TOKENS", "special"), ("SOL_H3_STAGE2_AUDIO", "noised")):
+            code, out = self.check(**{name: value})
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - {name} must be one of", out)
+
+    def test_older_patch(self):
+        """A checkout with an older patch (no settings checks, or one of them) passes only when every setting, set or
+        the default, asks for what that patch does anyway."""
+        for i, (version, settings, refused) in enumerate(OLDER_PATCH_CASES):
+            sana = self.d / f"sana-{i}"
+            (sana / "models/minimax_h3").mkdir(parents=True)
+            (sana / "models/minimax_h3/Sol-H3-Spark").symlink_to(older_patch_package(sana, version))
+            code, out = self.check(SOLH3_SANA=str(sana), **older_patch_settings(settings))
+            if refused is None:
+                self.assertEqual(code, 0, out)
+                continue
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - {refused} needs a newer patch than the one applied in", out)
+            self.assertIn("run install/10-sana.sh", out)
+
+
 class TrashPurge(Delete):
     env = {"SOLH3_TRASH_DAYS": "0.00001"}                                  # under a second
 

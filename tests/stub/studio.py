@@ -45,8 +45,10 @@ def port_taken(port):
 
 
 class StubStudio:
-    def __init__(self, root, port=None, load_s=3, clip_s=2, preload=True, env=None):
+    def __init__(self, root, port=None, load_s=3, clip_s=2, preload=True, env=None, package=None):
+        """package: the server's working directory, from which it imports runtime.* (default: this stub's)."""
         self.root = Path(root)
+        self.package = Path(package) if package else HERE
         self.port = port or free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self.runtime, self.state_dir = self.root / "runtime", self.root / "state"
@@ -77,7 +79,7 @@ class StubStudio:
             self._logf.close()
         since = self.log.stat().st_size if self.log.exists() else 0     # the log is appended to: this start's lines
         self._logf = self.log.open("a")
-        self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=HERE, env=self.env, stdin=self.stdin,
+        self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=self.package, env=self.env, stdin=self.stdin,
                                      stdout=self._logf, stderr=subprocess.STDOUT)
         serving = f"Sol-H3 Studio on {self.url}/".encode()
         deadline = time.time() + timeout
