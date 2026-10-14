@@ -14,8 +14,9 @@ the measurements in [PERFORMANCE.md](PERFORMANCE.md) came from. Step 80 built a 
 one the measurements used. On that install the first clip (t2va, 16:9, 5 s) took 213 s, including the one-time
 kernel compile; the next clip 65 s; after a restart, a cold start with the filled compile cache 104 s. That run
 reused weights already on the box (step 20 only verified them) and Docker's build cache for NVIDIA's base image.
-0.3 changed `install/10-sana.sh` and the patch (74 tests then), and 0.4 changes the patch again (133 tests). Their
-update paths were checked in scratch clones, not by a fresh install on hardware.
+0.3 changed `install/10-sana.sh` and the patch (74 tests then). 0.4 changes the patch again (133 tests) and how
+`install/10-sana.sh` runs its tests (without the settings file's switches). Their update paths were checked in
+scratch clones, not by a fresh install on hardware.
 <!-- /validation-status -->
 
 NVIDIA notes that a clean installation of Sol-H3-Spark has not been validated upstream; the pins here are the
