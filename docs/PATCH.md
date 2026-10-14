@@ -4,7 +4,7 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 126 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 129 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
   The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
@@ -27,7 +27,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 # prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
 cd models/minimax_h3/Sol-H3-Spark
 SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
-    -m unittest discover -s tests   # Ran 126 tests ... OK (skipped=1)
+    -m unittest discover -s tests   # Ran 129 tests ... OK (skipped=1)
 
 # the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
 # Qwen image, on the CPU (no --gpus)
@@ -536,11 +536,14 @@ and identity are unchanged, and the image is 5-11% sharper.
     each request loads its own, as before. Back below, the resident encoder loads again in the background if
     MemAvailable is at least the minimum of its early load in item 4, for the new length (32 GiB up to 5 s, 34 GiB
     above, or `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB`). Otherwise the next clip loads its own encoder and the resident
-    one loads after that clip. `results.json` records the reading with the reshape. Every encoder started after a
+    one loads after that clip, unless another reshape before that clip starts it. There is never more than one
+    resident encoder. `results.json` records the reading with the reshape. Every encoder started after a
     reshape gets the session's prompt-token mode (16), even if `SOL_H3_PROMPT_TOKENS` changed meanwhile, and a
     resident one refuses a recipe with another mode.
   - If a worker fails the command, the reshape fails, and the pipeline refuses requests until it is closed. A
-    pipeline that is closing refuses a reshape, and starts no resident encoder after its close began.
+    pipeline that is closing refuses a reshape, and starts no resident encoder after its close began. A reshape
+    that a close overlaps (Unload while it waits for a resident encoder that is still loading) fails, and the close
+    waits for that encoder and closes it.
   - Before the first clip only the recipe changes, and the first clip follows the new length's rules for the
     resident encoder (item 3, item 4).
 - **Static compiles.** Graphs for a new shape compile on its first request. Stage 1's regions and Stage 2's blocks
@@ -623,9 +626,10 @@ can't be imported): what `install()` and `install_dense()` wrap with the setting
 see the shape of every request; the Stage 2 globals are compared with the shared module's own import code for every
 length and orientation. It also covers the capture's shape check and PCM trim, the BSA self-check per shape, the
 keyframe canvas, the static compiles (with the torch behaviour they rely on, a marked dimension included), a
-pipeline that is closing or failed a reshape, the resident encoder's restart (the minimum of item 4 for the new
-length, and the session's prompt-token mode), a reshape before the first clip, and the `SPARK_DEBUG_AUTOTUNE` lines.
-126 tests in total (upstream: 65).
+pipeline that is closing or failed a reshape, a close during a reshape that waits for a loading encoder, the
+resident encoder's restart (the minimum of item 4 for the new length, the session's prompt-token mode, two reshapes
+without a clip between them, never two resident encoders), a reshape before the first clip, and the
+`SPARK_DEBUG_AUTOTUNE` lines. 129 tests in total (upstream: 65).
 
 ## All switches
 

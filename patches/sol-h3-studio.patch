@@ -575,7 +575,7 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
-index 9aad551..3e6af91 100644
+index 9aad551..645c43e 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 @@ -6,9 +6,14 @@ from pathlib import Path
@@ -695,7 +695,7 @@ index 9aad551..3e6af91 100644
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -138,50 +195,298 @@ class Pipeline:
+@@ -138,50 +195,322 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -838,7 +838,7 @@ index 9aad551..3e6af91 100644
 +                       final_mp4_complete_monotonic_ns=ended, qwen_s=conditioning["request_wall_s"],
 +                       stage1_s=s1["request_wall_s"], stage2_s=s2["stage2_request_s"],
 +                       stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
-         self.save()
++        self.save()
 +        return row
 +
 +    def _spawn_stage2_when_stage1_resident(self, response, marker="Loaded deferred module transformer"):
@@ -876,9 +876,23 @@ index 9aad551..3e6af91 100644
 +        return room, reading
 +
 +    def _resident_qwen(self):
-+        if self.qwen is None and self._qwen_future is not None:
-+            future, self._qwen_future = self._qwen_future, None
-+            self.qwen = future.result()
++        """sol-h3-studio: the resident Qwen, waiting for one still loading. Its future stays registered until the
++        worker is in self.qwen, so a close() meanwhile (Unload during a reshape that waits here) finds it, waits for
++        it and closes it. On a pipeline that is closing this raises: the caller gets no encoder, close() closes it."""
++        future = self._qwen_future
++        if self.qwen is None and future is not None:
++            try:
++                worker = future.result()
++            except BaseException:
++                with self._lock:
++                    if self._qwen_future is future:
++                        self._qwen_future = None
++                raise
++            with self._lock:
++                if self._qwen_future is future:
++                    self._qwen_future, self.qwen = None, worker
++        if self.closing:
++            raise RuntimeError("The pipeline is closing")
 +        return self.qwen
 +
 +    def _close_resident_qwen(self):
@@ -888,16 +902,21 @@ index 9aad551..3e6af91 100644
 +                self._resident_qwen()
 +            except BaseException:
 +                pass
-+        qwen, self.qwen = self.qwen, None
++        with self._lock:
++            qwen, self.qwen = self.qwen, None
 +        if qwen is not None:
 +            qwen.close()
 +
 +    def _spawn_resident_qwen(self, config=None, *, pool=None):
 +        """sol-h3-studio: load the resident Qwen in the background, unless the pipeline is closing: on start()'s pool
-+        (qwen-worker), or on its own after a reshape (qwen-worker-r1, -r2, ...)."""
++        (qwen-worker), or on its own after a reshape (qwen-worker-r1, -r2, ...). Never a second one: with one loading
++        or loaded it keeps that one (a second future would replace the first, and close() would never see it).
++        Returns whether a resident Qwen is loading or loaded."""
 +        with self._lock:
 +            if self.closing:
 +                return False
++            if self._qwen_future is not None or self.qwen is not None:
++                return True
 +            if pool is None:
 +                self.qwen_restarts += 1
 +                root = self.root / f"qwen-worker-r{self.qwen_restarts}"
@@ -922,7 +941,8 @@ index 9aad551..3e6af91 100644
 +        uses for the new length (_early_qwen_minimum), else the next clip loads its own and the resident one loads
 +        after it. A restarted Qwen gets the new recipe, with the session's prompt-token mode. Before start() only
 +        the recipe changes. Raises if a worker fails (the pipeline then refuses requests: close
-+        it), or if the pipeline is closing or a reshape failed before. Returns the record added to results.json.
++        it), if the pipeline is closing, also when close() began during the reshape, or if a reshape failed before.
++        Returns the record added to results.json.
 +        """
 +        if self.closing:
 +            raise RuntimeError("The pipeline is closing")
@@ -953,12 +973,16 @@ index 9aad551..3e6af91 100644
 +            if back_to_resident:                   # after Stage1/Stage2 released the previous shape's caches
 +                room, reading = self._room_for_early_qwen(config, after="after the reshape")
 +                if room and self._spawn_resident_qwen(config):
++                    # it loads now: the next clip uses it, even if an earlier reshape had deferred it (no clip since)
++                    self.resident_qwen_after_next_clip = False
 +                    workers["qwen"] = dict(reading, spawn="after_reshape")
 +                elif self.closing:
 +                    raise RuntimeError("The pipeline is closing")
 +                else:
 +                    self.resident_qwen_after_next_clip = True
 +                    workers["qwen"] = dict(reading, spawn="after_next_clip")
++            if self.closing:                       # close() began meanwhile (Unload): no change on a closing pipeline
++                raise RuntimeError("The pipeline is closing")
 +        except BaseException as error:
 +            self.reshape_error = f"{type(error).__name__}: {error}"
 +            raise
@@ -971,7 +995,7 @@ index 9aad551..3e6af91 100644
 +                      reshape_s=(ended - started) / 1e9)
 +        self.report.setdefault("reshapes", []).append(record)
 +        self.report.update(recipe=config, transient_qwen=transient)
-+        self.save()
+         self.save()
 +        return record
  
      def generate(self, case):
@@ -1016,7 +1040,7 @@ index 9aad551..3e6af91 100644
              self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -195,7 +500,11 @@ class Pipeline:
+@@ -195,7 +524,11 @@ class Pipeline:
                         qwen_s=conditioning["request_wall_s"], stage1_s=s1["request_wall_s"],
                         stage2_s=s2["stage2_request_s"],
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
@@ -1029,7 +1053,7 @@ index 9aad551..3e6af91 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -212,13 +521,17 @@ class Pipeline:
+@@ -212,13 +545,17 @@ class Pipeline:
          self.save()
  
      def close(self):
@@ -3965,10 +3989,10 @@ index 0000000..6658e47
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
 new file mode 100644
-index 0000000..70090d4
+index 0000000..ee61057
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
-@@ -0,0 +1,782 @@
+@@ -0,0 +1,878 @@
 +"""sol-h3-studio: CPU tests of reshape, another clip length or orientation in a running session (not part of upstream
 +Sol-H3-Spark). Stand-in workers check that every worker sees the shape of each request; the shape state each real
 +worker rebinds is checked against what a fresh worker for that shape has."""
@@ -4253,6 +4277,102 @@ index 0000000..70090d4
 +        pipeline.stage1.close = stage1_close
 +        pipeline.close()
 +        self.assertIn(("close", "qwen", "late-qwen"), GeometryWorker.events)
++
++    def qwen_roots(self, kind):
++        return [event[2] for event in GeometryWorker.events if event[:2] == (kind, "qwen")]
++
++    def test_a_second_reshape_that_starts_the_encoder_ends_the_deferral(self):
++        """Two reshapes with no clip between them ("Load selected now" twice): 15 s -> 10 s with too little memory
++        defers the resident Qwen to after the next clip, then 10 s -> 5 s 9:16 finds room and starts it. The next
++        clip uses that encoder: no per-request one loads next to it, and no second resident one replaces it after
++        the clip (close() would never see the first)."""
++        pipeline = self.pipeline()
++        case = {"case_id": "c0", "prompt": "A fox.", "seed": 1}
++        pipeline.start(case, deliver=True)
++        pipeline.reshape(seconds=15)
++        self.mem_gib = 33.0                                  # below 10 s's 34 GiB minimum, above 5 s's 32 GiB
++        self.assertEqual(pipeline.reshape(seconds=10)["workers"]["qwen"]["spawn"], "after_next_clip")
++        self.assertEqual(pipeline.reshape(orientation="portrait")["workers"]["qwen"]["spawn"], "after_reshape")
++        self.assertFalse(pipeline.resident_qwen_after_next_clip)
++        loads = pipeline.qwen_loads
++        for name in ("next", "after"):
++            pipeline.generate(dict(case, case_id=name))
++        self.assertEqual(pipeline.qwen_loads, loads)
++        self.assertEqual(self.qwen_roots("start"), ["warmup-qwen-worker", "qwen-worker", "qwen-worker-r1"])
++        self.assertEqual(pipeline._resident_qwen().root.name, "qwen-worker-r1")
++        pipeline.close()
++        self.assertEqual(sorted(self.qwen_roots("start")), sorted(self.qwen_roots("close")))
++
++    def test_never_a_second_resident_encoder(self):
++        """With a resident Qwen loading or loaded, another start keeps it (a second future would replace the first,
++        which close() would then never see)."""
++        pipeline = self.pipeline()
++        pipeline.start({"case_id": "c0", "prompt": "A fox.", "seed": 1}, deliver=True)
++        loading = pipeline._qwen_future
++        self.assertIsNotNone(loading)
++        self.assertTrue(pipeline._spawn_resident_qwen(pipeline.config))
++        self.assertIs(pipeline._qwen_future, loading)
++        resident = pipeline._resident_qwen()
++        self.assertTrue(pipeline._spawn_resident_qwen(pipeline.config))
++        self.assertIsNone(pipeline._qwen_future)
++        self.assertIs(pipeline.qwen, resident)
++        self.assertEqual(self.qwen_roots("start"), ["warmup-qwen-worker", "qwen-worker"])
++
++    def test_unload_while_a_reshape_waits_for_a_loading_encoder(self):
++        """A 15 s session went back to 10 s, and its resident Qwen (r1) is still loading. Another reshape (5 s) waits
++        for it; meanwhile Unload closes the pipeline on another thread. r1 is closed once it has loaded, the reshape
++        fails instead of reporting a change on a closed pipeline, and close() returns only after r1 is closed."""
++        import threading
++        loaded = threading.Event()
++        submitted = threading.Event()
++
++        class SlowQwen(GeometryWorker):
++            def __init__(self, name, root, paths, config):
++                super().__init__(name, root, paths, config)
++                if Path(root).name == "qwen-worker-r1":
++                    loaded.wait(10)                           # loading in the background (20-60 s on the GPU)
++
++            def submit(self, op="run", **kwargs):
++                response = super().submit(op, **kwargs)
++                if op == "reshape" and self.name == "stage2" and kwargs["config"] == load_recipe():
++                    submitted.set()
++                return response
++        pipeline = Pipeline({}, Path(self.directory.name) / "unload", worker_factory=SlowQwen)
++        self.addCleanup(pipeline.close)
++        self.addCleanup(loaded.set)
++        pipeline.start({"case_id": "c0", "prompt": "A fox.", "seed": 1}, deliver=True)
++        pipeline.reshape(seconds=15)
++        self.assertEqual(pipeline.reshape(seconds=10)["workers"]["qwen"]["spawn"], "after_reshape")
++        outcome = {}
++
++        def run(name, call):
++            try:
++                outcome[name] = call()
++            except BaseException as error:     # noqa: BLE001 - checked below
++                outcome[name] = error
++        reshaping = threading.Thread(target=run, args=("reshape", lambda: pipeline.reshape(seconds=None)))
++        reshaping.start()
++        self.assertTrue(submitted.wait(5))
++        closing = threading.Thread(target=run, args=("close", pipeline.close))
++        closing.start()
++        for _ in range(500):
++            if pipeline.closing:
++                break
++            threading.Event().wait(0.01)
++        self.assertTrue(pipeline.closing)
++        threading.Event().wait(0.1)                   # close() has gone as far as it can while r1 loads
++        loaded.set()
++        for thread in (reshaping, closing):
++            thread.join(10)
++            self.assertFalse(thread.is_alive())
++        self.assertIsInstance(outcome["reshape"], RuntimeError)
++        self.assertIn("closing", str(outcome["reshape"]))
++        self.assertIsNone(outcome["close"])
++        self.assertIn("qwen-worker-r1", self.qwen_roots("close"))
++        self.assertEqual(sorted(self.qwen_roots("start")), sorted(self.qwen_roots("close")))
++        self.assertIsNone(pipeline.qwen)
++        saved = json.loads((pipeline.root / "results.json").read_text())
++        self.assertEqual([r["to"]["output_frames"] for r in saved["reshapes"]], [361, 241])   # not the 5 s one
 +
 +    def test_same_shape_is_no_change_and_the_task_and_options_stay(self):
 +        pipeline = self.pipeline(task="ref2va", ref_image_match="stage2")
