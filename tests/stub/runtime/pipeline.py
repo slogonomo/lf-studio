@@ -19,7 +19,8 @@ with a tone, with the requested format and length.
   time a clip runs (a .failed-once file next to the session directories remembers it), so the server's retry runs.
   reshape() (another length or orientation, models kept) is a `sleep` of STUB_RESHAPE_S (default 0.2) and appends a
   line to RESHAPES in the root; STUB_RESHAPE_FAIL=1 makes it fail like a dead worker. Like the real pipeline, close()
-  first marks the pipeline as closing, and reshape() and generate() refuse a closing one.
+  first marks the pipeline as closing, reshape() and generate() refuse a closing one, and a reshape that a close
+  overlaps fails.
 """
 import json
 import os
@@ -127,6 +128,8 @@ class Pipeline:
             raise RuntimeError("Worker exited with code 1 (STUB_RESHAPE_FAIL)")
         started = time.time()
         self._work(float(os.environ.get("STUB_RESHAPE_S", "0.2")))
+        if self.closing:                       # close() began meanwhile (Unload): no change on a closing pipeline
+            raise RuntimeError("The pipeline is closing")
         self.orientation, self.seconds = after["orientation"], after["seconds"]
         self.size = SIZE[self.orientation]
         with (self.root / "RESHAPES").open("a") as log:

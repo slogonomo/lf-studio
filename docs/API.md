@@ -487,6 +487,11 @@ more than 5% off the clip's aspect ratio gets a warning. The shape is the one sh
 PNG or WebP counts, as the pipeline applies it. The upload sends `X-Switchboard-Wait: <--hold>` (default
 900 s).
 
+**Line ends.** `--prompt-file FILE` reads the file with universal newlines, so CRLF becomes LF, while the page's form
+sends a multi-line prompt with CRLF and the studio keeps it: the same prompt can tokenize differently through the CLI
+and through the page. To render a page clip again, pass its prompt as the page sent it (its API record's `prompt`),
+for example with `--prompt` (`--prompt-file -` also keeps CRLF, on Linux).
+
 - Without `--wait`, `--out` or `--poster`, it prints the clip's id and exits.
 - With any of them it waits, then saves the MP4: into the current directory under the clip's own name
   (`sol-h3_<task>_<s>s_seed<seed>_<id6>.mp4`), into a directory given as `--out` (an existing one, or a path ending

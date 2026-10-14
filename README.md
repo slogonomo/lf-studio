@@ -102,8 +102,10 @@ MiniMax lists for H3. The first-request attention self-check covers 8 calls inst
 are derived after the frozen-recipe hash check. Stage 2 refines the video against the H3 audio held fixed instead of
 a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync. Since 0.4 the prompt
 encoder reads the dialogue tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does and H3 was trained
-with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). All of it can be switched back; see
-[docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
+with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). Also since 0.4, Stage 1 and Stage 2 compile with
+static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), and a session changes its length and
+orientation in place, one worker rendering several shapes (`SOLH3_RESHAPE=0` loads the models again). All of it can
+be switched back; see [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 
 ## Requirements
 
@@ -142,6 +144,9 @@ Problems: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 To update: `git pull`, then `install/10-sana.sh`, then restart the studio ([details](docs/INSTALL.md#updating)).
 0.4 changes the patch: until `install/10-sana.sh` has applied it, the studio refuses to start with
 "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...".
+0.4 also answers only to known host names: if you open the studio by a name other than an IP address, `localhost`, a
+name without a dot or one ending in `.ts.net`, `.local`, `.lan`, `.home`, `.home.arpa` or `.internal`, add it to
+`SOLH3_ALLOWED_HOSTS` before you restart, or every request gets 421 ([more](docs/INSTALL.md#updating)).
 
 The server listens on 127.0.0.1:8190. From a laptop use [NVIDIA Sync](docs/nvidia-sync.md) or
 `ssh -L 8190:127.0.0.1:8190 you@spark-xxxx.local`. `SOLH3_HOST=0.0.0.0` serves the LAN; there is no login, so only

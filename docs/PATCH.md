@@ -4,7 +4,7 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 126 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 133 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
   The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
@@ -27,7 +27,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 # prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
 cd models/minimax_h3/Sol-H3-Spark
 SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
-    -m unittest discover -s tests   # Ran 126 tests ... OK (skipped=1)
+    -m unittest discover -s tests   # Ran 133 tests ... OK (skipped=1)
 
 # the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
 # Qwen image, on the CPU (no --gpus)
@@ -40,8 +40,9 @@ docker run --rm --network=none --user "$(id -u):$(id -g)" -e HOME=/tmp -e CUDA_V
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 ```
 
-`install/10-sana.sh` does the clone, the apply and the tests. Most features below also have an environment
-switch that restores NVIDIA's behaviour without removing the patch. Set switches in the settings file
+`install/10-sana.sh` does the clone, the apply and the tests (without the `SOL_H3_*` and `SPARK_*` switches of the
+settings file, since the tests check the defaults; the `SOL_H3_SPARK_*` paths stay). Most features below also have
+an environment switch that restores NVIDIA's behaviour without removing the patch. Set switches in the settings file
 (`~/.config/sol-h3-studio/env`) or the environment of whatever starts the pipeline. The pipeline passes the
 environment to its Stage1 and Stage2 workers. `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS` are only defaults for
 `infer.py`: the web server removes both from its environment at start, because it sets format and length per job.
@@ -62,7 +63,7 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
 | The prompt encoder tokenizes `<d>`, `</d>` and 5 more tags as single tokens, as MiniMax's tokenizer does, instead of splitting them into text as the pinned ComfyUI does. Compared on clips in an A/B test; see [16](#16-minimaxs-prompt-tokens). | on (since 0.4) | `SOL_H3_PROMPT_TOKENS=plain` |
-| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differed between any two processes, reshaped or not, because three kernels were tuned again in each. 0.4 stops that ([8](#8-inductor-autotune-cache-fix-torch-213), issue #51); the 15 s check runs again in staging ([18](#18-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
+| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differed between any two processes, reshaped or not, because three kernels were tuned again in each. 0.4 stops this re-tuning ([8](#8-inductor-autotune-cache-fix-torch-213), issue #51). Whether 15 s output then matches is not shown yet: the 15 s comparison runs again in staging ([18](#18-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
 | Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change. This changes Stage 1's graphs from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). The output was the same with and without it in one GPU check (3 clips). See [18](#18-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
@@ -141,10 +142,13 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
     a minimum (32 GiB up to 5 s, 34 GiB for longer clips), the encoder loads after the first clip, as before.
     `results.json` records the reading and where the encoder started (`resident_qwen`). The warm-up encoder still
     closes before Stage2 starts. Sessions over 241 output frames load the encoder per request, as before (item 3).
+    A clip that waits for an encoder still loading may be interrupted (Ctrl-C in `infer.py`): the encoder stays
+    registered, and `close()` waits for it and closes it.
 - **Files.** `runtime/pipeline.py`, `infer.py`, `tests/test_pipeline.py`.
 - **Switch.** `deliver` is opt-in (`infer.py` without `--deliver-first` keeps the separate warm-up). The overlap
   itself has no switch. `SOL_H3_RESIDENT_QWEN_EARLY=0` loads the resident encoder after the first clip, as before
-  0.4. `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` sets one minimum for every length instead. The same minimum, for the
+  0.4. `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` sets one minimum for every length instead (a value that is not a number
+  of GiB, such as `32GiB`, stops the pipeline when it is created, with the setting's name). The same minimum, for the
   new length, decides whether the resident encoder loads again right after a session changes back to 10 s or less
   ([18](#18-reshape-another-length-or-orientation-without-a-reload)).
 - **Measured.** First clip 282 → 177 s, lowest MemAvailable 18 GiB. The first overlap attempt fell to 2.4 GiB
@@ -161,8 +165,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 
   So the encoder can't just start during the refine: that would leave ~3-5 GiB, at the memory guard's 5 GiB
   (inferred). With Stage2's release first, the first refine gets about as low as a warm clip with the encoder
-  resident. Measured on the test lane, 2026-10-13, one run each: `SOL_H3_RESIDENT_QWEN_EARLY=0` → the default (the
-  same branch); MemAvailable every 0.5 s.
+  resident. Measured on a separate test studio on the same DGX Spark (its own checkout, runtime root and clip
+  history), 2026-10-13, one run each: `SOL_H3_RESIDENT_QWEN_EARLY=0` → the default (the same branch); MemAvailable
+  every 0.5 s.
 
   | Load | Next clip's encoding starts after its request | Next clip | MemAvailable at the check | Lowest in the load | Lowest in the next clip |
   |---|---|---|---|---|---|
@@ -184,7 +189,7 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   The minimum depends on the length, since a longer first refine needs more. Measured, the encoder plus a first
   refine took 23.1-23.8 GiB at t2va 5 s and 26.7 GiB at fl2va 10 s. So the minimum is 32 GiB up to 121 output
   frames (5 s) and 34 GiB above: at the minimum, ~8-9 GiB would be left at 5 s and ~7 GiB at 10 s, above the memory
-  guard's 5 GiB. After the release, the bench traces had 34-39 GiB in every setting and the test lane 34.2-37.0 GiB,
+  guard's 5 GiB. After the release, the bench traces had 34-39 GiB in every setting and the test studio 34.2-37.0 GiB,
   so the check passes in a normal session. It is there for a box with less free memory. `results.json` records the
   minimum that applied (`resident_qwen.min_gib`, `min_from`).
   With a cold compile cache (the first run of a format and length), Stage2's first refine also compiles and
@@ -472,10 +477,10 @@ and identity are unchanged, and the image is 5-11% sharper.
   at a session's second length (automatic dynamic shapes). There the setting saves that one recompile, but it also
   compiles the first length's body for a symbolic length (measured below: the same output). The optional Sol route
   (`ref_stage1_attn=sol`) ignores the setting; its receipt says `per_length (setting ignored)`.
-- **Measured** on the test lane, 2026-10-13, with this setting's patch before its merge into 0.4 (prompts tokenized
-  `plain`, 16): a studio with the setting off and then one with it on, the same 19 clips (5 s, 16:9) in the same
-  order. A t2va, an fl2va (keyframe) and a ref2va session each had 2 new prompt lengths and repeated every prompt
-  later. Both studios started from the same copy of the compile cache.
+- **Measured** on a separate test studio on the same DGX Spark, 2026-10-13, with this setting's patch before its
+  merge into 0.4 (prompts tokenized `plain`, 16): a studio with the setting off and then one with it on, the same 19
+  clips (5 s, 16:9) in the same order. A t2va, an fl2va (keyframe) and a ref2va session each had 2 new prompt
+  lengths and repeated every prompt later. Both studios started from the same copy of the compile cache.
   - New prompt length, Stage 1 against the same prompt repeated later: with the setting 0.0-0.8 s in t2va and fl2va,
     and 0.0 s in ref2va at its third length. ref2va's second length cost 2.6 s: the text refiner recompiles there,
     with or without the setting. Without the setting: 2.3-9.7 s in t2va and fl2va, and 5.9 s and 0.0 s in ref2va
@@ -536,11 +541,15 @@ and identity are unchanged, and the image is 5-11% sharper.
     each request loads its own, as before. Back below, the resident encoder loads again in the background if
     MemAvailable is at least the minimum of its early load in item 4, for the new length (32 GiB up to 5 s, 34 GiB
     above, or `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB`). Otherwise the next clip loads its own encoder and the resident
-    one loads after that clip. `results.json` records the reading with the reshape. Every encoder started after a
+    one loads after that clip, unless another reshape before that clip starts it. There is never more than one
+    resident encoder. `results.json` records the reading with the reshape. Every encoder started after a
     reshape gets the session's prompt-token mode (16), even if `SOL_H3_PROMPT_TOKENS` changed meanwhile, and a
     resident one refuses a recipe with another mode.
   - If a worker fails the command, the reshape fails, and the pipeline refuses requests until it is closed. A
-    pipeline that is closing refuses a reshape, and starts no resident encoder after its close began.
+    pipeline that is closing refuses a reshape, and starts no resident encoder after its close began. A reshape
+    that a close overlaps (Unload while it waits for a resident encoder that is still loading) fails, and the close
+    waits for that encoder and closes it. A close that overlaps a reshape closing the resident encoder (a change to
+    over 10 s) returns only once that encoder has shut down.
   - Before the first clip only the recipe changes, and the first clip follows the new length's rules for the
     resident encoder (item 3, item 4).
 - **Static compiles.** Graphs for a new shape compile on its first request. Stage 1's regions and Stage 2's blocks
@@ -600,8 +609,9 @@ and identity are unchanged, and the image is 5-11% sharper.
 deliver-first, when the resident prompt encoder starts, the new `Pipeline` arguments and the compile-cache
 location (it also points the cache at a temp directory, so running the tests writes nothing under `$HOME`).
 `tests/test_qwen_media.py` and `tests/test_stage1_contracts.py` follow the new signatures and the configurable
-BSA check. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint states, the setting,
-older LTX-2), `tests/test_pipeline.py` its check before any worker starts.
+BSA check. `tests/test_pipeline.py` also checks that a malformed `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` fails with its
+name before any worker starts. `tests/test_stage2_contract.py` adds the Stage-2 audio policy (frozen and joint
+states, the setting, older LTX-2), `tests/test_pipeline.py` its check before any worker starts.
 `tests/test_stage2_contract.py` also covers item 8's fallback with a stand-in `CachingAutotuner` that follows torch
 2.13's rules for halving, benchmarking and coordinate descent, with torch's own recheck and cache check and Triton's
 `Config`. A fallback hit gets the cache info of torch's own hit plus `spark_fallback`, and runs as stored. With the
@@ -623,9 +633,18 @@ can't be imported): what `install()` and `install_dense()` wrap with the setting
 see the shape of every request; the Stage 2 globals are compared with the shared module's own import code for every
 length and orientation. It also covers the capture's shape check and PCM trim, the BSA self-check per shape, the
 keyframe canvas, the static compiles (with the torch behaviour they rely on, a marked dimension included), a
-pipeline that is closing or failed a reshape, the resident encoder's restart (the minimum of item 4 for the new
-length, and the session's prompt-token mode), a reshape before the first clip, and the `SPARK_DEBUG_AUTOTUNE` lines.
-126 tests in total (upstream: 65).
+pipeline that is closing or failed a reshape, a close during a reshape that waits for a loading encoder, a close
+while a reshape closes the encoder, a wait for a loading encoder that is interrupted, the resident encoder's restart
+(the minimum of item 4 for the new length, the session's prompt-token mode whether given to `Pipeline` or read from
+`SOL_H3_PROMPT_TOKENS`, two reshapes without a clip between them, never two resident encoders), a reshape before the
+first clip, and the `SPARK_DEBUG_AUTOTUNE` lines.
+Settings: `PipelineReshapeTests` clears the 8 settings it reads (`SOL_H3_RESIDENT_QWEN_EARLY`,
+`SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB`, `SOL_H3_RESIDENT_QWEN_MAX_FRAMES`, `SOL_H3_PROMPT_TOKENS`,
+`SOL_H3_STATIC_SHAPES`, `SOL_H3_DYNAMIC_TEXT_LENGTH`, `SOL_H3_ORIENTATION`, `SOL_H3_SECONDS`), and `QwenReshapeTests`
+clears `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS`. `UserSettingsTests` runs both classes again with a user's own value
+of each of the 8. `tests/test_pipeline.py` clears the three `SOL_H3_RESIDENT_QWEN_*` settings in its tests of where
+the resident encoder starts. Other tests still read `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS`, so
+`install/10-sana.sh` runs the suite without the settings file's switches. 133 tests in total (upstream: 65).
 
 ## All switches
 

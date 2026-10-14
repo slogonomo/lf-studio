@@ -28,7 +28,8 @@ python3 tests/ui_test.py http://127.0.0.1:18299/   # a general check of the page
 `tests/test_server.py` drives the server over HTTP, and `tests/test_api.py` its API for programs (JSON submit,
 `/api/jobs/<id>?wait=`, labels, limits). `tests/test_cli.py` and `tests/test_mcp.py` run `bin/sol-h3` as a CLI and
 as an MCP server against the stub and against small fake spark-switchboard servers (ports 18820-18839), and check
-that it stays a lone Python 3.9 file. `tests/test_page.py` drives the page in WebKit and is skipped without
+that it stays a lone Python 3.9 file. `tests/test_page.py` drives the page in WebKit, also running
+`tests/ui_test.py` against a stub studio with a session loaded (`SOLH3_RESHAPE` 1 and 0), and is skipped without
 Playwright (`pip install playwright && playwright install webkit`). One touch test uses Chromium
 (`playwright install chromium`) and is skipped without it.
 
@@ -46,7 +47,7 @@ store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch,
 process, stopping it under `bench/memguard-run.sh`, the report, the quality step and the SyncNet table. It takes
 `runtime/geometry.py` from the patch itself.
 
-The patch has its own 126 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
+The patch has its own 133 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A
 second studio next to an installed one needs its own env file (`SOLH3_ENV=<file> bin/sol-h3-studio`) with its own
