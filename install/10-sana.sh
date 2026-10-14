@@ -195,14 +195,25 @@ that patch file (git -C $SOLH3_SANA apply -R <that patch>), or move $SOLH3_SANA 
 fi
 
 step "CPU tests (no GPU, no weights)"
+# The tests check the patch at its defaults, so they run without the switches of the settings file (SOL_H3_*,
+# SPARK_*): a user's own SOL_H3_ORIENTATION or SOL_H3_RESIDENT_QWEN_EARLY=0 would change what they expect, and the
+# patch would seem to fail. The SOL_H3_SPARK_* paths stay (the prompt-token tests read SOL_H3_SPARK_COMFY_ROOT).
+unset_switches=()
+for name in $(compgen -e); do
+    case "$name" in
+        SOL_H3_SPARK_*) ;;
+        SOL_H3_*|SPARK_*) unset_switches+=(-u "$name") ;;
+    esac
+done
 if [[ -x "$ENVS/stage1/bin/python" ]]; then
     if [[ "$DRY_RUN" == 1 ]]; then
-        echo "+ (cd $PKG && CUDA_VISIBLE_DEVICES= $ENVS/stage1/bin/python -B -m unittest discover -s tests)"
+        echo "+ (cd $PKG && env ${unset_switches[*]} CUDA_VISIBLE_DEVICES= $ENVS/stage1/bin/python -B" \
+            "-m unittest discover -s tests)"
     else
-        (cd "$PKG" && CUDA_VISIBLE_DEVICES='' "$ENVS/stage1/bin/python" -B -m unittest discover -s tests) ||
-            die "CPU tests failed"
+        (cd "$PKG" && env "${unset_switches[@]}" CUDA_VISIBLE_DEVICES='' "$ENVS/stage1/bin/python" -B \
+            -m unittest discover -s tests) || die "CPU tests failed"
     fi
 else
-    say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the 129 CPU tests"
+    say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the 130 CPU tests"
 fi
 say "done. Next: install/20-weights.sh"

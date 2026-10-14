@@ -4,7 +4,7 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 129 CPU tests pass.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 130 CPU tests pass.
 - Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
   69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
   The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
@@ -27,7 +27,7 @@ git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 # prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
 cd models/minimax_h3/Sol-H3-Spark
 SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
-    -m unittest discover -s tests   # Ran 129 tests ... OK (skipped=1)
+    -m unittest discover -s tests   # Ran 130 tests ... OK (skipped=1)
 
 # the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
 # Qwen image, on the CPU (no --gpus)
@@ -40,8 +40,9 @@ docker run --rm --network=none --user "$(id -u):$(id -g)" -e HOME=/tmp -e CUDA_V
 git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
 ```
 
-`install/10-sana.sh` does the clone, the apply and the tests. Most features below also have an environment
-switch that restores NVIDIA's behaviour without removing the patch. Set switches in the settings file
+`install/10-sana.sh` does the clone, the apply and the tests (without the `SOL_H3_*` and `SPARK_*` switches of the
+settings file, since the tests check the defaults; the `SOL_H3_SPARK_*` paths stay). Most features below also have
+an environment switch that restores NVIDIA's behaviour without removing the patch. Set switches in the settings file
 (`~/.config/sol-h3-studio/env`) or the environment of whatever starts the pipeline. The pipeline passes the
 environment to its Stage1 and Stage2 workers. `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS` are only defaults for
 `infer.py`: the web server removes both from its environment at start, because it sets format and length per job.
@@ -628,8 +629,9 @@ length and orientation. It also covers the capture's shape check and PCM trim, t
 keyframe canvas, the static compiles (with the torch behaviour they rely on, a marked dimension included), a
 pipeline that is closing or failed a reshape, a close during a reshape that waits for a loading encoder, the
 resident encoder's restart (the minimum of item 4 for the new length, the session's prompt-token mode, two reshapes
-without a clip between them, never two resident encoders), a reshape before the first clip, and the
-`SPARK_DEBUG_AUTOTUNE` lines. 129 tests in total (upstream: 65).
+without a clip between them, never two resident encoders), a reshape before the first clip, the
+`SPARK_DEBUG_AUTOTUNE` lines, and the reshape tests again with a user's own value of every setting they read in the
+environment. 130 tests in total (upstream: 65).
 
 ## All switches
 

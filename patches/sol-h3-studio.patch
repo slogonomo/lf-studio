@@ -3989,10 +3989,10 @@ index 0000000..6658e47
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
 new file mode 100644
-index 0000000..ee61057
+index 0000000..6b14e6c
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_reshape.py
-@@ -0,0 +1,878 @@
+@@ -0,0 +1,906 @@
 +"""sol-h3-studio: CPU tests of reshape, another clip length or orientation in a running session (not part of upstream
 +Sol-H3-Spark). Stand-in workers check that every worker sees the shape of each request; the shape state each real
 +worker rebinds is checked against what a fresh worker for that shape has."""
@@ -4002,6 +4002,7 @@ index 0000000..ee61057
 +import json
 +import os
 +from pathlib import Path
++import subprocess
 +import sys
 +import tempfile
 +import types
@@ -4096,6 +4097,14 @@ index 0000000..ee61057
 +    return config["stage1"].get("task", "t2va")
 +
 +
++# sol-h3-studio: the settings these tests expect at their defaults. install/10-sana.sh runs the tests with the
++# settings file in the environment, so a user's own values (SOL_H3_RESIDENT_QWEN_EARLY=0, a MAX_FRAMES from 0.3, ...)
++# must not change what they check (UserSettingsTests).
++USER_SETTINGS = ("SOL_H3_RESIDENT_QWEN_EARLY", "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB", "SOL_H3_RESIDENT_QWEN_MAX_FRAMES",
++                 "SOL_H3_PROMPT_TOKENS", "SOL_H3_STATIC_SHAPES", "SOL_H3_DYNAMIC_TEXT_LENGTH", "SOL_H3_ORIENTATION",
++                 "SOL_H3_SECONDS")
++
++
 +class PipelineReshapeTests(unittest.TestCase):
 +    def setUp(self):
 +        GeometryWorker.events = []
@@ -4104,9 +4113,11 @@ index 0000000..ee61057
 +        self.mem_gib = 64.0             # MemAvailable as the pipeline reads it; not this machine's, not the user's limit
 +        for patcher in (mock.patch.object(pipeline_module, "mem_available_gib", lambda: self.mem_gib),
 +                        mock.patch.object(pipeline_module, "MEM_SETTLE_S", 0.0),
-+                        mock.patch.dict(os.environ, {"SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB": ""})):
++                        mock.patch.dict(os.environ)):
 +            patcher.start()
 +            self.addCleanup(patcher.stop)
++        for name in USER_SETTINGS:
++            os.environ.pop(name, None)
 +
 +    def pipeline(self, **options):
 +        pipeline = Pipeline({}, Path(self.directory.name) / "run", worker_factory=GeometryWorker, **options)
@@ -4433,6 +4444,23 @@ index 0000000..ee61057
 +        self.assertEqual(json.loads(lines[0])["op"], "reshape")
 +        with self.assertRaises(ValueError):
 +            worker.submit("load_weights")
++
++
++class UserSettingsTests(unittest.TestCase):
++    def test_the_reshape_tests_pass_with_a_users_settings(self):
++        """install/10-sana.sh runs these tests with the settings file in the environment (install/env.sh exports
++        it). With a user's own value of every setting they read (an opt-out, a 0.3 MAX_FRAMES, ...), they pass as at
++        the defaults, instead of failing an upgrade that worked."""
++        settings = {"SOL_H3_RESIDENT_QWEN_EARLY": "0", "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB": "40",
++                    "SOL_H3_RESIDENT_QWEN_MAX_FRAMES": "361", "SOL_H3_PROMPT_TOKENS": "plain",
++                    "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "1", "SOL_H3_ORIENTATION": "portrait",
++                    "SOL_H3_SECONDS": "10"}
++        self.assertEqual(set(settings), set(USER_SETTINGS))
++        result = subprocess.run([sys.executable, "-B", "-m", "unittest", "tests.test_reshape.PipelineReshapeTests"],
++                                cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=600,
++                                env=dict(os.environ, CUDA_VISIBLE_DEVICES="", SOL_H3_STAGE2_AUDIO="joint", **settings))
++        self.assertEqual(result.returncode, 0, result.stderr[-3000:])
++        self.assertRegex(result.stderr, r"Ran [1-9][0-9]* tests")
 +
 +
 +def shared_module_globals(source_frames, output_frames):
