@@ -127,9 +127,9 @@ comparable side by side.
   Keeping it resident saved nothing (192.9 vs 190.8 s per clip).
 - Lowest MemAvailable: 15-18 GiB for a 5 s first clip (upstream flow: 13 GiB); 12 GiB for 15 s. Measured before
   0.4, when the resident prompt encoder loaded after the first clip. It now loads during the first clip's refine,
-  so the next clip doesn't wait for it. On the test lane (2026-10-13) that took the lowest point of a load from
-  14.0-16.3 to 10.3-12.1 GiB (t2va 5 s, fl2va 10 s, a warm-up), about what the next warm clip reaches
-  (11.8-12.2 GiB). [PATCH.md](PATCH.md) item 4 has the numbers.
+  so the next clip doesn't wait for it. On a separate test studio on the same DGX Spark (2026-10-13) that took the
+  lowest point of a load from 14.0-16.3 to 10.3-12.1 GiB (t2va 5 s, fl2va 10 s, a warm-up), about what the next warm
+  clip reaches (11.8-12.2 GiB). [PATCH.md](PATCH.md) item 4 has the numbers.
 - Read-ahead into the page cache made the cold start slower (177 → 195 s): 54 GB of Stage 2 read-ahead competed
   with Stage 1's compile for disk and memory.
 
@@ -180,13 +180,15 @@ clip after such a change may wait for it. A change of mode still reloads.
   the tile counts) and to the denoise step. The setting
   `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (off by default;
   [PATCH.md, 17](PATCH.md#17-prompt-lengths-without-recompiles-experimental)) compiles them per session (2 graphs:
-  the first denoise step and the rest), not per length. Measured on the test lane (2026-10-13, 19 clips each way):
-  a new length cost 0.0-0.8 s in t2va and fl2va with it, 2.3-9.7 s without; known-length clips +0.3 to +0.9 %;
-  every warm clip bit-identical. The text refiner still compiled once more at a session's second length (2.6 s in
-  that ref2va clip). Those runs had dynamic compiles (`SOL_H3_STATIC_SHAPES=0`). With static compiles the body blocks
-  keep their 2 graphs per session, since a dimension marked dynamic stays dynamic, and the text refiner compiles at
-  every new length, as above (graph counts from a CPU test with a stand-in model). The GPU check of both settings
-  together runs again in staging.
+  the first denoise step and the rest), not per length. Measured on a separate test studio (2026-10-13, 19 clips
+  each way): a new length cost 0.0-0.8 s in t2va and fl2va with it, 2.3-9.7 s without; known-length clips +0.3 to
+  +0.9 %; every warm clip bit-identical. The text refiner still compiled once more at a session's second length
+  (2.6 s in that ref2va clip). Those runs had dynamic compiles (`SOL_H3_STATIC_SHAPES=0`). With static compiles the
+  body blocks keep their 2 graphs per session, since a dimension marked dynamic stays dynamic, and the text refiner
+  compiles at every new length, as above (graph counts from a CPU test with a stand-in model). The GPU check of both
+  settings together runs again in staging. In ref2va the dense body used to become length-dynamic at a session's
+  second length, so its third new length cost nothing even without the setting (0.0 s in that run). With static
+  compiles it compiles per new length again, as in t2va and fl2va, unless `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (inferred).
 - Cold vs warm overhead (~55 s), measured before the last fix: Stage 2 first compile 15-20 s, Stage 1 LoRA merge
   + FP8 ~7 s, Stage 1 first-denoise compile ~11 s, audio VAE 6 s.
 - The numbers above assume the compile cache is warm from an earlier run of the same mode, format and length.

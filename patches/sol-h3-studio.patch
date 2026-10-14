@@ -575,7 +575,7 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
-index 9aad551..645c43e 100644
+index 9aad551..01182b2 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/pipeline.py
 @@ -6,9 +6,14 @@ from pathlib import Path
@@ -723,9 +723,9 @@ index 9aad551..645c43e 100644
 +    def _early_qwen_minimum(self, config=None):
 +        """sol-h3-studio: the MemAvailable minimum for loading the resident Qwen while other workers hold their
 +        caches (during start()'s refine, or right after a reshape back to a resident length), and where it comes
-+        from: 32 GiB up to 121 output frames (5 s), 34 GiB above (test lane: Qwen plus a first refine took
-+        23.1-23.8 GiB at 5 s, 26.7 GiB at fl2va 10 s; so ~7-9 GiB would be left at the minimum, above memguard's
-+        5 GiB). SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB sets one minimum for every length."""
++        from: 32 GiB up to 121 output frames (5 s), 34 GiB above (measured on a test studio: Qwen plus a first
++        refine took 23.1-23.8 GiB at 5 s, 26.7 GiB at fl2va 10 s; so ~7-9 GiB would be left at the minimum, above
++        memguard's 5 GiB). SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB sets one minimum for every length."""
 +        from . import geometry as _geometry
 +        explicit = os.environ.get("SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB")
 +        if explicit:

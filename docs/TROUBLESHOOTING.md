@@ -88,9 +88,12 @@ another app grew next to it. `launcher.log` lists the memory users at that momen
 floor; 0 turns the guard off (not recommended).
 
 **The first clip with a new prompt takes 9-10 s longer than the next one.** Stage 1 is compiled for static
-shapes, and each new prompt length (in text tokens) compiles new graphs once. Reusing a prompt, or editing it
-without changing its token count, avoids it. Before the patch the 4th distinct length in a session crashed the
-worker ("Forward execution thread failed", Dynamo recompile limit); the patch raises the limit.
+shapes, and each new prompt length (in text tokens) compiles new graphs once (measured before 0.4; about 1-2 s more
+with 0.4's static compiles, inferred). Reusing a prompt, or editing it without changing its token count, avoids it.
+`SOL_H3_DYNAMIC_TEXT_LENGTH=1` (experimental) avoids most of it: the body blocks then compile per session, not per
+length ([PATCH.md](PATCH.md#17-prompt-lengths-without-recompiles-experimental)). Before the patch the 4th distinct
+length in a session crashed the worker ("Forward execution thread failed", Dynamo recompile limit); the patch raises
+the limit.
 
 **The first run of a mode, format or length is much slower.** Its kernels are compiled once into
 `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` (measured first runs: t2va 9:16 5 s 111 s, t2va 16:9 10 s 264 s,
@@ -210,8 +213,10 @@ starts the studio again (about 110 GiB). If instead the studio itself stopped wh
 
 **A script's status check or wait starts the studio (and pushes another app out).** Your copy of the integration
 file in switchboard's `services/` directory is older than this version: add the API's paths to its
-`passive_paths` ([INSTALL.md](INSTALL.md#updating)). `bin/sol-h3` asks switchboard first and never starts a stopped
-studio for `status`, `wait` or `fetch` (only `fetch --wake` does).
+`passive_paths` ([INSTALL.md](INSTALL.md#updating)). That includes a config made from switchboard's own example
+(`examples/services/sol-h3-studio.toml`) while its `passive_paths` is only `["/health"]`; this repo's
+`integrations/spark-switchboard/sol-h3-studio.toml` has the full list. `bin/sol-h3` asks switchboard first and never
+starts a stopped studio for `status`, `wait` or `fetch` (only `fetch --wake` does).
 
 **An MCP call says the clip is still running, or the host stops the call.** Each host limits how long a tool call
 may run. Set `SOLH3_MCP_WAIT_S` below that limit and let the agent call `wait` with the id

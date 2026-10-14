@@ -162,8 +162,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 
   So the encoder can't just start during the refine: that would leave ~3-5 GiB, at the memory guard's 5 GiB
   (inferred). With Stage2's release first, the first refine gets about as low as a warm clip with the encoder
-  resident. Measured on the test lane, 2026-10-13, one run each: `SOL_H3_RESIDENT_QWEN_EARLY=0` → the default (the
-  same branch); MemAvailable every 0.5 s.
+  resident. Measured on a separate test studio on the same DGX Spark (its own checkout, runtime root and clip
+  history), 2026-10-13, one run each: `SOL_H3_RESIDENT_QWEN_EARLY=0` → the default (the same branch); MemAvailable
+  every 0.5 s.
 
   | Load | Next clip's encoding starts after its request | Next clip | MemAvailable at the check | Lowest in the load | Lowest in the next clip |
   |---|---|---|---|---|---|
@@ -185,7 +186,7 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   The minimum depends on the length, since a longer first refine needs more. Measured, the encoder plus a first
   refine took 23.1-23.8 GiB at t2va 5 s and 26.7 GiB at fl2va 10 s. So the minimum is 32 GiB up to 121 output
   frames (5 s) and 34 GiB above: at the minimum, ~8-9 GiB would be left at 5 s and ~7 GiB at 10 s, above the memory
-  guard's 5 GiB. After the release, the bench traces had 34-39 GiB in every setting and the test lane 34.2-37.0 GiB,
+  guard's 5 GiB. After the release, the bench traces had 34-39 GiB in every setting and the test studio 34.2-37.0 GiB,
   so the check passes in a normal session. It is there for a box with less free memory. `results.json` records the
   minimum that applied (`resident_qwen.min_gib`, `min_from`).
   With a cold compile cache (the first run of a format and length), Stage2's first refine also compiles and
@@ -473,10 +474,10 @@ and identity are unchanged, and the image is 5-11% sharper.
   at a session's second length (automatic dynamic shapes). There the setting saves that one recompile, but it also
   compiles the first length's body for a symbolic length (measured below: the same output). The optional Sol route
   (`ref_stage1_attn=sol`) ignores the setting; its receipt says `per_length (setting ignored)`.
-- **Measured** on the test lane, 2026-10-13, with this setting's patch before its merge into 0.4 (prompts tokenized
-  `plain`, 16): a studio with the setting off and then one with it on, the same 19 clips (5 s, 16:9) in the same
-  order. A t2va, an fl2va (keyframe) and a ref2va session each had 2 new prompt lengths and repeated every prompt
-  later. Both studios started from the same copy of the compile cache.
+- **Measured** on a separate test studio on the same DGX Spark, 2026-10-13, with this setting's patch before its
+  merge into 0.4 (prompts tokenized `plain`, 16): a studio with the setting off and then one with it on, the same 19
+  clips (5 s, 16:9) in the same order. A t2va, an fl2va (keyframe) and a ref2va session each had 2 new prompt
+  lengths and repeated every prompt later. Both studios started from the same copy of the compile cache.
   - New prompt length, Stage 1 against the same prompt repeated later: with the setting 0.0-0.8 s in t2va and fl2va,
     and 0.0 s in ref2va at its third length. ref2va's second length cost 2.6 s: the text refiner recompiles there,
     with or without the setting. Without the setting: 2.3-9.7 s in t2va and fl2va, and 5.9 s and 0.0 s in ref2va

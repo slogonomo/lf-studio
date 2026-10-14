@@ -166,7 +166,8 @@ up to date when `integrations/spark-switchboard/sol-h3-studio.toml` changes: for
 `idle_values` (the busy probe must count the new status as idle); for 0.4, set its `passive_paths` to `["/health",
 "/api/state", "/api/jobs", "/api/jobs/*", "/poster/*"]` (without it, a script that reads a clip's state or waits
 for it starts a stopped studio). Or replace its contents with the new file and keep its file name and your path edits. Then
-`spark-switchboard check`, and restart switchboard.
+`spark-switchboard check`, and restart switchboard. A config made from switchboard's own example
+(`examples/services/sol-h3-studio.toml`) needs the same `passive_paths` while the example lists only `"/health"`.
 
 A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a released version of the patch is
 found the same way. Any other patch: reverse it with the file you applied (`git -C "$SOLH3_SANA" apply -R <that
@@ -182,7 +183,17 @@ tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does. A dialogue 
 from 0.3, and a 0.3 dialogue clip doesn't come back from its seed unless you set `SOL_H3_PROMPT_TOKENS=plain`. Prompts
 without these tags encode as before ([PATCH.md](PATCH.md#16-minimaxs-prompt-tokens)). Stage 1 now compiles every
 graph statically ([PATCH.md](PATCH.md#18-reshape-another-length-or-orientation-without-a-reload)), so the first clip of
-each prompt length and shape compiles Stage 1 once more after the update (inferred).
+each prompt length and shape compiles Stage 1 once more after the update (inferred). Also new in 0.4:
+
+- The studio answers only to IP addresses, `localhost`, names without a dot and names ending in `.ts.net`, `.local`,
+  `.lan`, `.home`, `.home.arpa` or `.internal`. If you open it by any other name (a router's name such as
+  `spark.fritz.box` or `spark.localdomain`, a domain of your own, or a reverse proxy that sends such a name in
+  `X-Forwarded-Host`), add that name to `SOLH3_ALLOWED_HOSTS` in the env file before you restart. Otherwise every
+  request gets 421 `unknown host name` ([API.md](API.md#access)).
+- At most `SOLH3_MAX_QUEUED` clips (default 20) wait in the queue; a script that queues more gets 429 until one has
+  started.
+- A clip of the loaded mode with another length or format keeps the models loaded and changes the session's shape
+  (`SOLH3_RESHAPE=1`, the default). `SOLH3_RESHAPE=0` loads the models again for it, as before.
 
 From 0.1 to 0.2: the first start imports the clip history (`jobs.json`) into `jobs.db` in the same directory
 (see "Where the clip history is" in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#while-it-runs)). Back up
