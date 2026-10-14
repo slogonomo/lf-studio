@@ -396,6 +396,45 @@ class ReshapeLabelOff(ReshapeLabel):
     reshape = False
 
 
+UI_TEST = Path(__file__).resolve().parent / "ui_test.py"
+
+
+@unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")
+class UiTestScript(unittest.TestCase):
+    """tests/ui_test.py, the general check of the page that AGENTS.md runs against any studio, passes against a stub
+    studio with a t2va session loaded, with SOLH3_RESHAPE=1 (the default since 0.4: another format or length keeps the
+    models, another mode reloads them) and with 0 (any change reloads). An fl2va clip before it makes fl2va a mode
+    'Load selected now' can warm up."""
+
+    def run_ui_test(self, reshape):
+        root = Path(tempfile.mkdtemp(prefix="sol-h3-uitest-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        studio = StubStudio(root, load_s=1, clip_s=0.5, preload=False, env={"SOLH3_RESHAPE": reshape})
+        studio.start()
+        self.addCleanup(studio.stop)
+        ids = [studio.generate(task="fl2va", files={"first_frame": [("first.png", png())]})[1]["id"],
+               studio.generate()[1]["id"]]
+        self.assertEqual([job["status"] for job in studio.wait(ids)], ["done", "done"])
+        state = studio.state()
+        self.assertEqual((state["reshape"], state["session"]["key"], sorted(state["warmable"])),
+                         (reshape == "1", ["t2va", "landscape", 5], ["fl2va", "t2va"]))
+        result = subprocess.run([sys.executable, str(UI_TEST), studio.url + "/", "--shots", str(root / "shots")],
+                                capture_output=True, text=True, timeout=300)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-2000:])
+        self.assertIn("ALL PASS", result.stdout)
+        return result.stdout
+
+    def test_reshape_on(self):
+        out = self.run_ui_test("1")
+        for check in ("PASS Generate keeps the models when the format differs",
+                      "PASS Generate keeps the models when the length differs",
+                      "PASS Generate warns about a reload when the mode differs"):
+            self.assertIn(check, out)
+
+    def test_reshape_off(self):
+        self.assertIn("PASS Generate warns about a reload when the format differs", self.run_ui_test("0"))
+
+
 class ReleaseReviewPage(PageTest):
     """From the whole-release review: Undo vs a poll that still lists the clip as deleted, clips restored elsewhere
     from an older page, and the keyboard."""

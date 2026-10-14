@@ -28,7 +28,8 @@ python3 tests/ui_test.py http://127.0.0.1:18299/   # a general check of the page
 `tests/test_server.py` drives the server over HTTP, and `tests/test_api.py` its API for programs (JSON submit,
 `/api/jobs/<id>?wait=`, labels, limits). `tests/test_cli.py` and `tests/test_mcp.py` run `bin/sol-h3` as a CLI and
 as an MCP server against the stub and against small fake spark-switchboard servers (ports 18820-18839), and check
-that it stays a lone Python 3.9 file. `tests/test_page.py` drives the page in WebKit and is skipped without
+that it stays a lone Python 3.9 file. `tests/test_page.py` drives the page in WebKit, also running
+`tests/ui_test.py` against a stub studio with a session loaded (`SOLH3_RESHAPE` 1 and 0), and is skipped without
 Playwright (`pip install playwright && playwright install webkit`). One touch test uses Chromium
 (`playwright install chromium`) and is skipped without it.
 
