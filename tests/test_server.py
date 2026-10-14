@@ -1532,6 +1532,34 @@ class ReshapeLoadSelected(StudioTest):
         self.assertEqual(len(list((self.studio.runtime / "outputs" / "webui").iterdir())), 1)
 
 
+class ReshapeLoadSelectedUnload(StudioTest):
+    """Unload while "Load selected now" changes the shape: the change fails on the closing pipeline. The studio says
+    so in one line, with no traceback and no second close; Unload's close ends the session."""
+    load_s, clip_s, preload = 2, 1, True
+
+    def seed(self):
+        self.studio.env.update(STUB_RESHAPE_S="1", STUB_CLOSE_S="3")     # the change fails while the close runs
+        self.write_state([finished_job()])
+
+    def test_unload_during_the_change(self):
+        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 5]
+                             and st["session"]["state"] == "ready", timeout=30)
+        self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "portrait",
+                                                                  "seconds": 10})[0], 200)
+        self.studio.wait_for(lambda st: st["session"]["state"] == "reshaping", timeout=10)
+        self.assertEqual(self.studio.post("/api/unload")[0], 200)              # answers once the close is done
+        st = self.studio.state()["session"]
+        self.assertEqual((st["key"], st["state"], st.get("loading_key")), (None, "idle", None))
+        log = self.studio.log.read_text()
+        self.assertIn("length/format change stopped: the session was closed meanwhile - RuntimeError: The pipeline "
+                      "is closing", log)
+        self.assertNotIn("Traceback", log)
+        self.assertEqual(log.count("closing session"), 1)                      # Unload's
+        [root] = (self.studio.runtime / "outputs" / "webui").iterdir()
+        self.assertTrue((root / "CLOSED").exists())
+        self.assertFalse((root / "RESHAPES").exists())
+
+
 class ReshapeWarmUp(StudioTest):
     """The warm-up's takeover rule counts a clip of the warm-up's task as one for the same models: early in the warm-up
     it stops the warm-up and loads them itself, later it waits and changes the shape. A queued one keeps the warm-up

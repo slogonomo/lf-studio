@@ -649,13 +649,19 @@ def loaded_pipeline():
 
 def reshape_session(key, reason):
     """Give the loaded session the length and orientation of `key` (same task), without a clip ("Load selected now").
-    A failure closes the session. Call it without holding `lock`."""
+    A failure closes the session, unless it failed because the session is being closed already (Unload meanwhile):
+    then one line says so, and that close finishes the job. Call it without holding `lock`."""
     p, old = session["pipeline"], session["key"]
     log("reshaping session", old, "->", key, "-", reason)
     session.update(state="reshaping", since=time.time(), loading_key=key)
     try:
         p.reshape(**reshape_args(key))
-    except Exception:
+    except Exception as e:
+        with lock:
+            closed = getattr(p, "closing", False) or session["pipeline"] is not p
+        if closed:
+            log("length/format change stopped: the session was closed meanwhile -", f"{type(e).__name__}: {e}")
+            return
         traceback.print_exc()
         close_session("length/format change failed")
         return
