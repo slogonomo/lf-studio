@@ -2,6 +2,8 @@
 
 Unofficial web studio and faster cold start for NVIDIA's Sol-H3-Spark video+audio pipeline on one DGX Spark.
 
+![Sol-H3 Studio interface with generation controls and a gallery of queued, generating, and completed clips](docs/images/sol-h3-studio.jpeg)
+
 Not affiliated with or endorsed by NVIDIA, MiniMax or Lightricks. Model weights are not included; you download
 them yourself under each model's own terms ([Model terms](#model-terms)).
 
