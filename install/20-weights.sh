@@ -4,18 +4,23 @@
 # Measured on a DGX Spark: ~224 GB, ~48 min at ~80 MB/s for all three tasks plus the offline weights.
 # To reuse weights you already have, set SOLH3_CHECKPOINTS to that directory; the script resumes and verifies.
 # The offline weights (INT8 Gemma + INT8 connector, ~37 GB) are only needed once, for 80-prompt-cache.sh.
+# RTX 5090 (SOLH3_BACKEND=rtx5090): the same files and revisions from Sol-H3-RTX5090's download_checkpoints.py, but
+# without the offline weights (~183 GB), since the prompt cache comes from a DGX Spark there (80-prompt-cache.sh).
+# Checkpoints a DGX Spark already has can be copied instead (SOLH3_CHECKPOINTS; docs/INSTALL.md, "RTX 5090").
 # Needs: a Hugging Face login whose account accepted the Lightricks/LTX-2.5 terms: $SOLH3_HOME/envs/download/bin/hf
 # auth login (install/00-check.sh prints how to create that venv first), or HF_TOKEN in the environment.
 # Model terms: you download the weights yourself; each model has its own license (README.md, "Model terms"). The
 # MiniMax H3 Community License does not cover the EU, the UK, South Korea or the USA (its sections I.5 and V.4).
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
-[[ -d "$PKG" || "$DRY_RUN" == 1 ]] || die "no Sol-H3-Spark package at $PKG; run 10-sana.sh first"
-need_cmd python3.12 "sudo apt install python3.12-venv"
+[[ -d "$PKG" || "$DRY_RUN" == 1 ]] || die "no $PKG_NAME package at $PKG; run 10-sana.sh first"
+need_host_py "sudo apt install python3.12-venv"
 DL="$ENVS/download"
+offline=(--include-offline)
+[[ "$SOLH3_BACKEND" == rtx5090 ]] && offline=()     # the prompt cache is built on a DGX Spark
 
 step "download tool ($DL, huggingface-hub from requirements/download.txt)"
 if [[ ! -x "$DL/bin/python" ]]; then
-    run python3.12 -m venv "$DL"
+    run "$HOST_PY" -m venv "$DL"
 fi
 if [[ "$DRY_RUN" == 1 ]] || ! "$DL/bin/python" -c 'import huggingface_hub' 2>/dev/null; then
     run "$DL/bin/pip" install -q -r "$PKG/requirements/download.txt"
@@ -27,7 +32,7 @@ fi
 run mkdir -p "$SOLH3_CHECKPOINTS"
 for task in $SOLH3_TASKS; do
     step "weights for $task -> $SOLH3_CHECKPOINTS"
-    run_in "$PKG" "$DL/bin/python" download_checkpoints.py --task "$task" --include-offline --verify-sha256 \
+    run_in "$PKG" "$DL/bin/python" download_checkpoints.py --task "$task" "${offline[@]}" --verify-sha256 \
         --output-dir "$SOLH3_CHECKPOINTS" || die "download for $task failed; run this script again to resume"
     if [[ -f "$SOLH3_CHECKPOINTS/checkpoint-paths.json" ]]; then
         run cp "$SOLH3_CHECKPOINTS/checkpoint-paths.json" "$SOLH3_CHECKPOINTS/checkpoint-paths-$task.json"

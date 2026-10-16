@@ -44,6 +44,33 @@ run_in() {
 
 need_cmd() { command -v "$1" >/dev/null || die "$1 not found${2:+ ($2)}"; }
 
+# fetch_checked URL FILE SHA256: download URL to FILE and check its SHA-256 (a FILE that already has it is kept).
+# The download goes to FILE.part first; a mismatch stops with FILE.part left for inspection.
+fetch_checked() {
+    local url=$1 file=$2 sha=$3
+    if [[ -f "$file" ]] && echo "$sha  $file" | sha256sum -c --status - 2>/dev/null; then
+        say "have $file (SHA-256 checked)"
+        return 0
+    fi
+    run mkdir -p "$(dirname "$file")"
+    run curl -fL --retry 3 -o "$file.part" "$url" || die "download failed: $url"
+    echo "+ check the SHA-256 of $file.part: $sha"
+    if [[ "$DRY_RUN" != 1 ]]; then
+        echo "$sha  $file.part" | sha256sum -c --status - ||
+            die "$url does not have the pinned SHA-256 $sha (the download is kept as $file.part)"
+    fi
+    run mv -f "$file.part" "$file"
+}
+
+# freeze_matches PYTHON REFERENCE: PYTHON's `pip freeze` is the reference freeze, comment lines left out (read-only,
+# so it also runs in a dry run). On the RTX 5090, 40 and 50 adopt a venv built by hand to the same recipe this way
+# instead of reinstalling into it; a venv that differs in any line is rebuilt as usual.
+freeze_matches() {
+    local py=$1 ref=$2
+    [[ -x "$py" && -f "$ref" ]] || return 1
+    diff -q <(grep -v '^#' "$ref") <("$py" -m pip freeze 2>/dev/null) >/dev/null
+}
+
 # NVIDIA Sync logins can predate docker group membership; fall back to `sg docker`.
 docker() {
     if [[ -w /var/run/docker.sock ]]; then

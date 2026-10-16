@@ -141,6 +141,13 @@ Every install script takes `--dry-run`. Paths, ports and switches: [bin/env.exam
 times, disk use, which scripts have been run end to end, and updating: [docs/INSTALL.md](docs/INSTALL.md).
 Problems: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
+**RTX 5090 (work in progress).** The same studio (page, queue, agent API, CLI) also runs on a workstation with one
+GeForce RTX 5090, x86_64, with NVIDIA's Sol-H3-RTX5090 package (CPU offload) and its own patch:
+`SOLH3_BACKEND=rtx5090` in the settings file selects it, and the install scripts above then set up that machine
+instead (no Docker; Python from uv; the prompt cache and, if you like, the weights copied from a DGX Spark). Without
+the setting everything is the DGX Spark's, as above. Design, memory plan and status:
+[docs/RTX5090.md](docs/RTX5090.md); steps: [docs/INSTALL.md](docs/INSTALL.md#rtx-5090).
+
 To update: `git pull`, then `install/10-sana.sh`, then restart the studio ([details](docs/INSTALL.md#updating)).
 0.4 changes the patch: until `install/10-sana.sh` has applied it, the studio refuses to start with
 "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...".

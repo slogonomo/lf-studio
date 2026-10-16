@@ -1,0 +1,25 @@
+# Exact versions pip resolves against in install/40-stage1.sh with SOLH3_BACKEND=rtx5090 (observed working set on a
+# workstation with one RTX 5090, x86_64). The DGX Spark's set is stage1-constraints.txt.
+torch==2.12.0+cu130
+torchvision==0.27.0+cu130
+torchaudio==2.11.0+cu130
+triton==3.7.0
+diffusers==0.40.0
+transformers==5.15.1
+safetensors==0.8.0
+accelerate==1.0.1
+nvidia-cudnn-frontend==1.27.0
+nvidia-cutlass-dsl==4.6.0
+quack-kernels==0.6.3
+apache-tvm-ffi==0.1.11
+cuda-python==13.3.1
+huggingface-hub==1.29.0
+av==18.1.0
+imageio==2.37.4
+imageio-ffmpeg==0.6.0
+einops==0.9.0.dev0
+comfy-kitchen==0.2.26
+comfy-aimdo==0.4.11
+remote-pdb==2.1.0
+ftfy==6.3.1
+omegaconf==2.3.1

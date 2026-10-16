@@ -5,10 +5,13 @@
 # to sources/FastVideo (prepare.py does that itself and checks every file hash).
 # Before 80-prompt-cache.sh the manifests are written with --cache-pending; they become valid once
 # $SOLH3_HOME/fixed-prompt.pt exists, no rewrite needed.
+# RTX 5090 (SOLH3_BACKEND=rtx5090): Sol-H3-RTX5090's prepare.py, run with uv's Python 3.12; the Qwen encoder runs
+# natively with the Stage1 python (--python-qwen). The prompt cache must exist first (80-prompt-cache.sh takes one
+# built on a DGX Spark), since this install has no offline weights for --cache-pending.
 # Idempotent: existing manifests are kept (prepare.py refuses to overwrite); FORCE=1 rewrites them (old copy *.bak).
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 [[ -f "$PKG/prepare.py" || "$DRY_RUN" == 1 ]] || die "no $PKG/prepare.py; run 10-sana.sh first"
-need_cmd python3.12
+need_host_py
 for py in "$ENVS/stage1/bin/python" "$ENVS/stage2/bin/python"; do
     [[ -x "$py" || "$DRY_RUN" == 1 ]] || die "$py missing; run 40-stage1.sh and 50-stage2.sh first"
 done
@@ -17,6 +20,15 @@ EXISTING="$SOLH3_HOME/existing-paths.json"
 
 pending=()
 [[ -f "$PROMPT_CACHE" ]] || pending=(--cache-pending)
+qwen_python="$PKG/qwen_python.sh"
+if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
+    qwen_python="$ENVS/stage1/bin/python"
+    if [[ ${#pending[@]} -gt 0 ]]; then
+        [[ "$DRY_RUN" == 1 ]] || die "no prompt cache at $PROMPT_CACHE: on the RTX 5090 run install/80-prompt-cache.sh first"
+        echo "(dry run: no prompt cache at $PROMPT_CACHE yet; without --dry-run this stops until 80-prompt-cache.sh has put one there)"
+        pending=()
+    fi
+fi
 for task in $SOLH3_TASKS; do
     out=$(manifest_for "$task")
     step "$task -> $out"
@@ -25,11 +37,13 @@ for task in $SOLH3_TASKS; do
         run mv -f "$out" "$out.bak"
     fi
     run mkdir -p "$(dirname "$out")"
-    run_in "$PKG" python3.12 prepare.py --task "$task" \
+    run_in "$PKG" "$HOST_PY" prepare.py --task "$task" \
         --sources "$SOURCES" --checkpoints "$SOLH3_CHECKPOINTS" --paths "$EXISTING" \
         --python-stage1 "$ENVS/stage1/bin/python" --python-stage2 "$ENVS/stage2/bin/python" \
-        --python-qwen "$PKG/qwen_python.sh" --prompt-cache "$PROMPT_CACHE" "${pending[@]}" \
+        --python-qwen "$qwen_python" --prompt-cache "$PROMPT_CACHE" "${pending[@]}" \
         --output "$out" || die "prepare.py failed for $task (are its weights downloaded? SOLH3_TASKS=$SOLH3_TASKS)"
 done
 [[ ${#pending[@]} -eq 0 ]] || say "prompt cache pending: run install/80-prompt-cache.sh next"
-say "done. Next: install/80-prompt-cache.sh"
+next=install/80-prompt-cache.sh
+[[ "$SOLH3_BACKEND" == rtx5090 ]] && next=install/90-env.sh     # the RTX 5090 ran 80 before this step
+say "done. Next: $next"

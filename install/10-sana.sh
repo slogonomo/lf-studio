@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # 10-sana.sh: clone NVlabs/Sana (branch sol-engine) at patches/BASE_COMMIT into $SOLH3_SANA, apply
 # patches/sol-h3-studio.patch, and run the package's CPU tests with the Stage1 python if it exists.
+# With SOLH3_BACKEND=rtx5090 the same with patches/BASE_COMMIT_RTX5090 and patches/sol-h3-studio-rtx5090.patch,
+# which changes Sol-H3-RTX5090 (docs/RTX5090.md). Everything below applies to either pair: updating the patch file
+# (and its BASE_COMMIT file) in this repo and running this script again is all an update needs.
 # Idempotent: an existing checkout is reused; an already applied patch is detected and left alone.
 # Updates: a copy of the applied patch is kept with the checkout (sol-h3-studio-applied.patch in its git directory,
 # so each clone and each git worktree has its own). After a `git pull` of this repo, run this script again. If the
@@ -71,8 +74,8 @@ earlier_patch() {
         while read -r sha; do
             n=$((n + 1))
             f="$HISTORY/patch-$n-${sha:0:7}.patch"
-            git -C "$SOLH3_REPO" show "$sha:patches/sol-h3-studio.patch" > "$f" 2>/dev/null && candidates+=("$f")
-        done < <(git -C "$SOLH3_REPO" log --format=%H -- patches/sol-h3-studio.patch)
+            git -C "$SOLH3_REPO" show "$sha:patches/$PATCH_NAME" > "$f" 2>/dev/null && candidates+=("$f")
+        done < <(git -C "$SOLH3_REPO" log --format=%H -- "patches/$PATCH_NAME")
     fi
     for f in "${candidates[@]}"; do
         [[ -f "$f" ]] && sana apply --reverse --check "$f" 2>/dev/null || continue
@@ -129,7 +132,7 @@ else
     say "existing checkout at $(sana rev-parse HEAD)"
 fi
 
-step "apply patches/sol-h3-studio.patch"
+step "apply patches/$PATCH_NAME"
 if [[ "$DRY_RUN" == 1 && ! -e "$SOLH3_SANA/.git" ]]; then
     run git -C "$SOLH3_SANA" apply --check "$PATCH"
     run git -C "$SOLH3_SANA" apply "$PATCH"
@@ -158,7 +161,7 @@ else
         replaced=0
         if [[ -n "$current" ]]; then
             if [[ "$current" == "$PATCH" ]]; then
-                say "patches/BASE_COMMIT changed ($head -> $COMMIT); moving the checkout and applying the patch there"
+                say "patches/$BASE_COMMIT_FILE changed ($head -> $COMMIT); moving the checkout and applying the patch there"
             else
                 say "the checkout carries an earlier version of the patch ($current); replacing it"
             fi
@@ -214,6 +217,8 @@ if [[ -x "$ENVS/stage1/bin/python" ]]; then
             -m unittest discover -s tests) || die "CPU tests failed"
     fi
 else
-    say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the 133 CPU tests"
+    tests=133
+    [[ "$SOLH3_BACKEND" == rtx5090 ]] && tests=143
+    say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the $tests CPU tests"
 fi
 say "done. Next: install/20-weights.sh"

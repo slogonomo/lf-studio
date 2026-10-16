@@ -4,15 +4,17 @@
 # prepare.py stops with "Missing required inputs" at this point because the Python envs do not exist yet;
 # that is expected. This script checks the fetched revisions itself. The FastVideo loader patch is applied
 # later, by the first prepare.py run in 70-manifests.sh.
+# RTX 5090: the same sources and revisions from Sol-H3-RTX5090's prepare.py (~1 min measured on a workstation with
+# one RTX 5090), with uv's Python 3.12 (05-python.sh).
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
-[[ -d "$PKG" || "$DRY_RUN" == 1 ]] || die "no Sol-H3-Spark package at $PKG; run 10-sana.sh first"
-need_cmd python3.12
+[[ -d "$PKG" || "$DRY_RUN" == 1 ]] || die "no $PKG_NAME package at $PKG; run 10-sana.sh first"
+need_host_py
 need_cmd git
 
 step "pinned sources -> $SOURCES"
 run mkdir -p "$SOURCES"
 probe="$SOLH3_HOME/.paths-probe-$$.json"
-run_in "$PKG" python3.12 prepare.py --fetch-sources --sources "$SOURCES" --checkpoints "$SOLH3_CHECKPOINTS" \
+run_in "$PKG" "$HOST_PY" prepare.py --fetch-sources --sources "$SOURCES" --checkpoints "$SOLH3_CHECKPOINTS" \
     --output "$probe" || say "prepare.py stopped (expected before the envs exist); checking the sources"
 [[ "$DRY_RUN" == 1 ]] && { say "dry run: skipping the revision check"; exit 0; }
 rm -f "$probe"
@@ -22,7 +24,7 @@ while IFS=$'\t' read -r key dir rev; do
     [[ "$key" == fa4_source_root && -d "$SOURCES/fa4-runtime/flash_attn/cute" && ! -d "$SOURCES/$dir" ]] && continue
     have=$(git -C "$SOURCES/$dir" rev-parse HEAD 2>/dev/null || echo missing)
     if [[ "$have" == "$rev" ]]; then echo "  ok    $dir @ ${rev:0:8}"; else echo "  FAIL  $dir: $have (want $rev)"; bad=1; fi
-done < <(python3.12 -c '
+done < <("$HOST_PY" -c '
 import json, sys
 for s in json.load(open(sys.argv[1]))["sources"]:
     print(s["key"], s["directory"], s["revision"], sep="\t")' "$PKG/configs/dependencies.json")

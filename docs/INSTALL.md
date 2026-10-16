@@ -1,7 +1,8 @@
 # Install
 
 Step by step on one DGX Spark. Times and sizes were measured on a DGX Spark; yours will differ, mostly in the
-download. A dash means not measured.
+download. A dash means not measured. For a workstation with one RTX 5090, see [RTX 5090](#rtx-5090) below: the same
+scripts with `SOLH3_BACKEND=rtx5090`.
 
 Status: these steps were first run by hand on one DGX Spark (DGX OS = Ubuntu 24.04 aarch64, driver 580.178.04,
 CUDA 13.0); the scripts in `install/` automate them.
@@ -83,6 +84,7 @@ for a mode whose weights were not downloaded.
 | Step | What it does | Time / size measured |
 |---|---|---|
 | `install/00-check.sh` | Checks aarch64, GB10, driver, CUDA 13, python3.12, git, curl, ffmpeg, docker, disk, HF access to LTX-2.5. Changes nothing. | - |
+| `install/05-python.sh` | RTX 5090 only; on a DGX Spark it does nothing (the install uses the system's `python3.12`). | - |
 | `install/10-sana.sh` | Clones NVlabs/Sana `sol-engine` at `patches/BASE_COMMIT`, applies the patch (and keeps a copy for [updates](#updating)), runs the 133 CPU tests once the Stage1 env exists. | - |
 | `install/20-weights.sh` | Downloads the pinned weights for t2va, fl2va and ref2va with NVIDIA's `download_checkpoints.py --include-offline --verify-sha256`. `SOLH3_TASKS` limits it (see above). Resumable. | ~48 min at ~80 MB/s, ~224 GB |
 | `install/30-sources.sh` | Fetches the pinned source trees with `prepare.py --fetch-sources`. It ends with "Missing required inputs", which is expected; the script checks the revisions itself. | ~12 s, ~0.5-0.8 GB |
@@ -143,6 +145,76 @@ Other ways to run it: as an NVIDIA Sync custom app ([nvidia-sync.md](nvidia-sync
 command that removes leftovers, and the paths whose requests never start a stopped studio (`passive_paths`: the
 health check, and the state, clip records, waits and posters that scripts read).
 
+## RTX 5090
+
+The same studio on a workstation with one GeForce RTX 5090 (32 GB), x86_64 Linux, with NVIDIA's
+[Sol-H3-RTX5090](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-RTX5090) package and its own
+patch, `patches/sol-h3-studio-rtx5090.patch` against `patches/BASE_COMMIT_RTX5090`
+([RTX5090.md](RTX5090.md)). No Docker, no CUDA toolkit and no system Python are needed: the Qwen prompt encoder runs
+natively in the Stage1 env, `nvcc` comes from pip, and both Pythons come from [uv](https://github.com/astral-sh/uv).
+Nothing is installed with sudo.
+
+Set `SOLH3_BACKEND=rtx5090` for the whole install: export it, or put it in `~/.config/sol-h3-studio/env` before step
+00. `install/00-check.sh` says so if the machine looks like an RTX 5090 and it is not set, and `install/90-env.sh`
+writes it into the settings file. The steps, in this order (80 comes before 70 here):
+
+| Step | On the RTX 5090 | Time / size measured |
+|---|---|---|
+| `install/00-check.sh` | Checks x86_64, the RTX 5090, driver 580 or newer, git, curl, tar, sha256sum, ffmpeg, gcc, disk, HF access. | - |
+| `install/05-python.sh` | uv 0.13.1 (the release binary, SHA-256 pinned) into `~/sol-h3/bin`, CPython 3.12.15 and 3.13.16 into `~/sol-h3/python`. | under 1 min, ~270 MB (~230 MB of it the Pythons) |
+| `install/10-sana.sh` | Sana at `patches/BASE_COMMIT_RTX5090` (`801f040`), `patches/sol-h3-studio-rtx5090.patch`, its 143 CPU tests. | - |
+| `install/20-weights.sh` | The same weights and revisions as the Spark's, without the offline weights (the prompt cache comes from a Spark). | - (or a copy, below) |
+| `install/30-sources.sh` | The same pinned sources (FastVideo, flash-attention, ComfyUI v0.30.0, LTX-2, H3 upscaler). | ~1 min |
+| `install/40-stage1.sh` | Stage1 venv with Python 3.12.15: torch 2.12+cu130, FastVideo, ComfyUI's requirements, comfy-kitchen (the native Qwen encoder), no fastvideo-kernel; the FA4 target. | ~25 min, most of it downloads at ~9 MB/s; ~7.7 GB |
+| `install/50-stage2.sh` | Stage2 venv with Python 3.13.16: torch 2.13+cu132, LTX-2, ltx-kernels built for SM120; a GCC 14 toolchain for that build if the system's gcc is newer than 15. | ~10 min, the ltx-kernels build ~3 min of it; ~5.9 GB, toolchain ~1.2 GB |
+| `install/60-qwen-image.sh` | Nothing: says so and exits. | - |
+| `install/80-prompt-cache.sh` | Takes the prompt cache from a DGX Spark and checks it (see below). | seconds, 12.6 MB |
+| `install/70-manifests.sh` | `prepare.py` per mode, `--python-qwen` = the Stage1 python. Needs the prompt cache. | - |
+| `install/90-env.sh` | Writes the settings file with `SOLH3_BACKEND=rtx5090`, then `bin/sol-h3-studio --check`. | - |
+
+Measured on a workstation with one RTX 5090, 64 GB of RAM and one NVMe disk, Arch Linux, driver 615.78.08,
+2026-10-16.
+
+**Weights from a DGX Spark.** The checkpoints are the same files and revisions on both machines, so instead of
+step 20 you can copy a Spark's `$SOLH3_CHECKPOINTS` (or point `SOLH3_CHECKPOINTS` at a shared copy) and then run
+step 20, which verifies them and downloads only what is missing. Copying 205 GB from a Spark over 1 GbE took 47 min.
+
+**The prompt cache.** NVIDIA's cache builder requires an SM121 GPU (a DGX Spark), so step 80 cannot build the cache
+on the RTX 5090. Copy `fixed-prompt.pt` from a Spark install (`~/sol-h3/fixed-prompt.pt` there; its step 80 builds
+it), then:
+
+```bash
+SOLH3_PROMPT_CACHE_FROM=<the copy> install/80-prompt-cache.sh
+```
+
+It checks the file with the package's own recipe check (`runtime/prompt_cache.py`: prompt, recipe fingerprint, shapes,
+dtypes, finite values; on the CPU) and copies it to `$SOLH3_HOME/fixed-prompt.pt`. A file that fails the check is
+refused, and so is a missing cache. The cache builder and the recipe check are byte-identical in both packages.
+
+**ltx-kernels and GCC.** `nvcc` 13.2 accepts host compilers up to GCC 15, and `nvcc` 13.4 rejects torch's CUDA 13.2
+headers. With a newer system gcc (Arch ships GCC 16), step 50 installs micromamba 2.9.0 (static binary, SHA-256
+pinned) into `~/sol-h3/bin` and GCC 14 from conda-forge into `~/sol-h3/toolchains/gcc14`, and builds with it
+([TROUBLESHOOTING.md](TROUBLESHOOTING.md#loading-fails)). With GCC 15 or older no toolchain is installed.
+
+**Start.** `bin/sol-h3-studio` as on the Spark. It skips the Docker checks, and refuses to start below
+`SOLH3_MIN_FREE_GIB` of free RAM (default 40 GiB on the RTX 5090) or `SOLH3_MIN_FREE_VRAM_GIB` of free GPU memory
+(default 24 GiB, from `nvidia-smi`). Both defaults are placeholders until measured ([RTX5090.md](RTX5090.md)); 0 turns
+a check off. The page says "on one RTX 5090", and its clip times are marked as estimates until they are measured.
+
+Under `~/sol-h3` the RTX 5090 install also has `bin/` (uv, uvx, micromamba), `python/` (uv's CPythons),
+`toolchains/` (the GCC 14 toolchain, only with a newer system gcc), `cache/downloads/` (the checked downloads) and
+`cache/pip`, `cache/uv` (pip's cache, ~6.3 GB of wheels after steps 40 and 50, and uv's, a few KB; `PIP_CACHE_DIR`,
+`UV_CACHE_DIR`), so nothing is written outside it and a rerun does not download the wheels again. Keep `toolchains/gcc14`: the ltx-kernels extensions carry an RPATH to its `lib/` and
+load its libstdc++ at run time. `FORCE=1` keeps it; `FORCE=1 FORCE_TOOLCHAIN=1 install/50-stage2.sh` installs it
+again (the old one is moved to `cache/` first) and rebuilds the extensions against it.
+
+**An install made by hand.** Steps 40 and 50 count as done when the venv has the marker `.sol-h3-studio-done`. A venv
+without it whose `pip freeze` matches `install/freeze/stage1-rtx5090-freeze.txt` or `stage2-rtx5090-freeze.txt`
+exactly (one built by hand to the same recipe) is adopted: nothing is installed or rebuilt, and the marker is written
+once the step's import check passes. A venv that differs in any line is built as usual (pip installs into it again,
+and step 50 rebuilds ltx-kernels); if you know such a venv is right (for example one with an extra tool such as
+py-spy), mark it done yourself: `touch ~/sol-h3/envs/stage1/.sol-h3-studio-done`.
+
 ## Updating
 
 ```bash
@@ -177,6 +249,10 @@ patch>`), or re-clone as above.
 The compile cache is keyed on code and versions, so it stays valid; delete `$SOL_H3_SPARK_RUNTIME_ROOT/cache` to
 start clean.
 
+On the RTX 5090 the same: `install/10-sana.sh` (with `SOLH3_BACKEND=rtx5090` in the settings file) finds the earlier
+version of `patches/sol-h3-studio-rtx5090.patch`, reverses it, moves to a new `patches/BASE_COMMIT_RTX5090` if that
+changed, and applies the new one. A new patch file is all an update of the 5090 patch needs.
+
 From 0.3 to 0.4: the patch changed, so run `install/10-sana.sh` after the pull. Until then the studio refuses to start
 with "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...; run
 install/10-sana.sh": the old patch would ignore the new setting. With `minimax` the prompt encoder reads the dialogue
@@ -203,4 +279,5 @@ From 0.1 to 0.2: the first start imports the clip history (`jobs.json`) into `jo
 ## Uninstall
 
 Stop the studio, then remove `~/sol-h3` (or your `$SOLH3_HOME`), `~/.config/sol-h3-studio`,
-`~/.local/state/sol-h3-studio` and the images: `docker rmi sol-h3-spark-qwen sol-h3-spark-qwen:base`.
+`~/.local/state/sol-h3-studio` and the images: `docker rmi sol-h3-spark-qwen sol-h3-spark-qwen:base` (the RTX 5090
+install has no images; uv's own cache is in `~/.cache/uv`).

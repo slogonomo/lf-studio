@@ -17,6 +17,8 @@
 #
 # Progress lines start with ">>> STATUS:"; refusals contain REFUSED, failures ERROR. Exit code 0 = stopped on
 # request, non-zero = refused or failed.
+# SOLH3_BACKEND (spark, the default, or rtx5090; docs/RTX5090.md) picks the package (Sol-H3-Spark or Sol-H3-RTX5090)
+# and the checks: Docker and the Qwen container on the Spark only; free RAM, and on the RTX 5090 free GPU memory.
 # Run modes:
 #   terminal            foreground; Ctrl-C stops it
 #   NVIDIA Sync         custom app command "bash ~/src/sol-h3-studio/bin/sol-h3-studio"; exits when Sync's
@@ -65,14 +67,24 @@ load_env_file "$ENV_FILE"
 if [[ "$MODE" == client ]]; then exec python3 "$REPO/bin/sol-h3" "$@"; fi
 
 # defaults: the same as install/env.sh
+BACKEND_SET=0
+[[ -n "${SOLH3_BACKEND:-}" ]] && BACKEND_SET=1      # set by the user (a refusal below says so)
+export SOLH3_BACKEND=${SOLH3_BACKEND:-spark}
+case "$SOLH3_BACKEND" in
+    spark) PKG_NAME=Sol-H3-Spark; OTHER_NAME=Sol-H3-RTX5090; OTHER_BACKEND=rtx5090 ;;
+    rtx5090) PKG_NAME=Sol-H3-RTX5090; OTHER_NAME=Sol-H3-Spark; OTHER_BACKEND=spark ;;
+    *) PKG_NAME= ;;      # refused below, once the log is set up
+esac
 export SOLH3_HOME=${SOLH3_HOME:-$HOME/sol-h3}
 export SOLH3_SANA=${SOLH3_SANA:-$SOLH3_HOME/Sana}
 export SOLH3_CHECKPOINTS=${SOLH3_CHECKPOINTS:-$SOLH3_HOME/checkpoints}
 export SOLH3_PYTHON=${SOLH3_PYTHON:-$SOLH3_HOME/envs/stage1/bin/python}
 export SOL_H3_SPARK_RUNTIME_ROOT=${SOL_H3_SPARK_RUNTIME_ROOT:-$SOLH3_HOME/runtime}
-export SOL_H3_SPARK_QWEN_IMAGE=${SOL_H3_SPARK_QWEN_IMAGE:-sol-h3-spark-qwen}
-# extra read-only mounts of the Qwen container (qwen_python.sh): the NVFP4 encoder checkpoint and ComfyUI
-export SOL_H3_SPARK_QWEN_WEIGHTS_ROOT=${SOL_H3_SPARK_QWEN_WEIGHTS_ROOT:-$SOLH3_CHECKPOINTS/Comfy-MiniMax-H3}
+if [[ "$SOLH3_BACKEND" == spark ]]; then   # the RTX 5090 runs the Qwen encoder natively, without a container
+    export SOL_H3_SPARK_QWEN_IMAGE=${SOL_H3_SPARK_QWEN_IMAGE:-sol-h3-spark-qwen}
+    # extra read-only mounts of the Qwen container (qwen_python.sh): the NVFP4 encoder checkpoint and ComfyUI
+    export SOL_H3_SPARK_QWEN_WEIGHTS_ROOT=${SOL_H3_SPARK_QWEN_WEIGHTS_ROOT:-$SOLH3_CHECKPOINTS/Comfy-MiniMax-H3}
+fi
 export SOL_H3_SPARK_COMFY_ROOT=${SOL_H3_SPARK_COMFY_ROOT:-$SOLH3_HOME/sources/ComfyUI}
 [[ -n "${SOLH3_PATHS:-}" ]] || SOLH3_PATHS="$SOLH3_HOME/paths-{task}.json"   # {task} = t2va, fl2va or ref2va
 export SOLH3_PATHS
@@ -80,14 +92,23 @@ export SOLH3_STATE_DIR=${SOLH3_STATE_DIR:-$HOME/.local/state/sol-h3-studio}
 export SOLH3_PORT=${SOLH3_PORT:-8190}
 export SOLH3_HOST=${SOLH3_HOST:-127.0.0.1}
 export SOLH3_PRELOAD=${SOLH3_PRELOAD:-1}
-MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-110}       # refuse to start below this MemAvailable (0 = no check)
+# refuse to start below this MemAvailable (0 = no check), and on the RTX 5090 below this free GPU memory (GiB).
+# The RTX 5090 values are placeholders until measured (docs/RTX5090.md).
+if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
+    MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-40}
+    MIN_FREE_VRAM_GIB=${SOLH3_MIN_FREE_VRAM_GIB:-24}
+else
+    MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-110}
+    MIN_FREE_VRAM_GIB=0       # the DGX Spark's GPU shares the RAM checked above
+fi
 GUARD_GIB=${SOLH3_GUARD_GIB:-4}               # stop when MemAvailable stays below this for 3 s (0 = no guard)
 STOP_WAIT_S=${SOLH3_STOP_WAIT_S:-90}          # how long the server may take to close its pipeline
 START_TIMEOUT_S=${SOLH3_START_TIMEOUT_S:-60}  # until /health answers
-PKG="$SOLH3_SANA/models/minimax_h3/Sol-H3-Spark"
+PKG="$SOLH3_SANA/models/minimax_h3/$PKG_NAME"
 SERVER=${SOLH3_SERVER:-$REPO/webui/server.py}          # test hook: a stub server
 CONTAINER_PREFIX=${SOLH3_CONTAINER_PREFIX:-sol-h3-qwen-} # test hook: qwen_python.sh names its containers so
 SKIP_DOCKER=${SOLH3_TEST_SKIP_DOCKER:-0}               # test hook: skip the docker checks
+[[ "$SOLH3_BACKEND" == spark ]] || SKIP_DOCKER=1        # no Docker on the RTX 5090: no checks, no container cleanup
 LOG=${SOLH3_LOG:-$SOLH3_STATE_DIR/server.log}
 LAUNCH_LOG="$SOLH3_STATE_DIR/launcher.log"
 PIDFILE=${SOLH3_PIDFILE:-}
@@ -95,6 +116,11 @@ mkdir -p "$SOLH3_STATE_DIR" 2>/dev/null
 
 log() { local m; m="[$(date '+%F %T')] $*"; echo "$m" 2>/dev/null; echo "$m" >>"$LAUNCH_LOG" 2>/dev/null; }
 say() { echo ">>> STATUS: $*" 2>/dev/null; echo "[$(date '+%F %T')] >>> STATUS: $*" >>"$LAUNCH_LOG" 2>/dev/null; }
+
+if [[ -z "$PKG_NAME" ]]; then
+    say "REFUSED - SOLH3_BACKEND=$SOLH3_BACKEND: must be spark or rtx5090 (see bin/env.example)"
+    exit 1
+fi
 
 # NVIDIA Sync keeps one SSH login whose group list is frozen when it starts. If that login predates being added
 # to the docker group, plain `docker` fails; `sg docker` works. Exported so qwen_python.sh (started by the
@@ -127,6 +153,7 @@ WORKER_RE="($(path_re "$PKG")/(runtime|qwen_python\.sh)|runtime\.worker --module
 SERVER_RE="$(path_re "$SERVER")"
 
 stop_containers() {   # $1 = docker stop | docker rm -f
+    [[ "$SOLH3_BACKEND" == spark ]] || return 0
     [[ "$SKIP_DOCKER" == 1 && "$CONTAINER_PREFIX" == sol-h3-qwen- ]] && return 0
     command -v docker >/dev/null || return 0
     local ids
@@ -180,13 +207,26 @@ except OSError:
 refuse() { say "REFUSED - $*"; exit 1; }
 
 run_checks() {
-    local t f rc found=0 missing=() have free
+    local t f rc found=0 missing=() have free other vram
     [[ -x "$SOLH3_PYTHON" ]] || refuse "no Python at SOLH3_PYTHON=$SOLH3_PYTHON (install/40-stage1.sh, or set it in $ENV_FILE)"
     "$SOLH3_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null ||
         refuse "SOLH3_PYTHON=$SOLH3_PYTHON is not a working Python 3.10+"
     [[ -f "$SERVER" ]] || refuse "server not found: $SERVER"
-    [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-Spark package at $PKG (SOLH3_SANA must be the patched Sana checkout; install/10-sana.sh)"
-    [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio.patch"
+    # the package of this backend, patched (runtime/geometry.py is new in both patches). Sol-H3-RTX5090 has
+    # runtime/offload.py, Sol-H3-Spark does not. A checkout with the other backend's patch is named as such.
+    other="$SOLH3_SANA/models/minimax_h3/$OTHER_NAME"
+    if [[ ! -f "$PKG/runtime/geometry.py" && -f "$other/runtime/geometry.py" ]]; then
+        refuse "$SOLH3_SANA carries the patch for $OTHER_NAME, not $PKG_NAME: set SOLH3_BACKEND=$OTHER_BACKEND (it is $SOLH3_BACKEND$([[ "$BACKEND_SET" == 1 ]] || echo ', the default')), or point SOLH3_SANA at the $PKG_NAME checkout"
+    fi
+    if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
+        [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-RTX5090 package at $PKG (SOLH3_SANA must be the Sana checkout patched for the RTX 5090; SOLH3_BACKEND=rtx5090 install/10-sana.sh)"
+        [[ -f "$PKG/runtime/offload.py" ]] || refuse "$PKG is not NVIDIA's Sol-H3-RTX5090 package (runtime/offload.py missing)"
+        [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio-rtx5090.patch (install/10-sana.sh)"
+    else
+        [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-Spark package at $PKG (SOLH3_SANA must be the patched Sana checkout; install/10-sana.sh)"
+        [[ ! -f "$PKG/runtime/offload.py" ]] || refuse "$PKG has runtime/offload.py, which only Sol-H3-RTX5090 has; this is not the Sol-H3-Spark package"
+        [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio.patch"
+    fi
     # the patch's own settings checks: (name, check, default, what a patch without the setting does, the version
     # that added it). A bad value exits 3 with the message. An older patch lacks some of them (0.3's has no
     # SOL_H3_PROMPT_TOKENS or SOL_H3_STATIC_SHAPES): any value but what it does, set or the default, exits 4 (the
@@ -248,8 +288,23 @@ for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_m
         fi
         log "memory check OK: ${have} GiB available (need ${MIN_FREE_GIB})"
     fi
+    if (( MIN_FREE_VRAM_GIB > 0 )); then     # RTX 5090 only: the desktop and other apps share its 32 GB
+        command -v nvidia-smi >/dev/null ||
+            refuse "nvidia-smi not found, so the free GPU memory is unknown (set SOLH3_MIN_FREE_VRAM_GIB=0 to start anyway)"
+        vram=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+        [[ "$vram" =~ ^[0-9]+$ ]] ||
+            refuse "cannot read the free GPU memory from nvidia-smi (got '${vram}'; set SOLH3_MIN_FREE_VRAM_GIB=0 to start anyway)"
+        vram=$((vram / 1024))
+        if (( vram < MIN_FREE_VRAM_GIB )); then
+            say "REFUSED - Sol-H3 Studio needs ~${MIN_FREE_VRAM_GIB} GiB free GPU memory, only ${vram} GiB free. Biggest users:"
+            memory_users | while IFS= read -r l; do echo "$l" 2>/dev/null; echo "$l" >>"$LAUNCH_LOG"; done
+            say "close those apps (or set SOLH3_MIN_FREE_VRAM_GIB=0 to start anyway), then try again"
+            exit 1
+        fi
+        log "GPU memory check OK: ${vram} GiB free (need ${MIN_FREE_VRAM_GIB})"
+    fi
     free=$(mem_gib MemFree)
-    if (( free < 20 )); then
+    if [[ "$SOLH3_BACKEND" == spark ]] && (( free < 20 )); then     # the Spark's GPU allocates from the same RAM
         log "note: MemFree is ${free} GiB (the rest is page cache). If CUDA reports out of memory while the models load,"
         log "      drop the page cache first: sync; echo 1 | sudo tee /proc/sys/vm/drop_caches (docs/TROUBLESHOOTING.md)"
     fi

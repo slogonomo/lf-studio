@@ -267,15 +267,15 @@ sound), `<Video 1>` and `<Audio 2>` (the WAV). The prompt must then use those nu
 """
 
 INSTRUCTIONS = (
-    "Sol-H3 Studio makes short video clips with sound on a DGX Spark: 3-15 s, 1344x768 (landscape) or 768x1344 "
-    "(portrait), 24 fps. One clip renders at a time: about 40 s for a 3 s clip to 3:15 for a 15 s clip once the models "
-    "are loaded, plus about 1-2 min when they must load first (a different task than the last clip; a new format or "
-    "length of the same task keeps them loaded and adds up to about 30 s the first time), plus any queue. Call "
-    "prompt_guide once and write the prompt in H3's structured format: nothing rewrites it. Then call generate: it "
-    "uploads your files (paths on this machine or http(s) URLs), waits up to wait_s seconds and, when the clip is "
-    "done, saves the MP4 here and returns its absolute path, its studio URL and a poster frame. If it answers that the "
-    "clip is still running, call wait with the id. Cancelling a tool call does not cancel the clip; use cancel for "
-    "that.")
+    "Sol-H3 Studio makes short video clips with sound on one DGX Spark or RTX 5090: 3-15 s, 1344x768 (landscape) or "
+    "768x1344 (portrait), 24 fps. One clip renders at a time: on a DGX Spark about 40 s for a 3 s clip to 3:15 for a "
+    "15 s clip once the models are loaded, plus about 1-2 min when they must load first (a different task than the "
+    "last clip; a new format or length of the same task keeps them loaded and adds up to about 30 s the first time), "
+    "plus any queue. Call prompt_guide once and write the prompt in H3's structured format: nothing rewrites it. Then "
+    "call generate: it uploads your files (paths on this machine or http(s) URLs), waits up to wait_s seconds and, "
+    "when the clip is done, saves the MP4 here and returns its absolute path, its studio URL and a poster frame. "
+    "If it answers that the clip is still running, call wait with the id. Cancelling a tool call does not cancel the "
+    "clip; use cancel for that.")
 
 
 # ---- small things ------------------------------------------------------------------------------------------------
@@ -518,7 +518,8 @@ class Studio:
 
 
 def asleep(sb):
-    """Whether switchboard has the studio stopped, so that a request for it would start it (about 110 GiB)."""
+    """Whether switchboard has the studio stopped, so that a request for it would start it (most of the machine's
+    memory)."""
     if not sb:
         return False
     return sb.get("state") in ("stopped", "stopping", "failed") or bool(sb.get("paused")) and sb.get("state") != "ready"
@@ -1052,7 +1053,8 @@ def fetch_clip(studio, jid, saver, wake, wake_hold):
     if not asleep(sb):
         return wait_for_clip(studio, jid, time.time(), saver)
     if not wake:
-        raise Fail(f"{asleep_text(sb)}; fetching would start it (it needs about 110 GiB). Add --wake.", 3, jid=jid)
+        raise Fail(f"{asleep_text(sb)}; fetching would start it (it needs most of the machine's memory). Add --wake.",
+                   3, jid=jid)
     resp, conn = studio.open("GET", f"/video/{jid}", None, {"X-Switchboard-Wait": str(int(wake_hold))},
                              timeout=wake_hold + 60)
     if resp.status == 200:
@@ -1375,8 +1377,8 @@ TOOLS = [
      "annotations": {"destructiveHint": True}},
     {"name": "fetch", "title": "Save a clip",
      "description": ("Save an existing clip's MP4 (any clip, also ones made in the web page). If the studio is "
-                     "stopped, this refuses unless wake is true, because waking it takes the Spark's memory from "
-                     "other apps."),
+                     "stopped, this refuses unless wake is true, because waking it takes most of the "
+                     "machine's memory from other apps."),
      "inputSchema": {"type": "object", "required": ["id"], "additionalProperties": False, "properties": {
          "id": STR, "out": OUT, "poster": POSTER,
          "wake": {"type": "boolean", "default": False, "description": "Start the studio if it is stopped"}}}},
@@ -1727,8 +1729,8 @@ class McpServer:
             if error.by_switchboard:
                 return text_result(f'{prefix}spark-switchboard stopped the studio while waiting for clip {jid}; the '
                                    f'clip most likely finished first. Call fetch with id "{jid}" and wake: true to '
-                                   "get it (that starts the studio, which takes about 110 GiB of the Spark's memory "
-                                   "from other apps).", error=True)
+                                   "get it (that starts the studio, which takes most of the machine's memory from "
+                                   "other apps).", error=True)
             return text_result(prefix + error.message[0].upper() + error.message[1:] + ".", error.job, error=True)
         except Fail as error:
             if not prefix:
@@ -1854,7 +1856,7 @@ class McpServer:
         if asleep(sb):
             return text_result(f'{asleep_text(sb)[0].upper()}{asleep_text(sb)[1:]}, so clip {jid} is not running any '
                                f'more: it most likely finished before. Call fetch with id "{jid}" and wake: true to '
-                               "get it (that starts the studio, which takes about 110 GiB of the Spark's memory from "
+                               "get it (that starts the studio, which takes most of the machine's memory from "
                                "other apps).", error=True)
         return self.wait_outcome(jid, t0 + self.budget(args.get("wait_s")), saver, call)
 
@@ -2001,7 +2003,7 @@ def parser():
     f.add_argument("--out", metavar="PATH", help="the MP4 file, or a directory for it (default: here)")
     f.add_argument("--poster", action="store_true", help="also save the poster frame as <out stem>.jpg")
     f.add_argument("--wake", action="store_true",
-                   help="start the studio if spark-switchboard has stopped it (it needs about 110 GiB)")
+                   help="start the studio if spark-switchboard has stopped it (it needs most of the machine's memory)")
     sub.add_parser("guide", parents=[common], help="print the prompt guide for H3")
     sub.add_parser("mcp", parents=[common], help="run the MCP server on stdin/stdout")
     return ap

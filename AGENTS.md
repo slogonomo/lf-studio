@@ -14,6 +14,10 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
 - `bin/sol-h3-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/sol-h3-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
+- The RTX 5090 backend (`SOLH3_BACKEND=rtx5090`, [docs/RTX5090.md](docs/RTX5090.md)):
+  `patches/sol-h3-studio-rtx5090.patch` against `patches/BASE_COMMIT_RTX5090` for NVIDIA's Sol-H3-RTX5090 package,
+  `install/05-python.sh` (uv and its Pythons), and per-backend branches in the launcher, `install/env.sh` and the
+  install scripts. Without the setting everything is the DGX Spark's, as before; keep it so.
 
 ## Tests
 
@@ -42,12 +46,23 @@ gives each run its own runtime root, state directory and port under a temp direc
 non-zero exit status) if the port is in use or its server stops by itself, so nothing goes to another studio on that
 port. Add a test there for every server change.
 
+`tests/test_backend.py` covers `SOLH3_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
+(the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
+`Sol-H3-RTX5090` with a stand-in `runtime/offload.py`; no Docker; the RAM floor; the GPU memory floor driven by a fake
+`nvidia-smi` on PATH) and with a wrong or mismatched value; the server's `backend` in `/api/state` and its page; the
+page's per-backend texts without a browser (its `MACHINES` table, and its `applyMachine` in node when node is
+installed); and every install script's `--dry-run` under both backends, with fake `uname`, `nvidia-smi`, `gcc`,
+`docker` and `sg` on PATH and everything in a temp directory; on the RTX 5090 also the caches under `$SOLH3_HOME`,
+the GCC 14 toolchain kept on `FORCE=1`, the adoption of a venv whose fake `pip freeze` is the reference freeze, and
+the dated prompt-cache backup. Add a test there for every backend change.
+
 `tests/test_replay.py` covers the Stage-2 replay bench (`bench/replay.sh`, `bench/replay/`) on the CPU: the draft
 store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch, a `run` with a stand-in Stage-2
 process, stopping it under `bench/memguard-run.sh`, the report, the quality step and the SyncNet table. It takes
 `runtime/geometry.py` from the patch itself.
 
 The patch has its own 133 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
+The RTX 5090 patch has 143 (`install/10-sana.sh` with `SOLH3_BACKEND=rtx5090` runs them).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A
 second studio next to an installed one needs its own env file (`SOLH3_ENV=<file> bin/sol-h3-studio`) with its own
