@@ -606,10 +606,10 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
-index f3f15bb..e1f3a17 100644
+index f3f15bb..844aa10 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
-@@ -20,6 +20,29 @@ def mutation_scope(module):
+@@ -20,6 +20,44 @@ def mutation_scope(module):
      return state.mutate() if state is not None else nullcontext()
  
  
@@ -636,22 +636,47 @@ index f3f15bb..e1f3a17 100644
 +    return out
 +
 +
++def _will_need(torch, module):
++    """sol-h3-studio: ask the kernel to start reading a CPU module's tensors (checkpoint mmap or scratch pages) in the
++    background, so the next block's copy to the GPU does not fault its pages in one by one. Values are untouched."""
++    import ctypes
++    import mmap
++    libc = ctypes.CDLL(None, use_errno=True)
++    page = mmap.PAGESIZE
++    for tensor in [*module.parameters(), *module.buffers()]:
++        if tensor is None or tensor.device.type != "cpu" or tensor.numel() == 0:
++            continue
++        start = tensor.data_ptr() // page * page
++        end = tensor.data_ptr() + tensor.untyped_storage().nbytes()
++        libc.madvise(ctypes.c_void_p(start), ctypes.c_size_t(end - start), 3)   # MADV_WILLNEED
++
++
  def install_stage1_loader():
      """Use native CPU loading and LoRA scopes, including FP8 nonpersistent buffers.
  
-@@ -44,6 +67,11 @@ def install_stage1_loader():
+@@ -44,6 +82,12 @@ def install_stage1_loader():
          return original_load(*args, **kwargs)
  
      component_loader.maybe_load_fsdp_model = cpu_load
 +    import os
 +    from .config import stage1_scratch_dir
 +    FILEBACKED_DIR = stage1_scratch_dir()
++    READ_AHEAD = os.environ.get("SOL_H3_STAGE1_READ_AHEAD", "1") != "0"
 +    if FILEBACKED_DIR:
 +        os.makedirs(FILEBACKED_DIR, exist_ok=True)
  
      class State:
          def __init__(self, module, stats):
-@@ -70,7 +98,22 @@ def install_stage1_loader():
+@@ -61,6 +105,8 @@ def install_stage1_loader():
+             if any(t.device.type != "cpu" for group in self.saved for t in group.values()):
+                 raise RuntimeError("An idle offloaded block retained GPU weights")
+             self.module.to("cuda:0")
++            if READ_AHEAD and "pinned_block_bytes" not in self.stats and getattr(self, "next", None) is not None:
++                _will_need(torch, self.next.module)
+             self.stats["block_loads"] += 1
+             self.stats["active_blocks"] += 1
+             self.stats["max_active_blocks"] = max(self.stats["max_active_blocks"], self.stats["active_blocks"])
+@@ -70,7 +116,22 @@ def install_stage1_loader():
              if self.saved is None:
                  return
              torch.cuda.synchronize()
@@ -675,7 +700,16 @@ index f3f15bb..e1f3a17 100644
                  # LoRA merge, exact lookup replacement and FP8 conversion may
                  # change tensor names, shapes and dtypes. Capture the new state.
                  self.module.to("cpu")
-@@ -141,6 +184,50 @@ def install_stage1_loader():
+@@ -116,6 +177,8 @@ def install_stage1_loader():
+             self.states, self.handles = [], []
+             for block in blocks:
+                 state = State(block, self.stats)
++                if self.states:
++                    self.states[-1].next = state
+                 block._sol_h3_offload_state = state
+                 self.states.append(state)
+                 ModuleHookManager.get_from_or_default(block).append_forward_hook(Hook(state))
+@@ -141,6 +204,50 @@ def install_stage1_loader():
                      lambda module, args, output, state=state: state.release(), always_call=True))
              self.stats["fp8_buffer_count"] = sum(
                  name.endswith("_fp8_weight") for state in self.states for name, _ in state.module.named_buffers())
@@ -727,7 +761,7 @@ index f3f15bb..e1f3a17 100644
          def release_all(self):
              for state in self.states:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
-index fa18e02..d5438b1 100644
+index fa18e02..eac3c91 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 @@ -6,9 +6,16 @@ from pathlib import Path
@@ -774,7 +808,7 @@ index fa18e02..d5438b1 100644
  def worker_environment(name, paths):
      env = os.environ.copy()
      env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
-@@ -47,6 +72,27 @@ def worker_environment(name, paths):
+@@ -47,6 +72,28 @@ def worker_environment(name, paths):
          env.pop("LD_LIBRARY_PATH", None)
      elif name == "stage2":
          env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -796,13 +830,14 @@ index fa18e02..d5438b1 100644
 +    # sol-h3-studio (RTX 5090): the driver's JIT cache defaults to 1 GiB, which Stage 1, Stage 2 and Qwen together
 +    # overflow, so each session compiled Qwen's PTX-only kernels again (~9 s of the first clip after loading).
 +    env.setdefault("CUDA_CACHE_MAXSIZE", str(4 << 30))
-+    if name == "stage2":
-+        # one Inductor compile worker per CPU thread costs several GiB of RAM during the first (autotuning) session
++    if name in ("stage1", "stage2"):
++        # one Inductor compile worker per CPU thread costs several GiB of RAM whenever a new shape compiles (the first
++        # session, and a reshape to a shape not compiled yet); on 64 GB that ran out of RAM
 +        env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "4")
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -79,7 +125,7 @@ class Worker:
+@@ -79,7 +126,7 @@ class Worker:
              raise
  
      def submit(self, op="run", **kwargs):
@@ -811,7 +846,7 @@ index fa18e02..d5438b1 100644
              raise ValueError("Unsupported session operation")
          self.sequence += 1
          response = self.root / f"response-{self.sequence:05d}.json"
-@@ -117,26 +163,47 @@ class Worker:
+@@ -117,26 +164,47 @@ class Worker:
  class Pipeline:
      """Reuse three isolated runtime environments and the same models for a batch.
  
@@ -866,7 +901,7 @@ index fa18e02..d5438b1 100644
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -146,63 +213,375 @@ class Pipeline:
+@@ -146,63 +214,375 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -1274,7 +1309,7 @@ index fa18e02..d5438b1 100644
                  self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -218,6 +597,9 @@ class Pipeline:
+@@ -218,6 +598,9 @@ class Pipeline:
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
              if self.qwen is not None:
                  self.qwen.call("release_idle_cache")
@@ -1284,7 +1319,7 @@ index fa18e02..d5438b1 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -234,13 +616,17 @@ class Pipeline:
+@@ -234,13 +617,17 @@ class Pipeline:
          self.save()
  
      def close(self):
