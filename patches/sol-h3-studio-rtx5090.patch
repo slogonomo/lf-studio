@@ -3598,7 +3598,7 @@ index 9264fee..31b3db2 100644
 +        raise RuntimeError(f"writer chunk16 consumed {receipt['frames']} frames, expected {expected_frames}")
      receipt["complete"] = True
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
-index b90a591..ef523b9 100644
+index b90a591..5f4f63c 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
 @@ -12,6 +12,9 @@ import sys
@@ -3611,7 +3611,28 @@ index b90a591..ef523b9 100644
  
  def write_json(path, value):
      path = Path(path)
-@@ -38,7 +41,7 @@ def main():
+@@ -21,6 +24,20 @@ def write_json(path, value):
+     temporary.replace(path)
+ 
+ 
++def release_freed_memory():
++    """sol-h3-studio: give memory that glibc keeps after big transient CPU buffers (decoded frames, latents, compile
++    work) back to the system after every operation. Without it the idle footprint of the three workers grew by about
++    1 GB per clip on an RTX 5090 workstation with 64 GB. SOL_H3_MALLOC_TRIM=0 turns it off."""
++    import ctypes
++    import os
++    if os.environ.get("SOL_H3_MALLOC_TRIM", "1") == "0":
++        return
++    try:
++        ctypes.CDLL("libc.so.6").malloc_trim(0)
++    except (OSError, AttributeError):
++        pass
++
++
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--module", choices=("stage1", "stage2", "qwen"), required=True)
+@@ -38,11 +55,12 @@ def main():
              command = json.loads(line)
              if command["op"] == "close":
                  break
@@ -3620,6 +3641,11 @@ index b90a591..ef523b9 100644
                  raise ValueError("unsupported session operation")
              try:
                  result = getattr(session, command["op"])(**command["kwargs"])
+                 write_json(command["response"], {"status": "PASS", "result": result})
++                release_freed_memory()
+             except Exception as error:
+                 write_json(command["response"], {
+                     "status": "FAIL", "error": f"{type(error).__name__}: {error}"})
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_geometry.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_geometry.py
 new file mode 100644
 index 0000000..b65dac7
