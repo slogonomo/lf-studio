@@ -189,14 +189,15 @@ run_checks() {
     [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio.patch"
     # the patch's own settings checks: (name, check, default, what a patch without the setting does, the version
     # that added it). A bad value exits 3 with the message. An older patch lacks some of them (0.3's has no
-    # SOL_H3_PROMPT_TOKENS or SOL_H3_STATIC_SHAPES): any value but what it does, set or the default, exits 4 (the
-    # checkout needs the current patch). Any other error exits non-zero with Python's traceback, whose last line
-    # names it
+    # SOL_H3_PROMPT_TOKENS, SOL_H3_STATIC_SHAPES or SOL_H3_DYNAMIC_TEXT_LENGTH): any value but what it does, set or the
+    # default, exits 4 (the checkout needs the current patch). Any other error exits non-zero with Python's
+    # traceback, whose last line names it
     f=$(cd "$PKG" && "$SOLH3_PYTHON" -B -c 'import os, sys
 import runtime.config as config
 for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
                                          ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4"),
-                                         ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4")):
+                                         ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4"),
+                                         ("SOL_H3_DYNAMIC_TEXT_LENGTH", "dynamic_text_length", "1", "0", "0.4")):
     check, value = getattr(config, name, None), os.environ.get(var, "")
     if check is None and (value.strip().lower() or default) != older:
         asked = f"{var}={value}" if value.strip() else f"{var}={default} (the default since {since})"

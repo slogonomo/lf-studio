@@ -47,7 +47,7 @@ store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch,
 process, stopping it under `bench/memguard-run.sh`, the report, the quality step and the SyncNet table. It takes
 `runtime/geometry.py` from the patch itself.
 
-The patch has its own 133 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
+The patch has its own 135 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A
 second studio next to an installed one needs its own env file (`SOLH3_ENV=<file> bin/sol-h3-studio`) with its own

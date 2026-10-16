@@ -20,9 +20,9 @@ NVIDIA Sync, use switchboard's `delegate.sh` then, see [nvidia-sync.md](nvidia-s
 `SOLH3_PORT`.
 
 **`REFUSED - SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...`**
-(or the same for `SOL_H3_STAGE2_AUDIO` or `SOL_H3_STATIC_SHAPES`). The repo was updated, but the Sana checkout still
-carries the patch of an older release, which would ignore that setting. Run `install/10-sana.sh`, then start again
-([updating](INSTALL.md#updating)).
+(or the same for `SOL_H3_STAGE2_AUDIO`, `SOL_H3_STATIC_SHAPES` or `SOL_H3_DYNAMIC_TEXT_LENGTH`). The repo was
+updated, but the Sana checkout still carries the patch of an older release, which would ignore that setting. Run
+`install/10-sana.sh`, then start again ([updating](INSTALL.md#updating)).
 
 **`cannot talk to docker as <user>`, or `permission denied while trying to connect to the Docker daemon socket`.**
 Add yourself to the group (`sudo usermod -aG docker $USER`) and log in again. A login session started before
@@ -87,13 +87,14 @@ launcher's memory guard stopped the app before GB10's unified memory ran out, wh
 another app grew next to it. `launcher.log` lists the memory users at that moment. `SOLH3_GUARD_GIB` changes the
 floor; 0 turns the guard off (not recommended).
 
-**The first clip with a new prompt takes 9-10 s longer than the next one.** Stage 1 is compiled for static
-shapes, and each new prompt length (in text tokens) compiles new graphs once (measured before 0.4; about 1-2 s more
-with 0.4's static compiles, inferred). Reusing a prompt, or editing it without changing its token count, avoids it.
-`SOL_H3_DYNAMIC_TEXT_LENGTH=1` (experimental) avoids most of it: the body blocks then compile per session, not per
-length ([PATCH.md](PATCH.md#17-prompt-lengths-without-recompiles-experimental)). Before the patch the 4th distinct
-length in a session crashed the worker ("Forward execution thread failed", Dynamo recompile limit); the patch raises
-the limit.
+**The first clip with a new prompt takes longer than the next one.** Stage 1 is compiled for static shapes, and a new
+prompt length (in text tokens) compiles new graphs once. Since 0.4 (`SOL_H3_DYNAMIC_TEXT_LENGTH=1`, the default) that is
+only the two text-refiner regions: in the staging check of 0.4, two new lengths in t2va 5 s took 1.9 s and 0.5 s longer
+in Stage 1; the body blocks compile per session, not per length
+([PATCH.md](PATCH.md#17-prompt-lengths-without-recompiles)). With `SOL_H3_DYNAMIC_TEXT_LENGTH=0` they compile per length
+again: 9-10 s (measured before 0.4; about 1-2 s more with 0.4's static compiles, inferred). Reusing a prompt, or editing
+it without changing its token count, avoids it. Before the patch the 4th distinct length in a session crashed the worker
+("Forward execution thread failed", Dynamo recompile limit); the patch raises the limit.
 
 **The first run of a mode, format or length is much slower.** Its kernels are compiled once into
 `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` (measured first runs: t2va 9:16 5 s 111 s, t2va 16:9 10 s 264 s,
@@ -128,9 +129,9 @@ cancelled clip ends the block at once.
 
 **Switching mode takes minutes.** Each mode is one loaded session. Another mode closes it and loads the models again;
 the Generate button says so before you click. Another format or length in the same mode keeps the models loaded: the
-session changes its shape, and the first clip at a shape it has not run yet compiles for it (measured 0-27 s more
-than a warm clip, against 43-54 s for a reload in the same run). With `SOLH3_RESHAPE=0` any change of mode, format or
-length reloads, as before 0.4.
+session changes its shape, and the first clip at a shape it has not run yet compiles for it (measured 0-10 s more than a
+warm clip in the staging check of 0.4; 0-27 s in an earlier run with `SOL_H3_DYNAMIC_TEXT_LENGTH` off, against 43-54 s
+for a reload in the same run). With `SOLH3_RESHAPE=0` any change of mode, format or length reloads, as before 0.4.
 
 **Clips in the gallery after pruning old session directories.** Each clip lives in its session directory under
 `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/`. If you prune those, clips that also have a copy in
