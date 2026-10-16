@@ -120,19 +120,42 @@ with sync_playwright() as p:
         check(vis == {"#fl": t == "fl2va", "#ref": t == "ref2va"}, f"only the {t} inputs are shown {vis}")
     check(pg.input_value("#prompt") == "my own prompt", "prompt untouched by mode changes")
     key = pg.evaluate("state.session.key")
-    print("session key:", key)
+    reshape = pg.evaluate("!!state.reshape")    # SOLH3_RESHAPE=1 (default since 0.4): same mode, no reload
+    print("session key:", key, "| reshape:", reshape)
     if key:
         pick(pg, "task", key[0]); pick(pg, "orientation", key[1]); pick(pg, "seconds", str(key[2] or 5))
         go = pg.text_content("#go")
         check("load" not in go.lower() and not pg.is_visible("#reloadnote"),
               "no reload warning when everything matches what's loaded")
-        pick(pg, "orientation", "portrait" if key[1] == "landscape" else "landscape")
+        other_orientation = "portrait" if key[1] == "landscape" else "landscape"
+        other_seconds = "10" if (key[2] or 5) != 10 else "5"
+        if reshape:
+            # another format or length keeps the models loaded: no reload warning and no 'Load selected now'
+            for name, value, what in (("orientation", other_orientation, "format"),
+                                      ("seconds", other_seconds, "length")):
+                pick(pg, name, value)
+                go = pg.text_content("#go")
+                check("same models" in go and "load" not in go.lower() and not pg.is_visible("#reloadnote")
+                      and not pg.is_visible("#loadnow"), f"Generate keeps the models when the {what} differs")
+                pick(pg, name, key[1] if name == "orientation" else str(key[2] or 5))
+            # another mode reloads them
+            other_task = next((t for t in pg.evaluate("state.warmable || []") if t != key[0]),
+                              next(t for t in ("t2va", "fl2va", "ref2va") if t != key[0]))
+            pick(pg, "task", other_task)
+            what = "the mode"
+        else:
+            pick(pg, "orientation", other_orientation)
+            other_task, what = key[0], "the format"
         go = pg.text_content("#go")
         check("reloads" in go.lower() and pg.is_visible("#reloadnote") and pg.text_content("#reloadtext"),
-              "Generate warns about a reload when the format differs")
+              f"Generate warns about a reload when {what} differs")
         busy = pg.evaluate("state.jobs.some(active)")
-        check(pg.is_visible("#loadnow") != busy, "'Load selected now' offered only while nothing is queued or running")
-        pick(pg, "orientation", key[1])
+        offered = not busy and pg.evaluate(
+            f"(state.warmable || []).includes('{other_task}') && "
+            f"(!Array.isArray(state.tasks_ready) || state.tasks_ready.includes('{other_task}'))")
+        check(pg.is_visible("#loadnow") == offered,
+              "'Load selected now' offered only while nothing is queued or running, for a mode it can warm up")
+        pick(pg, "task", key[0]); pick(pg, "orientation", key[1])
     else:
         skip("reload-warning checks (no session loaded)")
     pg.reload()

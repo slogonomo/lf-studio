@@ -17,6 +17,10 @@ with a tone, with the requested format and length.
   that no started pipeline was left open. Like the real pipeline, a request makes its directory when it begins.
   A prompt containing STUB_FAIL makes the request fail as if a worker died; STUB_FAIL_ONCE does that only the first
   time a clip runs (a .failed-once file next to the session directories remembers it), so the server's retry runs.
+  reshape() (another length or orientation, models kept) is a `sleep` of STUB_RESHAPE_S (default 0.2) and appends a
+  line to RESHAPES in the root; STUB_RESHAPE_FAIL=1 makes it fail like a dead worker. Like the real pipeline, close()
+  first marks the pipeline as closing, reshape() and generate() refuse a closing one, and a reshape that a close
+  overlaps fails.
 """
 import json
 import os
@@ -31,11 +35,12 @@ SIZE = {"landscape": (336, 192), "portrait": (192, 336)}
 class Pipeline:
     def __init__(self, paths, output_root, *, task="t2va", orientation=None, seconds=None, **_):
         self.task = task
-        self.size = SIZE[orientation or "landscape"]
+        self.orientation = orientation or "landscape"
+        self.size = SIZE[self.orientation]
         self.seconds = seconds or 5
         self.root = Path(output_root).resolve()
         self.root.mkdir(parents=True, exist_ok=False)
-        self.started = self.broken = False
+        self.started = self.broken = self.closing = False
         (self.root / "results.json").write_text(json.dumps({"status": "STARTING", "task": task}))
 
     def _work(self, seconds, check=True):
@@ -103,13 +108,36 @@ class Pipeline:
     def generate(self, case):
         if not self.started:
             raise RuntimeError("start() first")
+        if self.closing:
+            raise RuntimeError("The pipeline is closing")
         started = time.time()
         request = self.root / case["case_id"]
         request.mkdir()
         self._work(float(os.environ.get("STUB_CLIP_S", "2")))
         return self._row(case, request, started)
 
+    def reshape(self, *, orientation=None, seconds=None):
+        if self.closing:
+            raise RuntimeError("The pipeline is closing")
+        before = {"orientation": self.orientation, "seconds": self.seconds}
+        after = {"orientation": orientation or "landscape", "seconds": seconds or 5}
+        if after == before:
+            return {"from": before, "to": after, "changed": False, "reshape_s": 0.0}
+        if os.environ.get("STUB_RESHAPE_FAIL") == "1":
+            self.broken = True
+            raise RuntimeError("Worker exited with code 1 (STUB_RESHAPE_FAIL)")
+        started = time.time()
+        self._work(float(os.environ.get("STUB_RESHAPE_S", "0.2")))
+        if self.closing:                       # close() began meanwhile (Unload): no change on a closing pipeline
+            raise RuntimeError("The pipeline is closing")
+        self.orientation, self.seconds = after["orientation"], after["seconds"]
+        self.size = SIZE[self.orientation]
+        with (self.root / "RESHAPES").open("a") as log:
+            log.write(json.dumps({"from": before, "to": after}) + "\n")
+        return {"from": before, "to": after, "changed": True, "reshape_s": time.time() - started}
+
     def close(self):
+        self.closing = True
         time.sleep(float(os.environ.get("STUB_CLOSE_S", "0")))
         self.started = False
         (self.root / "CLOSED").touch()
