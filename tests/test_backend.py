@@ -178,7 +178,7 @@ class LauncherRtx5090(LauncherTest):
         code, out = self.check(SOLH3_BACKEND="rtx5090", SOLH3_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="30000")
         self.assertEqual(code, 0, out)
         self.assertIn(f"checking (package {self.package}, port", out)
-        self.assertIn("GPU memory check OK: 29 GiB free (need 27)", out)
+        self.assertIn("GPU memory check OK: 29 GiB free (need 26)", out)
         self.assertNotIn("docker", out.lower())
 
     def test_ram_floor(self):
@@ -197,7 +197,7 @@ class LauncherRtx5090(LauncherTest):
     def test_vram_floor(self):
         code, out = self.check(SOLH3_BACKEND="rtx5090", SOLH3_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="10000")
         self.assertEqual(code, 1, out)
-        self.assertIn("REFUSED - Sol-H3 Studio needs ~27 GiB free GPU memory, only 9 GiB free", out)
+        self.assertIn("REFUSED - Sol-H3 Studio needs ~26 GiB free GPU memory, only 9 GiB free", out)
         self.assertIn("SOLH3_MIN_FREE_VRAM_GIB=0", out)
         code, out = self.check(SOLH3_BACKEND="rtx5090", SOLH3_MIN_FREE_GIB="0", SOLH3_MIN_FREE_VRAM_GIB="8",
                                FAKE_VRAM_FREE_MIB="10000")
