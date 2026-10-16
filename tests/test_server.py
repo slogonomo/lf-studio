@@ -1117,11 +1117,11 @@ class BadDynamicTextLength(unittest.TestCase):
     def test_refused_at_start(self):
         d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
         try:
-            for i, value in enumerate(("on", "2")):
+            for i, value in enumerate(("on", "2", "true")):
                 with self.assertRaises(RuntimeError) as e:
                     StubStudio(d / f"a{i}", env={"SOL_H3_DYNAMIC_TEXT_LENGTH": value}).start()
                 self.assertIn(f"SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not {value!r}", str(e.exception))
-            for i, value in enumerate(("0", " ")):                         # the opt-out, and empty (the default)
+            for i, value in enumerate(("0", " ", "1")):                    # the opt-out, empty (the default), set
                 studio = StubStudio(d / f"b{i}", env={"SOL_H3_DYNAMIC_TEXT_LENGTH": value}).start()
                 studio.stop()
         finally:
@@ -1241,10 +1241,12 @@ class LauncherSettingsCheck(unittest.TestCase):
         code, out = self.check(SOL_H3_STATIC_SHAPES="yes")
         self.assertEqual(code, 1, out)
         self.assertIn("REFUSED - SOL_H3_STATIC_SHAPES must be 1 or 0", out)
-        self.assertEqual(self.check(SOL_H3_DYNAMIC_TEXT_LENGTH="0")[0], 0)
-        code, out = self.check(SOL_H3_DYNAMIC_TEXT_LENGTH="on")
-        self.assertEqual(code, 1, out)
-        self.assertIn("REFUSED - SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not 'on'", out)
+        for value in ("0", "1"):
+            self.assertEqual(self.check(SOL_H3_DYNAMIC_TEXT_LENGTH=value)[0], 0, value)
+        for value in ("on", "true"):
+            code, out = self.check(SOL_H3_DYNAMIC_TEXT_LENGTH=value)
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not {value!r}", out)
 
     def test_older_patch(self):
         """A checkout with an older patch (no settings checks, or one of them) passes only when every setting, set or

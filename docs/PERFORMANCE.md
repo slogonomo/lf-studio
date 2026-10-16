@@ -135,14 +135,14 @@ comparable side by side.
 
 ## Reliability: prompt-length recompiles
 
-Stage 1's transformer is compiled with static shapes, so each new prompt length (in text tokens) compiled new
-graphs. FastVideo caps recompiles at 16; the 4th distinct prompt length in a session hit the limit, killed the
-worker and forced a full reload. The limit is raised (1,024; 65,536 accumulated). Tested: 7 distinct prompt
-lengths in one session, no failure. Since 0.4 `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (the default) stops the per-length
-graphs of the body blocks; only the two text-refiner regions still compile once per new length. A session can also
-change its clip length and format, and every graph is static. With `SOL_H3_DYNAMIC_TEXT_LENGTH=0` each pair of prompt
-length and clip shape then compiles its own graphs, 4-5 per region (inferred), and the limit covers about 200-250
-such pairs in one session (inferred); past it the worker fails and the clip reloads the models.
+Stage 1's transformer compiled new graphs for each new prompt length (in text tokens). FastVideo caps recompiles at 16;
+the 4th distinct prompt length in a session hit the limit, killed the worker and forced a full reload. The limit is
+raised (1,024; 65,536 accumulated). Tested: 7 distinct prompt lengths in one session, no failure. Since 0.4
+`SOL_H3_DYNAMIC_TEXT_LENGTH=1` (the default) stops the per-length graphs of the body blocks; only the two text-refiner
+regions still compile once per new length. A session can also change its clip length and format, and every graph is
+static, apart from the dimensions that setting marks dynamic. With `SOL_H3_DYNAMIC_TEXT_LENGTH=0` each pair of prompt
+length and clip shape then compiles its own graphs, 4-5 per region (inferred), and the limit covers about 200-250 such
+pairs in one session (inferred); past it the worker fails and the clip reloads the models.
 
 ## Changing length or format
 
@@ -160,35 +160,38 @@ change of mode. Measured cost of such a switch: the first clip after it, minus a
 | **Total extra** | **~81** | **~62** | **~65** | **~63** |
 
 Now the session keeps its models for another length or format of the same mode and changes its shape in place
-([PATCH.md](PATCH.md#18-reshape-another-length-or-orientation-without-a-reload)). The first two rows and the weights
-go away; the first clip at a shape the session has not run compiles its graphs (from the compile cache when that
-shape ran before). Measured in one run (t2va and fl2va, one prompt; first clip after the change minus a warm clip of
-that shape): 5 → 10 s 14.4 s, 5 → 15 s 27.0 s (both compiled Stage 1 for this prompt length from scratch), 15 → 5 s
-(a shape the session had run) none, fl2va 16:9 → 9:16 0.2 s. Reloads in the same run cost 37.5-47.1 s over a warm
-clip, plus 4-9 s to close the previous session. Above 10 s the prompt encoder still loads per request; after a change
-back to 10 s or less the resident encoder loads again in the background if MemAvailable is at least the minimum of
-its early load (32 GiB up to 5 s, 34 GiB above; [PATCH.md](PATCH.md) item 4), else after the next clip, so the first
-clip after such a change may wait for it. A change of mode still reloads.
+([PATCH.md](PATCH.md#18-reshape-another-length-or-orientation-without-a-reload)). The first two rows and the weights go
+away; the first clip at a shape the session has not run compiles its graphs (from the compile cache when that shape ran
+before): Stage 2's, and with `SOL_H3_DYNAMIC_TEXT_LENGTH=0` Stage 1's body blocks too. Measured in one run before 0.4's
+defaults (`SOL_H3_DYNAMIC_TEXT_LENGTH` off; t2va and fl2va, one prompt; first clip after the change minus a warm clip of
+that shape): 5 → 10 s 14.4 s, 5 → 15 s 27.0 s (both compiled Stage 1 for this prompt length from scratch), 15 → 5 s (a
+shape the session had run) none, fl2va 16:9 → 9:16 0.2 s. Reloads in the same run cost 37.5-47.1 s over a warm clip,
+plus 4-9 s to close the previous session. In the staging check of 0.4 (t2va, the defaults, a warm compile cache, one
+run): 5 → 10 s 7.1 s and 10 → 15 s 10.1 s, of which Stage 1 1.8 s and 2.7 s, with no Stage-1 compile; 10 → 5 s (a shape
+the session had run) none. Above 10 s the prompt encoder still loads per request; after a change back to 10 s or less
+the resident encoder loads again in the background if MemAvailable is at least the minimum of its early load (32 GiB up
+to 5 s, 34 GiB above; [PATCH.md](PATCH.md) item 4), else after the next clip, so the first clip after such a change may
+wait for it. A change of mode still reloads.
 `SOLH3_RESHAPE=0` reloads for any change.
 
 ## Known costs, not fixed
 
-- A new prompt length on a warm session added 9-10 s before 0.4 (Stage 1 17.6 → 26.2 s): the body blocks' graphs
-  were tied to the length through FastVideo's H3 sparse-attention metadata and tiling (`total_seq_length`, the tile
-  counts) and to the denoise step. Since 0.4 `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (the default;
-  [PATCH.md, 17](PATCH.md#17-prompt-lengths-without-recompiles)) compiles them per session (2 graphs: the first
-  denoise step and the rest), not per length. What is left is the two text-refiner regions, which compile once per
-  new length with static compiles (0.4, `SOL_H3_STATIC_SHAPES=1`). In the staging check of 0.4 (a separate test
-  studio on the same DGX Spark, 2026-10-14, 19 clips in 5 sessions, both settings on) a new prompt length cost 1.9 s
-  in Stage 1 over the same prompt repeated later when its text-refiner graph was new to the compile cache, and 0.5 s
-  when it was not (t2va 5 s); no body block compiled for it. Every pair of clips that should match was bit-identical,
-  and so were 5 clips against renders made before these settings. Reusing a prompt, or editing it without changing
-  its token count, avoids even that. An earlier run with dynamic compiles (`SOL_H3_STATIC_SHAPES=0`; 2026-10-13, 19 clips each way):
-  a new length cost 0.0-0.8 s in t2va and fl2va with the setting, 2.3-9.7 s without; known-length clips +0.3 to
-  +0.9 %; every warm clip bit-identical. The text refiner still compiled once more at a session's second length
-  (2.6 s in that ref2va clip). In ref2va the dense body used to become length-dynamic at a session's second length,
-  so its third new length cost nothing even without the setting (0.0 s in that run). With static compiles and
-  `SOL_H3_DYNAMIC_TEXT_LENGTH=0` it compiles per new length again, as in t2va and fl2va (inferred).
+- A new prompt length on a warm session added 9-10 s before 0.4 (Stage 1 17.6 → 26.2 s): the body blocks' graphs were
+  tied to the length through FastVideo's H3 sparse-attention metadata and tiling (`total_seq_length`, the tile counts)
+  and to the denoise step. Since 0.4 `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (the default;
+  [PATCH.md, 17](PATCH.md#17-prompt-lengths-without-recompiles)) compiles them per session (2 graphs: the first denoise
+  step and the rest), not per length. What is left is the two text-refiner regions, which compile once per new length
+  with static compiles (0.4, `SOL_H3_STATIC_SHAPES=1`). In the staging check of 0.4 (a separate test studio on the same
+  DGX Spark, 2026-10-14, 19 clips in 5 sessions, both settings on) a new prompt length in t2va 5 s cost 1.9 s in Stage 1
+  over the same prompt repeated later when its text-refiner graph was new to the compile cache, and 0.5 s when it was
+  not; no body block compiled for it. Every pair of clips that should match was bit-identical, and so were 5 clips
+  against renders made before these settings. Reusing a prompt, or editing it without changing its token count, avoids
+  even that. An earlier run with dynamic compiles (`SOL_H3_STATIC_SHAPES=0`; 2026-10-13, 19 clips each way): a new
+  length cost 0.0-0.8 s in t2va and fl2va with the setting, 2.3-9.7 s without; known-length clips +0.3 to +0.9 %; every
+  warm clip bit-identical. The text refiner still compiled once more at a session's second length (2.6 s in that ref2va
+  clip). In ref2va the dense body used to become length-dynamic at a session's second length, so its third new length
+  cost nothing even without the setting (0.0 s in that run). With static compiles and `SOL_H3_DYNAMIC_TEXT_LENGTH=0` it
+  compiles per new length again, as in t2va and fl2va (inferred).
 - Cold vs warm overhead (~55 s), measured before the last fix: Stage 2 first compile 15-20 s, Stage 1 LoRA merge
   + FP8 ~7 s, Stage 1 first-denoise compile ~11 s, audio VAE 6 s.
 - The numbers above assume the compile cache is warm from an earlier run of the same mode, format and length.
