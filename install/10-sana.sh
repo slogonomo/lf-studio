@@ -218,7 +218,7 @@ if [[ -x "$ENVS/stage1/bin/python" ]]; then
     fi
 else
     tests=133
-    [[ "$SOLH3_BACKEND" == rtx5090 ]] && tests=143
+    [[ "$SOLH3_BACKEND" == rtx5090 ]] && tests=177
     say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the $tests CPU tests"
 fi
 say "done. Next: install/20-weights.sh"
