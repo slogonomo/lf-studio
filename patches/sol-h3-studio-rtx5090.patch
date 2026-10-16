@@ -50,7 +50,7 @@ index 19c4db6..b4e16aa 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
-index 0327a69..1feb1ab 100644
+index 0327a69..53487de 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 @@ -6,6 +6,10 @@ import os
@@ -64,7 +64,7 @@ index 0327a69..1feb1ab 100644
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,89 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,115 @@ REQUIRED_PATHS = (
  )
  
  
@@ -82,6 +82,32 @@ index 0327a69..1feb1ab 100644
 +    if runtime_root:
 +        return str(Path(runtime_root) / "cache" / "compile")
 +    return str(Path.home() / ".cache" / "sol-h3-studio" / "compile")
++
++
++def data_root():
++    """sol-h3-studio: where the RTX 5090 memory features keep their files (scratch pages, the fused LTX blocks):
++    $SOL_H3_SPARK_RUNTIME_ROOT when set, else ~/.cache/sol-h3-studio. Put it on a disk without compression or
++    copy-on-write (O_DIRECT reads; btrfs: chattr +C on the directory)."""
++    runtime_root = os.environ.get("SOL_H3_SPARK_RUNTIME_ROOT")
++    return Path(runtime_root) if runtime_root else Path.home() / ".cache" / "sol-h3-studio"
++
++
++def stage1_scratch_dir():
++    """sol-h3-studio: SOL_H3_FILEBACKED_DIR, the folder for H3's construction pages ("0": anonymous memory, as
++    upstream). Default <data root>/scratch."""
++    value = os.environ.get("SOL_H3_FILEBACKED_DIR", "")
++    if value in ("0", "off"):
++        return ""
++    return value or str(data_root() / "scratch")
++
++
++def ltx_blocks_dir():
++    """sol-h3-studio: SOL_H3_LTX_BLOCKS, the fused LTX block file ("0": upstream's all-pinned build).
++    Default <data root>/derived/ltx-fused-blocks; built on first use (about 40 GB, about a minute)."""
++    value = os.environ.get("SOL_H3_LTX_BLOCKS", "")
++    if value in ("0", "off"):
++        return ""
++    return value or str(data_root() / "derived" / "ltx-fused-blocks")
 +
 +
 +# sol-h3-studio: Stage-2 audio policy (runtime/stage2.py). "frozen" (default): Stage 2 refines the video against the
@@ -157,10 +183,10 @@ index 0327a69..1feb1ab 100644
      if task != "ref2va" and (ref_image_match is not None or ref_stage1_attn is not None):
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/fastload.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/fastload.py
 new file mode 100644
-index 0000000..42b267f
+index 0000000..7f502dd
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/fastload.py
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,281 @@
 +"""sol-h3-studio: faster safetensors -> GPU weight loading on DGX Spark (GB10).
 +
 +Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -382,6 +408,12 @@ index 0000000..42b267f
 +        tensor = self._inner.get_tensor(name)          # CPU view on the mmap
 +        return tensor.clone().to(self._device)          # anon RAM -> fast H2D
 +
++    def get_tensors(self):
++        # safetensors >= 0.8 load_file() calls get_tensors(); without this it reached the CPU handle below and
++        # returned every tensor on the CPU whatever device was asked for.
++        names = self._inner.offset_keys() if hasattr(self._inner, "offset_keys") else self._inner.keys()
++        return {name: self.get_tensor(name) for name in names}
++
 +    def __getattr__(self, name):                        # keys, metadata, get_slice, offset_keys, ...
 +        return getattr(self._inner, name)
 +
@@ -573,8 +605,129 @@ index d14e6f8..2aca017 100644
          value = payload[key]
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
+diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
+index f3f15bb..e1f3a17 100644
+--- a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
++++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
+@@ -20,6 +20,29 @@ def mutation_scope(module):
+     return state.mutate() if state is not None else nullcontext()
+ 
+ 
++def _filebacked_like(torch, tensor, directory, counter=[0]):
++    """An empty CPU tensor with ``tensor``'s shape, strides and dtype, stored in a shared file mapping.
++
++    The pages belong to the page cache (written back and reclaimed under memory pressure) instead of
++    anonymous memory. Only the storage differs from ``tensor.to("cpu")``; the values are copied.
++    """
++    import os
++    span = 1 + sum((size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride())) if tensor.numel() else 0
++    nbytes = max(span * tensor.element_size(), 1)
++    counter[0] += 1
++    path = os.path.join(directory, f"stage1-{os.getpid()}-{counter[0]}.bin")
++    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
++    try:
++        os.ftruncate(fd, nbytes)
++        storage = torch.UntypedStorage.from_file(path, shared=True, nbytes=nbytes)
++    finally:
++        os.close(fd)
++        os.unlink(path)
++    out = torch.empty(0, dtype=tensor.dtype)
++    out.set_(storage, 0, tensor.shape, tensor.stride())
++    return out
++
++
+ def install_stage1_loader():
+     """Use native CPU loading and LoRA scopes, including FP8 nonpersistent buffers.
+ 
+@@ -44,6 +67,11 @@ def install_stage1_loader():
+         return original_load(*args, **kwargs)
+ 
+     component_loader.maybe_load_fsdp_model = cpu_load
++    import os
++    from .config import stage1_scratch_dir
++    FILEBACKED_DIR = stage1_scratch_dir()
++    if FILEBACKED_DIR:
++        os.makedirs(FILEBACKED_DIR, exist_ok=True)
+ 
+     class State:
+         def __init__(self, module, stats):
+@@ -70,7 +98,22 @@ def install_stage1_loader():
+             if self.saved is None:
+                 return
+             torch.cuda.synchronize()
+-            if changed:
++            if changed and FILEBACKED_DIR:
++                # Same capture as module.to("cpu"), into file-backed pages instead of anonymous memory.
++                with torch.no_grad():
++                    for name, param in list(self.module.named_parameters()):
++                        if param.device.type != "cpu":
++                            dst = _filebacked_like(torch, param.data, FILEBACKED_DIR)
++                            dst.copy_(param.data)
++                            param.data = dst
++                    for name, buf in list(self.module.named_buffers()):
++                        if buf is not None and buf.device.type != "cpu":
++                            dst = _filebacked_like(torch, buf, FILEBACKED_DIR)
++                            dst.copy_(buf)
++                            parent, _, leaf = name.rpartition(".")
++                            owner = self.module.get_submodule(parent) if parent else self.module
++                            owner._buffers[leaf] = dst
++            elif changed:
+                 # LoRA merge, exact lookup replacement and FP8 conversion may
+                 # change tensor names, shapes and dtypes. Capture the new state.
+                 self.module.to("cpu")
+@@ -141,6 +184,50 @@ def install_stage1_loader():
+                     lambda module, args, output, state=state: state.release(), always_call=True))
+             self.stats["fp8_buffer_count"] = sum(
+                 name.endswith("_fp8_weight") for state in self.states for name, _ in state.module.named_buffers())
++            if os.environ.get("SOL_H3_STAGE1_PIN", "1") != "0":
++                self.pin_idle_blocks()
++
++        def pin_idle_blocks(self):
++            # The converted blocks are final now: copy them once into page-locked memory, so they
++            # stay in RAM (file-backed pages could be evicted and read again) and copy to the GPU at
++            # full speed. Same bytes, so the same results.
++            # One exact page-locked buffer per block (cudaHostRegister on ordinary memory, as LTX's
++            # block streaming does): Tensor.pin_memory() would round every tensor up to a power of two.
++            import weakref
++            cudart = torch.cuda.cudart()
++            pinned = 0
++            with torch.no_grad():
++                for state in self.states:
++                    if state.saved is not None:
++                        raise RuntimeError("Pinning an active H3 block")
++                    params = [(n, p.data) for n, p in state.module.named_parameters()]
++                    bufs = [(n, b) for n, b in state.module.named_buffers() if b is not None]
++                    spans, total = [], 0
++                    for _, t in params + bufs:
++                        span = (1 + sum((s - 1) * st for s, st in zip(t.shape, t.stride()))) if t.numel() else 0
++                        total = -(-total // 64) * 64
++                        spans.append((total, span))
++                        total += span * t.element_size()
++                    raw = torch.empty(max(total, 1), dtype=torch.uint8)
++                    ptr = raw.data_ptr()
++                    if int(cudart.cudaHostRegister(ptr, raw.numel(), 0)) != 0:
++                        raise RuntimeError("cudaHostRegister failed for an H3 block")
++                    weakref.finalize(raw.untyped_storage(), lambda p=ptr: cudart.cudaHostUnregister(p))
++                    storage = raw.untyped_storage()
++                    out = []
++                    for (name, t), (offset, span) in zip(params + bufs, spans):
++                        dst = torch.empty(0, dtype=t.dtype)
++                        dst.set_(storage, offset // t.element_size(), t.shape, t.stride())
++                        dst.copy_(t)
++                        out.append((name, dst))
++                    for name, dst in out[:len(params)]:
++                        state.module.get_parameter(name).data = dst
++                    for name, dst in out[len(params):]:
++                        parent, _, leaf = name.rpartition(".")
++                        owner = state.module.get_submodule(parent) if parent else state.module
++                        owner._buffers[leaf] = dst
++                    pinned += raw.numel()
++            self.stats["pinned_block_bytes"] = pinned
+ 
+         def release_all(self):
+             for state in self.states:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
-index fa18e02..ff61e65 100644
+index fa18e02..d5438b1 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 @@ -6,9 +6,16 @@ from pathlib import Path
@@ -621,7 +774,7 @@ index fa18e02..ff61e65 100644
  def worker_environment(name, paths):
      env = os.environ.copy()
      env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
-@@ -47,6 +72,21 @@ def worker_environment(name, paths):
+@@ -47,6 +72,27 @@ def worker_environment(name, paths):
          env.pop("LD_LIBRARY_PATH", None)
      elif name == "stage2":
          env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -640,10 +793,16 @@ index fa18e02..ff61e65 100644
 +        # sol-h3-studio: keep Triton autotune winners on disk too (sol_attn / block-sparse autotune re-ran on every cold
 +        # start; measured first clip 127 -> 124 s)
 +        env.setdefault("TRITON_CACHE_AUTOTUNING", "1")
++    # sol-h3-studio (RTX 5090): the driver's JIT cache defaults to 1 GiB, which Stage 1, Stage 2 and Qwen together
++    # overflow, so each session compiled Qwen's PTX-only kernels again (~9 s of the first clip after loading).
++    env.setdefault("CUDA_CACHE_MAXSIZE", str(4 << 30))
++    if name == "stage2":
++        # one Inductor compile worker per CPU thread costs several GiB of RAM during the first (autotuning) session
++        env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "4")
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -79,7 +119,7 @@ class Worker:
+@@ -79,7 +125,7 @@ class Worker:
              raise
  
      def submit(self, op="run", **kwargs):
@@ -652,7 +811,7 @@ index fa18e02..ff61e65 100644
              raise ValueError("Unsupported session operation")
          self.sequence += 1
          response = self.root / f"response-{self.sequence:05d}.json"
-@@ -117,26 +157,47 @@ class Worker:
+@@ -117,26 +163,47 @@ class Worker:
  class Pipeline:
      """Reuse three isolated runtime environments and the same models for a batch.
  
@@ -707,7 +866,7 @@ index fa18e02..ff61e65 100644
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -146,63 +207,375 @@ class Pipeline:
+@@ -146,63 +213,375 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -1115,7 +1274,7 @@ index fa18e02..ff61e65 100644
                  self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -218,6 +591,9 @@ class Pipeline:
+@@ -218,6 +597,9 @@ class Pipeline:
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
              if self.qwen is not None:
                  self.qwen.call("release_idle_cache")
@@ -1125,7 +1284,7 @@ index fa18e02..ff61e65 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -234,13 +610,17 @@ class Pipeline:
+@@ -234,13 +616,17 @@ class Pipeline:
          self.save()
  
      def close(self):
@@ -1148,7 +1307,7 @@ index fa18e02..ff61e65 100644
 +                finally:
 +                    self._close_resident_qwen()    # sol-h3-studio: one whose start began before `closing` was set
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
-index b2ef6f5..1348fd6 100644
+index b2ef6f5..24d64a9 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
 @@ -10,6 +10,9 @@ import time
@@ -1161,10 +1320,140 @@ index b2ef6f5..1348fd6 100644
  
  
  def atomic_json(path, value):
-@@ -140,9 +143,20 @@ def load_resident_checkpoint(checkpoint, torch):
+@@ -85,6 +88,8 @@ def weight_snapshot(model, torch):
+ 
+ def load_resident_checkpoint(checkpoint, torch):
+     """Reuse verified O_DIRECT chunks to avoid whole-checkpoint CPU mmap peaks."""
++    if os.environ.get("SOL_H3_QWEN_FAST_LOAD", "1") != "0":
++        return load_resident_checkpoint_windows(checkpoint, torch)
+     from safetensors import safe_open
+     from .qwen_ops.direct_io import (
+         DIRECT_CHUNK_BYTES, DIRECT_ALIGNMENT_BYTES, read_safetensors_records,
+@@ -140,9 +145,141 @@ def load_resident_checkpoint(checkpoint, torch):
              empty_host_cache()
  
  
++# sol-h3-studio: the same tensors, read faster. The loader above reads one tensor at a time through one 64 MiB pinned
++# slot and waits for each GPU copy before the next disk read (~1.6 GB/s measured on an RTX 5090 workstation). This
++# one reads the file front to back in large aligned windows with parallel O_DIRECT reads, several windows ahead, and
++# copies each window's slices to the GPU on a side stream. Every tensor gets the same bytes in a CUDA buffer of the
++# same size, allocated in the same order. SOL_H3_QWEN_FAST_LOAD=0 uses the loader above.
++QWEN_WINDOW_BYTES = 256 << 20
++QWEN_WINDOWS = 4
++QWEN_READ_THREADS = 8
++
++
++def load_resident_checkpoint_windows(checkpoint, torch):
++    from concurrent.futures import ThreadPoolExecutor
++    import ctypes
++    from safetensors import safe_open
++    from .qwen_ops.direct_io import DIRECT_ALIGNMENT_BYTES, read_safetensors_records
++    checkpoint = Path(checkpoint).resolve(strict=True)
++    with safe_open(str(checkpoint), framework='pt', device='cpu') as header:
++        metadata = header.metadata()
++    records = sorted(read_safetensors_records(checkpoint), key=lambda r: r.file_offset)
++    dtype_names = {'U8': 'uint8', 'I8': 'int8', 'I32': 'int32', 'I64': 'int64',
++                   'F32': 'float32', 'F16': 'float16', 'BF16': 'bfloat16',
++                   'F8_E4M3': 'float8_e4m3fn', 'F8_E5M2': 'float8_e5m2'}
++    align, window = DIRECT_ALIGNMENT_BYTES, QWEN_WINDOW_BYTES
++    file_size = checkpoint.stat().st_size
++    start = min(r.file_offset for r in records) // align * align
++    end = max(r.file_offset + r.nbytes for r in records)
++    raws = [torch.empty(r.nbytes, dtype=torch.uint8, device='cuda:0') for r in records]
++    backing = torch.empty(QWEN_WINDOWS * window + align, dtype=torch.uint8, pin_memory=True)
++    base = backing[(-backing.data_ptr()) % align:]
++    slots = [base[i * window:(i + 1) * window] for i in range(QWEN_WINDOWS)]
++    events = [None] * QWEN_WINDOWS
++    stream = torch.cuda.Stream()
++    stats = {'mode': 'startup_only_ODIRECT_windows_to_resident_CUDA', 'pinned_slots': QWEN_WINDOWS,
++             'pinned_bytes': backing.numel(), 'tensor_count': len(records),
++             'logical_bytes': sum(r.nbytes for r in records), 'read_calls': 0, 'physical_read_bytes': 0,
++             'fallback_count': 0, 'direct_read_ns': 0}
++    fd = os.open(checkpoint, os.O_RDONLY | os.O_DIRECT)
++    pool = ThreadPoolExecutor(max_workers=QWEN_READ_THREADS, thread_name_prefix='qwen-load')
++    started = time.monotonic_ns()
++
++    def read(slot, offset, nbytes):
++        view = memoryview((ctypes.c_char * nbytes).from_address(slot.data_ptr())).cast('B')
++        part = max(align, -(-nbytes // QWEN_READ_THREADS // align) * align)
++
++        def one(lo):
++            hi, done = min(lo + part, nbytes), lo
++            while done < hi:
++                n = os.preadv(fd, [view[done:hi]], offset + done)
++                if n <= 0:
++                    if offset + done >= file_size:
++                        break               # the last aligned window reaches past the end of the file
++                    raise OSError(f"short O_DIRECT read of {checkpoint} at {offset + done}")
++                done += n
++            return done - lo
++        return [pool.submit(one, lo) for lo in range(0, nbytes, part)]
++
++    try:
++        windows = []
++        pos = start
++        while pos < end:
++            nbytes = min(window, -(-(end - pos) // align) * align, -(-(file_size - pos) // align) * align)
++            windows.append((pos, nbytes))
++            pos += nbytes
++        pending = {}
++        def submit(i):
++            slot_index = i % QWEN_WINDOWS
++            if events[slot_index] is not None:
++                events[slot_index].synchronize()
++            pending[i] = read(slots[slot_index], *windows[i])
++        for i in range(min(QWEN_WINDOWS, len(windows))):
++            submit(i)
++        r = 0
++        for i, (offset, nbytes) in enumerate(windows):
++            got = sum(f.result() for f in pending.pop(i))
++            stats['read_calls'] += 1
++            stats['physical_read_bytes'] += got
++            slot_index = i % QWEN_WINDOWS
++            slot = slots[slot_index]
++            with torch.cuda.stream(stream):
++                while r < len(records) and records[r].file_offset < offset + nbytes:
++                    record = records[r]
++                    lo = max(record.file_offset, offset)
++                    hi = min(record.file_offset + record.nbytes, offset + nbytes)
++                    raws[r][lo - record.file_offset:hi - record.file_offset].copy_(
++                        slot[lo - offset:hi - offset], non_blocking=True)
++                    if record.file_offset + record.nbytes > offset + nbytes:
++                        break               # continues in the next window
++                    r += 1
++                events[slot_index] = torch.cuda.Event()
++                events[slot_index].record(stream)
++            if i + QWEN_WINDOWS < len(windows):
++                submit(i + QWEN_WINDOWS)
++        stream.synchronize()
++        torch.cuda.synchronize()
++        stats['direct_read_ns'] = time.monotonic_ns() - started
++        state = {}
++        for record, raw in zip(records, raws):
++            value = raw.view(getattr(torch, dtype_names[record.dtype_code])).view(record.shape)
++            state[record.name] = value.cpu() if record.name.endswith('.comfy_quant') else value
++        return state, metadata, stats
++    finally:
++        pool.shutdown(wait=True)
++        os.close(fd)
++        del slots, base, backing
++        gc.collect()
++        empty_host_cache = getattr(torch._C, '_host_emptyCache', None)
++        if callable(empty_host_cache):
++            empty_host_cache()
++
++
++def _major_faults_and_reads():
++    """sol-h3-studio: (major page faults, bytes read from storage) of this process so far."""
++    try:
++        fields = open('/proc/self/stat').read().rsplit(')', 1)[1].split()
++        io = dict(line.split(': ') for line in open('/proc/self/io').read().splitlines())
++        tick = os.sysconf('SC_CLK_TCK')
++        return int(fields[9]), int(io['read_bytes']), int(fields[11]) / tick, int(fields[12]) / tick
++    except (OSError, ValueError, KeyError, IndexError):
++        return 0, 0, 0.0, 0.0
++
++
 +# sol-h3-studio: the keyframe/reference-video canvas follows the (possibly portrait) draft size and can change in a
 +# running session (reshape).
 +def draft_canvas(config):
@@ -1182,7 +1471,7 @@ index b2ef6f5..1348fd6 100644
          checkpoint = Path(paths['qwen_checkpoint']).expanduser().resolve(strict=True)
          comfy_root = Path(paths['comfy_root']).expanduser().resolve(strict=True)
          self.work_dir = Path(work_dir).resolve()
-@@ -182,6 +196,9 @@ class Session:
+@@ -182,6 +319,9 @@ class Session:
          finally:
              utils.load_torch_file = original_load
          self.clip = self.owner.clip
@@ -1192,7 +1481,7 @@ index b2ef6f5..1348fd6 100644
          import comfy.model_management as management
          management.load_models_gpu([self.clip.patcher], force_full_load=True)
          self.clip.cond_stage_model.eval().requires_grad_(False)
-@@ -222,7 +239,7 @@ class Session:
+@@ -222,7 +362,7 @@ class Session:
              'checkpoint_page_cache_advice': self.checkpoint_page_cache_advice,
              'startup_checkpoint_reads': self.startup_checkpoint_reads,
              'startup_reader': self.startup_reader,
@@ -1201,7 +1490,7 @@ index b2ef6f5..1348fd6 100644
  
      def release_idle_cache(self):
          """Protocol name reused for metadata-only residency evidence; no offload."""
-@@ -239,6 +256,20 @@ class Session:
+@@ -239,6 +379,20 @@ class Session:
              'weight_storage_unchanged': True, 'weight_residency': info,
              'resources': resource_snapshot(self.torch)}
  
@@ -1222,17 +1511,47 @@ index b2ef6f5..1348fd6 100644
      def run(self, case, output_root):
          if self.closed or self.failed:
              raise RuntimeError('Qwen resident session is unavailable')
-@@ -252,7 +283,8 @@ class Session:
+@@ -250,18 +404,31 @@ class Session:
+         root.mkdir(parents=True, exist_ok=False)
+         torch = self.torch
          try:
++            phases = {}                         # sol-h3-studio: where the request time goes
++            mark = time.monotonic()
              before = self.release_idle_cache()
              torch.cuda.reset_peak_memory_stats()
 -            tokenize_kwargs, prepared_media = prepare_inputs(case, torch, target_area=self.reference_target_area)
++            phases['release_idle_cache_s'], mark = time.monotonic() - mark, time.monotonic()
 +            tokenize_kwargs, prepared_media = prepare_inputs(case, torch, target_area=self.reference_target_area,
 +                                                         canvas=getattr(self, 'canvas', (384, 672)))
              identity = {'task': case.get('task', 't2va'), 'external_anchor_used': False,
                  'input_conditioned': case.get('task', 't2va') != 't2va',
                  'input_spec': input_spec(case), 'prepared_media': prepared_media}
-@@ -275,6 +307,8 @@ class Session:
+             with torch.inference_mode():
+                 # Native Comfy owns visual tokens, temporal patches and tags.
++                phases['prepare_inputs_s'], mark = time.monotonic() - mark, time.monotonic()
+                 tokens = self.clip.tokenize(case['prompt'], **tokenize_kwargs)
++                phases['tokenize_s'], mark = time.monotonic() - mark, time.monotonic()
++                faults = _major_faults_and_reads()
+                 encoded = self.clip.encode_from_tokens(tokens, return_dict=True)
+                 value = self.normalize(encoded)
+             torch.cuda.synchronize()
++            phases['encode_s'], mark = time.monotonic() - mark, time.monotonic()
++            after_faults = _major_faults_and_reads()
++            phases['encode_major_faults'] = after_faults[0] - faults[0]
++            phases['encode_read_bytes'] = after_faults[1] - faults[1]
++            phases['encode_user_cpu_s'] = after_faults[2] - faults[2]
++            phases['encode_kernel_cpu_s'] = after_faults[3] - faults[3]
+             payload = {'prompt': case['prompt'], **identity,
+                 'prompt_embeds': value.cond, 'text_token_tags': value.minimax_token_tags}
+             path = root / 'conditioning.pt'
+@@ -269,12 +436,15 @@ class Session:
+             with temporary.open('xb') as stream:
+                 torch.save(payload, stream)
+             temporary.replace(path)
++            phases['save_s'], mark = time.monotonic() - mark, time.monotonic()
+             self.completed_requests += 1
+             after = self.release_idle_cache()
+             receipt = {'status': 'PASS', **identity,
                  'prompt': case['prompt'], 'case_id': case['case_id'], 'seed': case['seed'],
                  'payload': str(path), 'payload_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                  'shape': list(value.cond.shape), 'dtype': str(value.cond.dtype),
@@ -1241,6 +1560,14 @@ index b2ef6f5..1348fd6 100644
                  'producer_mode': 'resident', 'model_load_count': self.model_load_count,
                  'request_index': self.completed_requests, 'residency_before': before,
                  'residency_after': after, 'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
+@@ -284,6 +454,7 @@ class Session:
+                 'completion_protocol': 'resident_RPC_after_atomic_payload_commit'}
+             receipt['conditioning_path'] = str((root / 'conditioning.json').resolve())
+             receipt['request_wall_s'] = (receipt['completed_monotonic_ns'] - started_ns) / 1e9
++            receipt['phases_s'] = phases
+             atomic_json(root / 'conditioning.json', receipt)
+             return receipt
+         except BaseException:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/media.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/media.py
 index 39080d4..554c8de 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/media.py
@@ -2570,8 +2897,410 @@ index 4e6e910..47a0c62 100644
 +    output = model(network_input, scale=2.0, target_size=tuple(target_shape[2:]), enable_chunking=True)
      output = output * std + mean
      return output.to(dtype=normalized.dtype)
+diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
+new file mode 100644
+index 0000000..c1065cf
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
+@@ -0,0 +1,396 @@
++"""sol-h3-studio: LTX refiner blocks with the distilled LoRA fused once, streamed partly from disk.
++
++Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++
++NVIDIA's CPU offload pins all 48 LTX blocks in host RAM (about 40 GB, never swappable) and fuses the LoRA into
++them while building, which needs more RAM than a 64 GB workstation has next to H3. Here the fused blocks are
++written once to a block file (``build``), with the exact calls of LTX's pinned build: the same loader and key
++renaming, ``fuse_lora_weights`` with the same rule on the same GPU, the same 16-byte layout. A session then pins
++only the first ``resident`` blocks and reads the others from the file with large parallel O_DIRECT reads into a
++few pinned slots, ahead of use (``HybridWeightSource``). The bytes that reach the GPU are the same as with
++NVIDIA's pinned blocks; only where they wait in between differs.
++
++File layout: ``<dir>/blocks.bin`` holds each block's buffer image (``carve_buffer`` layout) at a 4096-byte
++aligned offset; ``<dir>/non_block.safetensors`` the fused non-block weights; ``<dir>/index.json`` the layouts,
++offsets, SHA-256 of every block and the identity of the inputs.
++"""
++from __future__ import annotations
++
++import ctypes
++import hashlib
++import json
++import os
++import threading
++import time
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++
++FORMAT = "sol-h3-studio-ltx-fused-blocks-v1"
++ALIGN = 4096
++CHUNK = 64 << 20            # bytes per preadv call
++READ_THREADS = 8
++
++
++def _ceil(n, a=ALIGN):
++    return -(-n // a) * a
++
++
++def _dtype_name(dtype):
++    return str(dtype).removeprefix("torch.")
++
++
++def _layout_json(layout):
++    return [[name, list(shape), _dtype_name(dtype)] for name, (shape, dtype) in layout.items()]
++
++
++def _layout_from_json(torch, items):
++    return {name: (torch.Size(shape), getattr(torch, dtype)) for name, shape, dtype in items}
++
++
++def _view(buf, nbytes):
++    """A writable memoryview over the first ``nbytes`` of a CPU uint8 tensor."""
++    return memoryview((ctypes.c_char * nbytes).from_address(buf.data_ptr())).cast("B")
++
++
++def _page_aligned_empty(torch, nbytes):
++    """CPU uint8 tensor whose data starts on a page boundary (O_DIRECT needs aligned buffers)."""
++    raw = torch.empty(nbytes + ALIGN, dtype=torch.uint8)
++    shift = (-raw.data_ptr()) % ALIGN
++    return raw[shift:shift + nbytes]
++
++
++class DirectFile:
++    """Parallel O_DIRECT reads of aligned ranges of one file into aligned buffers."""
++
++    def __init__(self, path, threads=READ_THREADS):
++        self.path = str(path)
++        try:
++            self.fd = os.open(self.path, os.O_RDONLY | getattr(os, "O_DIRECT", 0))
++            self.direct = True
++        except OSError:                 # e.g. tmpfs: same reads through the page cache
++            self.fd = os.open(self.path, os.O_RDONLY)
++            self.direct = False
++        self.pool = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="ltx-blocks-read")
++
++    def read_into(self, buf, offset, nbytes):
++        """Fill buf[:nbytes] from the file at ``offset``; offset, nbytes and buf must be 4096-aligned."""
++        view = _view(buf, nbytes)
++
++        def part(start):
++            end = min(start + CHUNK, nbytes)
++            done = start
++            while done < end:
++                n = os.preadv(self.fd, [view[done:end]], offset + done)
++                if n <= 0:
++                    raise OSError(f"short read in {self.path} at {offset + done}")
++                done += n
++
++        return [self.pool.submit(part, start) for start in range(0, nbytes, CHUNK)]
++
++    def read(self, buf, offset, nbytes):
++        for future in self.read_into(buf, offset, nbytes):
++            future.result()
++
++    def close(self):
++        self.pool.shutdown(wait=True)
++        os.close(self.fd)
++
++
++# --------------------------------------------------------------------------- build (once, stage2 env, GPU)
++
++def build(builder, output_dir, *, identity, torch):
++    """Write the fused block file for ``builder`` (an LTX ``StreamingModelBuilder`` with its LoRA).
++
++    Mirrors ``StreamingModelBuilder._build_pinned_source`` and ``_load_non_block_weights``, one block at a time
++    so the host needs about one block plus the LoRA in RAM. Returns the index.
++    """
++    from safetensors.torch import save_file
++    from ltx_core.block_streaming import builder as sb
++    from ltx_core.block_streaming.utils import carve_buffer, derive_layout, layout_nbytes, make_block_key
++    from ltx_core.loader.fuse_loras import fuse_lora_weights
++    from ltx_core.loader.helpers import create_meta_model, load_state_dict
++    from ltx_core.loader.primitives import StateDict
++    from ltx_core.loader.registry import ModelRegistry
++
++    output_dir = Path(output_dir)
++    output_dir.mkdir(parents=True, exist_ok=False)
++    dtype, device = torch.bfloat16, torch.device("cuda", 0)
++    registry = ModelRegistry(cache_models=False, cache_weights=False)
++    builder = builder.with_registry(registry)
++    metadata = builder.model_metadata()
++    meta_model = create_meta_model(builder.model_class_configurator, metadata, builder.module_ops)
++    blocks = sb.resolve_attr(meta_model, builder.blocks_attr)
++    paths = list(builder.model_path) if isinstance(builder.model_path, tuple) else [builder.model_path]
++    block_key_map, non_block_keys = sb._scan_checkpoint_keys(paths, builder.model_sd_ops, builder.blocks_prefix)
++    lora_sds = builder._load_lora_sds()
++
++    index = {"format": FORMAT, "identity": identity, "blocks_prefix": builder.blocks_prefix,
++             "blocks_attr": builder.blocks_attr, "num_blocks": len(blocks), "blocks": []}
++    offset = 0
++    with open(output_dir / "blocks.bin", "wb") as out:
++        for idx in range(len(blocks)):
++            entries = block_key_map[idx]
++            state = sb._block_state(blocks[idx])
++            layout = derive_layout({name: state[name] for _key, name in entries}, dtype)
++            nbytes = layout_nbytes(layout)
++            image = torch.zeros(_ceil(nbytes), dtype=torch.uint8)
++            views = carve_buffer(image, layout)
++            fill = {make_block_key(builder.blocks_prefix, idx, name): views[name] for _key, name in entries}
++            block_sd = load_state_dict(builder.model_path, builder.model_loader, registry, torch.device("cpu"),
++                                       builder._filtered_sd_ops(f"blocks{idx}", frozenset(fill)))
++            for key, fused in fuse_lora_weights(block_sd, lora_sds, fuse_rule=builder.fuse_rule,
++                                                preserve_input_device=False):
++                fill[key].copy_(fused)
++                block_sd.sd[key] = None
++            torch.cuda.synchronize()
++            for key, view in fill.items():
++                if block_sd.sd[key] is not None:
++                    view.copy_(block_sd.sd[key])
++                    block_sd.sd[key] = None
++            data = image.numpy().tobytes()
++            out.write(data)
++            index["blocks"].append({"offset": offset, "nbytes": nbytes, "file_nbytes": len(data),
++                                    "sha256": hashlib.sha256(data[:nbytes]).hexdigest(),
++                                    "layout": _layout_json(layout)})
++            offset += len(data)
++            del block_sd, views, fill, image, data
++            print(f"[ltx-blocks] block {idx + 1}/{len(blocks)} fused", flush=True)
++
++    # Non-block weights: same restricted load and fuse as _load_non_block_weights (on the GPU), saved to CPU.
++    non_block_ops = builder._filtered_sd_ops("non_block", frozenset(mk for _key, mk in non_block_keys))
++    loaded = load_state_dict(builder.model_path, builder.model_loader, registry, device, non_block_ops)
++    non_block_sd = {key: tensor.to(dtype=dtype) for key, tensor in loaded.sd.items()}
++    if lora_sds:
++        state_dict = StateDict(sd=non_block_sd, device=device, size=0, dtype={dtype})
++        for key, fused in fuse_lora_weights(state_dict, lora_sds, fuse_rule=builder.fuse_rule,
++                                            preserve_input_device=True):
++            non_block_sd[key] = fused
++    save_file({k: v.detach().to("cpu").contiguous() for k, v in non_block_sd.items()},
++              str(output_dir / "non_block.safetensors"))
++    index["non_block_sha256"] = _sha256_file(output_dir / "non_block.safetensors")
++    index["blocks_nbytes"] = offset
++    with open(output_dir / "index.json.tmp", "w") as stream:
++        json.dump(index, stream, indent=1)
++    os.replace(output_dir / "index.json.tmp", output_dir / "index.json")
++    return index
++
++
++def _sha256_file(path):
++    digest = hashlib.sha256()
++    with open(path, "rb") as stream:
++        for chunk in iter(lambda: stream.read(1 << 24), b""):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def load_index(directory, identity=None):
++    directory = Path(directory)
++    index = json.loads((directory / "index.json").read_text())
++    if index.get("format") != FORMAT:
++        raise RuntimeError(f"{directory}: not a {FORMAT} block file")
++    if identity is not None and index.get("identity") != identity:
++        raise RuntimeError(f"{directory}: built from other inputs ({index.get('identity')} != {identity})")
++    return index
++
++
++def available_bytes():
++    """RAM this process could still use: MemAvailable, and inside a memory-limited cgroup (systemd scope or
++    service with MemoryMax) the room left under each limit, counting its page cache as free."""
++    meminfo = dict(line.split(":", 1) for line in open("/proc/meminfo").read().splitlines())
++    free = int(meminfo["MemAvailable"].split()[0]) * 1024
++    try:
++        relative = open("/proc/self/cgroup").read().strip().split("::", 1)[1]
++        node = Path("/sys/fs/cgroup") / relative.lstrip("/")
++        while node != Path("/sys/fs/cgroup") and node.is_dir():
++            limit = (node / "memory.max").read_text().strip() if (node / "memory.max").exists() else "max"
++            if limit != "max":
++                stat = dict(line.split() for line in (node / "memory.stat").read_text().splitlines())
++                used = int((node / "memory.current").read_text()) - int(stat.get("file", 0))
++                free = min(free, int(limit) - used)
++            node = node.parent
++    except (OSError, IndexError, ValueError):
++        pass
++    return max(free, 0)
++
++
++def resident_blocks(index, setting="auto", reserve_gib=12.0):
++    """Which blocks to pin: SOL_H3_LTX_RESIDENT_BLOCKS as a number, or "auto": as many as fit in the RAM still
++    available minus ``reserve_gib`` (left for Qwen, the page cache and the first session's compile workers).
++    The first blocks are pinned, so the read-ahead of the others overlaps their compute."""
++    n = index["num_blocks"]
++    if str(setting).strip().lower() != "auto":
++        return range(max(0, min(n, int(setting))))
++    budget = available_bytes() - int(reserve_gib * (1 << 30))
++    count, used = 0, 0
++    for block in index["blocks"]:
++        if used + block["file_nbytes"] > budget:
++            break
++        used += block["file_nbytes"]
++        count += 1
++    print(f"[ltx-blocks] {count} of {n} blocks pinned ({used / (1 << 30):.1f} GiB; "
++          f"{available_bytes() / (1 << 30):.1f} GiB available, {reserve_gib:g} GiB kept free)", flush=True)
++    return range(count)
++
++
++# --------------------------------------------------------------------------- runtime source
++
++class HybridWeightSource:
++    """LTX ``WeightSource``: blocks in ``resident`` stay pinned in RAM, the others are read ahead from disk.
++
++    ``get(idx)`` returns one contiguous pinned uint8 buffer carved by the block's layout, as LTX's pinned and
++    disk sources do. Streamed blocks go through ``slots`` pinned slots; after a block is handed out, the next
++    ``depth`` streamed blocks (in forward order, wrapping to the next update) are read in the background.
++    """
++
++    def __init__(self, torch, directory, index, resident, *, depth=3, threads=READ_THREADS, verify=False):
++        from ltx_core.block_streaming.utils import alloc_buffer
++        self.torch = torch
++        self.index = index
++        self.num_blocks = index["num_blocks"]
++        self.layouts = [_layout_from_json(torch, b["layout"]) for b in index["blocks"]]
++        self.resident = sorted(set(resident))
++        self.streamed = [i for i in range(self.num_blocks) if i not in set(self.resident)]
++        self.file = DirectFile(Path(directory) / "blocks.bin", threads=threads)
++        self.slot_file_nbytes = max(b["file_nbytes"] for b in index["blocks"])
++        self.stats = {"resident_blocks": len(self.resident), "streamed_blocks": len(self.streamed),
++                      "streamed_reads": 0, "read_bytes": 0, "read_wait_s": 0.0, "resident_bytes": 0}
++        t0 = time.monotonic()
++        self.pinned = {}
++        for idx in self.resident:
++            block = index["blocks"][idx]
++            buf = alloc_buffer(block["file_nbytes"] + ALIGN, torch.device("cpu"), pin_memory=True)
++            buf = buf[(-buf.data_ptr()) % ALIGN:][:block["file_nbytes"]]
++            self.file.read(buf, block["offset"], block["file_nbytes"])
++            if verify:
++                self._check(idx, buf)
++            self.pinned[idx] = buf
++            self.stats["resident_bytes"] += block["file_nbytes"]
++        self.stats["resident_load_s"] = time.monotonic() - t0
++        self.depth = min(depth, len(self.streamed))
++        count = self.depth + 1 if self.streamed else 0
++        raw = alloc_buffer(count * self.slot_file_nbytes + ALIGN, torch.device("cpu"), pin_memory=True) if count else None
++        if raw is not None:
++            raw = raw[(-raw.data_ptr()) % ALIGN:]
++        self.free = [raw[i * self.slot_file_nbytes:(i + 1) * self.slot_file_nbytes] for i in range(count)]
++        self.events = {}
++        self.scheduled = {}       # idx -> (slot, futures)
++        self.in_use = {}          # idx -> slot
++        self.lock = threading.Lock()
++        self.verify = verify
++
++    def _check(self, idx, buf):
++        block = self.index["blocks"][idx]
++        digest = hashlib.sha256(_view(buf, block["nbytes"])).hexdigest()
++        if digest != block["sha256"]:
++            raise RuntimeError(f"LTX fused block {idx} does not match its recorded SHA-256")
++
++    # WeightSource protocol
++    def block_layout(self, idx):
++        return self.layouts[idx]
++
++    @property
++    def slot_nbytes(self):
++        return self.slot_file_nbytes
++
++    def get(self, idx):
++        if idx in self.pinned:
++            self._ahead(idx)
++            return self.pinned[idx]
++        if idx in self.in_use:
++            raise RuntimeError(f"LTX block {idx} is already in flight")
++        entry = self.scheduled.pop(idx, None) or self._schedule(idx)
++        slot, futures = entry
++        t0 = time.monotonic()
++        for future in futures:
++            future.result()
++        self.stats["read_wait_s"] += time.monotonic() - t0
++        if self.verify:
++            self._check(idx, slot)
++        self.in_use[idx] = slot
++        self._ahead(idx)
++        return slot
++
++    def release(self, idx, event):
++        slot = self.in_use.pop(idx, None)
++        if slot is None:
++            return                      # resident block
++        if event is not None:
++            self.events[id(slot)] = event
++        self.free.append(slot)
++
++    def cleanup(self):
++        for slot, futures in self.scheduled.values():
++            for future in futures:
++                future.result()
++        self.scheduled.clear()
++        self.in_use.clear()
++        self.pinned.clear()
++        self.free = []
++        self.file.close()
++
++    # read-ahead
++    def _acquire(self):
++        slot = self.free.pop(0)
++        event = self.events.pop(id(slot), None)
++        if event is not None:
++            event.synchronize()
++        return slot
++
++    def _schedule(self, idx):
++        block = self.index["blocks"][idx]
++        slot = self._acquire()
++        self.stats["streamed_reads"] += 1
++        self.stats["read_bytes"] += block["file_nbytes"]
++        return slot, self.file.read_into(slot, block["offset"], block["file_nbytes"])
++
++    def _ahead(self, idx):
++        if not self.streamed:
++            return
++        n = self.num_blocks
++        wanted = []
++        step = 1
++        while len(wanted) < self.depth and step <= n:
++            j = (idx + step) % n
++            if j not in self.pinned:
++                wanted.append(j)
++            step += 1
++        for j in wanted:
++            if j in self.scheduled or j in self.in_use:
++                continue
++            if not self.free:
++                break
++            self.scheduled[j] = self._schedule(j)
++
++
++def build_streaming_wrapper(builder, directory, *, device, dtype, resident, depth, torch, verify=False):
++    """``StreamingModelBuilder.build`` with a fused block file instead of the checkpoint and LoRA."""
++    from safetensors.torch import load_file
++    from ltx_core.block_streaming import builder as sb
++    from ltx_core.block_streaming.pool import BufferPool
++    from ltx_core.block_streaming.provider import WeightsProvider
++    from ltx_core.block_streaming.stream_sync import create_stream_sync
++    from ltx_core.block_streaming.utils import derive_layout
++    from ltx_core.block_streaming.wrapper import BlockStreamingWrapper
++    from ltx_core.loader.helpers import create_meta_model
++
++    index = load_index(directory)
++    metadata = builder.model_metadata()
++    meta_model = create_meta_model(builder.model_class_configurator, metadata, builder.module_ops)
++    meta_model.eval()
++    blocks = sb.resolve_attr(meta_model, builder.blocks_attr)
++    if len(blocks) != index["num_blocks"] or builder.blocks_prefix != index["blocks_prefix"]:
++        raise RuntimeError("LTX fused block file does not match the model")
++    for idx, block in enumerate(blocks):
++        state = sb._block_state(block)
++        expected = _layout_from_json(torch, index["blocks"][idx]["layout"])
++        if derive_layout({name: state[name] for name in expected}, dtype) != expected:
++            raise RuntimeError(f"LTX fused block {idx} layout differs from the model")
++    non_block = load_file(str(Path(directory) / "non_block.safetensors"), device=str(device))
++    meta_model.load_state_dict({k: v.to(device=device, dtype=dtype) for k, v in non_block.items()}, strict=False, assign=True)
++    source = HybridWeightSource(torch, directory, index, resident, depth=depth, verify=verify)
++    sync = create_stream_sync(device)
++    gpu_pool = BufferPool(source.slot_nbytes, sb._DEFAULT_GPU_SLOTS, device, reuse_barrier=sync.reuse_barrier)
++    provider = WeightsProvider(gpu_pool, sync, device, source, [], builder.blocks_prefix, fuse_rule=builder.fuse_rule)
++    wrapper = BlockStreamingWrapper(model=meta_model, blocks=blocks, provider=provider, target_device=device)
++    wrapper.sol_h3_block_source = source
++    return wrapper
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
-index 04a6f36..189425f 100644
+index 04a6f36..8b7ca77 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 @@ -7,6 +7,9 @@ pixel-input VAE, LTX upsampler and preview-decoder models.
@@ -2728,7 +3457,45 @@ index 04a6f36..189425f 100644
      lora = base.LoraPathStrengthAndSDOps(str(paths["refiner_lora"]), 0.8, base.LTXV_LORA_COMFY_RENAMING_MAP)
      stage = base.DiffusionStage.from_checkpoint(str(paths["transformer"]), models.dtype,
          models.device, loras=(lora,), quantization=None, registry=registry,
-@@ -134,6 +214,7 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -119,8 +199,35 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+         builder = stage._transformer_builder
+         stage._transformer_builder = builder.with_module_ops(
+             (*builder.module_ops, create_video_self_attention_module_ops(manager)))
+-        models.streaming_transformer = stage._prepared_builder().build(
+-            device=models.device, dtype=models.dtype)
++        prepared = stage._prepared_builder()
++        from ..config import ltx_blocks_dir
++        blocks_dir = ltx_blocks_dir()
++        slots = os.environ.get("SOL_H3_LTX_CPU_SLOTS")  # experiment: disk streaming with N pinned slots
++        if blocks_dir:
++            # sol-h3-studio: LoRA fused once into a block file; some blocks pinned, the rest read from disk.
++            from . import ltx_blocks
++            identity = {"transformer": Path(paths["transformer"]).name,
++                        "transformer_bytes": Path(paths["transformer"]).stat().st_size,
++                        "lora": Path(paths["refiner_lora"]).name,
++                        "lora_bytes": Path(paths["refiner_lora"]).stat().st_size, "lora_strength": 0.8,
++                        "compiled": bool(compile_enabled), "torch": torch.__version__,
++                        "gpu": torch.cuda.get_device_name(0)}
++            if not (Path(blocks_dir) / "index.json").exists():
++                t0 = time.monotonic()
++                ltx_blocks.build(prepared, blocks_dir, identity=identity, torch=torch)
++                print(f"[stage2] LTX fused block file built in {time.monotonic() - t0:.1f} s", flush=True)
++            index = ltx_blocks.load_index(blocks_dir, identity)
++            resident = ltx_blocks.resident_blocks(index, os.environ.get("SOL_H3_LTX_RESIDENT_BLOCKS", "auto"),
++                                                  float(os.environ.get("SOL_H3_LTX_RAM_RESERVE_GIB", "12")))
++            models.streaming_transformer = ltx_blocks.build_streaming_wrapper(
++                prepared, blocks_dir, device=models.device, dtype=models.dtype, resident=resident,
++                depth=int(os.environ.get("SOL_H3_LTX_READ_AHEAD", "3")), torch=torch,
++                verify=os.environ.get("SOL_H3_LTX_VERIFY", "0") == "1")
++            models.ltx_block_stats = models.streaming_transformer.sol_h3_block_source.stats
++        else:
++            models.streaming_transformer = prepared.build(
++                device=models.device, dtype=models.dtype,
++                cpu_slots_count=int(slots) if slots else None)
+         models.transformer = X0Model(SequenceParallelModelWrapper(
+             models.streaming_transformer, manager)).eval().requires_grad_(False)
+         # Retain the released Triton Sol implementation on SM120. The generic
+@@ -134,6 +241,7 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
              attn_mgr=manager, registry=registry,
              tracker=base.TransformerWeightTracker(group=dist.group.WORLD, no_lora_swap=True))
          models.transformer = stage._build_transformer(video_tools=models.video_tools).requires_grad_(False)
@@ -2736,7 +3503,7 @@ index 04a6f36..189425f 100644
      models.sol_attention = base.Stage2SolAttention(models.transformer,
          isolate_sol_from_compile=compile_enabled)
      models.sol_backend = base._actual_sol_backend()
-@@ -149,22 +230,16 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -149,22 +257,16 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
          registry=registry, alloc_trim_strategy=base.AllocatorTrimStrategy.DEFER)
      models.audio_encoder = audio_block._encoder_builder.build(
          device=torch.device("cpu") if cpu_offload else models.device, dtype=models.dtype).eval().requires_grad_(False)
@@ -2860,6 +3627,184 @@ index 0000000..b65dac7
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
+new file mode 100644
+index 0000000..167a6f0
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
+@@ -0,0 +1,172 @@
++"""sol-h3-studio: CPU tests of the fused LTX block file reader (runtime/stage2_ops/ltx_blocks.py).
++
++Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++"""
++import hashlib
++import os
++import json
++import sys
++import tempfile
++import types
++import unittest
++from pathlib import Path
++
++import torch
++
++PACKAGE = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(PACKAGE))
++
++
++def _stub_ltx_core():
++    """ltx_core lives in the Stage2 environment; the source only needs alloc_buffer from it."""
++    if "ltx_core.block_streaming.utils" in sys.modules:
++        return
++    utils = types.ModuleType("ltx_core.block_streaming.utils")
++    utils.alloc_buffer = lambda nbytes, device, pin_memory: torch.empty(nbytes, dtype=torch.uint8)
++    for name in ("ltx_core", "ltx_core.block_streaming"):
++        sys.modules.setdefault(name, types.ModuleType(name))
++    sys.modules["ltx_core.block_streaming.utils"] = utils
++
++
++_stub_ltx_core()
++from runtime.stage2_ops import ltx_blocks  # noqa: E402
++
++
++def write_block_file(directory, sizes, seed=0):
++    generator = torch.Generator().manual_seed(seed)
++    blocks, images, offset = [], [], 0
++    with open(Path(directory) / "blocks.bin", "wb") as out:
++        for nbytes in sizes:
++            image = torch.zeros(ltx_blocks._ceil(nbytes), dtype=torch.uint8)
++            image[:nbytes] = torch.randint(0, 256, (nbytes,), dtype=torch.uint8, generator=generator)
++            data = image.numpy().tobytes()
++            out.write(data)
++            blocks.append({"offset": offset, "nbytes": nbytes, "file_nbytes": len(data),
++                           "sha256": hashlib.sha256(data[:nbytes]).hexdigest(),
++                           "layout": [["w", [nbytes // 2], "bfloat16"]]})
++            images.append(data[:nbytes])
++            offset += len(data)
++    index = {"format": ltx_blocks.FORMAT, "identity": {"test": True}, "blocks_prefix": "transformer_blocks",
++             "blocks_attr": "transformer_blocks", "num_blocks": len(sizes), "blocks": blocks}
++    (Path(directory) / "index.json").write_text(json.dumps(index))
++    return index, images
++
++
++class HybridSourceTests(unittest.TestCase):
++    def setUp(self):
++        self.dir = tempfile.TemporaryDirectory()
++        self.addCleanup(self.dir.cleanup)
++        self.sizes = [10000, 6000, 12288, 8190, 4096, 9000, 7002]
++        self.index, self.images = write_block_file(self.dir.name, self.sizes)
++
++    def run_passes(self, source, passes=3):
++        for _ in range(passes):
++            for idx in range(len(self.sizes)):
++                buf = source.get(idx)
++                self.assertEqual(bytes(buf[:self.sizes[idx]].numpy()), self.images[idx], idx)
++                self.assertEqual(source.block_layout(idx)["w"], (torch.Size([self.sizes[idx] // 2]), torch.bfloat16))
++                source.release(idx, None)
++
++    def test_every_block_comes_back_byte_exact_over_several_updates(self):
++        for resident in ([], [0, 1, 2], list(range(len(self.sizes)))):
++            for depth in (1, 2, 3, 5):
++                with self.subTest(resident=resident, depth=depth):
++                    source = ltx_blocks.HybridWeightSource(torch, self.dir.name, self.index, resident,
++                                                           depth=depth, verify=True)
++                    self.run_passes(source)
++                    streamed = len(self.sizes) - len(resident)
++                    self.assertEqual(source.stats["resident_blocks"], len(resident))
++                    self.assertEqual(source.stats["streamed_blocks"], streamed)
++                    # Each streamed block is read once per update, plus at most the read-ahead past the end.
++                    self.assertGreaterEqual(source.stats["streamed_reads"], 3 * streamed)
++                    self.assertLessEqual(source.stats["streamed_reads"], 3 * streamed + source.depth)
++                    source.cleanup()
++
++    def test_slots_are_reused_only_after_their_event(self):
++        events = []
++
++        class Event:
++            def __init__(self):
++                self.waited = False
++
++            def synchronize(self):
++                self.waited = True
++
++        source = ltx_blocks.HybridWeightSource(torch, self.dir.name, self.index, [0], depth=2)
++        for _ in range(2):
++            for idx in range(len(self.sizes)):
++                source.get(idx)
++                event = Event()
++                events.append((idx, event))
++                source.release(idx, event)
++        streamed_events = [e for idx, e in events if idx != 0]
++        # Every streamed slot was recycled at least once, and each recycle waited on the event first.
++        self.assertTrue(any(e.waited for e in streamed_events))
++        self.assertFalse(any(e.waited for idx, e in events if idx == 0))
++        source.cleanup()
++
++    def test_a_changed_block_is_refused(self):
++        path = Path(self.dir.name) / "blocks.bin"
++        data = bytearray(path.read_bytes())
++        data[self.index["blocks"][4]["offset"] + 10] ^= 0xFF
++        path.write_bytes(bytes(data))
++        source = ltx_blocks.HybridWeightSource(torch, self.dir.name, self.index, [0, 1], depth=2, verify=True)
++        with self.assertRaisesRegex(RuntimeError, "block 4 does not match"):
++            for idx in range(len(self.sizes)):
++                source.get(idx)
++                source.release(idx, None)
++        source.cleanup()
++
++    def test_index_identity_and_format_are_checked(self):
++        self.assertEqual(ltx_blocks.load_index(self.dir.name, {"test": True})["num_blocks"], len(self.sizes))
++        with self.assertRaisesRegex(RuntimeError, "built from other inputs"):
++            ltx_blocks.load_index(self.dir.name, {"test": False})
++        index = json.loads((Path(self.dir.name) / "index.json").read_text())
++        index["format"] = "other"
++        (Path(self.dir.name) / "index.json").write_text(json.dumps(index))
++        with self.assertRaisesRegex(RuntimeError, "not a"):
++            ltx_blocks.load_index(self.dir.name)
++
++
++if __name__ == "__main__":
++    unittest.main()
++
++
++class BudgetAndDefaultsTests(unittest.TestCase):
++    def setUp(self):
++        self.dir = tempfile.TemporaryDirectory()
++        self.addCleanup(self.dir.cleanup)
++        self.index, _ = write_block_file(self.dir.name, [8192, 8192, 8192, 8192])
++
++    def test_a_number_pins_that_many_first_blocks(self):
++        self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "2")), [0, 1])
++        self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "0")), [])
++        self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "99")), [0, 1, 2, 3])
++
++    def test_auto_pins_what_fits_after_the_reserve(self):
++        from unittest import mock
++        gib = 1 << 30
++        with mock.patch.object(ltx_blocks, "available_bytes", return_value=gib + 2 * 8192 + 100):
++            self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "auto", reserve_gib=1)), [0, 1])
++        with mock.patch.object(ltx_blocks, "available_bytes", return_value=gib // 2):
++            self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "auto", reserve_gib=1)), [])
++
++    def test_available_bytes_is_positive_and_at_most_memavailable(self):
++        meminfo = dict(line.split(":", 1) for line in open("/proc/meminfo").read().splitlines())
++        self.assertLessEqual(ltx_blocks.available_bytes(), int(meminfo["MemAvailable"].split()[0]) * 1024)
++        self.assertGreaterEqual(ltx_blocks.available_bytes(), 0)
++
++    def test_setting_defaults_follow_the_runtime_root(self):
++        from unittest import mock
++        from runtime import config
++        with mock.patch.dict("os.environ", {"SOL_H3_SPARK_RUNTIME_ROOT": "/r"}, clear=False):
++            for key in ("SOL_H3_FILEBACKED_DIR", "SOL_H3_LTX_BLOCKS"):
++                os.environ.pop(key, None)
++            self.assertEqual(config.stage1_scratch_dir(), "/r/scratch")
++            self.assertEqual(config.ltx_blocks_dir(), "/r/derived/ltx-fused-blocks")
++            os.environ["SOL_H3_FILEBACKED_DIR"] = "0"
++            os.environ["SOL_H3_LTX_BLOCKS"] = "off"
++            self.assertEqual(config.stage1_scratch_dir(), "")
++            self.assertEqual(config.ltx_blocks_dir(), "")
++            os.environ["SOL_H3_LTX_BLOCKS"] = "/elsewhere"
++            self.assertEqual(config.ltx_blocks_dir(), "/elsewhere")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 index 6a8c437..cbaece5 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py

@@ -84,6 +84,9 @@ if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
     PY313_VERSION=3.13.16
     HOST_PY="$UV_PYTHON_INSTALL_DIR/cpython-$PY312_VERSION-linux-x86_64-gnu/bin/python3.12"
     HOST_PY313="$UV_PYTHON_INSTALL_DIR/cpython-$PY313_VERSION-linux-x86_64-gnu/bin/python3.13"   # Stage 2
+    # the RTX 5090 patch's memory features keep their files next to the checkpoints (bin/sol-h3-studio, env.example)
+    export SOL_H3_FILEBACKED_DIR=${SOL_H3_FILEBACKED_DIR:-$(dirname -- "$SOLH3_CHECKPOINTS")/scratch}
+    export SOL_H3_LTX_BLOCKS=${SOL_H3_LTX_BLOCKS:-$(dirname -- "$SOLH3_CHECKPOINTS")/derived/ltx-fused-blocks}
 else
     HOST_PY=python3.12
 fi

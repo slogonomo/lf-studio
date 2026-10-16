@@ -93,10 +93,15 @@ export SOLH3_PORT=${SOLH3_PORT:-8190}
 export SOLH3_HOST=${SOLH3_HOST:-127.0.0.1}
 export SOLH3_PRELOAD=${SOLH3_PRELOAD:-1}
 # refuse to start below this MemAvailable (0 = no check), and on the RTX 5090 below this free GPU memory (GiB).
-# The RTX 5090 values are placeholders until measured (docs/RTX5090.md).
+# RTX 5090 (docs/RTX5090.md): a 5 s clip ran in 44 GiB of RAM (40.1 GB peak, the rest page cache) and needed 25.5 GB
+# of GPU memory next to the desktop.
 if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
-    MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-40}
-    MIN_FREE_VRAM_GIB=${SOLH3_MIN_FREE_VRAM_GIB:-24}
+    MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-42}
+    MIN_FREE_VRAM_GIB=${SOLH3_MIN_FREE_VRAM_GIB:-26}
+    # the memory features' files (runtime/config.py of the RTX 5090 patch): next to the checkpoints by default, on a
+    # disk without compression or copy-on-write (O_DIRECT reads); new directories get chattr +C where that works
+    export SOL_H3_FILEBACKED_DIR=${SOL_H3_FILEBACKED_DIR:-$(dirname -- "$SOLH3_CHECKPOINTS")/scratch}
+    export SOL_H3_LTX_BLOCKS=${SOL_H3_LTX_BLOCKS:-$(dirname -- "$SOLH3_CHECKPOINTS")/derived/ltx-fused-blocks}
 else
     MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-110}
     MIN_FREE_VRAM_GIB=0       # the DGX Spark's GPU shares the RAM checked above
@@ -257,6 +262,15 @@ for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_m
     esac
     [[ "$SOL_H3_SPARK_RUNTIME_ROOT" == /* ]] || refuse "SOL_H3_SPARK_RUNTIME_ROOT must be an absolute path"
     mkdir -p "$SOL_H3_SPARK_RUNTIME_ROOT" || refuse "cannot create SOL_H3_SPARK_RUNTIME_ROOT=$SOL_H3_SPARK_RUNTIME_ROOT"
+    if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
+        for d in "$SOL_H3_FILEBACKED_DIR" "$(dirname -- "$SOL_H3_LTX_BLOCKS")"; do
+            [[ "$d" == 0 || "$d" == off || "$d" == . ]] && continue
+            if [[ ! -d "$d" ]]; then
+                mkdir -p "$d" || refuse "cannot create $d (SOL_H3_FILEBACKED_DIR / SOL_H3_LTX_BLOCKS)"
+                chattr +C "$d" 2>/dev/null || true   # btrfs: no copy-on-write or compression, so O_DIRECT reads work
+            fi
+        done
+    fi
     [[ "$SOLH3_PATHS" == *"{task}"* ]] || refuse "SOLH3_PATHS must contain {task}"
     for t in t2va fl2va ref2va; do
         f=${SOLH3_PATHS//\{task\}/$t}
