@@ -1782,10 +1782,18 @@ index 0000000..e06fee1
 +    ids = [entry[0] for entry in entries if isinstance(entry[0], int)]
 +    return {"text_tokens": int(token_tags.sum()), "minimax_tokens": sum(1 for i in ids if i in MINIMAX_EXTRA_IDS)}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
-index a1dd805..0f908a9 100644
+index a1dd805..1c7ba2c 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
-@@ -14,6 +14,11 @@ from .stage1_ops import native, vsa, sol
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ 
+ import dataclasses
+ import functools
++import gc
+ import hashlib
+ import json
+ import os
+@@ -14,6 +15,11 @@ from .stage1_ops import native, vsa, sol
  from . import offload
  from .stage1_ops.tasks import input_spec, native_inputs, ref_lora_alpha, task_of, validate_prepared_media
  from .qwen_ops.media import reference_target_area, resolve_reference_image_size
@@ -1797,7 +1805,7 @@ index a1dd805..0f908a9 100644
  
  
  def install_reference_image_size(reference_module, target_area):
-@@ -38,29 +43,80 @@ def validate_native_attention(before, after, *, require_calls=True):
+@@ -38,29 +44,80 @@ def validate_native_attention(before, after, *, require_calls=True):
               "resolved_precision_scope": "original constructor config; actual DiT converted to FP8 afterwards; Qwen external NVFP4"}]
  
  
@@ -1884,7 +1892,23 @@ index a1dd805..0f908a9 100644
      sol_route = sol.RequestRoute(state) if attention == sol.POLICY else None
      if not is_lazy_module(pipe.modules["transformer"]) or not is_lazy_module(pipe.modules["text_encoder"]):
          raise RuntimeError("existing native lazy construction required")
-@@ -161,6 +217,12 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -85,6 +142,15 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+             def no_video_decode(*args, **kwargs):
+                 raise RuntimeError("Stage1 latent transfer must not decode generated H3 video")
+             model.decode = no_video_decode
++            # sol-h3-studio (RTX 5090): this session only encodes keyframes and references, never decodes, and the
++            # decoder is 9.7 of the VAE's 10.4 GB (FP32) that CPU offload otherwise keeps in RAM next to H3. Encoding
++            # uses the encoder and quant_conv only. SOL_H3_KEEP_VAE_DECODER=1 keeps it.
++            if os.environ.get("SOL_H3_KEEP_VAE_DECODER", "0") != "1" and isinstance(
++                    getattr(model, "decoder", None), torch.nn.Module):
++                freed = sum(p.numel() * p.element_size() for p in model.decoder.parameters())
++                model.decoder = torch.nn.Module()
++                gc.collect()
++                state["video_vae_decoder_dropped_bytes"] = freed
+             return model
+         vae.set_materialize_transform(record_condition_encoder)
+     if task == "ref2va":
+@@ -161,6 +227,12 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
                  regional.install_dense(model, state)
              else:
                  sol.install(model, state, sol_route)
@@ -1897,7 +1921,7 @@ index a1dd805..0f908a9 100644
          else:
              vsa.install_model(model, state)
              regional.install(model, state)
-@@ -169,6 +231,26 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -169,6 +241,26 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
              state["offload"] = manager.stats
          return model
      pipe.modules["transformer"].set_materialize_transform(quantize_after_merge)
@@ -1924,7 +1948,7 @@ index a1dd805..0f908a9 100644
      control.install_fa4_audit(worker)  # Native FA4 handles the two text-refiner blocks.
      original_post_init = pipe.post_init
      def post_init():
-@@ -206,13 +288,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -206,13 +298,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
          keep = {id(pipe.modules[name]) for name in ("transformer", "vae", "audio_vae")}
          for stage in pipe._stages:
              stage._lazy_modules_to_release = tuple(m for m in stage._lazy_modules_to_release if id(m) not in keep)
@@ -1993,7 +2017,7 @@ index a1dd805..0f908a9 100644
  def arm_worker(worker, case, conditioning_path, outputdir):
      import torch
      from .stage1_ops import capture, vsa
-@@ -286,8 +422,10 @@ class Session:
+@@ -286,8 +432,10 @@ class Session:
          self.task = task_of(config.get("stage1", config))
          self.attention = config.get("stage1", config).get("attention")
          self.reference_area = reference_target_area(config)
@@ -2004,7 +2028,7 @@ index a1dd805..0f908a9 100644
          if self.attention == sol.POLICY and self.task != "ref2va":
              raise ValueError("this fixed Sol policy is Ref2VA only")
          self.basic = native.load_official_entry(
-@@ -295,8 +433,9 @@ class Session:
+@@ -295,8 +443,9 @@ class Session:
          profile = self.basic.parse_args([
              "--model-path", str(Path(paths["h3_model"]).expanduser().resolve(strict=True)),
              "--prompt", "session", "--output", str(self.root), "--num-gpus", "1",
@@ -2016,7 +2040,7 @@ index a1dd805..0f908a9 100644
              "--no-warmup", "--repeats", "1"])
          if self.task == "ref2va":
              profile.vsa = False
-@@ -345,7 +484,9 @@ class Session:
+@@ -345,7 +494,9 @@ class Session:
              self.rpc(functools.partial(install_worker, task=self.task, attention=self.attention,
                                        reference_area=self.reference_area,
                                        reference_budget_source=self.reference_budget_source,
@@ -2027,7 +2051,7 @@ index a1dd805..0f908a9 100644
          except BaseException:
              self.generator.shutdown()
              self.closed = True
-@@ -411,17 +552,50 @@ class Session:
+@@ -411,17 +562,50 @@ class Session:
                  "request_transformer_forwards": forwards,
                  "request_attention_calls": attention_calls,
                  "first_request_compile_included": not bool(before["transformer_forwards"]),

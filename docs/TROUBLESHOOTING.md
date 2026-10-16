@@ -42,7 +42,8 @@ is older than NVIDIA's RTX 5090 package (a DGX Spark's, at `patches/BASE_COMMIT`
 
 **RTX 5090: `REFUSED - Sol-H3 Studio needs ~N GiB free GPU memory, only M GiB free`.** Other apps hold GPU memory
 (`nvidia-smi` lists them; so does the launcher). Close them, or set `SOLH3_MIN_FREE_VRAM_GIB` lower (0 turns the
-check off). The default is a placeholder until measured ([RTX5090.md](RTX5090.md)).
+check off) at your own risk: reference (ref2va) clips needed 27.1 GB, text clips 25.5 GB ([RTX5090.md](RTX5090.md)); below
+that a clip can fail with a CUDA out-of-memory error.
 
 **`>>> STATUS: ERROR: the server exited ...`** or **`... did not answer ... within 60 s`.** The launcher shows
 the last lines of `server.log`; the full log is in `$SOLH3_STATE_DIR`.

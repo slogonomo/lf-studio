@@ -198,7 +198,7 @@ pinned) into `~/sol-h3/bin` and GCC 14 from conda-forge into `~/sol-h3/toolchain
 
 **Start.** `bin/sol-h3-studio` as on the Spark. It skips the Docker checks, and refuses to start below
 `SOLH3_MIN_FREE_GIB` of free RAM (default 42 GiB on the RTX 5090) or `SOLH3_MIN_FREE_VRAM_GIB` of free GPU memory
-(default 26 GiB, from `nvidia-smi`), measured on a 5 s clip ([RTX5090.md](RTX5090.md)); 0 turns
+(default 27 GiB, from `nvidia-smi`), measured on every mode ([RTX5090.md](RTX5090.md)); 0 turns
 a check off. The page says "on one RTX 5090", and its clip times are marked as estimates until they are measured.
 
 Under `~/sol-h3` the RTX 5090 install also has `bin/` (uv, uvx, micromamba), `python/` (uv's CPythons),

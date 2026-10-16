@@ -93,11 +93,11 @@ export SOLH3_PORT=${SOLH3_PORT:-8190}
 export SOLH3_HOST=${SOLH3_HOST:-127.0.0.1}
 export SOLH3_PRELOAD=${SOLH3_PRELOAD:-1}
 # refuse to start below this MemAvailable (0 = no check), and on the RTX 5090 below this free GPU memory (GiB).
-# RTX 5090 (docs/RTX5090.md): a 5 s clip ran in 44 GiB of RAM (40.1 GB peak, the rest page cache) and needed 25.5 GB
-# of GPU memory next to the desktop.
+# RTX 5090 (docs/RTX5090.md): every mode, length and orientation ran in a 48 GiB RAM limit (44.3 GB peak, the rest page
+# cache; a 5 s text clip also ran in 44 GiB), and needed at most 27.1 GB of GPU memory (reference clips) next to the desktop.
 if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
     MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-42}
-    MIN_FREE_VRAM_GIB=${SOLH3_MIN_FREE_VRAM_GIB:-26}
+    MIN_FREE_VRAM_GIB=${SOLH3_MIN_FREE_VRAM_GIB:-27}
     # the memory features' files (runtime/config.py of the RTX 5090 patch): next to the checkpoints by default, on a
     # disk without compression or copy-on-write (O_DIRECT reads); new directories get chattr +C where that works
     export SOL_H3_FILEBACKED_DIR=${SOL_H3_FILEBACKED_DIR:-$(dirname -- "$SOLH3_CHECKPOINTS")/scratch}

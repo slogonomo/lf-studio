@@ -342,8 +342,8 @@ const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","n
 const MACHINES=/*machines*/{
 "spark":{"name":"one DGX Spark","times":["Times shown are ","measured on a DGX Spark"," with nothing else running."],
   "eta":{"3":40,"4":45,"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
-"rtx5090":{"name":"one RTX 5090","times":["Times shown are ","estimates for an RTX 5090",", not measured there yet."],
-  "eta":{"3":35,"4":40,"5":50,"6":60,"7":70,"8":80,"10":105,"12":130,"15":170}}
+"rtx5090":{"name":"one RTX 5090","times":["Times shown are ","measured on an RTX 5090"," (64 GB RAM, desktop running; text clips)."],
+  "eta":{"3":28,"4":28,"5":28,"6":32,"7":36,"8":40,"10":47,"12":55,"15":66}}
 }/*machines*/;
 let ETA=MACHINES.spark.eta,machine='spark';
 function applyMachine(b){const m=MACHINES[b];if(!m||b===machine)return;machine=b;ETA=m.eta;

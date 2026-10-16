@@ -178,7 +178,7 @@ class LauncherRtx5090(LauncherTest):
         code, out = self.check(SOLH3_BACKEND="rtx5090", SOLH3_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="30000")
         self.assertEqual(code, 0, out)
         self.assertIn(f"checking (package {self.package}, port", out)
-        self.assertIn("GPU memory check OK: 29 GiB free (need 26)", out)
+        self.assertIn("GPU memory check OK: 29 GiB free (need 27)", out)
         self.assertNotIn("docker", out.lower())
 
     def test_ram_floor(self):
@@ -197,7 +197,7 @@ class LauncherRtx5090(LauncherTest):
     def test_vram_floor(self):
         code, out = self.check(SOLH3_BACKEND="rtx5090", SOLH3_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="10000")
         self.assertEqual(code, 1, out)
-        self.assertIn("REFUSED - Sol-H3 Studio needs ~26 GiB free GPU memory, only 9 GiB free", out)
+        self.assertIn("REFUSED - Sol-H3 Studio needs ~27 GiB free GPU memory, only 9 GiB free", out)
         self.assertIn("SOLH3_MIN_FREE_VRAM_GIB=0", out)
         code, out = self.check(SOLH3_BACKEND="rtx5090", SOLH3_MIN_FREE_GIB="0", SOLH3_MIN_FREE_VRAM_GIB="8",
                                FAKE_VRAM_FREE_MIB="10000")
@@ -359,7 +359,7 @@ class PageTexts(unittest.TestCase):
             self.assertTrue(all(isinstance(v, int) and v > 0 for v in texts["eta"].values()), backend)
         self.assertEqual(m["spark"]["name"], "one DGX Spark")
         self.assertEqual(m["rtx5090"]["name"], "one RTX 5090")
-        self.assertIn("estimates", "".join(m["rtx5090"]["times"]))        # not measured yet: said so
+        self.assertIn("measured on an RTX 5090", "".join(m["rtx5090"]["times"]))   # measured (docs/RTX5090.md)
         self.assertIn("measured on a DGX Spark", "".join(m["spark"]["times"]))
 
     def test_static_text_is_the_spark(self):
