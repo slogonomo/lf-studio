@@ -799,7 +799,7 @@ index f3f15bb..cfadd8a 100644
          def release_all(self):
              for state in self.states:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
-index fa18e02..eac3c91 100644
+index fa18e02..4e5422a 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 @@ -6,9 +6,16 @@ from pathlib import Path
@@ -846,10 +846,13 @@ index fa18e02..eac3c91 100644
  def worker_environment(name, paths):
      env = os.environ.copy()
      env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
-@@ -47,6 +72,28 @@ def worker_environment(name, paths):
+@@ -47,6 +72,31 @@ def worker_environment(name, paths):
          env.pop("LD_LIBRARY_PATH", None)
      elif name == "stage2":
          env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
++    if name == "stage1":
++        # sol-h3-studio (RTX 5090): a Ref2VA first clip ran out of GPU memory with 1 GiB of it reserved but fragmented
++        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 +    # sol-h3-studio: persistent Stage1 compile cache (default /tmp is wiped on reboot)
 +    cache = compile_cache_root()
 +    if name == "stage1" and cache != "session":
@@ -875,7 +878,7 @@ index fa18e02..eac3c91 100644
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -79,7 +126,7 @@ class Worker:
+@@ -79,7 +129,7 @@ class Worker:
              raise
  
      def submit(self, op="run", **kwargs):
@@ -884,7 +887,7 @@ index fa18e02..eac3c91 100644
              raise ValueError("Unsupported session operation")
          self.sequence += 1
          response = self.root / f"response-{self.sequence:05d}.json"
-@@ -117,26 +164,47 @@ class Worker:
+@@ -117,26 +167,47 @@ class Worker:
  class Pipeline:
      """Reuse three isolated runtime environments and the same models for a batch.
  
@@ -939,7 +942,7 @@ index fa18e02..eac3c91 100644
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -146,63 +214,375 @@ class Pipeline:
+@@ -146,63 +217,375 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -1347,7 +1350,7 @@ index fa18e02..eac3c91 100644
                  self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -218,6 +598,9 @@ class Pipeline:
+@@ -218,6 +601,9 @@ class Pipeline:
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
              if self.qwen is not None:
                  self.qwen.call("release_idle_cache")
@@ -1357,7 +1360,7 @@ index fa18e02..eac3c91 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -234,13 +617,17 @@ class Pipeline:
+@@ -234,13 +620,17 @@ class Pipeline:
          self.save()
  
      def close(self):
@@ -2768,10 +2771,10 @@ index 7553e35..ca84f95 100644
 +            "dynamic": "packed rows (hidden states, AdaLN rows, RoPE, untile index), tile count, tile buffer rows"}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py
 new file mode 100644
-index 0000000..dae65b4
+index 0000000..e8b5c87
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py
-@@ -0,0 +1,1335 @@
+@@ -0,0 +1,1341 @@
 +"""sol-h3-studio: Stage-1 snapshot, the finished H3 transformer saved once and restored instead of rebuilt.
 +
 +Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -3904,6 +3907,12 @@ index 0000000..dae65b4
 +            self.record.update(status="SAVE_FAILED", error=f"{type(error).__name__}: {error}")
 +            print(f"[sol-h3-studio] Stage1 snapshot not saved ({type(error).__name__}: {error})", flush=True)
 +            traceback.print_exc()
++        finally:
++            # the copies made for writing stay reserved in PyTorch's cache otherwise; a Ref2VA first clip ran out of
++            # GPU memory by about that much right after a save
++            import torch
++            if torch.cuda.is_available():
++                torch.cuda.empty_cache()
 +
 +
 +def rejection_count(directory):
