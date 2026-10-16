@@ -103,9 +103,10 @@ are derived after the frozen-recipe hash check. Stage 2 refines the video agains
 a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync. Since 0.4 the prompt
 encoder reads the dialogue tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does and H3 was trained
 with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). Also since 0.4, Stage 1 and Stage 2 compile with
-static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), and a session changes its length and
-orientation in place, one worker rendering several shapes (`SOLH3_RESHAPE=0` loads the models again). All of it can
-be switched back; see [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
+static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), Stage 1's body blocks compile once per session
+for any prompt length (`SOL_H3_DYNAMIC_TEXT_LENGTH=0` compiles them per length, as upstream does), and a session
+changes its length and orientation in place, one worker rendering several shapes (`SOLH3_RESHAPE=0` loads the models
+again). All of it can be switched back; see [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 
 ## Requirements
 

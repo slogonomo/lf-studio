@@ -135,14 +135,14 @@ comparable side by side.
 
 ## Reliability: prompt-length recompiles
 
-Stage 1's transformer is compiled with static shapes, so each new prompt length (in text tokens) compiles new
+Stage 1's transformer is compiled with static shapes, so each new prompt length (in text tokens) compiled new
 graphs. FastVideo caps recompiles at 16; the 4th distinct prompt length in a session hit the limit, killed the
 worker and forced a full reload. The limit is raised (1,024; 65,536 accumulated). Tested: 7 distinct prompt
-lengths in one session, no failure. `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (experimental, off by default) stops the
-per-length graphs of the body blocks. Since 0.4 a session can also change its clip length and format, and every
-graph is static, so each pair of prompt length and clip shape compiles its own graphs, 4-5 per region (inferred). The
-limit then covers about 200-250 such pairs in one session (inferred); past it the worker fails and the clip reloads
-the models.
+lengths in one session, no failure. Since 0.4 `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (the default) stops the per-length
+graphs of the body blocks; only the two text-refiner regions still compile once per new length. A session can also
+change its clip length and format, and every graph is static. With `SOL_H3_DYNAMIC_TEXT_LENGTH=0` each pair of prompt
+length and clip shape then compiles its own graphs, 4-5 per region (inferred), and the limit covers about 200-250
+such pairs in one session (inferred); past it the worker fails and the clip reloads the models.
 
 ## Changing length or format
 
@@ -173,22 +173,22 @@ clip after such a change may wait for it. A change of mode still reloads.
 
 ## Known costs, not fixed
 
-- A new prompt length on a warm session adds 9-10 s (Stage 1 17.6 → 26.2 s, measured before 0.4). With static
-  compiles (0.4, `SOL_H3_STATIC_SHAPES=1`) the two text-refiner regions also compile once per new length, about 1-2 s
-  more (inferred). Reusing a prompt, or editing it without changing its token count, avoids it. The body blocks'
-  graphs are tied to the length through FastVideo's H3 sparse-attention metadata and tiling (`total_seq_length`,
-  the tile counts) and to the denoise step. The setting
-  `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (off by default;
-  [PATCH.md, 17](PATCH.md#17-prompt-lengths-without-recompiles-experimental)) compiles them per session (2 graphs:
-  the first denoise step and the rest), not per length. Measured on a separate test studio (2026-10-13, 19 clips
-  each way): a new length cost 0.0-0.8 s in t2va and fl2va with it, 2.3-9.7 s without; known-length clips +0.3 to
+- A new prompt length on a warm session added 9-10 s before 0.4 (Stage 1 17.6 → 26.2 s): the body blocks' graphs
+  were tied to the length through FastVideo's H3 sparse-attention metadata and tiling (`total_seq_length`, the tile
+  counts) and to the denoise step. Since 0.4 `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (the default;
+  [PATCH.md, 17](PATCH.md#17-prompt-lengths-without-recompiles)) compiles them per session (2 graphs: the first
+  denoise step and the rest), not per length. What is left is the two text-refiner regions, which compile once per
+  new length with static compiles (0.4, `SOL_H3_STATIC_SHAPES=1`). In the staging check of 0.4 (a separate test
+  studio on the same DGX Spark, 2026-10-14, 19 clips in 5 sessions, both settings on) a new prompt length cost 1.9 s
+  in Stage 1 over the same prompt repeated later when its text-refiner graph was new to the compile cache, and 0.5 s
+  when it was not (t2va 5 s); no body block compiled for it. Every pair of clips that should match was bit-identical,
+  and so were 5 clips against renders made before these settings. Reusing a prompt, or editing it without changing
+  its token count, avoids even that. An earlier run with dynamic compiles (`SOL_H3_STATIC_SHAPES=0`; 2026-10-13, 19 clips each way):
+  a new length cost 0.0-0.8 s in t2va and fl2va with the setting, 2.3-9.7 s without; known-length clips +0.3 to
   +0.9 %; every warm clip bit-identical. The text refiner still compiled once more at a session's second length
-  (2.6 s in that ref2va clip). Those runs had dynamic compiles (`SOL_H3_STATIC_SHAPES=0`). With static compiles the
-  body blocks keep their 2 graphs per session, since a dimension marked dynamic stays dynamic, and the text refiner
-  compiles at every new length, as above (graph counts from a CPU test with a stand-in model). The GPU check of both
-  settings together runs again in staging. In ref2va the dense body used to become length-dynamic at a session's
-  second length, so its third new length cost nothing even without the setting (0.0 s in that run). With static
-  compiles it compiles per new length again, as in t2va and fl2va, unless `SOL_H3_DYNAMIC_TEXT_LENGTH=1` (inferred).
+  (2.6 s in that ref2va clip). In ref2va the dense body used to become length-dynamic at a session's second length,
+  so its third new length cost nothing even without the setting (0.0 s in that run). With static compiles and
+  `SOL_H3_DYNAMIC_TEXT_LENGTH=0` it compiles per new length again, as in t2va and fl2va (inferred).
 - Cold vs warm overhead (~55 s), measured before the last fix: Stage 2 first compile 15-20 s, Stage 1 LoRA merge
   + FP8 ~7 s, Stage 1 first-denoise compile ~11 s, audio VAE 6 s.
 - The numbers above assume the compile cache is warm from an earlier run of the same mode, format and length.
@@ -210,7 +210,7 @@ clip after such a change may wait for it. A change of mode still reloads.
 | `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)` |
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
 | `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip, or right after a change back to 10 s or less |
-| `SOL_H3_DYNAMIC_TEXT_LENGTH` | 0 | 1 = Stage 1's body blocks compile per session, not per length (experimental) |
+| `SOL_H3_DYNAMIC_TEXT_LENGTH` | 1 | 0 = Stage 1's body blocks compile per prompt length, not once per session |
 | `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 | `SOLH3_RESHAPE` (web UI) | 1 | 0 = another length or format closes the session and loads the models again |
 

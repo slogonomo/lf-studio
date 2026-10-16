@@ -27,6 +27,16 @@ def compile_dynamic():
     return False if value == "1" else None
 
 
+def dynamic_text_length(environ=None):
+    """The patch's SOL_H3_DYNAMIC_TEXT_LENGTH check (runtime/config.py), same rules."""
+    import os
+    raw = (os.environ if environ is None else environ).get("SOL_H3_DYNAMIC_TEXT_LENGTH", "")
+    value = raw.strip() or "1"
+    if value not in ("0", "1"):
+        raise ValueError(f"SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not {raw!r}")
+    return value == "1"
+
+
 PROMPT_TOKEN_MODES = ("plain", "minimax")
 
 

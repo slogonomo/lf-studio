@@ -58,11 +58,13 @@ Environment:
                              submit gets 429 until one has started.
   SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
 
-SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain) and SOL_H3_STATIC_SHAPES (1 or 0) are
-patch settings (see docs/PATCH.md), checked at start: another value stops the server with a message. So does a value,
-set or the default, that the applied patch is too old to give. 0.3's patch has neither of the last two: it tokenizes
-as plain and compiles as SOL_H3_STATIC_SHAPES=0 does, so the defaults stop the server until install/10-sana.sh has
-applied the current patch.
+SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0) and
+SOL_H3_DYNAMIC_TEXT_LENGTH (1 or 0; 1, the default since 0.4, compiles Stage 1's body blocks once per session for any
+prompt length, 0 once per prompt length) are patch settings (see docs/PATCH.md), checked at start: another value
+stops the server with a message, here and not in every Stage-1 load. So does a value, set or the default, that the
+applied patch is too old to give. 0.3's patch has none of the last three: it tokenizes as plain and compiles as
+SOL_H3_STATIC_SHAPES=0 and SOL_H3_DYNAMIC_TEXT_LENGTH=0 do, so the defaults stop the server until install/10-sana.sh
+has applied the current patch.
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
@@ -118,7 +120,8 @@ except ImportError as error:
 import runtime.config  # noqa: E402
 for setting, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
                                              ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4"),
-                                             ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4")):
+                                             ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4"),
+                                             ("SOL_H3_DYNAMIC_TEXT_LENGTH", "dynamic_text_length", "1", "0", "0.4")):
     setting_check, value = getattr(runtime.config, name, None), os.environ.get(setting, "")
     if setting_check is None and (value.strip().lower() or default) != older:
         asked = f"{setting}={value}" if value.strip() else f"{setting}={default} (the default since {since})"

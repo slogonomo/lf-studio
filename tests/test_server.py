@@ -1110,15 +1110,33 @@ class BadStage2Audio(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class BadDynamicTextLength(unittest.TestCase):
+    """SOL_H3_DYNAMIC_TEXT_LENGTH (a patch setting, #41; on by default since 0.4) is checked at start too: a bad value
+    stops the studio instead of failing every Stage-1 load once the transformer is in memory."""
+
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        try:
+            for i, value in enumerate(("on", "2")):
+                with self.assertRaises(RuntimeError) as e:
+                    StubStudio(d / f"a{i}", env={"SOL_H3_DYNAMIC_TEXT_LENGTH": value}).start()
+                self.assertIn(f"SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not {value!r}", str(e.exception))
+            for i, value in enumerate(("0", " ")):                         # the opt-out, and empty (the default)
+                studio = StubStudio(d / f"b{i}", env={"SOL_H3_DYNAMIC_TEXT_LENGTH": value}).start()
+                studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def older_patch_package(directory, version):
-    """The stub runtime as an older patch has it. 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS or
-    SOL_H3_STATIC_SHAPES; 0.2's has none of them. Such a patch tokenizes as plain does and compiles as
-    SOL_H3_STATIC_SHAPES=0 does, and 0.2's refines as joint does."""
+    """The stub runtime as an older patch has it. 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS,
+    SOL_H3_STATIC_SHAPES or SOL_H3_DYNAMIC_TEXT_LENGTH; 0.2's has none of them. Such a patch tokenizes as plain does
+    and compiles as SOL_H3_STATIC_SHAPES=0 and SOL_H3_DYNAMIC_TEXT_LENGTH=0 do, and 0.2's refines as joint does."""
     package = Path(directory) / f"package-{version}"
     shutil.copytree(Path(__file__).resolve().parent / "stub" / "runtime", package / "runtime",
                     ignore=shutil.ignore_patterns("__pycache__"))
-    missing = {"0.3": "prompt_tokens_mode, compile_dynamic",
-               "0.2": "stage2_audio_mode, prompt_tokens_mode, compile_dynamic"}[version]
+    missing = {"0.3": "prompt_tokens_mode, compile_dynamic, dynamic_text_length",
+               "0.2": "stage2_audio_mode, prompt_tokens_mode, compile_dynamic, dynamic_text_length"}[version]
     with (package / "runtime" / "config.py").open("a") as f:
         f.write(f"\ndel {missing}   # the patch of {version} has no such setting\n")
     return package
@@ -1132,17 +1150,23 @@ OLDER_PATCH_CASES = (
     ("0.3", {"SOL_H3_PROMPT_TOKENS": "minimax"}, "SOL_H3_PROMPT_TOKENS=minimax"),
     ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain"}, "SOL_H3_STATIC_SHAPES=1 (the default since 0.4)"),
     ("0.3", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "1"}, "SOL_H3_STATIC_SHAPES=1"),
-    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain", "SOL_H3_STATIC_SHAPES": " 0"}, None),
-    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0"},
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain", "SOL_H3_STATIC_SHAPES": " 0"},
+     "SOL_H3_DYNAMIC_TEXT_LENGTH=1 (the default since 0.4)"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "1"},
+     "SOL_H3_DYNAMIC_TEXT_LENGTH=1"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain", "SOL_H3_STATIC_SHAPES": " 0", "SOL_H3_DYNAMIC_TEXT_LENGTH": " 0"}, None),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0"},
      "SOL_H3_STAGE2_AUDIO=frozen (the default since 0.3)"),
-    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_STAGE2_AUDIO": "frozen"},
-     "SOL_H3_STAGE2_AUDIO=frozen"),
-    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_STAGE2_AUDIO": "JOINT"}, None),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0",
+             "SOL_H3_STAGE2_AUDIO": "frozen"}, "SOL_H3_STAGE2_AUDIO=frozen"),
+    ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0",
+             "SOL_H3_STAGE2_AUDIO": "JOINT"}, None),
 )
 
 
 def older_patch_settings(settings):
-    return {"SOL_H3_PROMPT_TOKENS": "", "SOL_H3_STAGE2_AUDIO": "", "SOL_H3_STATIC_SHAPES": "", **settings}
+    return {"SOL_H3_PROMPT_TOKENS": "", "SOL_H3_STAGE2_AUDIO": "", "SOL_H3_STATIC_SHAPES": "",
+            "SOL_H3_DYNAMIC_TEXT_LENGTH": "", **settings}
 
 
 class BadPromptTokens(unittest.TestCase):
@@ -1184,8 +1208,8 @@ class BadPromptTokens(unittest.TestCase):
 
 class LauncherSettingsCheck(unittest.TestCase):
     """bin/sol-h3-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS,
-    SOL_H3_STATIC_SHAPES) in the package, here the stub runtime, and refuses a bad value with its message, or a value
-    an older patch can't give (#38)."""
+    SOL_H3_STATIC_SHAPES, SOL_H3_DYNAMIC_TEXT_LENGTH) in the package, here the stub runtime, and refuses a bad value
+    with its message, or a value an older patch can't give (#38)."""
 
     def setUp(self):
         self.d = Path(tempfile.mkdtemp(prefix="sol-h3-check-"))
@@ -1217,6 +1241,10 @@ class LauncherSettingsCheck(unittest.TestCase):
         code, out = self.check(SOL_H3_STATIC_SHAPES="yes")
         self.assertEqual(code, 1, out)
         self.assertIn("REFUSED - SOL_H3_STATIC_SHAPES must be 1 or 0", out)
+        self.assertEqual(self.check(SOL_H3_DYNAMIC_TEXT_LENGTH="0")[0], 0)
+        code, out = self.check(SOL_H3_DYNAMIC_TEXT_LENGTH="on")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not 'on'", out)
 
     def test_older_patch(self):
         """A checkout with an older patch (no settings checks, or one of them) passes only when every setting, set or
