@@ -621,7 +621,7 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
-index f3f15bb..cfadd8a 100644
+index f3f15bb..183572c 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
 @@ -1,5 +1,8 @@
@@ -633,7 +633,7 @@ index f3f15bb..cfadd8a 100644
  
  
  def enabled(config):
-@@ -20,12 +23,53 @@ def mutation_scope(module):
+@@ -20,12 +23,80 @@ def mutation_scope(module):
      return state.mutate() if state is not None else nullcontext()
  
  
@@ -651,7 +651,11 @@ index f3f15bb..cfadd8a 100644
 +    path = os.path.join(directory, f"stage1-{os.getpid()}-{counter[0]}.bin")
 +    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
 +    try:
-+        os.ftruncate(fd, nbytes)
++        try:
++            os.posix_fallocate(fd, 0, nbytes)   # reserve the blocks now: a full disk is an error here, not a SIGBUS
++        except OSError as error:
++            raise RuntimeError(f"no room for H3's construction pages in {directory} ({error}); free disk space there "
++                               "or set SOL_H3_FILEBACKED_DIR=0 (then H3 is built in RAM, about 73 GB)") from error
 +        storage = torch.UntypedStorage.from_file(path, shared=True, nbytes=nbytes)
 +    finally:
 +        os.close(fd)
@@ -676,6 +680,29 @@ index f3f15bb..cfadd8a 100644
 +        libc.madvise(ctypes.c_void_p(start), ctypes.c_size_t(end - start), 3)   # MADV_WILLNEED
 +
 +
++def _log_gpu_holders(torch):
++    """sol-h3-studio: on a CUDA out-of-memory, print what this process holds on the GPU (diagnostics only)."""
++    import gc
++    import sys
++    try:
++        sizes = {}
++        for obj in gc.get_objects():
++            if not issubclass(type(obj), torch.Tensor):     # type(): no attribute lookup on lazy proxies
++                continue
++            try:
++                if obj.is_cuda:
++                    storage = obj.untyped_storage()
++                    sizes[storage.data_ptr()] = (storage.nbytes(), tuple(obj.shape), str(obj.dtype))
++            except Exception:               # fake/functional tensors from compile tracing
++                continue
++        big = sorted(sizes.values(), reverse=True)
++        print(f"[sol-h3-studio] GPU out of memory: {torch.cuda.memory_allocated() / 2**30:.2f} GiB allocated, "
++              f"{sum(n for n, _s, _d in big) / 2**30:.2f} GiB in {len(big)} live tensor storages; largest: "
++              + "; ".join(f"{n / 2**20:.0f} MiB {s} {d}" for n, s, d in big[:25]), file=sys.stderr, flush=True)
++    except Exception as error:          # diagnostics must not hide the original error
++        print(f"[sol-h3-studio] GPU holder listing failed: {error}", file=sys.stderr, flush=True)
++
++
 +def install_stage1_loader(restore=None):
      """Use native CPU loading and LoRA scopes, including FP8 nonpersistent buffers.
  
@@ -688,7 +715,7 @@ index f3f15bb..cfadd8a 100644
      """
      import torch
      from fastvideo.models.loader import component_loader
-@@ -41,14 +85,25 @@ def install_stage1_loader():
+@@ -41,14 +112,25 @@ def install_stage1_loader():
          # the native stage must not later move the whole DiT onto CUDA.
          kwargs["cpu_offload"] = True
          kwargs["device"] = torch.device("cpu")
@@ -714,16 +741,22 @@ index f3f15bb..cfadd8a 100644
              module.to("cpu")
  
          @torch.compiler.disable
-@@ -61,6 +116,8 @@ def install_stage1_loader():
+@@ -60,7 +142,13 @@ def install_stage1_loader():
+             self.saved = ({name: param.detach() for name, param in self.saved[0].items()}, self.saved[1])
              if any(t.device.type != "cpu" for group in self.saved for t in group.values()):
                  raise RuntimeError("An idle offloaded block retained GPU weights")
-             self.module.to("cuda:0")
+-            self.module.to("cuda:0")
++            try:
++                self.module.to("cuda:0")
++            except torch.OutOfMemoryError:
++                _log_gpu_holders(torch)
++                raise
 +            if READ_AHEAD and "pinned_block_bytes" not in self.stats and getattr(self, "next", None) is not None:
 +                _will_need(torch, self.next.module)
              self.stats["block_loads"] += 1
              self.stats["active_blocks"] += 1
              self.stats["max_active_blocks"] = max(self.stats["max_active_blocks"], self.stats["active_blocks"])
-@@ -70,7 +127,22 @@ def install_stage1_loader():
+@@ -70,7 +158,22 @@ def install_stage1_loader():
              if self.saved is None:
                  return
              torch.cuda.synchronize()
@@ -747,7 +780,7 @@ index f3f15bb..cfadd8a 100644
                  # LoRA merge, exact lookup replacement and FP8 conversion may
                  # change tensor names, shapes and dtypes. Capture the new state.
                  self.module.to("cpu")
-@@ -116,6 +188,8 @@ def install_stage1_loader():
+@@ -116,6 +219,8 @@ def install_stage1_loader():
              self.states, self.handles = [], []
              for block in blocks:
                  state = State(block, self.stats)
@@ -756,7 +789,7 @@ index f3f15bb..cfadd8a 100644
                  block._sol_h3_offload_state = state
                  self.states.append(state)
                  ModuleHookManager.get_from_or_default(block).append_forward_hook(Hook(state))
-@@ -141,6 +215,41 @@ def install_stage1_loader():
+@@ -141,6 +246,41 @@ def install_stage1_loader():
                      lambda module, args, output, state=state: state.release(), always_call=True))
              self.stats["fp8_buffer_count"] = sum(
                  name.endswith("_fp8_weight") for state in self.states for name, _ in state.module.named_buffers())
@@ -1383,7 +1416,7 @@ index fa18e02..4e5422a 100644
 +                finally:
 +                    self._close_resident_qwen()    # sol-h3-studio: one whose start began before `closing` was set
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
-index b2ef6f5..24d64a9 100644
+index b2ef6f5..2b3decc 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
 @@ -10,6 +10,9 @@ import time
@@ -1405,7 +1438,7 @@ index b2ef6f5..24d64a9 100644
      from safetensors import safe_open
      from .qwen_ops.direct_io import (
          DIRECT_CHUNK_BYTES, DIRECT_ALIGNMENT_BYTES, read_safetensors_records,
-@@ -140,9 +145,141 @@ def load_resident_checkpoint(checkpoint, torch):
+@@ -140,9 +145,145 @@ def load_resident_checkpoint(checkpoint, torch):
              empty_host_cache()
  
  
@@ -1436,8 +1469,12 @@ index b2ef6f5..24d64a9 100644
 +    start = min(r.file_offset for r in records) // align * align
 +    end = max(r.file_offset + r.nbytes for r in records)
 +    raws = [torch.empty(r.nbytes, dtype=torch.uint8, device='cuda:0') for r in records]
-+    backing = torch.empty(QWEN_WINDOWS * window + align, dtype=torch.uint8, pin_memory=True)
-+    base = backing[(-backing.data_ptr()) % align:]
++    # exactly 1 GiB: the pinned host allocator rounds any request up to a power of two (1 GiB + 4 KiB pins 2 GiB);
++    # its allocations start on a page boundary
++    backing = torch.empty(QWEN_WINDOWS * window, dtype=torch.uint8, pin_memory=True)
++    if backing.data_ptr() % align:
++        raise RuntimeError("pinned staging buffer is not page-aligned")
++    base = backing
 +    slots = [base[i * window:(i + 1) * window] for i in range(QWEN_WINDOWS)]
 +    events = [None] * QWEN_WINDOWS
 +    stream = torch.cuda.Stream()
@@ -1547,7 +1584,7 @@ index b2ef6f5..24d64a9 100644
          checkpoint = Path(paths['qwen_checkpoint']).expanduser().resolve(strict=True)
          comfy_root = Path(paths['comfy_root']).expanduser().resolve(strict=True)
          self.work_dir = Path(work_dir).resolve()
-@@ -182,6 +319,9 @@ class Session:
+@@ -182,6 +323,9 @@ class Session:
          finally:
              utils.load_torch_file = original_load
          self.clip = self.owner.clip
@@ -1557,7 +1594,7 @@ index b2ef6f5..24d64a9 100644
          import comfy.model_management as management
          management.load_models_gpu([self.clip.patcher], force_full_load=True)
          self.clip.cond_stage_model.eval().requires_grad_(False)
-@@ -222,7 +362,7 @@ class Session:
+@@ -222,7 +366,7 @@ class Session:
              'checkpoint_page_cache_advice': self.checkpoint_page_cache_advice,
              'startup_checkpoint_reads': self.startup_checkpoint_reads,
              'startup_reader': self.startup_reader,
@@ -1566,7 +1603,7 @@ index b2ef6f5..24d64a9 100644
  
      def release_idle_cache(self):
          """Protocol name reused for metadata-only residency evidence; no offload."""
-@@ -239,6 +379,20 @@ class Session:
+@@ -239,6 +383,20 @@ class Session:
              'weight_storage_unchanged': True, 'weight_residency': info,
              'resources': resource_snapshot(self.torch)}
  
@@ -1587,7 +1624,7 @@ index b2ef6f5..24d64a9 100644
      def run(self, case, output_root):
          if self.closed or self.failed:
              raise RuntimeError('Qwen resident session is unavailable')
-@@ -250,18 +404,31 @@ class Session:
+@@ -250,18 +408,31 @@ class Session:
          root.mkdir(parents=True, exist_ok=False)
          torch = self.torch
          try:
@@ -1620,7 +1657,7 @@ index b2ef6f5..24d64a9 100644
              payload = {'prompt': case['prompt'], **identity,
                  'prompt_embeds': value.cond, 'text_token_tags': value.minimax_token_tags}
              path = root / 'conditioning.pt'
-@@ -269,12 +436,15 @@ class Session:
+@@ -269,12 +440,15 @@ class Session:
              with temporary.open('xb') as stream:
                  torch.save(payload, stream)
              temporary.replace(path)
@@ -1636,7 +1673,7 @@ index b2ef6f5..24d64a9 100644
                  'producer_mode': 'resident', 'model_load_count': self.model_load_count,
                  'request_index': self.completed_requests, 'residency_before': before,
                  'residency_after': after, 'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
-@@ -284,6 +454,7 @@ class Session:
+@@ -284,6 +458,7 @@ class Session:
                  'completion_protocol': 'resident_RPC_after_atomic_payload_commit'}
              receipt['conditioning_path'] = str((root / 'conditioning.json').resolve())
              receipt['request_wall_s'] = (receipt['completed_monotonic_ns'] - started_ns) / 1e9
@@ -1823,7 +1860,7 @@ index 0000000..e06fee1
 +    ids = [entry[0] for entry in entries if isinstance(entry[0], int)]
 +    return {"text_tokens": int(token_tags.sum()), "minimax_tokens": sum(1 for i in ids if i in MINIMAX_EXTRA_IDS)}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
-index a1dd805..e7df9f8 100644
+index a1dd805..54c6bbf 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 @@ -3,17 +3,24 @@ from __future__ import annotations
@@ -1982,7 +2019,7 @@ index a1dd805..e7df9f8 100644
                  if not module.merged and not module.disable_lora:
                      raise RuntimeError(f"LoRA not merged before FP8: {name}")
                  if task == "ref2va" and module.merged and (module.lora_alpha, module.lora_rank) != (8, 128):
-@@ -124,24 +203,36 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -124,24 +203,37 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
                  merged += int(module.merged)
          pipe.lora_layers.clear()
          pipe.lora_adapters.clear()
@@ -1993,6 +2030,7 @@ index a1dd805..e7df9f8 100644
 -                module.quant_config = FP8Config()
 -                module.quant_method = FP8QuantizeMethod("tensor")
 -                tagged.append(name)
++        gc.collect()        # sol-h3-studio: Ref2VA's LoRA wrappers form cycles; free them before the GPU passes below
 +        if restored:
 +            # sol-h3-studio: the merge, the exact lookup and the FP8 conversion of the build that saved the snapshot
 +            # are in its tensors and structure (snapshot.Controller.restore); adopt checks the module tree against
@@ -2028,7 +2066,7 @@ index a1dd805..e7df9f8 100644
          original_model_forward = model.forward
          def observed_model_forward(*args, **kwargs):
              state["transformer_forwards"] += 1
-@@ -161,14 +252,57 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -161,14 +253,57 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
                  regional.install_dense(model, state)
              else:
                  sol.install(model, state, sol_route)
@@ -2087,7 +2125,7 @@ index a1dd805..e7df9f8 100644
      control.install_fa4_audit(worker)  # Native FA4 handles the two text-refiner blocks.
      original_post_init = pipe.post_init
      def post_init():
-@@ -206,13 +340,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -206,13 +341,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
          keep = {id(pipe.modules[name]) for name in ("transformer", "vae", "audio_vae")}
          for stage in pipe._stages:
              stage._lazy_modules_to_release = tuple(m for m in stage._lazy_modules_to_release if id(m) not in keep)
@@ -2156,7 +2194,7 @@ index a1dd805..e7df9f8 100644
  def arm_worker(worker, case, conditioning_path, outputdir):
      import torch
      from .stage1_ops import capture, vsa
-@@ -286,8 +474,10 @@ class Session:
+@@ -286,8 +475,10 @@ class Session:
          self.task = task_of(config.get("stage1", config))
          self.attention = config.get("stage1", config).get("attention")
          self.reference_area = reference_target_area(config)
@@ -2167,7 +2205,7 @@ index a1dd805..e7df9f8 100644
          if self.attention == sol.POLICY and self.task != "ref2va":
              raise ValueError("this fixed Sol policy is Ref2VA only")
          self.basic = native.load_official_entry(
-@@ -295,8 +485,9 @@ class Session:
+@@ -295,8 +486,9 @@ class Session:
          profile = self.basic.parse_args([
              "--model-path", str(Path(paths["h3_model"]).expanduser().resolve(strict=True)),
              "--prompt", "session", "--output", str(self.root), "--num-gpus", "1",
@@ -2179,7 +2217,7 @@ index a1dd805..e7df9f8 100644
              "--no-warmup", "--repeats", "1"])
          if self.task == "ref2va":
              profile.vsa = False
-@@ -345,7 +536,9 @@ class Session:
+@@ -345,7 +537,9 @@ class Session:
              self.rpc(functools.partial(install_worker, task=self.task, attention=self.attention,
                                        reference_area=self.reference_area,
                                        reference_budget_source=self.reference_budget_source,
@@ -2190,7 +2228,7 @@ index a1dd805..e7df9f8 100644
          except BaseException:
              self.generator.shutdown()
              self.closed = True
-@@ -411,17 +604,50 @@ class Session:
+@@ -411,17 +605,50 @@ class Session:
                  "request_transformer_forwards": forwards,
                  "request_attention_calls": attention_calls,
                  "first_request_compile_included": not bool(before["transformer_forwards"]),
@@ -2321,7 +2359,7 @@ index 81e37ba..b232ea5 100644
      state = worker._sol_h3_capture
      if state["target"] is not None or "native_normalized" in state:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/lookup.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/lookup.py
-index e3bc890..ee30be7 100644
+index e3bc890..8d7ce68 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/lookup.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/lookup.py
 @@ -1,6 +1,11 @@
@@ -2482,7 +2520,7 @@ index e3bc890..ee30be7 100644
                  passed = all(torch.equal(replacement(getattr(lookup, f"indices_{index // 4}_{index % 4}"))[0], output)
                               and bool(torch.isfinite(output).all()) for index, output in enumerate(reference))
                  if not passed:
-@@ -128,10 +174,48 @@ def install_exact_t2va_lookup(model, pipe, task="t2va"):
+@@ -128,10 +174,53 @@ def install_exact_t2va_lookup(model, pipe, task="t2va"):
                  record["verification"].append({"name": name, "step_rows": [len(row) for row in plan],
                                                 "all_mode_step_rows": [[len(row) for row in rows] for rows in plans],
                                                 "all_four_steps_bitwise_equal": True, "max_abs": 0.0})
@@ -2491,6 +2529,11 @@ index e3bc890..ee30be7 100644
 -    model.time_proj = lookup
 -    model.time_embedder = identity
 +                replace_projection(target, replacement)
++                # sol-h3-studio: free the replaced projection's GPU copy now. Something may still reference the old
++                # module (Ref2VA's LoRA wrappers form reference cycles), and with block offload its weights were just
++                # moved to the GPU: 50 x 0.5 GiB stayed there until the collector ran, enough to run out of memory.
++                linear.to("meta")
++                del linear, reference
 +    install_time_path(model, lookup, identity)
      record.update(removed_parameter_bytes=removed_bytes, lookup_table_bytes=table_bytes,
                    all_51_lookup_projections_bitwise_bf16=len(record["verification"]) == 51)
@@ -4659,10 +4702,10 @@ index 4e6e910..47a0c62 100644
      return output.to(dtype=normalized.dtype)
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
 new file mode 100644
-index 0000000..c1065cf
+index 0000000..af06cec
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,519 @@
 +"""sol-h3-studio: LTX refiner blocks with the distilled LoRA fused once, streamed partly from disk.
 +
 +Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -4763,7 +4806,7 @@ index 0000000..c1065cf
 +
 +# --------------------------------------------------------------------------- build (once, stage2 env, GPU)
 +
-+def build(builder, output_dir, *, identity, torch):
++def build(builder, output_dir, *, identity, torch, exist_ok=False):
 +    """Write the fused block file for ``builder`` (an LTX ``StreamingModelBuilder`` with its LoRA).
 +
 +    Mirrors ``StreamingModelBuilder._build_pinned_source`` and ``_load_non_block_weights``, one block at a time
@@ -4778,7 +4821,7 @@ index 0000000..c1065cf
 +    from ltx_core.loader.registry import ModelRegistry
 +
 +    output_dir = Path(output_dir)
-+    output_dir.mkdir(parents=True, exist_ok=False)
++    output_dir.mkdir(parents=True, exist_ok=exist_ok)
 +    dtype, device = torch.bfloat16, torch.device("cuda", 0)
 +    registry = ModelRegistry(cache_models=False, cache_weights=False)
 +    builder = builder.with_registry(registry)
@@ -4820,6 +4863,8 @@ index 0000000..c1065cf
 +            offset += len(data)
 +            del block_sd, views, fill, image, data
 +            print(f"[ltx-blocks] block {idx + 1}/{len(blocks)} fused", flush=True)
++        out.flush()
++        os.fsync(out.fileno())
 +
 +    # Non-block weights: same restricted load and fuse as _load_non_block_weights (on the GPU), saved to CPU.
 +    non_block_ops = builder._filtered_sd_ops("non_block", frozenset(mk for _key, mk in non_block_keys))
@@ -4836,8 +4881,98 @@ index 0000000..c1065cf
 +    index["blocks_nbytes"] = offset
 +    with open(output_dir / "index.json.tmp", "w") as stream:
 +        json.dump(index, stream, indent=1)
++        stream.flush()
++        os.fsync(stream.fileno())
 +    os.replace(output_dir / "index.json.tmp", output_dir / "index.json")
 +    return index
++
++
++KNOWN_FILES = ("blocks.bin", "non_block.safetensors", "index.json", "index.json.tmp")
++KEEP = 2
++
++
++def identity_of(paths, prepared, compile_enabled, torch):
++    """What the fused bytes and their layout depend on: the transformer and LoRA files (by content markers, as the
++    Stage-1 snapshots identify theirs), the LoRA strength the builder carries, LTX's loading and fusing code, whether
++    blocks are compiled (it renames their keys), torch and the GPU (the fusing GEMMs run on it)."""
++    import ltx_core.block_streaming.builder as builder_module
++    import ltx_core.loader.fuse_loras as fuse_module
++    from ..stage1_ops.snapshot import weight_file
++    loras = list(getattr(prepared, "loras", ()))
++    code = hashlib.sha256()
++    for module in (builder_module, fuse_module):
++        code.update(Path(module.__file__).read_bytes())
++    return {"format": FORMAT, "transformer": weight_file(paths["transformer"]),
++            "loras": [{**weight_file(lora.path), "strength": float(lora.strength)} for lora in loras],
++            "fuse_rule": getattr(getattr(prepared, "fuse_rule", None), "fuse_fn", None).__name__
++            if getattr(getattr(prepared, "fuse_rule", None), "fuse_fn", None) else None,
++            "ltx_code_sha256": code.hexdigest(), "compiled": bool(compile_enabled), "torch": torch.__version__,
++            "gpu": torch.cuda.get_device_name(0)}
++
++
++def _identity_key(identity):
++    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
++
++
++def _remove_known(directory):
++    """Delete a block-file folder by the names this module writes (nothing else is touched)."""
++    directory = Path(directory)
++    for name in KNOWN_FILES:
++        try:
++            (directory / name).unlink()
++        except FileNotFoundError:
++            pass
++    try:
++        directory.rmdir()
++    except OSError:
++        pass                            # something else is in it: leave it
++
++
++def ensure(prepared, root, identity, *, torch, log=print):
++    """The block-file folder for ``identity`` under ``root``: reused when complete, else built once under a lock
++    into a temporary folder and renamed into place, so an interrupted build never leaves a folder that looks done."""
++    import fcntl
++    root = Path(root)
++    root.mkdir(parents=True, exist_ok=True)
++    target = root / _identity_key(identity)
++    if (target / "index.json").exists():
++        load_index(target, identity)
++        os.utime(target / "index.json")
++        return target, False
++    with open(root / ".build.lock", "a+") as lock:
++        fcntl.flock(lock, fcntl.LOCK_EX)    # another worker may be building the same file
++        if (target / "index.json").exists():
++            load_index(target, identity)
++            return target, False
++        for stale in root.glob(".tmp-*"):   # a build that died part way
++            pid = stale.name.rsplit("-", 1)[-1]
++            if not (pid.isdigit() and Path(f"/proc/{pid}").exists()):
++                _remove_known(stale)
++        if (target).exists():
++            _remove_known(target)           # an earlier incomplete folder (no index.json)
++        temporary = root / f".tmp-{target.name}-{os.getpid()}"
++        temporary.mkdir()
++        from ..stage1_ops.snapshot import set_nocow
++        if set_nocow(temporary) is False:
++            log(f"[ltx-blocks] could not set no-copy-on-write (chattr +C) on {root}; O_DIRECT reads may be slower")
++        try:
++            build(prepared, temporary, identity=identity, torch=torch, exist_ok=True)
++            os.rename(temporary, target)
++        except BaseException:
++            _remove_known(temporary)
++            raise
++        # keep the newest KEEP folders; older identities (and the flat layout of earlier versions) go
++        folders = sorted((d for d in root.iterdir() if d.is_dir() and (d / "index.json").exists()),
++                         key=lambda d: (d / "index.json").stat().st_mtime, reverse=True)
++        for old in folders[KEEP:]:
++            _remove_known(old)
++        if (root / "index.json").exists():
++            for name in KNOWN_FILES:
++                try:
++                    (root / name).unlink()
++                except FileNotFoundError:
++                    pass
++        return target, True
 +
 +
 +def _sha256_file(path):
@@ -4858,6 +4993,29 @@ index 0000000..c1065cf
 +    return index
 +
 +
++def setting_int(name, default, minimum=0):
++    """An integer setting from the environment, with a message naming it when it is not one."""
++    raw = os.environ.get(name, "").strip()
++    try:
++        value = int(raw) if raw else default
++    except ValueError:
++        raise RuntimeError(f"{name}={raw!r}: expected a whole number (default {default})") from None
++    if value < minimum:
++        raise RuntimeError(f"{name}={value}: must be at least {minimum}")
++    return value
++
++
++def setting_float(name, default, minimum=0.0):
++    raw = os.environ.get(name, "").strip()
++    try:
++        value = float(raw) if raw else default
++    except ValueError:
++        raise RuntimeError(f"{name}={raw!r}: expected a number (default {default})") from None
++    if value < minimum:
++        raise RuntimeError(f"{name}={value}: must be at least {minimum}")
++    return value
++
++
 +def available_bytes():
 +    """RAM this process could still use: MemAvailable, and inside a memory-limited cgroup (systemd scope or
 +    service with MemoryMax) the room left under each limit, counting its page cache as free."""
@@ -4865,27 +5023,35 @@ index 0000000..c1065cf
 +    free = int(meminfo["MemAvailable"].split()[0]) * 1024
 +    try:
 +        relative = open("/proc/self/cgroup").read().strip().split("::", 1)[1]
-+        node = Path("/sys/fs/cgroup") / relative.lstrip("/")
-+        while node != Path("/sys/fs/cgroup") and node.is_dir():
++        top = Path("/sys/fs/cgroup")
++        node = top / relative.lstrip("/")
++        while node.is_dir():
 +            limit = (node / "memory.max").read_text().strip() if (node / "memory.max").exists() else "max"
 +            if limit != "max":
 +                stat = dict(line.split() for line in (node / "memory.stat").read_text().splitlines())
 +                used = int((node / "memory.current").read_text()) - int(stat.get("file", 0))
 +                free = min(free, int(limit) - used)
++            if node == top:             # a container's own root can carry its limit too
++                break
 +            node = node.parent
 +    except (OSError, IndexError, ValueError):
 +        pass
 +    return max(free, 0)
 +
 +
-+def resident_blocks(index, setting="auto", reserve_gib=12.0):
++def resident_blocks(index, setting="auto", reserve_gib=12.0, depth=3):
 +    """Which blocks to pin: SOL_H3_LTX_RESIDENT_BLOCKS as a number, or "auto": as many as fit in the RAM still
 +    available minus ``reserve_gib`` (left for Qwen, the page cache and the first session's compile workers).
 +    The first blocks are pinned, so the read-ahead of the others overlaps their compute."""
 +    n = index["num_blocks"]
 +    if str(setting).strip().lower() != "auto":
-+        return range(max(0, min(n, int(setting))))
-+    budget = available_bytes() - int(reserve_gib * (1 << 30))
++        try:
++            count = int(str(setting).strip())
++        except ValueError:
++            raise RuntimeError(f"SOL_H3_LTX_RESIDENT_BLOCKS={setting!r}: expected auto or a whole number") from None
++        return range(max(0, min(n, count)))
++    slots = (depth + 1) * max(block["file_nbytes"] for block in index["blocks"])   # pinned for the streamed ones
++    budget = available_bytes() - int(reserve_gib * (1 << 30)) - slots
 +    count, used = 0, 0
 +    for block in index["blocks"]:
 +        if used + block["file_nbytes"] > budget:
@@ -5060,7 +5226,7 @@ index 0000000..c1065cf
 +    wrapper.sol_h3_block_source = source
 +    return wrapper
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
-index 04a6f36..8b7ca77 100644
+index 04a6f36..52a05a7 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 @@ -7,6 +7,9 @@ pixel-input VAE, LTX upsampler and preview-decoder models.
@@ -5217,7 +5383,7 @@ index 04a6f36..8b7ca77 100644
      lora = base.LoraPathStrengthAndSDOps(str(paths["refiner_lora"]), 0.8, base.LTXV_LORA_COMFY_RENAMING_MAP)
      stage = base.DiffusionStage.from_checkpoint(str(paths["transformer"]), models.dtype,
          models.device, loras=(lora,), quantization=None, registry=registry,
-@@ -119,8 +199,35 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -119,8 +199,29 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
          builder = stage._transformer_builder
          stage._transformer_builder = builder.with_module_ops(
              (*builder.module_ops, create_video_self_attention_module_ops(manager)))
@@ -5226,36 +5392,30 @@ index 04a6f36..8b7ca77 100644
 +        prepared = stage._prepared_builder()
 +        from ..config import ltx_blocks_dir
 +        blocks_dir = ltx_blocks_dir()
-+        slots = os.environ.get("SOL_H3_LTX_CPU_SLOTS")  # experiment: disk streaming with N pinned slots
 +        if blocks_dir:
 +            # sol-h3-studio: LoRA fused once into a block file; some blocks pinned, the rest read from disk.
 +            from . import ltx_blocks
-+            identity = {"transformer": Path(paths["transformer"]).name,
-+                        "transformer_bytes": Path(paths["transformer"]).stat().st_size,
-+                        "lora": Path(paths["refiner_lora"]).name,
-+                        "lora_bytes": Path(paths["refiner_lora"]).stat().st_size, "lora_strength": 0.8,
-+                        "compiled": bool(compile_enabled), "torch": torch.__version__,
-+                        "gpu": torch.cuda.get_device_name(0)}
-+            if not (Path(blocks_dir) / "index.json").exists():
-+                t0 = time.monotonic()
-+                ltx_blocks.build(prepared, blocks_dir, identity=identity, torch=torch)
++            identity = ltx_blocks.identity_of(paths, prepared, compile_enabled, torch)
++            t0 = time.monotonic()
++            blocks_dir, built = ltx_blocks.ensure(prepared, blocks_dir, identity, torch=torch)
++            if built:
 +                print(f"[stage2] LTX fused block file built in {time.monotonic() - t0:.1f} s", flush=True)
 +            index = ltx_blocks.load_index(blocks_dir, identity)
++            depth = ltx_blocks.setting_int("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
 +            resident = ltx_blocks.resident_blocks(index, os.environ.get("SOL_H3_LTX_RESIDENT_BLOCKS", "auto"),
-+                                                  float(os.environ.get("SOL_H3_LTX_RAM_RESERVE_GIB", "12")))
++                                                  ltx_blocks.setting_float("SOL_H3_LTX_RAM_RESERVE_GIB", 12.0),
++                                                  depth=depth)
 +            models.streaming_transformer = ltx_blocks.build_streaming_wrapper(
 +                prepared, blocks_dir, device=models.device, dtype=models.dtype, resident=resident,
-+                depth=int(os.environ.get("SOL_H3_LTX_READ_AHEAD", "3")), torch=torch,
++                depth=depth, torch=torch,
 +                verify=os.environ.get("SOL_H3_LTX_VERIFY", "0") == "1")
 +            models.ltx_block_stats = models.streaming_transformer.sol_h3_block_source.stats
 +        else:
-+            models.streaming_transformer = prepared.build(
-+                device=models.device, dtype=models.dtype,
-+                cpu_slots_count=int(slots) if slots else None)
++            models.streaming_transformer = prepared.build(device=models.device, dtype=models.dtype)
          models.transformer = X0Model(SequenceParallelModelWrapper(
              models.streaming_transformer, manager)).eval().requires_grad_(False)
          # Retain the released Triton Sol implementation on SM120. The generic
-@@ -134,6 +241,7 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -134,6 +235,7 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
              attn_mgr=manager, registry=registry,
              tracker=base.TransformerWeightTracker(group=dist.group.WORLD, no_lora_swap=True))
          models.transformer = stage._build_transformer(video_tools=models.video_tools).requires_grad_(False)
@@ -5263,7 +5423,7 @@ index 04a6f36..8b7ca77 100644
      models.sol_attention = base.Stage2SolAttention(models.transformer,
          isolate_sol_from_compile=compile_enabled)
      models.sol_backend = base._actual_sol_backend()
-@@ -149,22 +257,16 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -149,22 +251,16 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
          registry=registry, alloc_trim_strategy=base.AllocatorTrimStrategy.DEFER)
      models.audio_encoder = audio_block._encoder_builder.build(
          device=torch.device("cpu") if cpu_offload else models.device, dtype=models.dtype).eval().requires_grad_(False)
@@ -5647,10 +5807,10 @@ index 0000000..b65dac7
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
 new file mode 100644
-index 0000000..167a6f0
+index 0000000..6e9e687
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,255 @@
 +"""sol-h3-studio: CPU tests of the fused LTX block file reader (runtime/stage2_ops/ltx_blocks.py).
 +
 +Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -5781,8 +5941,6 @@ index 0000000..167a6f0
 +            ltx_blocks.load_index(self.dir.name)
 +
 +
-+if __name__ == "__main__":
-+    unittest.main()
 +
 +
 +class BudgetAndDefaultsTests(unittest.TestCase):
@@ -5799,14 +5957,19 @@ index 0000000..167a6f0
 +    def test_auto_pins_what_fits_after_the_reserve(self):
 +        from unittest import mock
 +        gib = 1 << 30
++        slots = 4 * 8192                    # read-ahead depth 3 + 1, each the largest block
++        with mock.patch.object(ltx_blocks, "available_bytes", return_value=gib + slots + 2 * 8192 + 100):
++            self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "auto", reserve_gib=1, depth=3)), [0, 1])
 +        with mock.patch.object(ltx_blocks, "available_bytes", return_value=gib + 2 * 8192 + 100):
-+            self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "auto", reserve_gib=1)), [0, 1])
++            self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "auto", reserve_gib=1, depth=3)), [])
 +        with mock.patch.object(ltx_blocks, "available_bytes", return_value=gib // 2):
 +            self.assertEqual(list(ltx_blocks.resident_blocks(self.index, "auto", reserve_gib=1)), [])
 +
 +    def test_available_bytes_is_positive_and_at_most_memavailable(self):
-+        meminfo = dict(line.split(":", 1) for line in open("/proc/meminfo").read().splitlines())
-+        self.assertLessEqual(ltx_blocks.available_bytes(), int(meminfo["MemAvailable"].split()[0]) * 1024)
++        from unittest import mock
++        fake = "MemTotal: 64000000 kB\nMemAvailable: 1048576 kB\n"
++        with mock.patch("builtins.open", mock.mock_open(read_data=fake)):
++            self.assertLessEqual(ltx_blocks.available_bytes(), 1 << 30)    # never more than MemAvailable
 +        self.assertGreaterEqual(ltx_blocks.available_bytes(), 0)
 +
 +    def test_setting_defaults_follow_the_runtime_root(self):
@@ -5823,6 +5986,86 @@ index 0000000..167a6f0
 +            self.assertEqual(config.ltx_blocks_dir(), "")
 +            os.environ["SOL_H3_LTX_BLOCKS"] = "/elsewhere"
 +            self.assertEqual(config.ltx_blocks_dir(), "/elsewhere")
++
++
++class StoreTests(unittest.TestCase):
++    """ensure(): one folder per identity, built under a lock into a temporary folder and renamed into place."""
++
++    def setUp(self):
++        from unittest import mock
++        self.dir = tempfile.TemporaryDirectory()
++        self.addCleanup(self.dir.cleanup)
++        self.root = Path(self.dir.name)
++        self.builds = []
++
++        def fake_build(prepared, output_dir, *, identity, torch, exist_ok=False):
++            self.builds.append(Path(output_dir))
++            write_block_file(output_dir, [4096, 8192])
++            index = json.loads((Path(output_dir) / "index.json").read_text())
++            index["identity"] = identity
++            (Path(output_dir) / "index.json").write_text(json.dumps(index))
++            return index
++        patcher = mock.patch.object(ltx_blocks, "build", fake_build)
++        patcher.start()
++        self.addCleanup(patcher.stop)
++
++    def test_builds_once_then_reuses(self):
++        first, built = ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)
++        again, built_again = ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)
++        self.assertTrue(built)
++        self.assertFalse(built_again)
++        self.assertEqual(first, again)
++        self.assertEqual(len(self.builds), 1)
++        self.assertTrue(self.builds[0].name.startswith(".tmp-"))           # built aside, then renamed
++        self.assertFalse(any(p.name.startswith(".tmp-") for p in self.root.iterdir()))
++
++    def test_other_inputs_get_their_own_folder_and_old_ones_are_pruned(self):
++        folders = [ltx_blocks.ensure(None, self.root, {"a": i}, torch=torch, log=lambda *_: None)[0] for i in range(4)]
++        self.assertEqual(len(set(folders)), 4)
++        kept = sorted(p for p in self.root.iterdir() if p.is_dir())
++        self.assertEqual(len(kept), ltx_blocks.KEEP)
++        self.assertIn(folders[-1], kept)
++
++    def test_an_interrupted_build_is_cleaned_up_and_redone(self):
++        key = ltx_blocks._identity_key({"a": 1})
++        stale = self.root / f".tmp-{key}-999999999"           # no such process
++        stale.mkdir()
++        (stale / "blocks.bin").write_bytes(b"partial")
++        half = self.root / key                                 # a folder without index.json
++        half.mkdir()
++        (half / "blocks.bin").write_bytes(b"partial")
++        target, built = ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)
++        self.assertTrue(built)
++        self.assertFalse(stale.exists())
++        self.assertTrue((target / "index.json").exists())
++
++    def test_the_flat_layout_of_earlier_versions_is_removed_after_a_build(self):
++        write_block_file(self.root, [4096])
++        ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)
++        self.assertFalse((self.root / "blocks.bin").exists())
++        self.assertFalse((self.root / "index.json").exists())
++
++    def test_a_folder_with_foreign_files_is_left_alone(self):
++        odd = self.root / "mine"
++        odd.mkdir()
++        (odd / "notes.txt").write_text("keep")
++        ltx_blocks._remove_known(odd)
++        self.assertTrue((odd / "notes.txt").exists())
++
++    def test_bad_settings_name_themselves(self):
++        from unittest import mock
++        with mock.patch.dict("os.environ", {"SOL_H3_LTX_READ_AHEAD": "x"}):
++            with self.assertRaisesRegex(RuntimeError, "SOL_H3_LTX_READ_AHEAD"):
++                ltx_blocks.setting_int("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
++        with mock.patch.dict("os.environ", {"SOL_H3_LTX_READ_AHEAD": "0"}):
++            with self.assertRaisesRegex(RuntimeError, "at least 1"):
++                ltx_blocks.setting_int("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
++        with self.assertRaisesRegex(RuntimeError, "auto or a whole number"):
++            ltx_blocks.resident_blocks({"num_blocks": 2, "blocks": []}, "lots")
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 index 6a8c437..cbaece5 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
