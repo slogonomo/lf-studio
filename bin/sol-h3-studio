@@ -94,15 +94,16 @@ export SOLH3_HOST=${SOLH3_HOST:-127.0.0.1}
 export SOLH3_PRELOAD=${SOLH3_PRELOAD:-1}
 # refuse to start below this MemAvailable (0 = no check), and on the RTX 5090 below this free GPU memory (GiB).
 # RTX 5090 (docs/RTX5090.md): every mode, length and orientation ran in a 48 GiB RAM limit (43.3 GiB peak, the rest page
-# cache; 5 s text clips also in 44 GiB) and needed at most 26.5 GiB of GPU memory (reference clips) next to the desktop.
+# cache; 5 s text clips also in 44 GiB) and needed at most 24.8 GiB of GPU memory next to the desktop.
 if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
     MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-42}
-    MIN_FREE_VRAM_GIB=${SOLH3_MIN_FREE_VRAM_GIB:-26}
+    MIN_FREE_VRAM_GIB=${SOLH3_MIN_FREE_VRAM_GIB:-25}
     # the memory features' files (runtime/config.py of the RTX 5090 patch): next to the checkpoints by default, on a
     # disk without compression or copy-on-write (O_DIRECT reads); new directories get chattr +C where that works
     export SOL_H3_FILEBACKED_DIR=${SOL_H3_FILEBACKED_DIR:-$(dirname -- "$SOLH3_CHECKPOINTS")/scratch}
     export SOL_H3_LTX_BLOCKS=${SOL_H3_LTX_BLOCKS:-$(dirname -- "$SOLH3_CHECKPOINTS")/derived/ltx-fused-blocks}
     export SOL_H3_STAGE1_SNAPSHOTS=${SOL_H3_STAGE1_SNAPSHOTS:-$(dirname -- "$SOLH3_CHECKPOINTS")/derived/stage1-snapshots}
+    export SOL_H3_STAGE1_SNAPSHOTS_KEEP=${SOL_H3_STAGE1_SNAPSHOTS_KEEP:-1}   # one per mode (23 GB each)
 else
     MIN_FREE_GIB=${SOLH3_MIN_FREE_GIB:-110}
     MIN_FREE_VRAM_GIB=0       # the DGX Spark's GPU shares the RAM checked above

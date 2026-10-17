@@ -141,12 +141,14 @@ Every install script takes `--dry-run`. Paths, ports and switches: [bin/env.exam
 times, disk use, which scripts have been run end to end, and updating: [docs/INSTALL.md](docs/INSTALL.md).
 Problems: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
-**RTX 5090 (work in progress).** The same studio (page, queue, agent API, CLI) also runs on a workstation with one
-GeForce RTX 5090, x86_64, with NVIDIA's Sol-H3-RTX5090 package (CPU offload) and its own patch:
-`SOLH3_BACKEND=rtx5090` in the settings file selects it, and the install scripts above then set up that machine
-instead (no Docker; Python from uv; the prompt cache and, if you like, the weights copied from a DGX Spark). Without
-the setting everything is the DGX Spark's, as above. Design, memory plan and status:
-[docs/RTX5090.md](docs/RTX5090.md); steps: [docs/INSTALL.md](docs/INSTALL.md#rtx-5090).
+**RTX 5090.** The same studio (page, queue, agent API, CLI) also runs on a workstation with one GeForce RTX 5090
+and 64 GB of RAM, x86_64, with NVIDIA's Sol-H3-RTX5090 package (CPU offload) and its own patch, which makes it fit
+64 GB without changing what the models compute. `SOLH3_BACKEND=rtx5090` in the settings file selects it, and the
+install scripts above then set up that machine instead (no Docker; Python from uv; the prompt cache and, if you like,
+the weights copied from a DGX Spark). Measured there, next to a desktop: a 5 s text clip in 27 s, 15 s in 66 s, a
+reference clip in 50 s; launch to the first clip 57 s once the models' snapshots exist. Without the setting
+everything is the DGX Spark's, as above. Details and measurements: [docs/RTX5090.md](docs/RTX5090.md); steps:
+[docs/INSTALL.md](docs/INSTALL.md#rtx-5090).
 
 To update: `git pull`, then `install/10-sana.sh`, then restart the studio ([details](docs/INSTALL.md#updating)).
 0.4 changes the patch: until `install/10-sana.sh` has applied it, the studio refuses to start with
