@@ -459,7 +459,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("nothing to do", out["05-python.sh"][1])
         self.assertIn(f"sol-engine @ {base}", out["10-sana.sh"][1])
         self.assertIn("patches/sol-h3-studio.patch", out["10-sana.sh"][1])
-        self.assertIn("133 CPU tests", out["10-sana.sh"][1])
+        self.assertIn("135 CPU tests", out["10-sana.sh"][1])
         self.assertIn("python3.12 -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-Spark &&", out["20-weights.sh"][1])
         self.assertIn("--include-offline", out["20-weights.sh"][1])
@@ -502,7 +502,7 @@ class InstallDryRun(unittest.TestCase):
         text = out["10-sana.sh"][1]
         self.assertIn(f"sol-engine @ {RTX_BASE}", text)
         self.assertIn("patches/sol-h3-studio-rtx5090.patch", text)
-        self.assertIn("183 CPU tests", text)
+        self.assertIn("185 CPU tests", text)
         self.assertIn(f"{py312} -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-RTX5090 &&", out["20-weights.sh"][1])
         self.assertNotIn("--include-offline", out["20-weights.sh"][1])

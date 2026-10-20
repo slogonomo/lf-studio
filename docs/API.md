@@ -369,7 +369,7 @@ One clip renders at a time. Measured on one DGX Spark ([PERFORMANCE.md](PERFORMA
 |---|---|
 | t2va with the models loaded (the same task as the clip before, at an orientation and length the session has run) | 3 s: 36 s · 5 s: 54-66 s · 10 s: 123 s · 15 s: 191 s |
 | ref2va with a 5 s reference video, 5 s | 133 s per clip |
-| The first clip at an orientation or length the session hasn't run, same task (the models stay loaded; Stage 1 compiles for it) | a clip with the models loaded plus 0.2-27 s (5 → 10 s: 14 s, 5 → 15 s: 27 s, fl2va 16:9 → 9:16: 0.2 s; one run, [PERFORMANCE.md](PERFORMANCE.md#changing-length-or-format)) |
+| The first clip at an orientation or length the session hasn't run, same task (the models stay loaded; Stage 2 compiles for the new shape, from the compile cache when that shape ran before) | a clip with the models loaded plus 0.2-10 s (5 → 10 s: 7 s, 10 → 15 s: 10 s in the staging check of 0.4, compile cache warm; fl2va 16:9 → 9:16: 0.2 s in an earlier run; one run each, [PERFORMANCE.md](PERFORMANCE.md#changing-length-or-format)). With `SOL_H3_DYNAMIC_TEXT_LENGTH=0` Stage 1 compiles for it too: 5 → 10 s: 14 s, 5 → 15 s: 27 s when it compiled from scratch |
 | t2va, the first clip after a change of task (the models load first; also after any change with `SOLH3_RESHAPE=0`) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
 | The first clip of fl2va (first and last frame) / ref2va (an image and a video), 5 s | 115 s / 178 s with `infer.py` |
 | Cancel of a running clip, until the pipeline has closed | about 40 s; the next clip then loads the models again |

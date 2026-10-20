@@ -15,7 +15,7 @@ the measurements in [PERFORMANCE.md](PERFORMANCE.md) came from. Step 80 built a 
 one the measurements used. On that install the first clip (t2va, 16:9, 5 s) took 213 s, including the one-time
 kernel compile; the next clip 65 s; after a restart, a cold start with the filled compile cache 104 s. That run
 reused weights already on the box (step 20 only verified them) and Docker's build cache for NVIDIA's base image.
-0.3 changed `install/10-sana.sh` and the patch (74 tests then). 0.4 changes the patch again (133 tests) and how
+0.3 changed `install/10-sana.sh` and the patch (74 tests then). 0.4 changes the patch again (135 tests) and how
 `install/10-sana.sh` runs its tests (without the settings file's switches). Their update paths were checked in
 scratch clones, not by a fresh install on hardware.
 <!-- /validation-status -->
@@ -85,7 +85,7 @@ for a mode whose weights were not downloaded.
 |---|---|---|
 | `install/00-check.sh` | Checks aarch64, GB10, driver, CUDA 13, python3.12, git, curl, ffmpeg, docker, disk, HF access to LTX-2.5. Changes nothing. | - |
 | `install/05-python.sh` | RTX 5090 only; on a DGX Spark it does nothing (the install uses the system's `python3.12`). | - |
-| `install/10-sana.sh` | Clones NVlabs/Sana `sol-engine` at `patches/BASE_COMMIT`, applies the patch (and keeps a copy for [updates](#updating)), runs the 133 CPU tests once the Stage1 env exists. | - |
+| `install/10-sana.sh` | Clones NVlabs/Sana `sol-engine` at `patches/BASE_COMMIT`, applies the patch (and keeps a copy for [updates](#updating)), runs the 135 CPU tests once the Stage1 env exists. | - |
 | `install/20-weights.sh` | Downloads the pinned weights for t2va, fl2va and ref2va with NVIDIA's `download_checkpoints.py --include-offline --verify-sha256`. `SOLH3_TASKS` limits it (see above). Resumable. | ~48 min at ~80 MB/s, ~224 GB |
 | `install/30-sources.sh` | Fetches the pinned source trees with `prepare.py --fetch-sources`. It ends with "Missing required inputs", which is expected; the script checks the revisions itself. | ~12 s, ~0.5-0.8 GB |
 | `install/40-stage1.sh` | Stage1 venv (torch 2.12+cu130, FastVideo, fastvideo-kernel built for SM121, cuDNN 9.20) and the isolated FA4 target. | 5-22 min (5.5 min on a fast connection, 22 min in the first install), ~7.6 GB with FA4 |
@@ -130,12 +130,13 @@ SOLH3_URL=http://<spark-host>:8190 sol-h3 status
 
 The first clip of each new mode loads the models (5 s clips: 104-113 s for t2va in the studio, 99 s in the
 `infer.py` bench; ~115 s for fl2va and ~180 s for ref2va with a video reference, both measured with `infer.py`).
-Another format or length of the loaded mode keeps them loaded; its first clip compiles for the new shape (up to 27 s
-more than a warm clip in one measured run, [PERFORMANCE.md](PERFORMANCE.md#changing-length-or-format)). With
-`SOLH3_RESHAPE=0` any change loads the models. The very first run of a configuration also compiles its kernels (see
+Another format or length of the loaded mode keeps them loaded; its first clip compiles for the new shape (up to 10 s
+more than a warm clip in the staging check of 0.4, up to 27 s in an earlier run with `SOL_H3_DYNAMIC_TEXT_LENGTH` off;
+[PERFORMANCE.md](PERFORMANCE.md#changing-length-or-format)). With `SOLH3_RESHAPE=0` any change loads the models. The
+very first run of a configuration also compiles its kernels (see
 [PERFORMANCE.md](PERFORMANCE.md#known-costs-not-fixed)); after that the compile cache in
-`$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` makes cold starts faster. Ctrl-C stops the server, its workers and the
-Qwen container.
+`$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` makes cold starts faster. Ctrl-C stops the server, its workers and the Qwen
+container.
 
 Other ways to run it: as an NVIDIA Sync custom app ([nvidia-sync.md](nvidia-sync.md)), as a systemd user service
 (`integrations/systemd/sol-h3-studio.service`), or on demand with
@@ -258,10 +259,16 @@ with "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch t
 install/10-sana.sh": the old patch would ignore the new setting. With `minimax` the prompt encoder reads the dialogue
 tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does. A dialogue prompt therefore encodes differently
 from 0.3, and a 0.3 dialogue clip doesn't come back from its seed unless you set `SOL_H3_PROMPT_TOKENS=plain`. Prompts
-without these tags encode as before ([PATCH.md](PATCH.md#16-minimaxs-prompt-tokens)). Stage 1 now compiles every
-graph statically ([PATCH.md](PATCH.md#18-reshape-another-length-or-orientation-without-a-reload)), so the first clip of
-each prompt length and shape compiles Stage 1 once more after the update (inferred). Also new in 0.4:
+without these tags encode as before ([PATCH.md](PATCH.md#16-minimaxs-prompt-tokens)). Stage 1 now compiles its
+graphs statically ([PATCH.md](PATCH.md#18-reshape-another-length-or-orientation-without-a-reload)), apart from the
+prompt length in its body blocks (below), so the first clips after the update compile Stage 1 once more (inferred).
+Also new in 0.4:
 
+- A new prompt length no longer recompiles Stage 1's body blocks (`SOL_H3_DYNAMIC_TEXT_LENGTH=1`, the default;
+  [PATCH.md](PATCH.md#17-prompt-lengths-without-recompiles)). Before 0.4 a prompt with a token count new to the session
+  usually took 7-14 s longer in Stage 1 than a repeat (the studio's receipts). In the staging check of 0.4 two new
+  lengths in t2va 5 s took 1.9 s and 0.5 s longer, with bit-identical output. `SOL_H3_DYNAMIC_TEXT_LENGTH=0` compiles
+  per prompt length, as before.
 - The studio answers only to IP addresses, `localhost`, names without a dot and names ending in `.ts.net`, `.local`,
   `.lan`, `.home`, `.home.arpa` or `.internal`. If you open it by any other name (a router's name such as
   `spark.fritz.box` or `spark.localdomain`, a domain of your own, or a reverse proxy that sends such a name in

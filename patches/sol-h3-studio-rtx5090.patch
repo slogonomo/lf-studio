@@ -50,7 +50,7 @@ index 19c4db6..b4e16aa 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
-index 0327a69..353084f 100644
+index 0327a69..de4ceee 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 @@ -6,6 +6,10 @@ import os
@@ -58,13 +58,13 @@ index 0327a69..353084f 100644
  import re
  
 +# Modified by sol-h3-studio: portrait orientation, clip length, the persistent compile-cache location, the Stage-2
-+# audio setting, the prompt-token setting and static-shape compiles.
++# audio setting, the prompt-token setting, static-shape compiles and the Stage-1 prompt-length setting.
 +from .geometry import ORIENTATIONS, orient_recipe
 +
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,130 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,149 @@ REQUIRED_PATHS = (
  )
  
  
@@ -161,7 +161,9 @@ index 0327a69..353084f 100644
 +    """sol-h3-studio: the torch.compile `dynamic` flag for Stage1's regions and Stage2's blocks.
 +
 +    False (default): a new shape (prompt length, clip length, orientation) compiles its own static graph, the graph a
-+    fresh worker compiles for that shape, so a worker's output does not depend on the shapes it ran before. With
++    fresh worker compiles for that shape, so a worker's output does not depend on the shapes it ran before. A
++    dimension marked dynamic stays dynamic: with SOL_H3_DYNAMIC_TEXT_LENGTH=1 (the default) Stage 1's 50 body regions
++    compile no new graph for a new prompt length (stage1_ops/regional.py), only its 2 text-refiner regions do. With
 +    None (upstream, SOL_H3_STATIC_SHAPES=0) Dynamo compiles the first shape statically and, after a shape change,
 +    may compile a graph with dynamic sizes and other kernels. An empty value is the default, as unset.
 +    """
@@ -170,6 +172,23 @@ index 0327a69..353084f 100644
 +    if value not in ("0", "1"):
 +        raise ValueError(f"SOL_H3_STATIC_SHAPES must be 1 or 0, not {raw!r}")
 +    return False if value == "1" else None
++
++
++# sol-h3-studio: Stage 1's prompt lengths (runtime/stage1_ops/regional.py). "1" (default since 0.4): the 50 body
++# regions of the H3 DiT compile once per session for any prompt length; "0": a new prompt length compiles new graphs,
++# as up to 0.3. Read here so a bad value fails when a Pipeline is made and when the studio starts, before any worker
++# loads (and again where Stage 1 installs its regions).
++DYNAMIC_TEXT_LENGTH = "SOL_H3_DYNAMIC_TEXT_LENGTH"
++
++
++def dynamic_text_length(environ=None):
++    """SOL_H3_DYNAMIC_TEXT_LENGTH (from environ, default os.environ): True (default) = one set of Stage-1 body graphs
++    for any prompt length, False = graphs per prompt length. An empty value is the default, as unset."""
++    raw = (os.environ if environ is None else environ).get(DYNAMIC_TEXT_LENGTH, "")
++    value = raw.strip() or "1"
++    if value not in ("0", "1"):
++        raise ValueError(f"{DYNAMIC_TEXT_LENGTH} must be 0 or 1, not {raw!r}")
++    return value == "1"
 +
 +
 +def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None, orientation=None, seconds=None,
@@ -832,7 +851,7 @@ index f3f15bb..183572c 100644
          def release_all(self):
              for state in self.states:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
-index fa18e02..4e5422a 100644
+index fa18e02..de92d95 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 @@ -6,9 +6,16 @@ from pathlib import Path
@@ -849,7 +868,7 @@ index fa18e02..4e5422a 100644
  
 -from .config import PACKAGE, load_recipe
 -from .worker import write_json
-+from .config import PACKAGE, compile_cache_root, compile_dynamic, load_recipe, stage2_audio_mode
++from .config import PACKAGE, compile_cache_root, compile_dynamic, dynamic_text_length, load_recipe, stage2_audio_mode
 +from .worker import OPERATIONS, write_json
  
  
@@ -920,7 +939,7 @@ index fa18e02..4e5422a 100644
              raise ValueError("Unsupported session operation")
          self.sequence += 1
          response = self.root / f"response-{self.sequence:05d}.json"
-@@ -117,26 +167,47 @@ class Worker:
+@@ -117,26 +167,48 @@ class Worker:
  class Pipeline:
      """Reuse three isolated runtime environments and the same models for a batch.
  
@@ -956,6 +975,7 @@ index fa18e02..4e5422a 100644
 +                               "prompt_tokens": self.config["stage1"]["prompt_tokens"]}
 +        stage2_audio_mode()     # sol-h3-studio: a bad SOL_H3_STAGE2_AUDIO fails here, before any worker loads
 +        compile_dynamic()       # sol-h3-studio: the same for SOL_H3_STATIC_SHAPES
++        dynamic_text_length()   # sol-h3-studio: and for SOL_H3_DYNAMIC_TEXT_LENGTH
 +        self.transient_qwen = self._transient(self.config)
 +        self._plan_resident_qwen()      # sol-h3-studio: a bad SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB fails here, too
          self.root = Path(output_root).resolve()
@@ -975,7 +995,7 @@ index fa18e02..4e5422a 100644
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -146,63 +217,375 @@ class Pipeline:
+@@ -146,63 +218,375 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -1383,7 +1403,7 @@ index fa18e02..4e5422a 100644
                  self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -218,6 +601,9 @@ class Pipeline:
+@@ -218,6 +602,9 @@ class Pipeline:
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
              if self.qwen is not None:
                  self.qwen.call("release_idle_cache")
@@ -1393,7 +1413,7 @@ index fa18e02..4e5422a 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -234,13 +620,17 @@ class Pipeline:
+@@ -234,13 +621,17 @@ class Pipeline:
          self.save()
  
      def close(self):
@@ -1860,7 +1880,7 @@ index 0000000..e06fee1
 +    ids = [entry[0] for entry in entries if isinstance(entry[0], int)]
 +    return {"text_tokens": int(token_tags.sum()), "minimax_tokens": sum(1 for i in ids if i in MINIMAX_EXTRA_IDS)}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
-index a1dd805..54c6bbf 100644
+index a1dd805..a125845 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 @@ -3,17 +3,24 @@ from __future__ import annotations
@@ -1885,11 +1905,11 @@ index a1dd805..54c6bbf 100644
 +# reshape (another clip length or orientation in a running session) and the Stage-1 snapshot (the finished transformer
 +# saved once and restored by later sessions; stage1_ops/snapshot.py); see "sol-h3-studio:" notes.
 +from . import geometry
-+from .config import compile_dynamic
++from .config import DYNAMIC_TEXT_LENGTH, compile_dynamic, dynamic_text_length
  
  
  def install_reference_image_size(reference_module, target_area):
-@@ -38,29 +45,89 @@ def validate_native_attention(before, after, *, require_calls=True):
+@@ -38,29 +45,106 @@ def validate_native_attention(before, after, *, require_calls=True):
               "resolved_precision_scope": "original constructor config; actual DiT converted to FP8 afterwards; Qwen external NVFP4"}]
  
  
@@ -1898,9 +1918,9 @@ index a1dd805..54c6bbf 100644
 +
 +    Every new prompt length (text tokens) recompiles the fullgraph DiT regions; FastVideo caps recompiles at 16
 +    (layers/lora/linear.py), so a long-lived web-UI session died after ~4 distinct prompt lengths ('Dynamo recompile
-+    limit exceeded'). Allow many shapes; each new length still costs ~8-10 s once.
-+    SOL_H3_DYNAMIC_TEXT_LENGTH=1 (off by default) compiles the 50 body regions for any length instead (2 graphs per
-+    session, none per new length; stage1_ops/regional.py). Not on the Ref2VA Sol route.
++    limit exceeded'). Allow many shapes. SOL_H3_DYNAMIC_TEXT_LENGTH (on by default; runtime/config.py) compiles the 50
++    body regions for any length instead (2 graphs per session, none per new length; stage1_ops/regional.py). With
++    SOL_H3_DYNAMIC_TEXT_LENGTH=0, and on the Ref2VA Sol route, each new length still costs ~8-10 s once.
 +    Static shapes (runtime/config.py compile_dynamic): what torch.compile(dynamic=False) sets, for every compile in
 +    this worker (the 52 regions of each task). A graph compiled after a shape change (prompt length, clip length,
 +    orientation) is then static, the graph a fresh worker compiles for that shape, not one with dynamic sizes and
@@ -1912,6 +1932,23 @@ index a1dd805..54c6bbf 100644
 +    config.accumulated_recompile_limit = max(config.accumulated_recompile_limit, 65536)
 +    if compile_dynamic() is False:
 +        config.automatic_dynamic_shapes = False
++
++
++SOL_ROUTE_IGNORES_TEXT_LENGTH = f"[sol-h3-studio] {DYNAMIC_TEXT_LENGTH}=1 is ignored on the Ref2VA Sol route"
++
++
++def sol_route_text_length(environ=None):
++    """sol-h3-studio: the Ref2VA Sol route keeps its per-length graphs; SOL_H3_DYNAMIC_TEXT_LENGTH does not apply.
++
++    Returns (receipt, log line or None) for that route, from environ (default os.environ). The receipt says the
++    setting is ignored whenever it is on, the default included; the Stage1 log says so only when it was set to 1, so
++    that the default does not print it on every Sol-route load. A bad value raises, as runtime/config.py's check.
++    """
++    environ = os.environ if environ is None else environ
++    if not dynamic_text_length(environ):
++        return "per_length", None
++    explicit = environ.get(DYNAMIC_TEXT_LENGTH, "").strip() == "1"
++    return "per_length (setting ignored)", SOL_ROUTE_IGNORES_TEXT_LENGTH if explicit else None
 +
 +
  def install_worker(worker, task="t2va", attention=None, reference_area=None,
@@ -1988,7 +2025,7 @@ index a1dd805..54c6bbf 100644
      sol_route = sol.RequestRoute(state) if attention == sol.POLICY else None
      if not is_lazy_module(pipe.modules["transformer"]) or not is_lazy_module(pipe.modules["text_encoder"]):
          raise RuntimeError("existing native lazy construction required")
-@@ -85,6 +152,15 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -85,6 +169,15 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
              def no_video_decode(*args, **kwargs):
                  raise RuntimeError("Stage1 latent transfer must not decode generated H3 video")
              model.decode = no_video_decode
@@ -2004,7 +2041,7 @@ index a1dd805..54c6bbf 100644
              return model
          vae.set_materialize_transform(record_condition_encoder)
      if task == "ref2va":
-@@ -110,11 +186,14 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -110,11 +203,14 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
          state["transformer_materializations"] += 1
          if state["transformer_materializations"] != 1:
              raise RuntimeError("resident Stage1 transformer was unexpectedly reloaded")
@@ -2019,7 +2056,7 @@ index a1dd805..54c6bbf 100644
                  if not module.merged and not module.disable_lora:
                      raise RuntimeError(f"LoRA not merged before FP8: {name}")
                  if task == "ref2va" and module.merged and (module.lora_alpha, module.lora_rank) != (8, 128):
-@@ -124,24 +203,37 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -124,24 +220,37 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
                  merged += int(module.merged)
          pipe.lora_layers.clear()
          pipe.lora_adapters.clear()
@@ -2066,16 +2103,15 @@ index a1dd805..54c6bbf 100644
          original_model_forward = model.forward
          def observed_model_forward(*args, **kwargs):
              state["transformer_forwards"] += 1
-@@ -161,14 +253,57 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -161,14 +270,56 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
                  regional.install_dense(model, state)
              else:
                  sol.install(model, state, sol_route)
 +                # sol-h3-studio: the Sol route keeps its per-length graphs; SOL_H3_DYNAMIC_TEXT_LENGTH does not apply.
-+                ignored = regional.dynamic_text_length()
-+                state["sol_regional_compile"]["text_length"] = ("per_length (setting ignored)" if ignored
-+                                                                 else "per_length")
-+                if ignored:
-+                    print("[sol-h3-studio] SOL_H3_DYNAMIC_TEXT_LENGTH=1 is ignored on the Ref2VA Sol route", flush=True)
++                text_length, note = sol_route_text_length()
++                state["sol_regional_compile"]["text_length"] = text_length
++                if note:
++                    print(note, flush=True)
          else:
              vsa.install_model(model, state)
              regional.install(model, state)
@@ -2125,7 +2161,7 @@ index a1dd805..54c6bbf 100644
      control.install_fa4_audit(worker)  # Native FA4 handles the two text-refiner blocks.
      original_post_init = pipe.post_init
      def post_init():
-@@ -206,13 +341,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -206,13 +357,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
          keep = {id(pipe.modules[name]) for name in ("transformer", "vae", "audio_vae")}
          for stage in pipe._stages:
              stage._lazy_modules_to_release = tuple(m for m in stage._lazy_modules_to_release if id(m) not in keep)
@@ -2194,7 +2230,7 @@ index a1dd805..54c6bbf 100644
  def arm_worker(worker, case, conditioning_path, outputdir):
      import torch
      from .stage1_ops import capture, vsa
-@@ -286,8 +475,10 @@ class Session:
+@@ -286,8 +491,10 @@ class Session:
          self.task = task_of(config.get("stage1", config))
          self.attention = config.get("stage1", config).get("attention")
          self.reference_area = reference_target_area(config)
@@ -2205,7 +2241,7 @@ index a1dd805..54c6bbf 100644
          if self.attention == sol.POLICY and self.task != "ref2va":
              raise ValueError("this fixed Sol policy is Ref2VA only")
          self.basic = native.load_official_entry(
-@@ -295,8 +486,9 @@ class Session:
+@@ -295,8 +502,9 @@ class Session:
          profile = self.basic.parse_args([
              "--model-path", str(Path(paths["h3_model"]).expanduser().resolve(strict=True)),
              "--prompt", "session", "--output", str(self.root), "--num-gpus", "1",
@@ -2217,7 +2253,7 @@ index a1dd805..54c6bbf 100644
              "--no-warmup", "--repeats", "1"])
          if self.task == "ref2va":
              profile.vsa = False
-@@ -345,7 +537,9 @@ class Session:
+@@ -345,7 +553,9 @@ class Session:
              self.rpc(functools.partial(install_worker, task=self.task, attention=self.attention,
                                        reference_area=self.reference_area,
                                        reference_budget_source=self.reference_budget_source,
@@ -2228,7 +2264,7 @@ index a1dd805..54c6bbf 100644
          except BaseException:
              self.generator.shutdown()
              self.closed = True
-@@ -411,17 +605,50 @@ class Session:
+@@ -411,17 +621,50 @@ class Session:
                  "request_transformer_forwards": forwards,
                  "request_attention_calls": attention_calls,
                  "first_request_compile_included": not bool(before["transformer_forwards"]),
@@ -2579,31 +2615,23 @@ index e3bc890..8d7ce68 100644
 +        module.quant_method = FP8QuantizeMethod("tensor")
 +    return tagged
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/regional.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/regional.py
-index 7553e35..ca84f95 100644
+index 7553e35..2772352 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/regional.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/regional.py
-@@ -1,11 +1,30 @@
+@@ -1,11 +1,22 @@
  """Compile 52 native H3 regions around opaque SM121 VSA attention."""
-+# Modified by sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH=1 compiles the 50 body regions once for any prompt length
-+# instead of once per length (see the "sol-h3-studio:" notes below).
++# Modified by sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH (on by default; 0 = upstream's graphs per prompt length)
++# compiles the 50 body regions once for any prompt length instead of once per length (see the "sol-h3-studio:" notes
++# below).
 +import inspect
-+import os
  from types import MethodType, SimpleNamespace
  from typing import Optional
  
-+# sol-h3-studio: the setting, and the FastVideo signatures the length wrappers rely on.
-+DYNAMIC_TEXT_LENGTH = "SOL_H3_DYNAMIC_TEXT_LENGTH"
++# sol-h3-studio: the setting (read and checked in runtime/config.py, where the studio checks it at start too), and the
++# FastVideo signatures the length wrappers rely on.
++from ..config import DYNAMIC_TEXT_LENGTH, dynamic_text_length
 +BODY_REGION_ARGS = ("self", "hidden_states", "temb", "adaln_indices", "rotary_emb", "original_seq_len")
 +ATTENTION_ARGS = ("self", "q", "k", "v", "original_seq_len")
-+
-+
-+def dynamic_text_length(environ=None):
-+    """sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH. "0" (default): Stage-1 graphs per prompt length; "1": one set."""
-+    raw = (os.environ if environ is None else environ).get(DYNAMIC_TEXT_LENGTH, "")
-+    value = raw.strip() or "0"
-+    if value not in ("0", "1"):
-+        raise ValueError(f"{DYNAMIC_TEXT_LENGTH} must be 0 or 1, not {raw!r}")
-+    return value == "1"
 +
  
  def install_dense(model, state):
@@ -2613,7 +2641,7 @@ index 7553e35..ca84f95 100644
      attention = [module for module in model.modules() if type(module).__name__ == "MiniMaxH3Attention"]
      if len(attention) != 52 or any(module.to_gate_compress is not None for module in attention):
          raise RuntimeError("Ref2VA requires 52 native dense attention modules and no VSA gates")
-@@ -16,7 +35,12 @@ def install_dense(model, state):
+@@ -16,7 +27,12 @@ def install_dense(model, state):
      if (enabled, compiled) != (52, 52):
          raise RuntimeError("native Ref2VA regional compile did not cover all 52 regions")
      state["dense_regional_compile"] = {"regions_wrapped": compiled, "attention_modules_enabled": enabled,
@@ -2627,7 +2655,7 @@ index 7553e35..ca84f95 100644
  
  
  def _layer_number(tensor, count):
-@@ -41,6 +65,7 @@ def install(model, state, compile_kwargs=None):
+@@ -41,6 +57,7 @@ def install(model, state, compile_kwargs=None):
      from fastvideo.attention.layer import _attention_compile_explicitly_disabled
      from . import vsa as policy
  
@@ -2635,7 +2663,7 @@ index 7553e35..ca84f95 100644
      audit = state.get("official_vsa", {})
      backend = audit.get("selected_attention_backend")
      if (audit.get("fastvideo_commit") != policy.FASTVIDEO_COMMIT
-@@ -75,7 +100,8 @@ def install(model, state, compile_kwargs=None):
+@@ -75,7 +92,8 @@ def install(model, state, compile_kwargs=None):
          "sparse_math_changed": False, "compression_gates_retained": 50,
          "layer_identity": "CPU int64 scalar Tensor; no GPU scalar read",
          "body_runtime_calls": 0, "text_runtime_calls": 0,
@@ -2645,7 +2673,7 @@ index 7553e35..ca84f95 100644
  
      @torch.library.custom_op("sol_h3_spark_vsa::body", mutates_args=(), device_types="cuda")
      def body_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, gate: torch.Tensor,
-@@ -117,10 +143,15 @@ def install(model, state, compile_kwargs=None):
+@@ -117,10 +135,15 @@ def install(model, state, compile_kwargs=None):
          return text_op(query, key, value, self._sol_h3_cpu_layer,
              getattr(attn_metadata, "attn_mask", None), getattr(attn_metadata, "is_causal", False))
  
@@ -2661,7 +2689,7 @@ index 7553e35..ca84f95 100644
      # Deliberately not prepare_for_regional_compile(): that hook probes SM100a.
      model.prepare_for_compile()
      enabled = fsdp_load._enable_regional_attention_compile(model)
-@@ -128,6 +159,150 @@ def install(model, state, compile_kwargs=None):
+@@ -128,6 +151,151 @@ def install(model, state, compile_kwargs=None):
      if (enabled, compiled) != (52, 52):
          raise RuntimeError(f"expected native 52 attention modules/regions, got {(enabled, compiled)}")
      receipt.update(attention_modules_enabled=enabled, regions_wrapped=compiled)
@@ -2673,7 +2701,7 @@ index 7553e35..ca84f95 100644
      return receipt
 +
 +
-+# ---- sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH=1 ---------------------------------------------------------------------
++# ---- sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH=1, the default (0: graphs per prompt length) --------------------------
 +# With static shapes every new prompt length compiled new body-block graphs, 5 per length. Dynamo always specializes
 +# ints it reads from a global, here FastVideo's forward context: total_seq_length (the length check in FastVideo's
 +# tile()), num_prefix_tiles, num_video_tiles and current_timestep (passed to the opaque op above), and it branches on
@@ -2756,7 +2784,8 @@ index 7553e35..ca84f95 100644
 +    # The attention wrapper below passes the query's row count as original_seq_len: the same value on one GPU only.
 +    from fastvideo.distributed.parallel_state import get_sp_world_size, model_parallel_is_initialized
 +    if model_parallel_is_initialized() and get_sp_world_size() != 1:
-+        raise RuntimeError(f"{DYNAMIC_TEXT_LENGTH}=1 supports one GPU without sequence parallelism")
++        raise RuntimeError(f"{DYNAMIC_TEXT_LENGTH}=1 (the default) supports one GPU without sequence parallelism; "
++                           f"set {DYNAMIC_TEXT_LENGTH}=0 for graphs per prompt length")
 +
 +
 +def _check_signature(function, expected, what):
@@ -6067,7 +6096,7 @@ index 0000000..6e9e687
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
-index 6a8c437..cbaece5 100644
+index 6a8c437..97cd6bf 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -6145,7 +6174,7 @@ index 6a8c437..cbaece5 100644
                  FakeWorker.events.clear()
                  pipeline.generate(case)
                  pipeline.generate(dict(case, case_id="second"))
-@@ -87,28 +132,260 @@ class PipelineTests(unittest.TestCase):
+@@ -87,28 +132,277 @@ class PipelineTests(unittest.TestCase):
                  pipeline.close()
  
      def test_residency_order_and_real_endpoint(self):
@@ -6325,6 +6354,23 @@ index 6a8c437..cbaece5 100644
 +            os.environ["SOL_H3_STAGE2_AUDIO"] = "JOINT"
 +            Pipeline({}, Path(directory) / "run", worker_factory=factory)
 +
++    def test_bad_dynamic_text_length_setting_fails_before_any_worker(self):
++        """sol-h3-studio: a bad SOL_H3_DYNAMIC_TEXT_LENGTH fails when the Pipeline is made, not when Stage 1 installs
++        its regions with the transformer in memory."""
++        made = []
++        def factory(*args, **kwargs):
++            made.append(args)
++            return FakeWorker(*args, **kwargs)
++        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
++            os.environ["SOL_H3_DYNAMIC_TEXT_LENGTH"] = "on"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not 'on'"):
++                Pipeline({}, Path(directory) / "run", worker_factory=factory)
++            self.assertFalse((Path(directory) / "run").exists())
++            self.assertEqual(made, [])
++            for name, value in (("off", "0"), ("on", "1"), ("default", " ")):
++                os.environ["SOL_H3_DYNAMIC_TEXT_LENGTH"] = value
++                Pipeline({}, Path(directory) / name, worker_factory=factory)
++
 +    def test_bad_early_min_gib_setting_fails_before_any_worker(self):
 +        """sol-h3-studio: SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB that is not a number fails with its name, before the run
 +        directory exists, instead of float()'s message."""
@@ -6427,7 +6473,7 @@ index 6a8c437..cbaece5 100644
  
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
-@@ -222,7 +499,7 @@ class PipelineTests(unittest.TestCase):
+@@ -222,7 +516,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", offload_mode="none", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -6436,7 +6482,7 @@ index 6a8c437..cbaece5 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -252,7 +529,7 @@ class PipelineTests(unittest.TestCase):
+@@ -252,7 +546,7 @@ class PipelineTests(unittest.TestCase):
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
                                                      ref_image_match="stage2", ref_stage1_attn="sol",
@@ -6445,7 +6491,7 @@ index 6a8c437..cbaece5 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -287,11 +564,26 @@ class PipelineTests(unittest.TestCase):
+@@ -287,11 +581,26 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -6851,10 +6897,10 @@ index 4af9048..7d821d8 100644
                                                "last_frame": None, "references": refs})
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_regional_length.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_regional_length.py
 new file mode 100644
-index 0000000..5ff3f28
+index 0000000..3271fa4
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_regional_length.py
-@@ -0,0 +1,566 @@
+@@ -0,0 +1,597 @@
 +"""CPU checks for SOL_H3_DYNAMIC_TEXT_LENGTH: Stage-1 body regions compiled per session, not per prompt length.
 +
 +Part of sol-h3-studio. The model here is a small stand-in with the shape of FastVideo's H3 regions: a block forward
@@ -6879,6 +6925,7 @@ index 0000000..5ff3f28
 +import torch
 +import torch._dynamo
 +
++from runtime import config
 +from runtime.stage1_ops import regional
 +
 +HEADS, HEAD_DIM, AUDIO, VIDEO = 2, 8, 20, 192
@@ -7078,12 +7125,42 @@ index 0000000..5ff3f28
 +        self.addCleanup(torch._dynamo.reset)
 +
 +    def test_setting_values(self):
-+        self.assertFalse(regional.dynamic_text_length({}))
-+        self.assertFalse(regional.dynamic_text_length({regional.DYNAMIC_TEXT_LENGTH: " 0 "}))
++        """On by default since 0.4 (unset or empty); 0 is the opt-out. regional reads runtime/config.py's check, the
++        one the studio runs at start, so both refuse the same values with the same message."""
++        self.assertIs(regional.dynamic_text_length, config.dynamic_text_length)
++        self.assertTrue(regional.dynamic_text_length({}))
++        self.assertTrue(regional.dynamic_text_length({regional.DYNAMIC_TEXT_LENGTH: " "}))
 +        self.assertTrue(regional.dynamic_text_length({regional.DYNAMIC_TEXT_LENGTH: "1"}))
-+        for bad in ("true", "2", "on"):
-+            with self.assertRaisesRegex(ValueError, "SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1"):
++        self.assertFalse(regional.dynamic_text_length({regional.DYNAMIC_TEXT_LENGTH: " 0 "}))
++        for bad in ("true", "2", "on", "off"):
++            with self.assertRaisesRegex(ValueError, f"^SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not {bad!r}$"):
 +                regional.dynamic_text_length({regional.DYNAMIC_TEXT_LENGTH: bad})
++        with patch.dict(os.environ):                        # without an argument: the process environment
++            os.environ.pop(regional.DYNAMIC_TEXT_LENGTH, None)
++            self.assertTrue(config.dynamic_text_length())
++            os.environ[regional.DYNAMIC_TEXT_LENGTH] = "0"
++            self.assertFalse(config.dynamic_text_length())
++            os.environ[regional.DYNAMIC_TEXT_LENGTH] = "on"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not 'on'"):
++                config.dynamic_text_length()
++
++    def test_ref2va_sol_route_receipt_and_log_line(self):
++        """The Ref2VA Sol route ignores the setting (stage1.py): its receipt says so whenever the setting is on, the
++        default included; the Stage1 log line only when it was set to 1, not on every Sol-route load by default."""
++        from runtime import stage1
++        name, ignored = regional.DYNAMIC_TEXT_LENGTH, "per_length (setting ignored)"
++        line = "[sol-h3-studio] SOL_H3_DYNAMIC_TEXT_LENGTH=1 is ignored on the Ref2VA Sol route"
++        for environ, expected in (({}, (ignored, None)), ({name: ""}, (ignored, None)),
++                                  ({name: "0"}, ("per_length", None)), ({name: " 0 "}, ("per_length", None)),
++                                  ({name: "1"}, (ignored, line)), ({name: " 1 "}, (ignored, line))):
++            self.assertEqual(stage1.sol_route_text_length(environ), expected, environ)
++        with self.assertRaisesRegex(ValueError, "^SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not 'on'$"):
++            stage1.sol_route_text_length({name: "on"})
++        with patch.dict(os.environ):                        # without an argument: the process environment
++            os.environ.pop(name, None)
++            self.assertEqual(stage1.sol_route_text_length(), (ignored, None))
++            os.environ[name] = "1"
++            self.assertEqual(stage1.sol_route_text_length(), (ignored, line))
 +
 +    def test_prepare_tiles_follows_fastvideo_tile_bookkeeping(self):
 +        holder = Holder()
@@ -7111,7 +7188,7 @@ index 0000000..5ff3f28
 +        with self.assertRaisesRegex(ValueError, "built for sequence length"):
 +            prepare(metadata(201, 0, third, holder), hidden)
 +
-+    def install_today(self, model, namespace, calls):
++    def install_per_length(self, model, namespace, calls):
 +        """The body attention as regional.install() wires it with the setting off (ints passed to the op)."""
 +        original = sparse_attention(calls)
 +
@@ -7156,12 +7233,12 @@ index 0000000..5ff3f28
 +        with torch.no_grad():
 +            return [run_request(model, text) for text in lengths], calls
 +
-+    def test_today_recompiles_for_each_length_and_step(self):
++    def test_setting_off_recompiles_for_each_length_and_step(self):
 +        limit = patch.object(torch._dynamo.config, "recompile_limit", 64)   # raised in the worker too (stage1.py)
 +        limit.start()
 +        self.addCleanup(limit.stop)
 +        model, blocks, refiners, calls = Model(), GraphCounter(), GraphCounter(), []
-+        self.install_today(model, "sol_h3_test_regional_today", calls)
++        self.install_per_length(model, "sol_h3_test_regional_per_length", calls)
 +        compile_regions(model, blocks, refiners)
 +        graphs = []
 +        with torch.no_grad():
@@ -7423,7 +7500,7 @@ index 0000000..5ff3f28
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py
 new file mode 100644
-index 0000000..5f343f7
+index 0000000..a51e4fc
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py
 @@ -0,0 +1,1156 @@
@@ -8083,7 +8160,7 @@ index 0000000..5f343f7
 +        upgrade that worked."""
 +        settings = {"SOL_H3_RESIDENT_QWEN_EARLY": "0", "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB": "40",
 +                    "SOL_H3_RESIDENT_QWEN_MAX_FRAMES": "361", "SOL_H3_PROMPT_TOKENS": "plain",
-+                    "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "1", "SOL_H3_ORIENTATION": "portrait",
++                    "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0", "SOL_H3_ORIENTATION": "portrait",
 +                    "SOL_H3_SECONDS": "10"}
 +        self.assertEqual(set(settings), set(USER_SETTINGS))
 +        result = subprocess.run([sys.executable, "-B", "-m", "unittest", "tests.test_reshape.PipelineReshapeTests",
