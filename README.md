@@ -1,8 +1,9 @@
-# Sol-H3 Studio
+# LF Studio
 
 Unofficial web studio and faster cold start for NVIDIA's Sol-H3-Spark video+audio pipeline on one DGX Spark.
+Formerly Sol-H3 Studio, renamed in 0.5 because NVIDIA's own front end for Sol-H3 has that name.
 
-![Sol-H3 Studio interface with generation controls and a gallery of queued, generating, and completed clips](docs/images/sol-h3-studio.jpeg)
+![LF Studio interface with generation controls and a gallery of queued, generating, and completed clips](docs/images/lf-studio.jpeg)
 
 Not affiliated with or endorsed by NVIDIA, MiniMax or Lightricks. Model weights are not included; you download
 them yourself under each model's own terms ([Model terms](#model-terms)).
@@ -54,17 +55,17 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
 
 **Writing prompts:** the [prompt guide](docs/API.md#prompt-guide) sums up MiniMax's guides. Start each dialogue line
 inside `<d>...</d>` with a capital letter: a lowercase line that opens the clip can add a stray syllable at 0 s. In
-the A/B test of [#38](https://github.com/slogonomo/sol-h3-studio/issues/38) (4 seeds per prompt, one DGX Spark), with
+the A/B test of [#38](https://github.com/slogonomo/lf-studio/issues/38) (4 seeds per prompt, one DGX Spark), with
 the default prompt tokens, a scene that opened with "what" had it in 4 of 4 clips, and none of 4 with "What"
-([#53](https://github.com/slogonomo/sol-h3-studio/issues/53)).
+([#53](https://github.com/slogonomo/lf-studio/issues/53)).
 
 **An API for agents and scripts** ([docs/API.md](docs/API.md)): the studio's HTTP API, documented, with a JSON
-submit and a wait that hands over the MP4 as soon as the clip is done; and `bin/sol-h3`, one Python file for other
+submit and a wait that hands over the MP4 as soon as the clip is done; and `bin/lf-cli`, one Python file for other
 machines that is both a command line and an MCP server for agent hosts (Claude Code, Hermes, Codex). It uploads
 the input files, waits and saves the MP4 in one step; reading a clip's state never starts a studio that
 spark-switchboard has stopped.
 
-**A patch** to Sol-H3-Spark (`patches/sol-h3-studio.patch`, details in [docs/PATCH.md](docs/PATCH.md)). Measured on
+**A patch** to Sol-H3-Spark (`patches/lf-studio.patch`, details in [docs/PATCH.md](docs/PATCH.md)). Measured on
 one DGX Spark; each "Before" is described in its row:
 
 | | Before | With this patch | Before = |
@@ -88,7 +89,7 @@ persistent compile cache is also part of the patch, but it is already in the 282
 
 **Install scripts** (`install/00-90`) that build the three environments, the Docker image, the path manifests and
 the prompt cache with pinned versions, including fixes found on a DGX Spark (torchaudio on cu132, nvvm/crt pins
-for ltx-kernels, a torchaudio stub for the Qwen image). **A launcher** (`bin/sol-h3-studio`) with memory checks
+for ltx-kernels, a torchaudio stub for the Qwen image). **A launcher** (`bin/lf-studio`) with memory checks
 and clean shutdown for a terminal, NVIDIA Sync, systemd or
 [spark-switchboard](https://github.com/slogonomo/spark-switchboard). **Bench scripts** (`bench/`): whole-session
 timings, and a Stage-2 replay bench with bit-exact and picture checks
@@ -107,7 +108,7 @@ encoder reads the dialogue tags `<d>` and `</d>` as single tokens, as MiniMax's 
 with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). Also since 0.4, Stage 1 and Stage 2 compile with
 static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), Stage 1's body blocks compile once per session
 for any prompt length (`SOL_H3_DYNAMIC_TEXT_LENGTH=0` compiles them per length, as upstream does), and a session
-changes its length and orientation in place, one worker rendering several shapes (`SOLH3_RESHAPE=0` loads the models
+changes its length and orientation in place, one worker rendering several shapes (`LFSTUDIO_RESHAPE=0` loads the models
 again). All of it can be switched back; see [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 
 ## Requirements
@@ -115,16 +116,16 @@ again). All of it can be switched back; see [docs/PATCH.md](docs/PATCH.md#deviat
 - One NVIDIA DGX Spark (GB10, 128 GB). The pipeline needs nearly all memory: ~110 GiB free to start.
 - DGX OS (Ubuntu 24.04 aarch64), CUDA 13 at `/usr/local/cuda`, Python 3.12 with venv, git, curl, ffmpeg, Docker
   with the NVIDIA runtime. Tested with driver 580.178.04.
-- ~300 GB free disk (weights ~224 GB); ~60 GB if you reuse weights you already have (`SOLH3_CHECKPOINTS`).
+- ~300 GB free disk (weights ~224 GB); ~60 GB if you reuse weights you already have (`LFSTUDIO_CHECKPOINTS`).
 - A Hugging Face account that accepted the [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) terms,
   and a read token for it (the quick start logs in with it).
 
 ## Quick start
 
 ```bash
-git clone https://github.com/slogonomo/sol-h3-studio ~/src/sol-h3-studio && cd ~/src/sol-h3-studio
+git clone https://github.com/slogonomo/lf-studio ~/src/lf-studio && cd ~/src/lf-studio
 # Hugging Face login, once (accept the LTX-2.5 terms in the browser first). This is the download tool that
-# install/20-weights.sh uses; the paths assume the default SOLH3_HOME=~/sol-h3.
+# install/20-weights.sh uses; the paths assume the default LFSTUDIO_HOME=~/sol-h3.
 python3.12 -m venv ~/sol-h3/envs/download && ~/sol-h3/envs/download/bin/pip install huggingface-hub==1.29.0
 ~/sol-h3/envs/download/bin/hf auth login     # or: export HF_TOKEN=<your read token>
 install/00-check.sh            # prerequisites; changes nothing
@@ -136,8 +137,8 @@ install/50-stage2.sh           # ~6 min
 install/60-qwen-image.sh       # ~20 min
 install/70-manifests.sh
 install/80-prompt-cache.sh     # uses the GPU for ~20 s
-install/90-env.sh              # writes ~/.config/sol-h3-studio/env
-bin/sol-h3-studio              # then open http://localhost:8190
+install/90-env.sh              # writes ~/.config/lf-studio/env
+bin/lf-studio                  # then open http://localhost:8190
 ```
 
 Every install script takes `--dry-run`. Paths, ports and switches: [bin/env.example](bin/env.example). Details,
@@ -146,7 +147,7 @@ Problems: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 **RTX 5090.** The same studio (page, queue, agent API, CLI) also runs on a workstation with one GeForce RTX 5090
 and 64 GB of RAM, x86_64, with NVIDIA's Sol-H3-RTX5090 package (CPU offload) and its own patch, which makes it fit
-64 GB without changing what the models compute. `SOLH3_BACKEND=rtx5090` in the settings file selects it, and the
+64 GB without changing what the models compute. `LFSTUDIO_BACKEND=rtx5090` in the settings file selects it, and the
 install scripts above then set up that machine instead (no Docker; Python from uv; the prompt cache and, if you like,
 the weights copied from a DGX Spark). Measured there, next to a desktop: a 5 s text clip in 27 s, 15 s in 66 s, a
 reference clip in 50 s; launch to the first clip 57 s once the models' snapshots exist. Without the setting
@@ -154,14 +155,18 @@ everything is the DGX Spark's, as above. Details and measurements: [docs/RTX5090
 [docs/INSTALL.md](docs/INSTALL.md#rtx-5090).
 
 To update: `git pull`, then `install/10-sana.sh`, then restart the studio ([details](docs/INSTALL.md#updating)).
+0.5 renames the launcher (`bin/lf-studio`), the client (`bin/lf-cli`), the settings (`LFSTUDIO_*`), the settings
+file (`~/.config/lf-studio/env`) and the state (`~/.local/state/lf-studio`). An install made with 0.4 keeps working
+with no action until 0.6; `install/10-sana.sh` brings the patch under its new name
+([From 0.4 to 0.5](docs/INSTALL.md#from-04-to-05)).
 0.4 changes the patch: until `install/10-sana.sh` has applied it, the studio refuses to start with
 "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...".
 0.4 also answers only to known host names: if you open the studio by a name other than an IP address, `localhost`, a
 name without a dot or one ending in `.ts.net`, `.local`, `.lan`, `.home`, `.home.arpa` or `.internal`, add it to
-`SOLH3_ALLOWED_HOSTS` before you restart, or every request gets 421 ([more](docs/INSTALL.md#updating)).
+`LFSTUDIO_ALLOWED_HOSTS` before you restart, or every request gets 421 ([more](docs/INSTALL.md#updating)).
 
 The server listens on 127.0.0.1:8190. From a laptop use [NVIDIA Sync](docs/nvidia-sync.md) or
-`ssh -L 8190:127.0.0.1:8190 you@spark-xxxx.local`. `SOLH3_HOST=0.0.0.0` serves the LAN; there is no login, so only
+`ssh -L 8190:127.0.0.1:8190 you@spark-xxxx.local`. `LFSTUDIO_HOST=0.0.0.0` serves the LAN; there is no login, so only
 on a network you trust (cross-site form posts, and host names the studio doesn't know, are refused; see
 [docs/API.md](docs/API.md#access)). Scripts and agents use the same port: [docs/API.md](docs/API.md).
 
@@ -236,7 +241,7 @@ Other public MiniMax-H3 / Sol-H3 work, on DGX Spark and in ComfyUI, as of 2026-1
 Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).
 
 - The patch modifies Apache-2.0 code from NVlabs/Sana; `runtime/qwen_ops/media.py` also contains FastVideo-derived
-  Apache-2.0 code. Each modified file is marked "Modified by sol-h3-studio".
+  Apache-2.0 code. Each modified file is marked "Modified by lf-studio".
 - ComfyUI (GPL-3.0) runs inside the Qwen container that you build yourself with `install/60-qwen-image.sh`, on top
   of NVIDIA's NGC PyTorch image (NVIDIA terms). This repo ships only the Dockerfile layer and three stub files.
   Never redistribute the built image.

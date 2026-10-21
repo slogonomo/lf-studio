@@ -1,6 +1,6 @@
 # The patch: what it changes in Sol-H3-Spark
 
-`patches/sol-h3-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
+`patches/lf-studio.patch` changes NVIDIA's Sol-H3-Spark package in the
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
 
@@ -11,17 +11,17 @@ branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
   are unchanged too.
 - 19 of the 20 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
-- Every modified file carries a `Modified by sol-h3-studio` comment at its first change. Other changed lines are
-  tagged `sol-h3-studio:`. The 7 new files say they are part of sol-h3-studio.
+- Every modified file carries a `Modified by lf-studio` comment at its first change. Other changed lines are
+  tagged `lf-studio:`. The 7 new files say they are part of lf-studio.
 
 ## Apply, test, revert
 
 ```bash
 git clone --filter=blob:none -b sol-engine https://github.com/NVlabs/Sana
 cd Sana
-git checkout --detach "$(cat /path/to/sol-h3-studio/patches/BASE_COMMIT)"
-git apply --check /path/to/sol-h3-studio/patches/sol-h3-studio.patch
-git apply /path/to/sol-h3-studio/patches/sol-h3-studio.patch
+git checkout --detach "$(cat /path/to/lf-studio/patches/BASE_COMMIT)"
+git apply --check /path/to/lf-studio/patches/lf-studio.patch
+git apply /path/to/lf-studio/patches/lf-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python. SOL_H3_SPARK_COMFY_ROOT (the pinned ComfyUI) lets the
 # prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
@@ -37,13 +37,13 @@ docker run --rm --network=none --user "$(id -u):$(id -g)" -e HOME=/tmp -e CUDA_V
     --entrypoint python3 sol-h3-spark-qwen -B -m unittest tests.test_prompt_tokens   # Ran 12 tests ... OK
 
 # undo the whole patch
-git -C ../../.. apply -R /path/to/sol-h3-studio/patches/sol-h3-studio.patch
+git -C ../../.. apply -R /path/to/lf-studio/patches/lf-studio.patch
 ```
 
 `install/10-sana.sh` does the clone, the apply and the tests (without the `SOL_H3_*` and `SPARK_*` switches of the
 settings file, since the tests check the defaults; the `SOL_H3_SPARK_*` paths stay). Most features below also have
 an environment switch that restores NVIDIA's behaviour without removing the patch. Set switches in the settings file
-(`~/.config/sol-h3-studio/env`) or the environment of whatever starts the pipeline. The pipeline passes the
+(`~/.config/lf-studio/env`) or the environment of whatever starts the pipeline. The pipeline passes the
 environment to its Stage1 and Stage2 workers. `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS` are only defaults for
 `infer.py`: the web server removes both from its environment at start, because it sets format and length per job.
 
@@ -63,7 +63,7 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Reference videos (ref2va) are prepared at the draft canvas, not H3's native 768p canvas. NVIDIA lists video references as GPU-unvalidated. | on | no switch; `git apply -R` |
 | Stage 2 refines the video against the H3 audio held clean and fixed, instead of a re-noised copy that it regenerates and then discards (NVIDIA's `STAGE2_CONTRACT.md` steps 4 and 7). See [15](#15-stage-2-audio-held-fixed-lip-sync). | on | `SOL_H3_STAGE2_AUDIO=joint` |
 | The prompt encoder tokenizes `<d>`, `</d>` and 5 more tags as single tokens, as MiniMax's tokenizer does, instead of splitting them into text as the pinned ComfyUI does. Compared on clips in an A/B test; see [16](#16-minimaxs-prompt-tokens). | on (since 0.4) | `SOL_H3_PROMPT_TOKENS=plain` |
-| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differed between any two processes, reshaped or not, because three kernels were tuned again in each. 0.4 stops this re-tuning ([8](#8-inductor-autotune-cache-fix-torch-213), issue #51). In the staging check of 0.4, two fresh 15 s sessions and one reshaped from 10 s gave the same clip ([18](#18-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `SOLH3_RESHAPE=0` (studio setting) |
+| A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differed between any two processes, reshaped or not, because three kernels were tuned again in each. 0.4 stops this re-tuning ([8](#8-inductor-autotune-cache-fix-torch-213), issue #51). In the staging check of 0.4, two fresh 15 s sessions and one reshaped from 10 s gave the same clip ([18](#18-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `LFSTUDIO_RESHAPE=0` (studio setting) |
 | Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change, apart from the dimensions that `SOL_H3_DYNAMIC_TEXT_LENGTH=1` marks dynamic ([17](#17-prompt-lengths-without-recompiles)). This changes Stage 1's graphs from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). The output was the same with and without it in one GPU check (3 clips). See [18](#18-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
 | Stage 1's 50 body blocks compile once per session for any prompt length, with symbolic sequence sizes, instead of a graph per prompt length. The output was bit-identical with and without it in two GPU checks (16 warm clips; in the 0.4 staging check, 5 clips against renders made before it). See [17](#17-prompt-lengths-without-recompiles). | on (since 0.4) | `SOL_H3_DYNAMIC_TEXT_LENGTH=0` |
 
@@ -238,7 +238,8 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 - **Files.** `runtime/config.py` (`compile_cache_root`), `runtime/pipeline.py`, `runtime/stage2.py`,
   `tests/test_pipeline.py`.
 - **Switch.** `SOL_H3_COMPILE_CACHE`: a directory, or `session` for upstream's behaviour. Default
-  `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile`, or `~/.cache/sol-h3-studio/compile` if the runtime root is unset.
+  `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile`, or `~/.cache/lf-studio/compile` if the runtime root is unset (until
+  0.6 `~/.cache/sol-h3-studio/compile`, the studio's 0.4 name, while only that exists).
   Stage1 uses `<root>/stage1/{inductor,triton}`, Stage2 `<root>/stage2/{inductor,triton}`.
 - **Measured.** Startup 304 → 227 s (this was in place before the 282 s baseline). Triton autotune results
   on disk: 127 → 124 s.
@@ -337,7 +338,7 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 
 ### 14. Load-timing lines
 
-The Stage2 worker prints `[sol-h3-studio] HH:MM:SS ...` lines while it builds its models (upscaler, transformer,
+The Stage2 worker prints `[lf-studio] HH:MM:SS ...` lines while it builds its models (upscaler, transformer,
 audio encoder, decoder). They go to that worker's `worker.log`. No switch.
 
 ### 15. Stage-2 audio held fixed (lip sync)
@@ -402,7 +403,7 @@ and identity are unchanged, and the image is 5-11% sharper.
   during the first clip, see 4, or again after a reshape, see
   [18](#18-reshape-another-length-or-orientation-without-a-reload)) and those loaded per request. A value other than
   `plain` or `minimax` (any case) fails when the pipeline is created, before any worker loads; the studio and
-  `bin/sol-h3-studio --check` refuse to start with it. They also refuse `minimax`, set or by default, when the Sana
+  `bin/lf-studio --check` refuse to start with it. They also refuse `minimax`, set or by default, when the Sana
   checkout still carries an older patch, which would ignore the setting and tokenize as `plain`:
   "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...; run
   install/10-sana.sh". So after a `git pull`, run `install/10-sana.sh`. (Likewise `SOL_H3_STAGE2_AUDIO=frozen` with a
@@ -412,7 +413,7 @@ and identity are unchanged, and the image is 5-11% sharper.
   any of the 7 tokens gets the same ids in both modes, and its clips came out bit-identical (measured; see below).
 - **Receipts.** `results.json` has the mode in its recipe. Each request's Qwen receipt (`qwen/conditioning.json`)
   records `prompt_tokens` (the mode), `text_tokens` (the text positions in the conditioning) and `minimax_tokens` (how
-  many of them are the 7 tokens). The Qwen worker's log has a `[sol-h3-studio] prompt tokens:` line.
+  many of them are the 7 tokens). The Qwen worker's log has a `[lf-studio] prompt tokens:` line.
 - **Caches.** No cache keeps a prompt encoding between requests, so none needs the mode in its key. Stage 1 takes
   only the fresh Qwen receipt of its own request. `fixed-prompt.pt` (`runtime/prompt_cache.py`) holds Stage 2's
   fixed prompt, encoded by Gemma; it never sees the user's prompt. A dialogue prompt has fewer tokens with `minimax`,
@@ -433,7 +434,7 @@ and identity are unchanged, and the image is 5-11% sharper.
   separate test studio). Each prompt was rendered in both modes with the same 4 seeds: t2va 5 s with one English
   speaker, the same line in Spanish, an off-screen voiceover and no dialogue; ref2va 5 s with a voice reference; two
   fl2va 10 s two-person scenes and variants of one of them. Measured with Whisper (words, language), SyncNet (LSE-C on
-  the speaking face) and a look at every clip. Details in [PR #40](https://github.com/slogonomo/sol-h3-studio/pull/40).
+  the speaking face) and a look at every clip. Details in [PR #40](https://github.com/slogonomo/lf-studio/pull/40).
   - The 8 clips whose prompts have none of the 7 tokens (5 s without dialogue, and the scene with its lines in
     quotes) are bit-identical between the modes, decoded audio and video.
   - Word error rate, language and lip sync tie within `plain`'s spread in every group of the second window. In the
@@ -535,7 +536,7 @@ and identity are unchanged, and the image is 5-11% sharper.
   (the check when a pipeline is made), `runtime/stage1.py` (comment; the Sol route's receipt and log line),
   `tests/test_regional_length.py` (new).
 - **Switch.** `SOL_H3_DYNAMIC_TEXT_LENGTH`: `1` (the default, also when empty) on, `0` a graph per prompt length as
-  before. Another value fails when the pipeline is created; the studio and `bin/sol-h3-studio --check` refuse to start
+  before. Another value fails when the pipeline is created; the studio and `bin/lf-studio --check` refuse to start
   with it. They also refuse `1`, set or by default, when the Sana checkout carries an older patch, which compiles as
   `0`.
 
@@ -595,9 +596,9 @@ and identity are unchanged, and the image is 5-11% sharper.
   `runtime/stage1_ops/{capture,vsa,regional}.py`, `runtime/stage2.py`, `runtime/stage2_ops/models.py`,
   `runtime/qwen.py`, `tests/test_reshape.py` (new), `tests/test_regional_length.py`.
 - **Switches.** `SOL_H3_STATIC_SHAPES=0` restores `dynamic=None`. Another value (empty is the default) fails when the
-  pipeline is created; the studio and `bin/sol-h3-studio --check` refuse to start with it. They also refuse `1`, set
+  pipeline is created; the studio and `bin/lf-studio --check` refuse to start with it. They also refuse `1`, set
   or by default, when the Sana checkout carries an older patch, which compiles as `0`. The studio's
-  `SOLH3_RESHAPE=0` closes the session and loads the models again for any change, as before. `infer.py` does not
+  `LFSTUDIO_RESHAPE=0` closes the session and loads the models again for any change, as before. `infer.py` does not
   reshape.
 - **Measured** (one GPU run on one DGX Spark, 22 clips, one seed, short prompts: a reshaped session against fresh
   sessions at each shape, each a first and a warm clip; with this change's patch before its merge into 0.4, so
@@ -693,7 +694,7 @@ the resident encoder starts. Other tests still read `SOL_H3_ORIENTATION` and `SO
 | `SOL_H3_PROMPT_TOKENS` | minimax | `plain` = as up to 0.3: the pinned ComfyUI splits MiniMax's 7 prompt tokens (`<d>`, `</d>`, ...) into text tokens; `minimax` reads each as one token, as in H3's training |
 | `SOL_H3_DYNAMIC_TEXT_LENGTH` | 1 | 0 = Stage 1's body blocks compile a graph per prompt length, as upstream; 1 = once per session for any length ([17](#17-prompt-lengths-without-recompiles)) |
 | `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)`: after a size change a graph may get dynamic sizes ([18](#18-reshape-another-length-or-orientation-without-a-reload)) |
-| `SOLH3_RESHAPE` (studio) | 1 | 0 = another length or orientation closes the session and loads the models again |
+| `LFSTUDIO_RESHAPE` (studio) | 1 | 0 = another length or orientation closes the session and loads the models again |
 | `MIMALLOC_PURGE_DELAY` | 0 (workers) | any value you set wins |
 
 The `SPARK_*` names are kept from the patch's first version so existing setups keep working.

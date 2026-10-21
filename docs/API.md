@@ -3,43 +3,43 @@
 The studio's page talks to its server over HTTP, and programs can use the same API: queue a clip with its input
 files, wait for it, and download the MP4. This page documents that API and two clients built on it:
 
-- **`bin/sol-h3`**, a command line. It is one Python file (standard library only, Python 3.9 or later), so it can be
+- **`bin/lf-cli`**, a command line. It is one Python file (standard library only, Python 3.9 or later), so it can be
   copied to any machine that reaches the studio.
-- **`sol-h3 mcp`**, the same file as an MCP server: agent hosts such as Claude Code, Hermes or Codex get tools to
+- **`lf-cli mcp`**, the same file as an MCP server: agent hosts such as Claude Code, Hermes or Codex get tools to
   make clips, wait for them and save them.
 
 H3 takes its prompt in a structured format, and nothing in the studio rewrites a prompt. The
-[prompt guide](#prompt-guide) at the end says how to write one; it is also `sol-h3 guide` and the MCP tool
+[prompt guide](#prompt-guide) at the end says how to write one; it is also `lf-cli guide` and the MCP tool
 `prompt_guide`.
 
 Times on this page were measured on one DGX Spark ([PERFORMANCE.md](PERFORMANCE.md)); a studio on a workstation
-with one RTX 5090 (`SOLH3_BACKEND=rtx5090`, [RTX5090.md](RTX5090.md)) has the same API. Every curl, CLI and
+with one RTX 5090 (`LFSTUDIO_BACKEND=rtx5090`, [RTX5090.md](RTX5090.md)) has the same API. Every curl, CLI and
 MCP-registration example was run against the stub studio (`tests/stub/studio.py`), which makes small test clips
 without a GPU.
 
 Contents: [Quick start](#quick-start) · [Access](#access) · [Through spark-switchboard](#through-spark-switchboard) ·
 [Making a clip](#making-a-clip-post-apigenerate) · [Waiting](#waiting-get-apijobsid) ·
 [Getting the clip](#getting-the-clip) · [Cancel](#cancel) · [Other endpoints](#other-endpoints) ·
-[Errors](#errors) · [CLI](#cli-binsol-h3) · [MCP server](#mcp-server-sol-h3-mcp) · [Prompt guide](#prompt-guide)
+[Errors](#errors) · [CLI](#cli-binlf-cli) · [MCP server](#mcp-server-lf-cli-mcp) · [Prompt guide](#prompt-guide)
 
 ## Quick start
 
 Each example makes a 5 s clip from the first frame `kitchen.png` and the prompt in `prompt.txt` (an fl2va prompt,
 as in the [prompt guide](#prompt-guide)), and saves it as `clip.mp4`. The studio's address is
 `http://<spark-host>:8190` from another machine (through spark-switchboard, or a studio started with
-`SOLH3_HOST=0.0.0.0`), or `http://127.0.0.1:8190` on the Spark itself.
+`LFSTUDIO_HOST=0.0.0.0`), or `http://127.0.0.1:8190` on the Spark itself.
 
 **The CLI.** Get the file once (`~/.local/bin` must be on your `PATH`), then:
 
 ```bash
-mkdir -p ~/.local/bin && curl -fsSLo ~/.local/bin/sol-h3 \
-  https://raw.githubusercontent.com/slogonomo/sol-h3-studio/main/bin/sol-h3 && chmod +x ~/.local/bin/sol-h3
-export SOLH3_URL=http://<spark-host>:8190
-sol-h3 generate --first-frame kitchen.png --prompt-file prompt.txt --seconds 5 --out clip.mp4
+mkdir -p ~/.local/bin && curl -fsSLo ~/.local/bin/lf-cli \
+  https://raw.githubusercontent.com/slogonomo/lf-studio/main/bin/lf-cli && chmod +x ~/.local/bin/lf-cli
+export LFSTUDIO_URL=http://<spark-host>:8190
+lf-cli generate --first-frame kitchen.png --prompt-file prompt.txt --seconds 5 --out clip.mp4
 ```
 
 It shows progress on stderr and prints the saved file's absolute path on stdout. On the Spark,
-`bin/sol-h3-studio generate ...` runs the same client with the studio's env file, so it needs no `SOLH3_URL`.
+`bin/lf-studio generate ...` runs the same client with the studio's env file, so it needs no `LFSTUDIO_URL`.
 
 **curl with a form upload** (the page's own format). One command submits the clip, waits for it and saves it:
 
@@ -102,17 +102,17 @@ What the curl commands rely on:
   running, ask again"; 200 is the MP4 itself; 409 means the clip failed or was cancelled, with the reason.
 - `-o clip.part`, then `mv`: a refusal or a broken download never ends up as `clip.mp4`.
 
-**An agent host over MCP**: register `sol-h3 mcp` ([MCP server](#mcp-server-sol-h3-mcp)), for example in Claude
+**An agent host over MCP**: register `lf-cli mcp` ([MCP server](#mcp-server-lf-cli-mcp)), for example in Claude
 Code:
 
 ```bash
-claude mcp add --scope user --transport stdio sol-h3 -e SOLH3_URL=http://<spark-host>:8190 \
-  -e SOLH3_MCP_WAIT_S=600 -e SOLH3_MCP_MAX_WAIT_S=1800 -- python3 /path/to/sol-h3 mcp
+claude mcp add --scope user --transport stdio lf-studio -e LFSTUDIO_URL=http://<spark-host>:8190 \
+  -e LFSTUDIO_MCP_WAIT_S=600 -e LFSTUDIO_MCP_MAX_WAIT_S=1800 -- python3 /path/to/lf-cli mcp
 ```
 
 ## Access
 
-- **There is no login.** The studio listens on 127.0.0.1 by default. With `SOLH3_HOST=0.0.0.0`, or behind
+- **There is no login.** The studio listens on 127.0.0.1 by default. With `LFSTUDIO_HOST=0.0.0.0`, or behind
   spark-switchboard on 8190, **anyone who can reach the port** can:
   - make, cancel, delete and restore clips;
   - load and unload the models;
@@ -125,11 +125,11 @@ claude mcp add --scope user --transport stdio sol-h3 -e SOLH3_URL=http://<spark-
   so it does not stop them.
 - **The host check** answers only requests for a host name the studio knows: IP addresses, `localhost`, names
   without a dot (Tailscale MagicDNS short names), names ending in `.ts.net`, `.local`, `.lan`, `.home`,
-  `.home.arpa` or `.internal`, and the names in `SOLH3_ALLOWED_HOSTS` ([bin/env.example](../bin/env.example)).
+  `.home.arpa` or `.internal`, and the names in `LFSTUDIO_ALLOWED_HOSTS` ([bin/env.example](../bin/env.example)).
   Any other name in `Host` or `X-Forwarded-Host` gets 421 `unknown host name <name>; add it to
-  SOLH3_ALLOWED_HOSTS`. This stops DNS rebinding, where a web page uses a name of its own that resolves to your
+  LFSTUDIO_ALLOWED_HOSTS`. This stops DNS rebinding, where a web page uses a name of its own that resolves to your
   studio's address. It does not stop anyone who reaches the port directly. If you reach the studio by a domain of
-  your own, add that name to `SOLH3_ALLOWED_HOSTS`.
+  your own, add that name to `LFSTUDIO_ALLOWED_HOSTS`.
 - **Plain HTTP:** requests and clips cross the network unencrypted unless the network encrypts them. Tailscale
   does, through WireGuard.
 - An access token for the API is possible future work; nothing sends or checks one today.
@@ -138,7 +138,7 @@ claude mcp add --scope user --transport stdio sol-h3 -e SOLH3_URL=http://<spark-
 
 With [spark-switchboard](https://github.com/slogonomo/spark-switchboard), port 8190 belongs to switchboard. It
 starts the studio when something needs it and stops it when the memory is wanted elsewhere or the studio has been
-unused for 30 min (`integrations/spark-switchboard/sol-h3-studio.toml`). What a program's request does there:
+unused for 30 min (`integrations/spark-switchboard/lf-studio.toml`). What a program's request does there:
 
 | Request on port 8190 | Studio stopped | Studio starting | Studio running | Counts as use |
 |---|---|---|---|---|
@@ -163,7 +163,7 @@ How a client behaves well:
    `{"error": "<text>"}`: if `error` is an object, the answer came from switchboard. Without the header, a GET gets
    switchboard's answer as plain text.
 2. **Send a `User-Agent` that names your program.** switchboard's log and dashboard show it for each start ("wanted:
-   GET /api/state (curl/8.5.0 from ...)"). `bin/sol-h3` sends `sol-h3/0.4.0`.
+   GET /api/state (curl/8.5.0 from ...)"). `bin/lf-cli` sends `lf-cli/0.5.0`.
 3. **Submit with `X-Switchboard-Wait: <seconds>`** (0-3600). switchboard then holds the POST for that long while
    another app finishes its work and the studio starts, instead of answering 503 after `hold_s`. Your HTTP timeout
    must be longer. A 503 from switchboard means the POST was **not** passed on: no clip was made, and sending it again
@@ -240,7 +240,7 @@ out, for every key. A file is either
 
 Base64 may be wrapped across lines (GNU `base64` without `-w0`). The studio does not fetch URLs: a file given as
 `"https://..."` or `{"url": ...}` gets 400 `the studio does not fetch URLs; send the file as base64, or use
-bin/sol-h3, which downloads URLs itself`. The CLI and the MCP server download URLs on their own machine and upload
+bin/lf-cli, which downloads URLs itself`. The CLI and the MCP server download URLs on their own machine and upload
 the files.
 
 JSON is stricter than the form. Each of these gets 400 before any file is decoded:
@@ -257,7 +257,7 @@ JSON is stricter than the form. Each of these gets 400 before any file is decode
 ### Limits and checks
 
 Before the fields are read: 411, 400 (`bad Content-Length`) or 413 for the body's length, 415 for its type, and
-429 while `SOLH3_MAX_QUEUED` clips (default 20) are waiting in the queue (the running clip does not count), with
+429 while `LFSTUDIO_MAX_QUEUED` clips (default 20) are waiting in the queue (the running clip does not count), with
 `Retry-After: 60`: `the queue is full (20 clips waiting); try again when one has finished`.
 
 Then the form and JSON go through the same checks, with the same messages, and a refused request leaves nothing
@@ -370,7 +370,7 @@ One clip renders at a time. Measured on one DGX Spark ([PERFORMANCE.md](PERFORMA
 | t2va with the models loaded (the same task as the clip before, at an orientation and length the session has run) | 3 s: 36 s · 5 s: 54-66 s · 10 s: 123 s · 15 s: 191 s |
 | ref2va with a 5 s reference video, 5 s | 133 s per clip |
 | The first clip at an orientation or length the session hasn't run, same task (the models stay loaded; Stage 2 compiles for the new shape, from the compile cache when that shape ran before) | a clip with the models loaded plus 0.2-10 s (5 → 10 s: 7 s, 10 → 15 s: 10 s in the staging check of 0.4, compile cache warm; fl2va 16:9 → 9:16: 0.2 s in an earlier run; one run each, [PERFORMANCE.md](PERFORMANCE.md#changing-length-or-format)). With `SOL_H3_DYNAMIC_TEXT_LENGTH=0` Stage 1 compiles for it too: 5 → 10 s: 14 s, 5 → 15 s: 27 s when it compiled from scratch |
-| t2va, the first clip after a change of task (the models load first; also after any change with `SOLH3_RESHAPE=0`) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
+| t2va, the first clip after a change of task (the models load first; also after any change with `LFSTUDIO_RESHAPE=0`) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
 | The first clip of fl2va (first and last frame) / ref2va (an image and a video), 5 s | 115 s / 178 s with `infer.py` |
 | Cancel of a running clip, until the pipeline has closed | about 40 s; the next clip then loads the models again |
 
@@ -389,7 +389,7 @@ clips).
 
   Behind switchboard this path never starts the studio, and it sends the MP4 the moment the clip is done.
 - **`GET /video/<id>`**: the MP4 (`video/mp4`) with `Content-Disposition: inline;
-  filename="sol-h3_<task>_<seconds>s_seed<seed>_<id6>.mp4"`. `Range` requests get 206. 404 `no such video`. Behind
+  filename="lf-studio_<task>_<seconds>s_seed<seed>_<id6>.mp4"`. `Range` requests get 206. 404 `no such video`. Behind
   switchboard it starts a stopped studio.
 - **`GET /poster/<id>`**: a JPEG of the frame at about 1 s, 640 pixels wide. 404 `no poster`. Behind switchboard it
   never starts the studio (with this version's integration file).
@@ -416,7 +416,7 @@ call) never cancels the clip.
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "session", "jobs", "done", "more", "deleted"}`. `backend` is the machine, `spark` (the default) or `rtx5090` (`SOLH3_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`SOLH3_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
+| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "session", "jobs", "done", "more", "deleted"}`. `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
 | `GET /api/jobs?before=<created>&limit=<n>` | Older clips, newest first: `{"jobs": [...], "more": true/false}`. `before` is a `created` time (default: now), `limit` 1-100 (default 24). Records as stored. |
 | `GET /api/inputs/<id>` | A clip's input files, for Remix: `{"task", "inputs": {"<zone>": [{"name", "index", "url"}]}, "missing": [...]}` |
 | `GET /input/<id>/<zone>/<index>` | One input file (reference videos as converted). 404 `no such input`. |
@@ -427,7 +427,7 @@ Used by the page; stable, but not designed for agents. Each takes a JSON body of
 
 | Endpoint | Body | Does |
 |---|---|---|
-| `POST /api/delete` | `{"id"}` | moves a finished clip and its files to the trash for `SOLH3_TRASH_DAYS` (default 7); 409 while it is queued or running |
+| `POST /api/delete` | `{"id"}` | moves a finished clip and its files to the trash for `LFSTUDIO_TRASH_DAYS` (default 7); 409 while it is queued or running |
 | `POST /api/undelete` | `{"id"}` | brings it back |
 | `POST /api/load` | `{"task", "orientation", "seconds"}` | loads the models for those settings ahead of a clip ("Load selected now"). With that task loaded, it only changes the session's length and orientation, without a warm-up clip (`reshape` true). 409 while a clip is queued or running |
 | `POST /api/unload` | none | frees the models; 409 while a clip runs |
@@ -450,33 +450,34 @@ The studio answers errors as `{"error": "<text>"}` (some add `"job"`); spark-swi
 | 413 | studio | over 200 MB (`/api/generate`) or 64 KiB (the other POSTs) |
 | 415 | studio | `/api/generate` with a body that is neither form nor JSON |
 | 416 | studio | a `Range` outside the file |
-| 421 | studio | `unknown host name <name>; add it to SOLH3_ALLOWED_HOSTS` ([Access](#access)) |
+| 421 | studio | `unknown host name <name>; add it to LFSTUDIO_ALLOWED_HOSTS` ([Access](#access)) |
 | 429 | studio | the queue is full; `Retry-After: 60` |
 | 502 | switchboard | `upstream_down`: the studio stopped answering |
 | 503 | switchboard | not running: `loading`, `waiting`, `no_memory`, `failed`, `stopping`, `stopped`, `paused`; `Retry-After`. A POST that got it was not passed on. |
 | 503 | studio | `the studio is shutting down ...` with the clip's record (`/api/jobs/<id>`) |
 
-## CLI: `bin/sol-h3`
+## CLI: `bin/lf-cli`
 
-`bin/sol-h3` is one Python file: standard library only, Python 3.9 or later, and it reads no other file of this
+`bin/lf-cli` is one Python file: standard library only, Python 3.9 or later, and it reads no other file of this
 repo. On another machine, get it as in the [Quick start](#quick-start) (or copy it from a checkout). On the Spark,
-`bin/sol-h3-studio <command> ...` runs it with the settings of the studio's env file.
+`bin/lf-studio <command> ...` runs it with the settings of the studio's env file. Up to 0.4 it was `bin/sol-h3`: until
+0.6 that name runs `bin/lf-cli` (with a note on stderr), and a 0.4 copy on another machine works with this studio.
 
 ```
-sol-h3 generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
+lf-cli generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
        [--orientation landscape|portrait] [--seconds 3|4|5|6|7|8|10|12|15] [--seed N]
        [--first-frame FILE|URL] [--last-frame FILE|URL] [--ref FILE|URL]...
        [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
-sol-h3 wait ID [--out PATH] [--poster] [--timeout S]
-sol-h3 status [ID]
-sol-h3 cancel ID
-sol-h3 fetch ID [--out PATH] [--poster] [--wake]
-sol-h3 guide                  # the prompt guide
-sol-h3 mcp                    # the MCP server on stdin/stdout
+lf-cli wait ID [--out PATH] [--poster] [--timeout S]
+lf-cli status [ID]
+lf-cli cancel ID
+lf-cli fetch ID [--out PATH] [--poster] [--wake]
+lf-cli guide                  # the prompt guide
+lf-cli mcp                    # the MCP server on stdin/stdout
 common options, before or after the command: --url URL  --json  --quiet
 ```
 
-**The studio** is `--url`, else `$SOLH3_URL`, else `http://$SOLH3_HOST:$SOLH3_PORT` (`0.0.0.0` or empty counts
+**The studio** is `--url`, else `$LFSTUDIO_URL`, else `http://$LFSTUDIO_HOST:$LFSTUDIO_PORT` (`0.0.0.0` or empty counts
 as `127.0.0.1`; a missing port is 8190), else `http://127.0.0.1:8190`. Behind switchboard, use its port (8190).
 
 **`generate`** checks everything it can before it uploads: the task against the files (without `--task`: frames →
@@ -495,11 +496,11 @@ for example with `--prompt` (`--prompt-file -` also keeps CRLF, on Linux).
 
 - Without `--wait`, `--out` or `--poster`, it prints the clip's id and exits.
 - With any of them it waits, then saves the MP4: into the current directory under the clip's own name
-  (`sol-h3_<task>_<s>s_seed<seed>_<id6>.mp4`), into a directory given as `--out` (an existing one, or a path ending
+  (`lf-studio_<task>_<s>s_seed<seed>_<id6>.mp4`), into a directory given as `--out` (an existing one, or a path ending
   in `/`), or as the `--out` file, which it replaces. `--poster` also saves the poster as `<name>.jpg`. It checks
   that it can write there before it submits (exit 2 if not).
 - `--timeout S` stops waiting after S seconds (exit 4, the id on stdout); the clip keeps running. Ctrl-C while
-  waiting also leaves the clip running (exit 130) and says how to pick it up: `sol-h3 wait <id> --out ...`.
+  waiting also leaves the clip running (exit 130) and says how to pick it up: `lf-cli wait <id> --out ...`.
 
 **`wait ID`** waits for a clip and saves it as above. **`fetch ID`** saves a finished clip (also one made in the
 page) without waiting; a clip still running is exit 4. **`status`** prints one line per clip: the queued and
@@ -514,7 +515,7 @@ The MP4 is written to a `.part` file, checked against `Content-Length` and then 
 **With spark-switchboard**, `status`, `wait`, `cancel` and `fetch` read `/__switchboard/status` first and never
 start a stopped studio. `fetch` then refuses (exit 3, "fetching would start it (it needs most of the machine's
 memory). Add --wake."); `fetch --wake` starts it, holding up to 900 s. If switchboard stops the studio while `wait`
-or `generate --wait` waits, the clip most likely finished first; the CLI says so and how to get it (`sol-h3 fetch
+or `generate --wait` waits, the clip most likely finished first; the CLI says so and how to get it (`lf-cli fetch
 <id> --wake`).
 
 **Output:** stdout carries the result only: the saved MP4's absolute path, the id (generate without waiting), or
@@ -534,17 +535,17 @@ JSON object: the API record (plus `path`, `bytes` and `poster_path` when files w
 More examples:
 
 ```bash
-sol-h3 generate --prompt-file t2va.txt --seconds 8 --seed 7 --wait            # t2va, saved here
-sol-h3 generate --ref face.png --ref voice.wav --prompt-file ref.txt --out clips/   # ref2va, into clips/
-id=$(sol-h3 generate --prompt-file t2va.txt)                                   # queue only
-sol-h3 status "$id"
-sol-h3 wait "$id" --out clip.mp4 --poster --timeout 600
-sol-h3 --json fetch "$id" --out clips/
+lf-cli generate --prompt-file t2va.txt --seconds 8 --seed 7 --wait            # t2va, saved here
+lf-cli generate --ref face.png --ref voice.wav --prompt-file ref.txt --out clips/   # ref2va, into clips/
+id=$(lf-cli generate --prompt-file t2va.txt)                                   # queue only
+lf-cli status "$id"
+lf-cli wait "$id" --out clip.mp4 --poster --timeout 600
+lf-cli --json fetch "$id" --out clips/
 ```
 
-## MCP server: `sol-h3 mcp`
+## MCP server: `lf-cli mcp`
 
-`sol-h3 mcp` speaks MCP over stdin and stdout (newline-delimited JSON-RPC), both the `initialize` handshake
+`lf-cli mcp` speaks MCP over stdin and stdout (newline-delimited JSON-RPC), both the `initialize` handshake
 (protocol versions 2024-11-05 to 2025-11-25) and the 2026-07-28 revision. It runs on the agent's machine: it reads
 the agent's files there, uploads them, and saves the MP4 there. The studio itself has no MCP endpoint.
 
@@ -554,11 +555,15 @@ From the MCP process's environment (the host's server config):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SOLH3_URL` | as the CLI | the studio, `http://<spark-host>:8190` |
-| `SOLH3_OUT_DIR` | `./sol-h3-clips` (from the process's working directory; Claude Code starts it in the project directory) | where MP4s go when `out` is not given |
-| `SOLH3_MCP_WAIT_S` | 50 | how long `generate` and `wait` wait when the call gives no `wait_s` |
-| `SOLH3_MCP_MAX_WAIT_S` | 1800 | the cap on any `wait_s` |
-| `SOLH3_MCP_OUT_ANYWHERE` | unset | `1` lets `out` point outside `SOLH3_OUT_DIR` and the working directory |
+| `LFSTUDIO_URL` | as the CLI | the studio, `http://<spark-host>:8190` |
+| `LFSTUDIO_OUT_DIR` | `./lf-clips` (from the process's working directory; Claude Code starts it in the project directory) | where MP4s go when `out` is not given |
+| `LFSTUDIO_MCP_WAIT_S` | 50 | how long `generate` and `wait` wait when the call gives no `wait_s` |
+| `LFSTUDIO_MCP_MAX_WAIT_S` | 1800 | the cap on any `wait_s` |
+| `LFSTUDIO_MCP_OUT_ANYWHERE` | unset | `1` lets `out` point outside `LFSTUDIO_OUT_DIR` and the working directory |
+
+Until 0.6 each also works by its 0.4 name (`SOLH3_URL` and so on; the new name wins), with one warning on stderr, and
+`./sol-h3-clips` is the default while it exists and `./lf-clips` does not. A host registered with `sol-h3 mcp` keeps
+working through `bin/sol-h3` until 0.6; the server now calls itself `lf-studio` (`serverInfo`).
 
 ### Tools
 
@@ -593,16 +598,16 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
   earlier one first with `status` (no id: the newest clips) or its id.
 - **Cancelling a tool call** (Esc in the host, a host timeout) never cancels or removes a clip; only the `cancel`
   tool does.
-- **`out`** must be an existing directory or a name ending in `.mp4`, inside `SOLH3_OUT_DIR` or the working
-  directory (unless `SOLH3_MCP_OUT_ANYWHERE=1`). An existing file is never replaced: the clip is saved as
+- **`out`** must be an existing directory or a name ending in `.mp4`, inside `LFSTUDIO_OUT_DIR` or the working
+  directory (unless `LFSTUDIO_MCP_OUT_ANYWHERE=1`). An existing file is never replaced: the clip is saved as
   `<name>-1.mp4`, `-2`, ... instead.
 - **Relative paths** in `out`, `first_frame`, `last_frame` and `references` start from the MCP server's working
-  directory, not from `SOLH3_OUT_DIR`. That is the project directory in Claude Code; other hosts may start the
+  directory, not from `LFSTUDIO_OUT_DIR`. That is the project directory in Claude Code; other hosts may start the
   server anywhere, so agents there should pass absolute paths. A missing file's error names the absolute path it
   looked for.
-- **Before it submits**, `generate` checks that it can write where the clip goes (`out`, else `SOLH3_OUT_DIR`, or
+- **Before it submits**, `generate` checks that it can write where the clip goes (`out`, else `LFSTUDIO_OUT_DIR`, or
   the directory above it that exists). A host that starts the server in a directory it can't write to (`/`, say)
-  gets a refusal naming `SOLH3_OUT_DIR`, not a rendered clip that can't be saved. If saving fails all the same, the
+  gets a refusal naming `LFSTUDIO_OUT_DIR`, not a rendered clip that can't be saved. If saving fails all the same, the
   error says the clip is done on the studio and that `fetch` with its id and a writable `out` saves it.
 - **Progress:** when the host asks for it, `notifications/progress` every 10 s while a call waits, with the phase as
   the message.
@@ -611,10 +616,10 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
 
 ### Waiting values per client
 
-A tool call may run only as long as the host lets it. Set `SOLH3_MCP_WAIT_S` below that limit; `wait_s` in a call
-can ask for more, up to `SOLH3_MCP_MAX_WAIT_S`. The limits as the hosts document them (2026-10):
+A tool call may run only as long as the host lets it. Set `LFSTUDIO_MCP_WAIT_S` below that limit; `wait_s` in a call
+can ask for more, up to `LFSTUDIO_MCP_MAX_WAIT_S`. The limits as the hosts document them (2026-10):
 
-| Host | Limit per tool call | `SOLH3_MCP_WAIT_S` |
+| Host | Limit per tool call | `LFSTUDIO_MCP_WAIT_S` |
 |---|---|---|
 | Claude Code (stdio) | none; a call is stopped after 30 min without a result or progress, and the server sends progress every 10 s. A call still running after 2 min moves to the background, and its result arrives later. In `claude -p` (2.1.296) a 129 s `generate` stayed in the foreground and returned the clip as usual (measured 2026-10-12). | 600 |
 | Hermes | `timeout`, 300 s by default | 280, or 1700 with `timeout: 1800` when Hermes's model runs on the same Spark |
@@ -626,44 +631,44 @@ can ask for more, up to `SOLH3_MCP_MAX_WAIT_S`. The limits as the hosts document
 **Claude Code** (the name comes before the `-e` options):
 
 ```bash
-claude mcp add --scope user --transport stdio sol-h3 -e SOLH3_URL=http://<spark-host>:8190 \
-  -e SOLH3_MCP_WAIT_S=600 -e SOLH3_MCP_MAX_WAIT_S=1800 -- python3 /path/to/sol-h3 mcp
-claude mcp list          # sol-h3: python3 /path/to/sol-h3 mcp - ✔ Connected
+claude mcp add --scope user --transport stdio lf-studio -e LFSTUDIO_URL=http://<spark-host>:8190 \
+  -e LFSTUDIO_MCP_WAIT_S=600 -e LFSTUDIO_MCP_MAX_WAIT_S=1800 -- python3 /path/to/lf-cli mcp
+claude mcp list          # lf-studio: python3 /path/to/lf-cli mcp - ✔ Connected
 ```
 
 **Hermes** (`~/.hermes/config.yaml`):
 
 ```yaml
 mcp_servers:
-  sol_h3:
+  lf_studio:
     command: "python3"
-    args: ["/path/to/sol-h3", "mcp"]
-    env: {SOLH3_URL: "http://<spark-host>:8190", SOLH3_OUT_DIR: "/path/for/clips", SOLH3_MCP_WAIT_S: "280"}
+    args: ["/path/to/lf-cli", "mcp"]
+    env: {LFSTUDIO_URL: "http://<spark-host>:8190", LFSTUDIO_OUT_DIR: "/path/for/clips", LFSTUDIO_MCP_WAIT_S: "280"}
     timeout: 300
 ```
 
-If Hermes's own model runs on the same Spark, use `SOLH3_MCP_WAIT_S: "1700"`, `SOLH3_MCP_MAX_WAIT_S: "1800"` and
+If Hermes's own model runs on the same Spark, use `LFSTUDIO_MCP_WAIT_S: "1700"`, `LFSTUDIO_MCP_MAX_WAIT_S: "1800"` and
 `timeout: 1800`, so that one call covers the submit, the wait and the download
-([Through spark-switchboard](#through-spark-switchboard)). Set `SOLH3_OUT_DIR`: Hermes may start the server
-outside your project directory, and `out` must lie inside `SOLH3_OUT_DIR` or the server's working directory. A
+([Through spark-switchboard](#through-spark-switchboard)). Set `LFSTUDIO_OUT_DIR`: Hermes may start the server
+outside your project directory, and `out` must lie inside `LFSTUDIO_OUT_DIR` or the server's working directory. A
 relative `out` or input path still starts from that working directory, so tell the agent to pass absolute paths.
 
 **Codex:**
 
 ```bash
-codex mcp add sol-h3 --env SOLH3_URL=http://<spark-host>:8190 -- python3 /path/to/sol-h3 mcp
+codex mcp add lf-studio --env LFSTUDIO_URL=http://<spark-host>:8190 -- python3 /path/to/lf-cli mcp
 ```
 
-This keeps `SOLH3_MCP_WAIT_S` at 50, under Codex's 60 s. To wait longer per call, add
-`--env SOLH3_MCP_WAIT_S=580` to the command, and `tool_timeout_sec = 600` to the `[mcp_servers.sol-h3]` table it
+This keeps `LFSTUDIO_MCP_WAIT_S` at 50, under Codex's 60 s. To wait longer per call, add
+`--env LFSTUDIO_MCP_WAIT_S=580` to the command, and `tool_timeout_sec = 600` to the `[mcp_servers.lf-studio]` table it
 writes to `~/.codex/config.toml`.
 
-**Any other host:** the command `python3 /path/to/sol-h3 mcp`, with `SOLH3_URL` in its environment, and
-`SOLH3_OUT_DIR` too unless the host starts the server in a directory where clips should go.
+**Any other host:** the command `python3 /path/to/lf-cli mcp`, with `LFSTUDIO_URL` in its environment, and
+`LFSTUDIO_OUT_DIR` too unless the host starts the server in a directory where clips should go.
 
 ## Prompt guide
 
-The same text is `sol-h3 guide` and the MCP tool `prompt_guide`; a test keeps the copies identical.
+The same text is `lf-cli guide` and the MCP tool `prompt_guide`; a test keeps the copies identical.
 
 <!-- prompt-guide:start -->
 

@@ -172,7 +172,7 @@ the session had run) none. Above 10 s the prompt encoder still loads per request
 the resident encoder loads again in the background if MemAvailable is at least the minimum of its early load (32 GiB up
 to 5 s, 34 GiB above; [PATCH.md](PATCH.md) item 4), else after the next clip, so the first clip after such a change may
 wait for it. A change of mode still reloads.
-`SOLH3_RESHAPE=0` reloads for any change.
+`LFSTUDIO_RESHAPE=0` reloads for any change.
 
 ## Known costs, not fixed
 
@@ -214,10 +214,10 @@ wait for it. A change of mode still reloads.
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
 | `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip, or right after a change back to 10 s or less |
 | `SOL_H3_DYNAMIC_TEXT_LENGTH` | 1 | 0 = Stage 1's body blocks compile per prompt length, not once per session |
-| `SOLH3_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
-| `SOLH3_RESHAPE` (web UI) | 1 | 0 = another length or format closes the session and loads the models again |
+| `LFSTUDIO_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
+| `LFSTUDIO_RESHAPE` (web UI) | 1 | 0 = another length or format closes the session and loads the models again |
 
-The warm-up at launch (`SOLH3_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled
+The warm-up at launch (`LFSTUDIO_PRELOAD`) is a cold start like any other: 102-112 s for t2va 16:9 5 s with a filled
 compile cache. A clip with the same settings submitted while it runs used to wait for it and then render warm
 (186 s from submit to clip when submitted at launch). Now such a clip takes the warm-up over: it stops the warm-up
 and loads the models itself (112 s from submit to clip, measured 2026-10-10). It does so while the warm-up has run
@@ -261,8 +261,8 @@ bench/replay.sh run --arms baseline:2,steps2_from_0725:1,decode_untiled:1,previe
 bench/replay.sh quality <run directory> [--lpips <python>] [--syncnet '<scorer command>']
 ```
 
-`run` reads the same settings file as `bin/sol-h3-studio`. Like `bench/duration.sh`, it refuses to start below
-`SOLH3_MIN_FREE_GIB` (110) and runs each GPU process under `bench/memguard-run.sh`. It copies the Stage-2 compile
+`run` reads the same settings file as `bin/lf-studio`. Like `bench/duration.sh`, it refuses to start below
+`LFSTUDIO_MIN_FREE_GIB` (110) and runs each GPU process under `bench/memguard-run.sh`. It copies the Stage-2 compile
 cache into the run directory and uses the copy, so a run never writes the studio's cache. It deletes the copy at the
 end (`--keep-cache` keeps it). It does not stop or start the studio and does not use sudo. Everything goes to
 `<runtime root>/outputs/bench/replay-<time>[-label]/`: `plan.json`, `runs.jsonl` and `runs.csv` (one row per run),
