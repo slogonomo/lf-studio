@@ -3,7 +3,7 @@
 Logs:
 
 - Launcher: `~/.local/state/lf-studio/launcher.log` (`$LFSTUDIO_STATE_DIR`; an install made with 0.4 keeps
-  `~/.local/state/sol-h3-studio` until 0.6, while the new directory does not exist).
+  `~/.local/state/sol-h3-studio` until 0.6, while the new directory has no clip history).
 - Web server: `~/.local/state/lf-studio/server.log`.
 - Pipeline workers: `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/<session>/{stage1,stage2,qwen,warmup-qwen}-worker*/worker.log`.
   A failed clip's card shows the error; "Worker exited with code N; see .../worker.log" points at the right file.

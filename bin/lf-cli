@@ -1519,10 +1519,11 @@ class McpServer:
         self.wait_s = env_seconds("LFSTUDIO_MCP_WAIT_S", 50.0)
         self.max_wait_s = env_seconds("LFSTUDIO_MCP_MAX_WAIT_S", 1800.0)
         out = os.environ.get("LFSTUDIO_OUT_DIR") or "lf-clips"
-        if out == "lf-clips" and not os.path.exists(out) and os.path.isdir("sol-h3-clips"):  # until 0.6: 0.4's name
+        # until 0.6: 0.4's default while it exists and the new one is missing or empty
+        if out == "lf-clips" and os.path.isdir("sol-h3-clips") and not (os.path.isdir(out) and os.listdir(out)):
             out = "sol-h3-clips"
-            self.log(f"using {os.path.abspath(out)}: {os.path.abspath('lf-clips')} does not exist (the old default "
-                     "works until 0.6; LFSTUDIO_OUT_DIR sets another)")
+            self.log(f"using {os.path.abspath(out)}: {os.path.abspath('lf-clips')} is missing or empty (the old "
+                     "default works until 0.6; LFSTUDIO_OUT_DIR sets another)")
         self.out_dir = Path(os.path.abspath(Path(out).expanduser()))
         self.anywhere = os.environ.get("LFSTUDIO_MCP_OUT_ANYWHERE", "") == "1"
         self.stdout = sys.stdout.buffer

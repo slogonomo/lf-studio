@@ -10,7 +10,7 @@
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 if [[ -z "${LFSTUDIO_STATE_DIR:-}" ]]; then
     LFSTUDIO_STATE_DIR=$HOME/.local/state/lf-studio
-    old_path LFSTUDIO_STATE_DIR "$HOME/.local/state/sol-h3-studio"     # until 0.6: 0.4's place, if only it exists
+    old_path LFSTUDIO_STATE_DIR "$HOME/.local/state/sol-h3-studio" jobs.db   # until 0.6: 0.4's, if it has the history
 fi
 export LFSTUDIO_STATE_DIR
 detected=$(detect_backend)

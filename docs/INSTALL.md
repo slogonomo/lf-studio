@@ -274,9 +274,10 @@ Nothing else needs to change for a working install. Until 0.6:
   copy of the 0.4 `bin/sol-h3` on another machine works with the new studio as it is.
 - Every setting is also read by its 0.4 name, from the settings file and from the environment, with one warning that
   lists the old names used. Where both names are set, the new one wins; the environment still wins over the file.
-- `~/.config/sol-h3-studio/env`, `~/.local/state/sol-h3-studio`, `~/.cache/sol-h3-studio` (the compile cache when the
-  runtime root is unset) and the MCP server's `./sol-h3-clips` are used while the new place does not exist, with a note
-  naming both. Nothing is moved; a new install uses the new places.
+- `~/.config/sol-h3-studio/env` is used while `~/.config/lf-studio/env` does not exist, `~/.local/state/sol-h3-studio`
+  while it has the clip history (`jobs.db`) and `~/.local/state/lf-studio` does not, and `~/.cache/sol-h3-studio` (the
+  compile cache when the runtime root is unset) and the MCP server's `./sol-h3-clips` while the new one is missing or
+  empty, each with a note naming both. Nothing is moved; a new install uses the new places.
 - Venvs that 0.4 marked as built (`.sol-h3-studio-done`) count as built, and the page takes over the settings it kept in
   the browser (`solh3.*`).
 - `integrations/spark-switchboard/sol-h3-studio.toml` (unchanged) and `integrations/systemd/sol-h3-studio.service` stay

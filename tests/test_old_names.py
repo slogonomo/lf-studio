@@ -93,7 +93,9 @@ class LauncherSettings(LauncherTest):
         return run.returncode, run.stdout + run.stderr
 
     def test_old_places(self):
-        """The 0.4 settings file and state directory while the new ones do not exist, with a note naming both."""
+        """The 0.4 settings file while the new one does not exist, and the 0.4 state directory while it has the clip
+        history (jobs.db) and the new one does not, with a note naming both. A new directory that holds only a
+        pidfile (the new spark-switchboard file names one there) does not count."""
         self.port = free_port()
         home = self.d / "home"
         old_config, new_config = home / ".config/sol-h3-studio", home / ".config/lf-studio"
@@ -101,20 +103,23 @@ class LauncherSettings(LauncherTest):
         old_config.mkdir(parents=True)
         (old_config / "env").write_text("SOLH3_MIN_FREE_GIB=992\n")
         old_state.mkdir(parents=True)
+        (old_state / "jobs.db").write_bytes(b"")
+        new_config.mkdir(parents=True)                 # a directory without a settings file in it
+        new_state.mkdir(parents=True)
+        (new_state / "launcher.pid").write_text("1\n")
         code, out = self.default_places(home, "--check")
         self.assertEqual(code, 1, out)
         self.assertIn(f"lf-studio: using {old_config}/env: {new_config}/env does not exist", out)
-        self.assertIn(f"lf-studio: using {old_state}: {new_state} does not exist", out)
+        self.assertIn(f"lf-studio: using {old_state}: {new_state} has no jobs.db", out)
         self.assertIn("needs ~992 GiB", out)
         self.assertTrue((old_state / "launcher.log").is_file())
-        self.assertFalse(new_state.exists())
-        # new places that exist win, without a note
-        new_config.mkdir(parents=True)
+        self.assertFalse((new_state / "launcher.log").exists())
+        # new places with content win, without a note
         (new_config / "env").write_text("LFSTUDIO_MIN_FREE_GIB=991\n")
-        new_state.mkdir(parents=True)
+        (new_state / "jobs.db").write_bytes(b"")
         code, out = self.default_places(home, "--check")
         self.assertIn("needs ~991 GiB", out)
-        self.assertNotIn("does not exist", out)
+        self.assertNotIn("lf-studio: using", out)
         self.assertTrue((new_state / "launcher.log").is_file())
 
     def test_new_install(self):
@@ -122,7 +127,7 @@ class LauncherSettings(LauncherTest):
         self.port = free_port()
         home = self.d / "fresh"
         code, out = self.default_places(home, "--check")
-        self.assertNotIn("does not exist", out)
+        self.assertNotIn("lf-studio: using", out)
         self.assertTrue((home / ".local/state/lf-studio/launcher.log").is_file())
         self.assertFalse((home / ".local/state/sol-h3-studio").exists())
 
@@ -251,11 +256,12 @@ class Install(unittest.TestCase):
         old_config.mkdir(parents=True)
         (old_config / "env").write_text(f'SOLH3_HOME="{self.data}"\nSOLH3_SANA="$SOLH3_HOME/Sana"\nSOLH3_PORT=8191\n')
         old_state.mkdir(parents=True)
+        (old_state / "jobs.db").write_bytes(b"")
         code, out = self.run_script("90-env.sh", "--dry-run", LFSTUDIO_ENV=None, LFSTUDIO_HOME=None)
         self.assertEqual(code, 0, out)
         self.assertIn(f"=== 90-env.sh: settings file {old_config}/env\n>>> exists; kept", out)
         self.assertIn(f"lf-studio: using {old_config}/env: {self.home}/.config/lf-studio/env does not exist", out)
-        self.assertIn(f"lf-studio: using {old_state}: {self.home}/.local/state/lf-studio does not exist", out)
+        self.assertIn(f"lf-studio: using {old_state}: {self.home}/.local/state/lf-studio has no jobs.db", out)
         for line in (f"LFSTUDIO_SANA={self.data}/Sana", "LFSTUDIO_PORT=8191", f"LFSTUDIO_STATE_DIR={old_state}"):
             self.assertIn(f"\n    {line}\n", out)
         self.assertNotIn("SOLH3_", out.split("It would now contain:")[1].split("+ mkdir")[0])
@@ -317,7 +323,8 @@ class ClientSettings(unittest.TestCase):
 
 
 class McpClipsDirectory(McpTest):
-    """The MCP server's default clips directory: ./lf-clips, or ./sol-h3-clips (0.4's) while only that exists."""
+    """The MCP server's default clips directory: ./lf-clips, or ./sol-h3-clips (0.4's) while that exists and
+    ./lf-clips is missing or empty."""
 
     def clip_dir(self, **env):
         m = self.mcp(**env)
@@ -330,8 +337,10 @@ class McpClipsDirectory(McpTest):
         where, log = self.clip_dir()
         self.assertEqual(where, self.work / "sol-h3-clips")
         self.assertFalse((self.work / "lf-clips").exists())
-        self.assertIn(f"using {self.work}/sol-h3-clips: {self.work}/lf-clips does not exist", log.read_text())
+        self.assertIn(f"using {self.work}/sol-h3-clips: {self.work}/lf-clips is missing or empty", log.read_text())
         (self.work / "lf-clips").mkdir()
+        self.assertEqual(self.clip_dir()[0], self.work / "sol-h3-clips")
+        (self.work / "lf-clips" / "notes.txt").write_text("x\n")
         self.assertEqual(self.clip_dir()[0], self.work / "lf-clips")
 
     def test_old_setting(self):
@@ -341,8 +350,8 @@ class McpClipsDirectory(McpTest):
 
 
 class ServerSettings(unittest.TestCase):
-    """webui/server.py run without the launcher: the old names, and the 0.4 state directory while the new one does
-    not exist."""
+    """webui/server.py run without the launcher: the old names, and the 0.4 state directory while it has the clip
+    history and the new one does not."""
 
     def setUp(self):
         self.d = Path(tempfile.mkdtemp(prefix="lf-studio-old-"))
@@ -380,14 +389,17 @@ class ServerSettings(unittest.TestCase):
 
     def test_old_state_directory(self):
         home = self.d / "home"
-        old = home / ".local/state/sol-h3-studio"
+        old, new = home / ".local/state/sol-h3-studio", home / ".local/state/lf-studio"
         old.mkdir(parents=True)
+        (old / "jobs.db").write_bytes(b"")
+        new.mkdir(parents=True)
+        (new / "launcher.pid").write_text("1\n")       # what the new spark-switchboard file puts there
         studio = self.start(HOME=str(home), LFSTUDIO_STATE_DIR=None)
         log = studio.log.read_text()
-        self.assertIn(f"lf-studio: using {old}: {home}/.local/state/lf-studio does not exist", log)
+        self.assertIn(f"lf-studio: using {old}: {new} has no jobs.db", log)
         self.assertIn(f"state {old})", log)
-        self.assertTrue((old / "jobs.db").is_file())
-        self.assertFalse((home / ".local/state/lf-studio").exists())
+        self.assertGreater((old / "jobs.db").stat().st_size, 0)
+        self.assertFalse((new / "jobs.db").exists())
 
 
 @unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")

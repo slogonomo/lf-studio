@@ -27,10 +27,12 @@ old_settings_warning() {  # until 0.6
     for k in $(printf '%s\n' "${!OLD_USED[@]}" | sort); do list+="${list:+, }$k${OLD_USED[$k]}"; done
     echo "lf-studio: settings under their 0.4 names, which work until 0.6: $list. Rename them LFSTUDIO_*" >&2
 }
-# old_path VAR OLD: until 0.6, a default place that does not exist gives way to OLD, its place up to 0.4, if that exists
+# old_path VAR OLD [FILE]: until 0.6, the default place in VAR gives way to OLD, its place up to 0.4, while OLD has
+# FILE and the default does not (without FILE: while OLD exists and the default does not)
 old_path() {
-    [[ ! -e "${!1}" && -e "$2" ]] || return 0
-    echo "lf-studio: using $2: ${!1} does not exist (the old place works until 0.6; docs/INSTALL.md)" >&2
+    [[ ! -e "${!1}${3:+/$3}" && -e "$2${3:+/$3}" ]] || return 0
+    echo "lf-studio: using $2: ${!1} ${3:+has no }${3:-does not exist}" \
+        "(the old place works until 0.6; docs/INSTALL.md)" >&2
     printf -v "$1" '%s' "$2"
 }
 load_env_file() {

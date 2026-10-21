@@ -562,8 +562,8 @@ From the MCP process's environment (the host's server config):
 | `LFSTUDIO_MCP_OUT_ANYWHERE` | unset | `1` lets `out` point outside `LFSTUDIO_OUT_DIR` and the working directory |
 
 Until 0.6 each also works by its 0.4 name (`SOLH3_URL` and so on; the new name wins), with one warning on stderr, and
-`./sol-h3-clips` is the default while it exists and `./lf-clips` does not. A host registered with `sol-h3 mcp` keeps
-working through `bin/sol-h3` until 0.6; the server now calls itself `lf-studio` (`serverInfo`).
+`./sol-h3-clips` is the default while it exists and `./lf-clips` is missing or empty. A host registered with
+`sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; the server now calls itself `lf-studio` (`serverInfo`).
 
 ### Tools
 

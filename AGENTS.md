@@ -16,8 +16,9 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   `integrations/`, `bench/`, `docs/`.
 - The project was called Sol-H3 Studio up to 0.4. Until 0.6 its old names keep a 0.4 install working
   ([docs/INSTALL.md](docs/INSTALL.md#from-04-to-05)): `bin/sol-h3-studio` and `bin/sol-h3` are shims, every setting
-  is also read as `SOLH3_*`, and the old places of the settings file, the state and the clips are used while the new
-  ones do not exist. That code is marked "until 0.6".
+  is also read as `SOLH3_*`, and the old places of the settings file, the state, the compile cache and the clips are
+  used while the new ones hold nothing yet (decided by content: the state by its `jobs.db`). That code is marked
+  "until 0.6".
 - The RTX 5090 backend (`LFSTUDIO_BACKEND=rtx5090`, [docs/RTX5090.md](docs/RTX5090.md)):
   `patches/lf-studio-rtx5090.patch` against `patches/BASE_COMMIT_RTX5090` for NVIDIA's Sol-H3-RTX5090 package,
   `install/05-python.sh` (uv and its Pythons), and per-backend branches in the launcher, `install/env.sh` and the

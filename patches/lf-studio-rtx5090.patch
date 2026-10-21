@@ -50,7 +50,7 @@ index 19c4db6..898756d 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
-index 0327a69..ccce6b1 100644
+index 0327a69..ecd0437 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 @@ -6,6 +6,10 @@ import os
@@ -88,15 +88,15 @@ index 0327a69..ccce6b1 100644
 +
 +
 +def studio_cache():
-+    """lf-studio: ~/.cache/lf-studio. Until 0.6 ~/.cache/sol-h3-studio (the studio's name up to 0.4) when only that
-+    exists, with one note on stderr."""
++    """lf-studio: ~/.cache/lf-studio. Until 0.6 ~/.cache/sol-h3-studio (the studio's name up to 0.4) while the new one
++    is missing or empty, with one note on stderr."""
 +    new, old = Path.home() / ".cache" / "lf-studio", Path.home() / ".cache" / "sol-h3-studio"
-+    if new.exists() or not old.exists():
++    if not old.is_dir() or (new.is_dir() and any(new.iterdir())):
 +        return new
 +    if old not in _noted:
 +        import sys
 +        _noted.add(old)
-+        print(f"[lf-studio] using {old}: {new} does not exist (the old name works until 0.6)", file=sys.stderr,
++        print(f"[lf-studio] using {old}: {new} is missing or empty (the old name works until 0.6)", file=sys.stderr,
 +              flush=True)
 +    return old
 +
@@ -6113,7 +6113,7 @@ index 0000000..b70265b
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
-index 6a8c437..907f1c6 100644
+index 6a8c437..ed622ef 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -6508,7 +6508,7 @@ index 6a8c437..907f1c6 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -287,11 +581,34 @@ class PipelineTests(unittest.TestCase):
+@@ -287,11 +581,36 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -6530,8 +6530,10 @@ index 6a8c437..907f1c6 100644
 +            with contextlib.redirect_stderr(io.StringIO()) as err:
 +                self.assertEqual(compile_cache_root(), str(Path(home, ".cache/sol-h3-studio/compile")))
 +                self.assertEqual(data_root(), Path(home, ".cache/sol-h3-studio"))
-+            self.assertEqual(err.getvalue().count("does not exist"), 1)
-+            Path(home, ".cache/lf-studio").mkdir()
++            self.assertEqual(err.getvalue().count("is missing or empty"), 1)
++            Path(home, ".cache/lf-studio").mkdir()            # an empty new one does not count
++            self.assertEqual(compile_cache_root(), str(Path(home, ".cache/sol-h3-studio/compile")))
++            Path(home, ".cache/lf-studio/compile").mkdir()
 +            self.assertEqual(compile_cache_root(), str(Path(home, ".cache/lf-studio/compile")))
 +        with mock.patch.dict(os.environ, {"SOL_H3_SPARK_RUNTIME_ROOT": "/rt"}, clear=True):
 +            self.assertEqual(compile_cache_root(), "/rt/cache/compile")

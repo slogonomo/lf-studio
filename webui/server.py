@@ -64,8 +64,8 @@ Environment:
                              submit gets 429 until one has started.
   LFSTUDIO_LAUNCHER_PID      set by bin/lf-studio: the server stops (closing its pipeline) when that process dies.
 Until 0.6 these settings may also have their names up to 0.4 (SOLH3_HOST for LFSTUDIO_HOST, and so on; not
-LFSTUDIO_LAUNCHER_PID): an old name counts where the new one is not set, with one warning. The same goes for the
-state directory: ~/.local/state/sol-h3-studio while only that exists.
+LFSTUDIO_LAUNCHER_PID): an old name counts where the new one is not set, with one warning. The default state
+directory is ~/.local/state/sol-h3-studio while that has jobs.db and ~/.local/state/lf-studio does not.
 
 SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0) and
 SOL_H3_DYNAMIC_TEXT_LENGTH (1 or 0; 1, the default since 0.4, compiles Stage 1's body blocks once per session for any
@@ -185,9 +185,10 @@ if "{task}" not in PATHS_TEMPLATE:
     fail(f"LFSTUDIO_PATHS must contain {{task}}, e.g. {HOME}/paths-{{task}}.json (got {PATHS_TEMPLATE})")
 PATHS = {t: Path(PATHS_TEMPLATE.format(task=t)).expanduser() for t in TASKS}
 STATE_DIR = Path(os.environ.get("LFSTUDIO_STATE_DIR") or Path.home() / ".local/state/lf-studio").expanduser()
-OLD_STATE_DIR = Path.home() / ".local/state/sol-h3-studio"        # until 0.6: the default up to 0.4, if only it exists
-if not os.environ.get("LFSTUDIO_STATE_DIR") and not STATE_DIR.exists() and OLD_STATE_DIR.exists():
-    print(f"lf-studio: using {OLD_STATE_DIR}: {STATE_DIR} does not exist (the old place works until 0.6)",
+OLD_STATE_DIR = Path.home() / ".local/state/sol-h3-studio"   # until 0.6: 0.4's default, while it has the clip history
+if (not os.environ.get("LFSTUDIO_STATE_DIR") and not (STATE_DIR / "jobs.db").exists()
+        and (OLD_STATE_DIR / "jobs.db").exists()):
+    print(f"lf-studio: using {OLD_STATE_DIR}: {STATE_DIR} has no jobs.db (the old place works until 0.6)",
           file=sys.stderr, flush=True)
     STATE_DIR = OLD_STATE_DIR
 DB_FILE = STATE_DIR / "jobs.db"
