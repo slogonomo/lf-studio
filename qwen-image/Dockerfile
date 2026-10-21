@@ -1,4 +1,4 @@
-# Sol-H3 Studio layer on top of NVIDIA's Sol-H3-Spark Qwen image (install/60-qwen-image.sh builds both).
+# LF Studio layer on top of NVIDIA's Sol-H3-Spark Qwen image (install/60-qwen-image.sh builds both).
 #
 # Why: NVIDIA's Dockerfile.qwen starts from NGC PyTorch 25.11, which has no torchaudio. ComfyUI v0.30.0, which
 # that image installs for the Qwen tokenizer and visual encoder, imports torchaudio (and torchaudio.functional,

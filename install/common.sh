@@ -1,14 +1,14 @@
 # shellcheck shell=bash disable=SC2034  # variables here are used by the scripts that source this file
 # Shared by install/NN-*.sh. Not run directly.
-# Loads the settings (install/env.sh: ${SOLH3_ENV:-~/.config/sol-h3-studio/env}, defaults under $SOLH3_HOME,
+# Loads the settings (install/env.sh: ${LFSTUDIO_ENV:-~/.config/lf-studio/env}, defaults under $LFSTUDIO_HOME,
 # default ~/sol-h3) and provides run/step helpers.
-# Every script accepts --dry-run (or SOLH3_DRY_RUN=1): it prints the commands that change something instead of
+# Every script accepts --dry-run (or LFSTUDIO_DRY_RUN=1): it prints the commands that change something instead of
 # running them. Read-only checks still run. FORCE=1 redoes steps that are already done.
 set -uo pipefail
 
 INSTALL_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd -- "$INSTALL_DIR/.." && pwd)
-DRY_RUN=${SOLH3_DRY_RUN:-0}
+DRY_RUN=${LFSTUDIO_DRY_RUN:-${SOLH3_DRY_RUN:-0}}     # SOLH3_DRY_RUN: its name up to 0.4, until 0.6
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;

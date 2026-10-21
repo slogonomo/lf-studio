@@ -1,5 +1,5 @@
 # stage1-rtx5090-freeze.txt: pip freeze of the stage1 env on a workstation with one RTX 5090 (x86_64, 2026-10).
-# Reference only: install/40-stage1.sh (SOLH3_BACKEND=rtx5090) installs from install/constraints/ and writes a fresh freeze to $SOLH3_HOME/logs/.
+# Reference only: install/40-stage1.sh (LFSTUDIO_BACKEND=rtx5090) installs from install/constraints/ and writes a fresh freeze to $LFSTUDIO_HOME/logs/.
 absl-py==2.5.1
 accelerate==1.0.1
 aiofiles==24.1.0

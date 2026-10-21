@@ -1,5 +1,5 @@
 # stage1-freeze.txt: pip freeze of the stage1 env that produced the numbers in docs/PERFORMANCE.md (DGX Spark, 2026-09).
-# Reference only: install/40-stage1.sh installs from install/constraints/ and writes a fresh freeze to $SOLH3_HOME/logs/.
+# Reference only: install/40-stage1.sh installs from install/constraints/ and writes a fresh freeze to $LFSTUDIO_HOME/logs/.
 absl-py==2.5.0
 accelerate==1.0.1
 aiofiles==24.1.0
@@ -33,7 +33,7 @@ dill==0.4.1
 einops==0.9.0.dev0
 fastapi==0.141.1
 -e git+https://github.com/hao-ai-lab/FastVideo.git@3d8ac9d14bd697a89ede8f170cbfbca012a9edcc#egg=fastvideo
-fastvideo-kernel @ file://${SOLH3_HOME}/sources/FastVideo/fastvideo-kernel
+fastvideo-kernel @ file://${LFSTUDIO_HOME}/sources/FastVideo/fastvideo-kernel
 ffmpy==1.0.0
 filelock==4.0.1
 Flask==3.1.3

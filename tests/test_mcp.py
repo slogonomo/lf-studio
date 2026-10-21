@@ -1,4 +1,4 @@
-"""bin/sol-h3 mcp, the MCP server for agents (#29), driven over stdio with raw JSON-RPC lines (no SDK), against the
+"""bin/lf-cli mcp, the MCP server for agents (#29), driven over stdio with raw JSON-RPC lines (no SDK), against the
 stub studio (tests/stub) and small fake servers. No models, no GPU.
 
 python3 -m unittest tests.test_mcp -v      (or with the rest: python3 -m unittest discover -s tests)
@@ -26,7 +26,7 @@ MODERN_META = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
 
 
 class Mcp:
-    """bin/sol-h3 mcp as a subprocess: send requests, read responses by id, keep notifications and every stdout line."""
+    """bin/lf-cli mcp as a subprocess: send requests, read responses by id, keep notifications and every stdout line."""
 
     def __init__(self, cwd, url, log, **env):
         self.log = open(log, "w")
@@ -114,7 +114,7 @@ class McpTest(unittest.TestCase):
     studio_needed = True
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="sol-h3-mcp-"))
+        self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-mcp-"))
         self.work = self.dir / "work"
         self.work.mkdir()
         self.studio = None
@@ -161,7 +161,7 @@ class Protocol(McpTest):
                                           "clientInfo": {"name": "t", "version": "1"}})["result"]
         self.assertEqual(r["protocolVersion"], "2025-06-18")
         self.assertEqual(r["capabilities"], {"tools": {"listChanged": False}})
-        self.assertEqual(r["serverInfo"]["name"], "sol-h3")
+        self.assertEqual(r["serverInfo"]["name"], "lf-studio")
         self.assertLessEqual(len(r["instructions"]), 2048)
         r = self.m.request("initialize", {"protocolVersion": "1999-01-01", "capabilities": {}})["result"]
         self.assertEqual(r["protocolVersion"], "2025-11-25")
@@ -174,7 +174,7 @@ class Protocol(McpTest):
         r = self.m.request("server/discover", {"_meta": MODERN_META})["result"]
         self.assertIn("2026-07-28", r["supportedVersions"])
         self.assertEqual((r["resultType"], r["cacheScope"], r["ttlMs"]), ("complete", "public", 3600000))
-        self.assertEqual(r["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "sol-h3")
+        self.assertEqual(r["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "lf-studio")
         meta = dict(MODERN_META, **{"io.modelcontextprotocol/protocolVersion": "2099-01-01"})
         e = self.m.request("tools/list", {"_meta": meta})["error"]
         self.assertEqual(e["code"], -32022)
@@ -254,7 +254,7 @@ class Tools(McpTest):
         self.assertEqual((rec["state"], rec["task"], rec["orientation"]), ("done", "fl2va", "portrait"))
         path = Path(rec["path"])
         self.assertTrue(path.is_absolute() and path.is_file())
-        self.assertEqual(path.parent, self.work / "sol-h3-clips")
+        self.assertEqual(path.parent, self.work / "lf-clips")
         self.assertAlmostEqual(duration(path), 5.04, delta=0.1)
         self.assertEqual(rec["bytes"], path.stat().st_size)
         self.assertEqual(Path(rec["poster_path"]).read_bytes()[:2], b"\xff\xd8")
@@ -340,7 +340,7 @@ class Tools(McpTest):
         self.assertTrue(text(r).startswith(f"Clip {jid} was cancelled."))
 
     def test_prompt_guide(self):
-        """9.3 #10: prompt_guide returns the guide, the same text as sol-h3 guide."""
+        """9.3 #10: prompt_guide returns the guide, the same text as lf-cli guide."""
         r = self.mcp().call("prompt_guide")
         self.assertEqual(r["content"], [{"type": "text", "text": load_cli().GUIDE}])
 
@@ -354,7 +354,7 @@ class Tools(McpTest):
         self.assertIn(f"Already submitted as {first['id']}", text(r))
         self.assertEqual(r["structuredContent"]["id"], first["id"])
         self.assertEqual(r["structuredContent"]["path"], first["path"])          # not downloaded a second time
-        self.assertEqual(len(list((self.work / "sol-h3-clips").glob("*.mp4"))), 1)
+        self.assertEqual(len(list((self.work / "lf-clips").glob("*.mp4"))), 1)
         r = m.call("generate", dict(args, wait_s=0))                             # wait_s doesn't make it different
         self.assertEqual(r["structuredContent"]["id"], first["id"])
         again = m.call("generate", dict(args, again=True))["structuredContent"]
@@ -370,7 +370,7 @@ class Tools(McpTest):
 
     def test_out(self):
         """DECISIONS 15: out is an existing directory or a .mp4 name; an existing file is never replaced; out stays
-        in SOLH3_OUT_DIR or the working directory unless SOLH3_MCP_OUT_ANYWHERE=1."""
+        in LFSTUDIO_OUT_DIR or the working directory unless LFSTUDIO_MCP_OUT_ANYWHERE=1."""
         outside = self.dir / "outside"
         outside.mkdir()
         m = self.mcp()
@@ -383,9 +383,9 @@ class Tools(McpTest):
         r = m.call("fetch", {"id": r["structuredContent"]["id"], "out": "sub", "poster": False})
         self.assertEqual(Path(r["structuredContent"]["path"]).parent, self.work / "sub")
         jobs = len(self.studio.state()["jobs"])
-        for out, words in [(str(outside / "x.mp4"), "out must be inside SOLH3_OUT_DIR"),
-                           (str(outside), "out must be inside SOLH3_OUT_DIR"),
-                           ("../outside/x.mp4", "out must be inside SOLH3_OUT_DIR"),
+        for out, words in [(str(outside / "x.mp4"), "out must be inside LFSTUDIO_OUT_DIR"),
+                           (str(outside), "out must be inside LFSTUDIO_OUT_DIR"),
+                           ("../outside/x.mp4", "out must be inside LFSTUDIO_OUT_DIR"),
                            ("notes.txt", "out must be an existing directory or a file name ending in .mp4"),
                            ("newdir/", "out must be an existing directory")]:
             r = m.call("generate", {"prompt": "x", "wait_s": 30, "out": out})
@@ -395,7 +395,7 @@ class Tools(McpTest):
         (self.work / "link").symlink_to(outside)
         r = m.call("generate", {"prompt": "x", "wait_s": 30, "out": "link/y.mp4"})
         self.assertTrue(r["isError"])
-        m2 = self.mcp(SOLH3_MCP_OUT_ANYWHERE="1", SOLH3_OUT_DIR=str(self.dir / "clips"))
+        m2 = self.mcp(LFSTUDIO_MCP_OUT_ANYWHERE="1", LFSTUDIO_OUT_DIR=str(self.dir / "clips"))
         r = m2.call("generate", {"prompt": "x", "wait_s": 30, "out": str(outside / "x.mp4")})
         self.assertEqual(Path(r["structuredContent"]["path"]), outside / "x.mp4")
         r = m2.call("generate", {"prompt": "y", "wait_s": 30})
@@ -403,8 +403,8 @@ class Tools(McpTest):
         self.assertEqual([p.name for p in self.work.glob("*.part")] + [p.name for p in outside.glob(".*")], [])
 
     def test_unwritable_places(self):
-        """A host that starts the server where it can't write, without SOLH3_OUT_DIR: generate refuses before it
-        submits and names SOLH3_OUT_DIR; so does an out it can't write to. A save that fails all the same says the
+        """A host that starts the server where it can't write, without LFSTUDIO_OUT_DIR: generate refuses before it
+        submits and names LFSTUDIO_OUT_DIR; so does an out it can't write to. A save that fails all the same says the
         clip is done and how to fetch it."""
         if os.geteuid() == 0:
             self.skipTest("root can write anywhere")
@@ -415,16 +415,16 @@ class Tools(McpTest):
         m = self.mcp(cwd=ro)
         r = m.call("generate", {"prompt": "x", "wait_s": 30})
         self.assertTrue(r["isError"])
-        self.assertEqual(text(r), f"can't save clips in {ro}/sol-h3-clips (the default; SOLH3_OUT_DIR is unset): no "
+        self.assertEqual(text(r), f"can't save clips in {ro}/lf-clips (the default; LFSTUDIO_OUT_DIR is unset): no "
                                   f"permission to write to {ro}. Nothing was submitted or downloaded. Set "
-                                  "SOLH3_OUT_DIR in this server's settings to a directory it can write to, or pass out "
-                                  f"with a writable directory inside its working directory ({ro}).")
+                                  "LFSTUDIO_OUT_DIR in this server's settings to a directory it can write to, or pass "
+                                  f"out with a writable directory inside its working directory ({ro}).")
         for out in (str(ro), "new/c.mp4"):
             r = m.call("generate", {"prompt": "x", "wait_s": 30, "out": out})
             self.assertTrue(r["isError"], out)
             self.assertIn(f"no permission to write to {ro}. Nothing was submitted or downloaded.", text(r))
         self.assertEqual(self.studio.state()["jobs"], [])
-        m = self.mcp(SOLH3_OUT_DIR=str(self.dir / "clips"))
+        m = self.mcp(LFSTUDIO_OUT_DIR=str(self.dir / "clips"))
         (self.work / "late").mkdir()
         m.send({"jsonrpc": "2.0", "id": "g", "method": "tools/call",
                 "params": {"name": "generate", "arguments": {"prompt": "x", "wait_s": 30, "out": "late"}}})
@@ -443,9 +443,9 @@ class Tools(McpTest):
         self.assertEqual(Path(r["structuredContent"]["path"]).parent, self.work / "late")
 
     def test_relative_paths(self):
-        """Relative paths start from the server's working directory, also out when SOLH3_OUT_DIR is set (as the docs
+        """Relative paths start from the server's working directory, also out when LFSTUDIO_OUT_DIR is set (as the docs
         say); a missing file's error names the absolute path it looked for."""
-        m = self.mcp(SOLH3_OUT_DIR=str(self.dir / "clips"))
+        m = self.mcp(LFSTUDIO_OUT_DIR=str(self.dir / "clips"))
         r = m.call("generate", {"prompt": "x", "first_frame": "nothere.png"})
         self.assertTrue(r["isError"])
         self.assertEqual(text(r), f"first_frame: no such file: nothere.png (looked for {self.work / 'nothere.png'})")
@@ -492,13 +492,13 @@ class LongClips(McpTest):
         while not m.inbox.empty():
             m.pump(0.1)
         self.assertNotIn(json.dumps("w1"), m.responses)
-        self.assertFalse((self.work / "sol-h3-clips").exists() and list((self.work / "sol-h3-clips").iterdir()))
+        self.assertFalse((self.work / "lf-clips").exists() and list((self.work / "lf-clips").iterdir()))
         r = m.call("wait", {"id": jid, "wait_s": 10})
         self.assertFalse(r["isError"])
 
     def test_wait_budget(self):
         """A generate whose wait_s runs out says the clip is still running, with its id, and is not an error."""
-        m = self.mcp(SOLH3_MCP_WAIT_S="2")
+        m = self.mcp(LFSTUDIO_MCP_WAIT_S="2")
         t = time.time()
         r = m.call("generate", {"prompt": "x"})
         self.assertLess(time.time() - t, 6)
@@ -523,8 +523,8 @@ class FakeStudio(McpTest):
         and nothing but switchboard's status is asked for."""
         def answer(method, path, headers, body):
             if path == "/__switchboard/status":
-                return 200, JSON, {"state": "stopped", "paused": None, "message": "Sol-H3 Studio is not running"}
-            return switchboard_error("stopped", "Sol-H3 Studio is not running")
+                return 200, JSON, {"state": "stopped", "paused": None, "message": "LF Studio is not running"}
+            return switchboard_error("stopped", "LF Studio is not running")
         fake = self.fake(answer)
         m = self.mcp(url=fake.url)
         r = m.call("wait", {"id": self.JID})
@@ -562,7 +562,7 @@ class FakeStudio(McpTest):
         """A switchboard 503 on generate: NOT submitted, call again in Retry-After s; the hold is the budget less the
         upload margin (50 - 15 s)."""
         def answer(method, path, headers, body):
-            return switchboard_error("waiting", "Sol-H3 Studio will start once memory is free.", retry=90)
+            return switchboard_error("waiting", "LF Studio will start once memory is free.", retry=90)
         fake = self.fake(answer)
         r = self.mcp(url=fake.url).call("generate", {"prompt": "x"})
         self.assertTrue(r["isError"])
@@ -630,7 +630,7 @@ class FakeStudio(McpTest):
         self.assertFalse(m.call("generate", args)["isError"])
         for trouble in (None,                                                   # no answer (a held read timing out)
                         (500, JSON, {"error": "Internal error"}),
-                        switchboard_error("loading", "Sol-H3 Studio is starting")):
+                        switchboard_error("loading", "LF Studio is starting")):
             read["answer"] = trouble
             r = m.call("generate", args)
             self.assertIn(f"Already submitted as {self.JID}", text(r), trouble)

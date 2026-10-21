@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Sol-H3 Studio: a small web front end for NVIDIA Research's Sol-H3-Spark pipeline (unofficial), and for its
-Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (SOLH3_BACKEND=rtx5090; docs/RTX5090.md).
+"""LF Studio: a small web front end for NVIDIA Research's Sol-H3-Spark pipeline (unofficial), and for its
+Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5090; docs/RTX5090.md).
 
 - One job at a time (FIFO queue). Models stay loaded between jobs with the same task (one Pipeline session). A
   clip with another length or orientation changes the loaded session's shape in place (Pipeline.reshape: Stage 1
   and Stage 2 keep their models; only the prompt encoder closes or loads again when a clip crosses 10 s; the first
   clip at a shape the session has not run compiles for it). Another task closes the session and loads the models
-  again. SOLH3_RESHAPE=0 closes and reloads for any change, as before 0.4.
+  again. LFSTUDIO_RESHAPE=0 closes and reloads for any change, as before 0.4.
 - Tasks: t2va (text), fl2va (first and/or last frame), ref2va (reference images, videos, audio).
 - Output: 1344x768 (landscape) or 768x1344 (portrait), 24 fps, 3-15 s, with audio.
 - POST /api/cancel {"id": ...}: a queued clip leaves the queue at once; a running one is stopped (its pipeline
@@ -21,7 +21,7 @@ For agents and scripts (#29; docs/API.md):
 - POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
   ({"name", "data"} or a data: URI); the studio never fetches URLs. Without a task, it follows from the files (also
   for the form). Answer: {"id", "job"}, job being the API record (api_record). 411 without Content-Length (chunked),
-  413 over 200 MB, 415 for another Content-Type, 429 (Retry-After: 60) while SOLH3_MAX_QUEUED clips are waiting.
+  413 over 200 MB, 415 for another Content-Type, 429 (Retry-After: 60) while LFSTUDIO_MAX_QUEUED clips are waiting.
   fl2va and ref2va records keep "labels": the <Picture N>, <Video N> or <Audio N> each file is in the prompt.
 - GET /api/jobs/<id>[?wait=S]: one clip as an API record: the stored record plus state (queued, running, done, failed,
   cancelled), phase, ahead, elapsed_s and urls. With wait (seconds, at most 300) it answers when the clip has
@@ -29,39 +29,43 @@ For agents and scripts (#29; docs/API.md):
   meanwhile (after the restart the clip reads failed, "server restarted").
 - GET /api/jobs/<id>/video[?wait=S]: the same wait, then the MP4 as /video/<id> sends it; 202 with the record if the
   clip is still queued or running when S has passed, 409 with it for a failed or cancelled clip.
-- /video/<id> downloads as sol-h3_<task>_<seconds>s_seed<seed>_<id6>.mp4.
+- /video/<id> downloads as lf-studio_<task>_<seconds>s_seed<seed>_<id6>.mp4.
 - The small JSON POSTs (/api/cancel, /api/delete, /api/undelete, /api/load, /api/unload) answer 413 above 64 KiB.
 
 Run it with cwd = the patched Sol-H3-Spark package (models/minimax_h3/Sol-H3-Spark in the patched Sana checkout), or
-Sol-H3-RTX5090 with SOLH3_BACKEND=rtx5090: it imports runtime.config and runtime.pipeline from there. Both packages
+Sol-H3-RTX5090 with LFSTUDIO_BACKEND=rtx5090: it imports runtime.config and runtime.pipeline from there. Both packages
 have the same runtime API, so the server does the same on both. Standard library only; this process needs no torch.
-bin/sol-h3-studio does all of this for you.
+bin/lf-studio does all of this for you.
 
 Environment:
-  SOLH3_BACKEND              spark (default) or rtx5090: the machine. It changes only what /api/state reports
+  LFSTUDIO_BACKEND           spark (default) or rtx5090: the machine. It changes only what /api/state reports
                              ("backend") and so what the page says (the machine's name, its clip-time estimates);
-                             any other value stops the server. bin/sol-h3-studio picks the package and checks by it.
+                             any other value stops the server. bin/lf-studio picks the package and checks by it.
   SOL_H3_SPARK_RUNTIME_ROOT  required. Uploads and session outputs go under it (the Qwen container sees only it).
-  SOLH3_HOME                 default ~/sol-h3. Only used for the default manifest path.
-  SOLH3_PATHS                manifest path with {task}; default $SOLH3_HOME/paths-{task}.json
-  SOLH3_STATE_DIR            jobs.db (every clip; jobs.json from before 0.2 is imported once) and
-                             load-times.json; default ~/.local/state/sol-h3-studio
-  SOLH3_PUBLISH_DIR          optional: also copy each finished clip (and its poster) here
-  SOLH3_HOST, SOLH3_PORT     default 127.0.0.1 and 8190. 0.0.0.0 serves the whole LAN; there is no login.
-  SOLH3_ALLOWED_HOSTS        more host names the studio answers to: a comma list (ports are ignored), * = any.
+  LFSTUDIO_HOME              default ~/sol-h3. Only used for the default manifest path.
+  LFSTUDIO_PATHS             manifest path with {task}; default $LFSTUDIO_HOME/paths-{task}.json
+  LFSTUDIO_STATE_DIR         jobs.db (every clip; jobs.json from before 0.2 is imported once) and
+                             load-times.json; default ~/.local/state/lf-studio
+  LFSTUDIO_PUBLISH_DIR       optional: also copy each finished clip (and its poster) here
+  LFSTUDIO_HOST, LFSTUDIO_PORT
+                             default 127.0.0.1 and 8190. 0.0.0.0 serves the whole LAN; there is no login.
+  LFSTUDIO_ALLOWED_HOSTS     more host names the studio answers to: a comma list (ports are ignored), * = any.
                              Always answered: IP addresses, localhost, names without a dot (Tailscale MagicDNS) and
                              names ending in .ts.net, .local, .lan, .home, .home.arpa or .internal. A request for any
                              other name (Host, or X-Forwarded-Host when present) gets 421, so a web page can't reach
                              the studio by DNS rebinding (a name of its own that resolves to the studio's address).
-  SOLH3_PRELOAD              1 (default): at start, warm up the settings of the last finished clip. 0: off.
-  SOLH3_RESHAPE              1 (default): a clip with the loaded task but another length or orientation keeps the
+  LFSTUDIO_PRELOAD           1 (default): at start, warm up the settings of the last finished clip. 0: off.
+  LFSTUDIO_RESHAPE           1 (default): a clip with the loaded task but another length or orientation keeps the
                              models loaded and changes the session's shape. 0: close the session and load the models
                              again, as before 0.4. A patch without Pipeline.reshape always reloads.
-  SOLH3_TRASH_DAYS           days a deleted clip stays in $SOL_H3_SPARK_RUNTIME_ROOT/trash before it is removed
+  LFSTUDIO_TRASH_DAYS        days a deleted clip stays in $SOL_H3_SPARK_RUNTIME_ROOT/trash before it is removed
                              for good (default 7)
-  SOLH3_MAX_QUEUED           clips that may wait in the queue (default 20; the running one does not count). Another
+  LFSTUDIO_MAX_QUEUED        clips that may wait in the queue (default 20; the running one does not count). Another
                              submit gets 429 until one has started.
-  SOLH3_LAUNCHER_PID         set by bin/sol-h3-studio: the server stops (closing its pipeline) when that process dies.
+  LFSTUDIO_LAUNCHER_PID      set by bin/lf-studio: the server stops (closing its pipeline) when that process dies.
+Until 0.6 these settings may also have their names up to 0.4 (SOLH3_HOST for LFSTUDIO_HOST, and so on; not
+LFSTUDIO_LAUNCHER_PID): an old name counts where the new one is not set, with one warning. The same goes for the
+state directory: ~/.local/state/sol-h3-studio while only that exists.
 
 SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0) and
 SOL_H3_DYNAMIC_TEXT_LENGTH (1 or 0; 1, the default since 0.4, compiles Stage 1's body blocks once per session for any
@@ -102,18 +106,44 @@ TASKS = ("t2va", "fl2va", "ref2va")
 
 
 def fail(message):
-    print(f"sol-h3-studio: {message}", file=sys.stderr, flush=True)
+    print(f"lf-studio: {message}", file=sys.stderr, flush=True)
     sys.exit(2)
 
+
+# Until 0.6: the settings' names up to 0.4, SOLH3_X for LFSTUDIO_X (the docstring)
+OLD_SETTINGS = ("BACKEND", "HOME", "PATHS", "STATE_DIR", "PUBLISH_DIR", "HOST", "PORT", "ALLOWED_HOSTS", "PRELOAD",
+                "RESHAPE", "TRASH_DAYS", "MAX_QUEUED")
+
+
+def old_settings():
+    """Until 0.6: an old name counts where its new name is not set (the new one wins), with one warning on stderr
+    that lists the old names used."""
+    used = []
+    for name in OLD_SETTINGS:
+        old, new = "SOLH3_" + name, "LFSTUDIO_" + name
+        if old not in os.environ:
+            continue
+        value = os.environ.pop(old)
+        if new in os.environ:
+            used.append(f"{old} ({new} wins)")
+        else:
+            os.environ[new] = value
+            used.append(old)
+    if used:
+        print(f"lf-studio: settings under their 0.4 names, which work until 0.6: {', '.join(used)}. Rename them "
+              "LFSTUDIO_*", file=sys.stderr, flush=True)
+
+
+old_settings()
 
 # infer.py defaults (see the docstring); the studio sets length and format per job
 IGNORED_ENV = {name: os.environ.pop(name) for name in ("SOL_H3_SECONDS", "SOL_H3_ORIENTATION") if name in os.environ}
 
 # the machine (docs/RTX5090.md): only the page's texts and /api/state depend on it
 BACKENDS = {"spark": "Sol-H3-Spark", "rtx5090": "Sol-H3-RTX5090"}
-BACKEND = os.environ.get("SOLH3_BACKEND", "").strip() or "spark"
+BACKEND = os.environ.get("LFSTUDIO_BACKEND", "").strip() or "spark"
 if BACKEND not in BACKENDS:
-    fail(f"SOLH3_BACKEND={BACKEND}: must be spark or rtx5090 (see bin/env.example)")
+    fail(f"LFSTUDIO_BACKEND={BACKEND}: must be spark or rtx5090 (see bin/env.example)")
 
 PKG = Path.cwd()
 sys.path.insert(0, str(PKG))
@@ -149,20 +179,25 @@ RUNTIME = Path(os.environ["SOL_H3_SPARK_RUNTIME_ROOT"]).expanduser()
 if not RUNTIME.is_absolute():
     fail(f"SOL_H3_SPARK_RUNTIME_ROOT must be an absolute path, not {RUNTIME}")
 
-HOME = Path(os.environ.get("SOLH3_HOME") or Path.home() / "sol-h3").expanduser()
-PATHS_TEMPLATE = os.environ.get("SOLH3_PATHS") or str(HOME / "paths-{task}.json")
+HOME = Path(os.environ.get("LFSTUDIO_HOME") or Path.home() / "sol-h3").expanduser()
+PATHS_TEMPLATE = os.environ.get("LFSTUDIO_PATHS") or str(HOME / "paths-{task}.json")
 if "{task}" not in PATHS_TEMPLATE:
-    fail(f"SOLH3_PATHS must contain {{task}}, e.g. {HOME}/paths-{{task}}.json (got {PATHS_TEMPLATE})")
+    fail(f"LFSTUDIO_PATHS must contain {{task}}, e.g. {HOME}/paths-{{task}}.json (got {PATHS_TEMPLATE})")
 PATHS = {t: Path(PATHS_TEMPLATE.format(task=t)).expanduser() for t in TASKS}
-STATE_DIR = Path(os.environ.get("SOLH3_STATE_DIR") or Path.home() / ".local/state/sol-h3-studio").expanduser()
+STATE_DIR = Path(os.environ.get("LFSTUDIO_STATE_DIR") or Path.home() / ".local/state/lf-studio").expanduser()
+OLD_STATE_DIR = Path.home() / ".local/state/sol-h3-studio"        # until 0.6: the default up to 0.4, if only it exists
+if not os.environ.get("LFSTUDIO_STATE_DIR") and not STATE_DIR.exists() and OLD_STATE_DIR.exists():
+    print(f"lf-studio: using {OLD_STATE_DIR}: {STATE_DIR} does not exist (the old place works until 0.6)",
+          file=sys.stderr, flush=True)
+    STATE_DIR = OLD_STATE_DIR
 DB_FILE = STATE_DIR / "jobs.db"
 OLD_STATE_FILE = STATE_DIR / "jobs.json"         # before 0.2: the newest 200 jobs; imported once
 LOAD_TIMES = STATE_DIR / "load-times.json"
-PUBLISH = Path(os.environ["SOLH3_PUBLISH_DIR"]).expanduser() if os.environ.get("SOLH3_PUBLISH_DIR") else None
-HOST = os.environ.get("SOLH3_HOST") or "127.0.0.1"
-PORT = int(os.environ.get("SOLH3_PORT") or "8190")
-PRELOAD = os.environ.get("SOLH3_PRELOAD", "1") == "1"
-RESHAPE = os.environ.get("SOLH3_RESHAPE", "1") == "1" and hasattr(Pipeline, "reshape")   # an older patch reloads
+PUBLISH = Path(os.environ["LFSTUDIO_PUBLISH_DIR"]).expanduser() if os.environ.get("LFSTUDIO_PUBLISH_DIR") else None
+HOST = os.environ.get("LFSTUDIO_HOST") or "127.0.0.1"
+PORT = int(os.environ.get("LFSTUDIO_PORT") or "8190")
+PRELOAD = os.environ.get("LFSTUDIO_PRELOAD", "1") == "1"
+RESHAPE = os.environ.get("LFSTUDIO_RESHAPE", "1") == "1" and hasattr(Pipeline, "reshape")   # an older patch reloads
 
 
 def host_name(value):
@@ -175,12 +210,12 @@ def host_name(value):
     return value.rstrip(".")
 
 
-ALLOWED_HOSTS = {host_name(h) for h in (os.environ.get("SOLH3_ALLOWED_HOSTS") or "").split(",") if h.strip()}
+ALLOWED_HOSTS = {host_name(h) for h in (os.environ.get("LFSTUDIO_ALLOWED_HOSTS") or "").split(",") if h.strip()}
 LOCAL_SUFFIXES = (".ts.net", ".local", ".lan", ".home", ".home.arpa", ".internal")
 
 
 def known_host(name):
-    """Whether the studio answers to this host name (host_name): see SOLH3_ALLOWED_HOSTS in the docstring. A name
+    """Whether the studio answers to this host name (host_name): see LFSTUDIO_ALLOWED_HOSTS in the docstring. A name
     without a dot also covers a request without Host (HTTP/1.0), which no browser sends."""
     if "*" in ALLOWED_HOSTS or name in ALLOWED_HOSTS or name == "localhost" or "." not in name:
         return True
@@ -194,17 +229,17 @@ def known_host(name):
 
 INPUTS = RUNTIME / "inputs" / "webui"
 SESSIONS = RUNTIME / "outputs" / "webui"
-TRASH = RUNTIME / "trash"        # deleted clips, one directory per job, until SOLH3_TRASH_DAYS have passed
+TRASH = RUNTIME / "trash"        # deleted clips, one directory per job, until LFSTUDIO_TRASH_DAYS have passed
 try:
-    TRASH_DAYS = float(os.environ.get("SOLH3_TRASH_DAYS") or 7)
+    TRASH_DAYS = float(os.environ.get("LFSTUDIO_TRASH_DAYS") or 7)
     assert math.isfinite(TRASH_DAYS) and TRASH_DAYS >= 0
 except (ValueError, AssertionError):
-    fail(f"SOLH3_TRASH_DAYS must be a number of days, 0 or more (got {os.environ.get('SOLH3_TRASH_DAYS')!r})")
+    fail(f"LFSTUDIO_TRASH_DAYS must be a number of days, 0 or more (got {os.environ.get('LFSTUDIO_TRASH_DAYS')!r})")
 try:
-    MAX_QUEUED = int(os.environ.get("SOLH3_MAX_QUEUED") or 20)
+    MAX_QUEUED = int(os.environ.get("LFSTUDIO_MAX_QUEUED") or 20)
     assert MAX_QUEUED >= 1
 except (ValueError, AssertionError):
-    fail(f"SOLH3_MAX_QUEUED must be a whole number, 1 or more (got {os.environ.get('SOLH3_MAX_QUEUED')!r})")
+    fail(f"LFSTUDIO_MAX_QUEUED must be a whole number, 1 or more (got {os.environ.get('LFSTUDIO_MAX_QUEUED')!r})")
 for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -304,7 +339,7 @@ def save_job(job, strict=False):
 
 def same_models(a, b):
     """Whether the models loaded for settings `a` (task, orientation, seconds) serve a clip with settings `b`: the same
-    settings, or with SOLH3_RESHAPE the same task (the session changes length and orientation in place)."""
+    settings, or with LFSTUDIO_RESHAPE the same task (the session changes length and orientation in place)."""
     return a is not None and b is not None and (tuple(a) == tuple(b) or RESHAPE and a[0] == b[0])
 
 
@@ -340,7 +375,7 @@ def under(path, root):
 def trash_paths(job):
     """What deleting a job moves to the trash: the clip's own directory in its session (MP4, poster, intermediate
     files; for clips made before per-clip directories, the MP4 and its poster), the directories of runs that did not
-    finish (case_dirs), its input directory, and its SOLH3_PUBLISH_DIR copy with poster. Nothing another clip still
+    finish (case_dirs), its input directory, and its LFSTUDIO_PUBLISH_DIR copy with poster. Nothing another clip still
     uses (an old history can list the same file twice). Call with `lock` held."""
     found = [Path(d) for d in job.get("case_dirs") or [] if in_sessions(Path(d))]
     if job.get("output"):
@@ -543,7 +578,7 @@ def trashed_path(job, path):
 
 def restore_files(trashed, needed):
     """Move trashed files back. `needed`: the originals the clip can't do without (its directory, inputs, and an old
-    clip's only MP4, even if that is in the publish folder); any other is a SOLH3_PUBLISH_DIR copy, best effort.
+    clip's only MP4, even if that is in the publish folder); any other is a LFSTUDIO_PUBLISH_DIR copy, best effort.
     Folders are created again only inside the runtime root, never on a share that is not mounted. Returns (what is
     still in the trash, whether a publish copy stayed there, the error that stopped a needed file or None). Runs
     without `lock`."""
@@ -817,7 +852,7 @@ def run_job(job):
                 shutil.copy2(src.with_suffix(".jpg"), dst.with_suffix(".jpg"))
             job["published"] = str(dst)
         except OSError as error:
-            log("could not copy the clip to SOLH3_PUBLISH_DIR:", error)
+            log("could not copy the clip to LFSTUDIO_PUBLISH_DIR:", error)
 
 
 def make_poster(mp4):
@@ -831,7 +866,7 @@ def make_poster(mp4):
 
 
 def clip_file(job):
-    """A finished job's MP4: the copy in its session directory, or the SOLH3_PUBLISH_DIR copy once the session
+    """A finished job's MP4: the copy in its session directory, or the LFSTUDIO_PUBLISH_DIR copy once the session
     directory has been pruned."""
     for key in ("output", "published"):
         if job and job.get(key) and Path(job[key]).is_file():
@@ -841,7 +876,7 @@ def clip_file(job):
 
 def clip_name(job):
     """The file name a clip downloads as (/video/<id>): what it is, and its id's start."""
-    return f"sol-h3_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['id'][:6]}.mp4"
+    return f"lf-studio_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['id'][:6]}.mp4"
 
 
 def settled(job):
@@ -1306,7 +1341,7 @@ def job_labels(job):
 IMG = {".png", ".jpg", ".jpeg", ".webp"}
 AUD = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 VID = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
-DURATIONS = (3, 4, 5, 6, 7, 8, 10, 12, 15)   # seconds; 5 = NVIDIA's frozen route, others = sol-h3-studio extension
+DURATIONS = (3, 4, 5, 6, 7, 8, 10, 12, 15)   # seconds; 5 = NVIDIA's frozen route, others = lf-studio extension
 MAX_UPLOAD = 200 * 1024 * 1024
 SMALL_BODY = 64 * 1024           # the JSON bodies of /api/cancel, /api/delete, /api/undelete, /api/load, /api/unload
 PROMPT_MAX = 32768               # characters
@@ -1377,7 +1412,7 @@ def kept_zones(fields):
 
 
 JSON_KEYS = ("prompt", "task", "orientation", "seconds", "seed", "remix_from", "keep") + ZONES
-NO_URLS = "the studio does not fetch URLs; send the file as base64, or use bin/sol-h3, which downloads URLs itself"
+NO_URLS = "the studio does not fetch URLs; send the file as base64, or use bin/lf-cli, which downloads URLs itself"
 DATA_URI = re.compile(r"data:([^;,]*)((?:;[^;,]*)*);base64,", re.I)
 SPACES = str.maketrans("", "", " \t\n\r\f\v")
 
@@ -1491,7 +1526,7 @@ def json_form(raw):
 
 
 def queue_full():
-    """The 429 reply while SOLH3_MAX_QUEUED clips are waiting, else None. Call it holding `lock`."""
+    """The 429 reply while LFSTUDIO_MAX_QUEUED clips are waiting, else None. Call it holding `lock`."""
     if sum(j["status"] == "queued" for j in jobs) < MAX_QUEUED:
         return None
     return (429, {"error": f"the queue is full ({MAX_QUEUED} clips waiting); try again when one has finished"},
@@ -1598,7 +1633,7 @@ def submit(fields, files):
 
 
 class H(BaseHTTPRequestHandler):
-    server_version = "SolH3Studio/1.0"
+    server_version = "LFStudio/0.5"
 
     def log_message(self, *a):
         pass
@@ -1632,7 +1667,7 @@ class H(BaseHTTPRequestHandler):
                         n = self.headers.get("Content-Length", "")
                         if n.isdigit() and int(n) <= SMALL_BODY:  # a small body is read, so the answer arrives
                             self.rfile.read(int(n))
-                        self.send(421, {"error": f"unknown host name {name[:200]}; add it to SOLH3_ALLOWED_HOSTS"})
+                        self.send(421, {"error": f"unknown host name {name[:200]}; add it to LFSTUDIO_ALLOWED_HOSTS"})
                         return True
         return False
 
@@ -2003,10 +2038,10 @@ class H(BaseHTTPRequestHandler):
 
 
 def stop_with_launcher():
-    """bin/sol-h3-studio starts the server in its own session and sets SOLH3_LAUNCHER_PID. If the launcher dies
+    """bin/lf-studio starts the server in its own session and sets LFSTUDIO_LAUNCHER_PID. If the launcher dies
     without stopping the server (SIGKILL), Linux sends this process SIGTERM (PR_SET_PDEATHSIG), so the pipeline is
     still closed."""
-    launcher = os.environ.get("SOLH3_LAUNCHER_PID")
+    launcher = os.environ.get("LFSTUDIO_LAUNCHER_PID")
     if not launcher or not sys.platform.startswith("linux"):
         return
     try:
@@ -2069,7 +2104,7 @@ def main():
     stop_with_launcher()
     for name, value in IGNORED_ENV.items():
         log(f"ignoring {name}={value}: it is an infer.py default; the studio sets length and format per job")
-    log(f"Sol-H3 Studio on http://{HOST}:{PORT}/ (package {PKG}, state {STATE_DIR})")
+    log(f"LF Studio on http://{HOST}:{PORT}/ (package {PKG}, state {STATE_DIR})")
     try:
         srv.serve_forever()
     finally:

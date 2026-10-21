@@ -57,12 +57,13 @@ class StubStudio:
         for task in ("t2va", "fl2va", "ref2va"):
             (self.root / f"paths-{task}.json").write_text("{}")
         self.env = dict(os.environ, SOL_H3_SPARK_RUNTIME_ROOT=str(self.runtime),
-                        SOLH3_PATHS=str(self.root / "paths-{task}.json"), SOLH3_STATE_DIR=str(self.state_dir),
-                        SOLH3_HOST="127.0.0.1", SOLH3_PORT=str(self.port), SOLH3_PRELOAD="1" if preload else "0",
+                        LFSTUDIO_PATHS=str(self.root / "paths-{task}.json"), LFSTUDIO_STATE_DIR=str(self.state_dir),
+                        LFSTUDIO_HOST="127.0.0.1", LFSTUDIO_PORT=str(self.port),
+                        LFSTUDIO_PRELOAD="1" if preload else "0",
                         STUB_LOAD_S=str(load_s), STUB_CLIP_S=str(clip_s), PYTHONDONTWRITEBYTECODE="1",
-                        SOLH3_MAX_QUEUED="100")      # some tests queue more clips at once than the default 20
-        self.env.pop("SOLH3_PUBLISH_DIR", None)
-        self.env.pop("SOLH3_ALLOWED_HOSTS", None)
+                        LFSTUDIO_MAX_QUEUED="100")      # some tests queue more clips at once than the default 20
+        self.env.pop("LFSTUDIO_PUBLISH_DIR", None)
+        self.env.pop("LFSTUDIO_ALLOWED_HOSTS", None)
         self.env.update(env or {})
         self.proc = None
         self.stdin = None                    # the server's stdin: None for this process's
@@ -81,7 +82,7 @@ class StubStudio:
         self._logf = self.log.open("a")
         self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=self.package, env=self.env, stdin=self.stdin,
                                      stdout=self._logf, stderr=subprocess.STDOUT)
-        serving = f"Sol-H3 Studio on {self.url}/".encode()
+        serving = f"LF Studio on {self.url}/".encode()
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
@@ -203,7 +204,7 @@ def main():
     ap.add_argument("--clip-s", type=float, default=2)
     ap.add_argument("--no-preload", action="store_true")
     a = ap.parse_args()
-    root = Path(a.dir or tempfile.mkdtemp(prefix="sol-h3-stub-"))
+    root = Path(a.dir or tempfile.mkdtemp(prefix="lf-studio-stub-"))
     try:
         s = StubStudio(root, a.port, a.load_s, a.clip_s, not a.no_preload).start()
     except RuntimeError as error:

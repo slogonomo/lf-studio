@@ -5,10 +5,10 @@
 # ~20 min measured (mostly the NGC base pull, no docker login needed), ~21 GB.
 # The image contains GPL-3.0 ComfyUI and NGC components: build it yourself, never redistribute it.
 # Idempotent: existing images are kept (FORCE=1 rebuilds).
-# DGX Spark only: on the RTX 5090 (SOLH3_BACKEND=rtx5090) the Qwen encoder runs natively in the Stage1 env.
+# DGX Spark only: on the RTX 5090 (LFSTUDIO_BACKEND=rtx5090) the Qwen encoder runs natively in the Stage1 env.
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
-if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
-    say "SOLH3_BACKEND=rtx5090: no Docker image needed (the Qwen prompt encoder runs natively in the Stage1 env)."
+if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
+    say "LFSTUDIO_BACKEND=rtx5090: no Docker image needed (the Qwen prompt encoder runs natively in the Stage1 env)."
     say "Next: install/80-prompt-cache.sh (on the RTX 5090 it comes before 70-manifests.sh)"
     exit 0
 fi

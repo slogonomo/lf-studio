@@ -667,7 +667,7 @@ The same text is `sol-h3 guide` and the MCP tool `prompt_guide`; a test keeps th
 
 <!-- prompt-guide:start -->
 
-Sol-H3 Studio gives your prompt to MiniMax-H3 unchanged; nothing rewrites it. H3 was trained on a structured
+LF Studio gives your prompt to MiniMax-H3 unchanged; nothing rewrites it. H3 was trained on a structured
 format, and MiniMax calls that format critical to the quality of the result, so write it yourself as below.
 Plain prose is accepted. The prompt drives the draft picture and **all of the sound**. The refiner that makes the
 final 1344x768 video uses a fixed prompt of its own.
@@ -676,7 +676,7 @@ final 1344x768 video uses a fixed prompt of its own.
 
 - `t2va`: text only. `fl2va`: a first frame, a last frame, or both (images).
   - A keyframe should have the clip's shape (1344x768 or 768x1344, or the same aspect ratio): one of another
-    shape is stretched or cropped to fit. Without an orientation, `sol-h3` takes it from the first keyframe's
+    shape is stretched or cropped to fit. Without an orientation, `lf-cli` takes it from the first keyframe's
     shape.
 - `ref2va`:
   - up to 9 images, 3 videos (2-15 s each) and 3 audio files, 12 files in total;

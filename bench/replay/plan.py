@@ -110,7 +110,7 @@ def media_sha(path):
 
 
 def stage2_paths(paths_template, task):
-    """The Stage-2 entries of a task's path manifest (SOLH3_PATHS, {task} = t2va/fl2va/ref2va)."""
+    """The Stage-2 entries of a task's path manifest (LFSTUDIO_PATHS, {task} = t2va/fl2va/ref2va)."""
     manifest = Path(paths_template.replace("{task}", task)).expanduser()
     if not manifest.is_file():
         raise FileNotFoundError(f"no path manifest {manifest} for {task} (install/70-manifests.sh)")

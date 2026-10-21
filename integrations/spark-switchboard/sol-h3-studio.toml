@@ -1,3 +1,4 @@
+# DEPRECATED: the 0.4 file, kept unchanged until 0.6 (its old names work until then). Use lf-studio.toml.
 # Sol-H3 Studio as a spark-switchboard service (spark-switchboard, https://github.com/slogonomo/spark-switchboard:
 # the companion on-demand app manager for one DGX Spark). Copy this file into your switchboard config's services/
 # directory.
