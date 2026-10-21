@@ -49,11 +49,15 @@ case "$SOLH3_BACKEND" in
         PKG_NAME=Sol-H3-Spark
         PATCH_NAME=sol-h3-studio.patch
         BASE_COMMIT_FILE=BASE_COMMIT
+        OTHER_PKG_NAME=Sol-H3-RTX5090
+        OTHER_BACKEND=rtx5090
         ;;
     rtx5090)
         PKG_NAME=Sol-H3-RTX5090
         PATCH_NAME=sol-h3-studio-rtx5090.patch
         BASE_COMMIT_FILE=BASE_COMMIT_RTX5090
+        OTHER_PKG_NAME=Sol-H3-Spark
+        OTHER_BACKEND=spark
         ;;
     *)
         echo "ERROR: SOLH3_BACKEND=$SOLH3_BACKEND: must be spark or rtx5090 (see bin/env.example)" >&2

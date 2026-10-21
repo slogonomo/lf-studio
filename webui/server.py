@@ -141,6 +141,10 @@ for setting, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_aud
         setting_check and setting_check()
     except ValueError as error:
         fail(str(error))
+# the RTX 5090 patch also checks its own folders, switches and numbers (a list of problems; none = fine)
+problems = getattr(runtime.config, "check_settings", list)()
+if problems:
+    fail("; ".join(problems))
 
 if not os.environ.get("SOL_H3_SPARK_RUNTIME_ROOT"):
     fail("SOL_H3_SPARK_RUNTIME_ROOT is not set. Point it at your runtime directory "

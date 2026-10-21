@@ -337,8 +337,9 @@ const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","n
   ref2va:["subject_definitions:","summary: [reference generation]","retention_analysis:","detailed_description: [Shot 1]","overall_soundscape:","non_diegetic_music: N/A"]};
 // The machine (SOLH3_BACKEND; the server names it in the sol-h3-backend meta tag and in /api/state "backend"): its
 // name in the header, the note on times, and the seconds per clip once the models are loaded (t2va 16:9). The DGX
-// Spark's are measured (clips over 10 s also reload the prompt encoder each time). The RTX 5090's are a provisional
-// estimate until they are measured there (docs/RTX5090.md). JSON between the markers: tests/test_backend.py reads it.
+// Spark's are measured (clips over 10 s also reload the prompt encoder each time). The RTX 5090's are measured at 3,
+// 5, 10 and 15 s, the other lengths interpolated (docs/RTX5090.md). JSON between the markers: tests/test_backend.py
+// reads it.
 const MACHINES=/*machines*/{
 "spark":{"name":"one DGX Spark","times":["Times shown are ","measured on a DGX Spark"," with nothing else running."],
   "eta":{"3":40,"4":45,"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
