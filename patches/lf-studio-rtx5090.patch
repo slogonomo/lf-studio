@@ -1,6 +1,6 @@
 lf-studio patch for NVlabs/Sana, branch sol-engine, base commit 801f04055badca8cc1f3644e973188068f14ad98.
 Apply from the root of a Sana checkout:  git apply /path/to/lf-studio-rtx5090.patch
-What it changes: docs/RTX5090.md, and docs/PATCH.md for each part and how to switch it off, in the lf-studio repository.
+What it changes, and how to switch each part off: docs/RTX5090.md in the lf-studio repository.
 License: Apache-2.0 (the files it modifies are Apache-2.0 NVlabs/Sana code).
 
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/infer.py b/models/minimax_h3/Sol-H3-RTX5090/infer.py
@@ -50,7 +50,7 @@ index 19c4db6..898756d 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
-index 0327a69..ecd0437 100644
+index 0327a69..50b278a 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 @@ -6,6 +6,10 @@ import os
@@ -64,7 +64,7 @@ index 0327a69..ecd0437 100644
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,166 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,267 @@ REQUIRED_PATHS = (
  )
  
  
@@ -109,37 +109,138 @@ index 0327a69..ecd0437 100644
 +    return Path(runtime_root) if runtime_root else studio_cache()
 +
 +
++# lf-studio: the RTX 5090 memory settings are parsed strictly, so a typo fails when the studio starts (check_settings)
++# instead of being read as "on" or as a folder minutes into a session.
++OFF_WORDS = ("0", "off", "false", "no")
++ON_WORDS = ("1", "on", "true", "yes")
++
++
++def switch(name, default):
++    """An on/off setting: 0/1, off/on, false/true or no/yes (any case, spaces ignored); unset or empty = default.
++    Anything else is a ValueError naming the variable."""
++    raw = os.environ.get(name, "")
++    value = raw.strip().lower()
++    if not value:
++        return bool(default)
++    if value in ON_WORDS:
++        return True
++    if value in OFF_WORDS:
++        return False
++    raise ValueError(f"{name}={raw!r}: expected 1 or 0 (on/off), or unset for the default ({int(bool(default))})")
++
++
++def folder_setting(name, default):
++    """A folder setting: an absolute path (~ is expanded), or 0/off/false/no to turn the feature off ("");
++    unset or empty = ``default``. on/1/true/yes or a relative path is a ValueError naming the variable (the workers
++    run with the package as their working directory, so a relative folder would land inside the checkout)."""
++    raw = os.environ.get(name, "")
++    value = raw.strip()
++    if not value:
++        return str(default)
++    if value.lower() in OFF_WORDS:
++        return ""
++    if value.lower() in ON_WORDS:
++        raise ValueError(f"{name}={raw!r}: give a folder (an absolute path), 0 to turn it off, or leave it unset "
++                         + (f"for the default ({default})" if default else "for the default"))
++    path = os.path.expanduser(value)
++    if not os.path.isabs(path):
++        raise ValueError(f"{name}={raw!r}: must be an absolute path (or 0 to turn it off)")
++    return path
++
++
++def whole_number(name, default, minimum=0):
++    """A whole-number setting; unset or empty = default. A ValueError names the variable."""
++    raw = os.environ.get(name, "")
++    value = raw.strip()
++    try:
++        number = int(value) if value else default
++    except ValueError:
++        raise ValueError(f"{name}={raw!r}: expected a whole number (default {default})") from None
++    if number < minimum:
++        raise ValueError(f"{name}={raw!r}: must be at least {minimum}")
++    return number
++
++
++def decimal_number(name, default, minimum=0.0):
++    """A number setting; unset or empty = default. A ValueError names the variable."""
++    raw = os.environ.get(name, "")
++    value = raw.strip()
++    try:
++        number = float(value) if value else default
++    except ValueError:
++        raise ValueError(f"{name}={raw!r}: expected a number (default {default})") from None
++    if not number >= minimum:           # also refuses nan
++        raise ValueError(f"{name}={raw!r}: must be at least {minimum}")
++    return number
++
++
++def ltx_resident_blocks_setting():
++    """SOL_H3_LTX_RESIDENT_BLOCKS: "auto" (default) or a whole number of LTX blocks to pin."""
++    raw = os.environ.get("SOL_H3_LTX_RESIDENT_BLOCKS", "")
++    value = raw.strip().lower() or "auto"
++    if value == "auto":
++        return "auto"
++    if not value.isdigit():
++        raise ValueError(f"SOL_H3_LTX_RESIDENT_BLOCKS={raw!r}: expected auto or a whole number")
++    return int(value)
++
++
 +def stage1_scratch_dir():
 +    """lf-studio: SOL_H3_FILEBACKED_DIR, the folder for H3's construction pages ("0": anonymous memory, as
 +    upstream). Default <data root>/scratch."""
-+    value = os.environ.get("SOL_H3_FILEBACKED_DIR", "")
-+    if value in ("0", "off"):
-+        return ""
-+    return value or str(data_root() / "scratch")
++    return folder_setting("SOL_H3_FILEBACKED_DIR", data_root() / "scratch")
 +
 +
 +def ltx_blocks_dir():
 +    """lf-studio: SOL_H3_LTX_BLOCKS, the fused LTX block file ("0": upstream's all-pinned build).
-+    Default <data root>/derived/ltx-fused-blocks; built on first use (about 40 GB, about a minute)."""
-+    value = os.environ.get("SOL_H3_LTX_BLOCKS", "")
-+    if value in ("0", "off"):
-+        return ""
-+    return value or str(data_root() / "derived" / "ltx-fused-blocks")
++    Default <data root>/derived/ltx-fused-blocks; built on first use (about 39 GiB, about a minute)."""
++    return folder_setting("SOL_H3_LTX_BLOCKS", data_root() / "derived" / "ltx-fused-blocks")
 +
 +
 +def stage1_snapshots_dir():
 +    """lf-studio: SOL_H3_STAGE1_SNAPSHOTS, the folder of Stage-1 snapshots ("0"/"off": every session builds
 +    H3 from the checkpoint, as upstream). Default <data root>/derived/stage1-snapshots. Each snapshot is one
-+    subfolder <task>-<identity hash> (about 31 GB), written once after a normal build and read by later sessions
++    subfolder <task>-<identity hash> (about 22 GiB), written once after a normal build and read by later sessions
 +    with the same inputs instead of the checkpoint (runtime/stage1_ops/snapshot.py). Needs CPU offload with pinned
 +    blocks (SOL_H3_STAGE1_PIN, default on). SOL_H3_STAGE1_SNAPSHOTS_KEEP (default 2): snapshots kept per task, the
 +    most recently used first; SOL_H3_STAGE1_SNAPSHOT_VERIFY=0 skips the SHA-256 check of a restore. A new snapshot
 +    folder is made no-copy-on-write where the filesystem has the flag (btrfs chattr +C, best effort; see
 +    data_root)."""
-+    value = os.environ.get("SOL_H3_STAGE1_SNAPSHOTS", "")
-+    if value.strip().lower() in ("0", "off"):
-+        return ""
-+    return value or str(data_root() / "derived" / "stage1-snapshots")
++    return folder_setting("SOL_H3_STAGE1_SNAPSHOTS", data_root() / "derived" / "stage1-snapshots")
++
++
++# The RTX 5090 patch's on/off switches and their defaults (switch()).
++SWITCHES = {"SOL_H3_STAGE1_PIN": True, "SOL_H3_STAGE1_READ_AHEAD": True, "SOL_H3_STAGE1_SNAPSHOT_VERIFY": True,
++            "SOL_H3_QWEN_FAST_LOAD": True, "SOL_H3_MALLOC_TRIM": True, "SOL_H3_LTX_VERIFY": False,
++            "SOL_H3_KEEP_VAE_DECODER": False, "SOL_H3_VAE_ON_DEVICE": True, "SOL_H3_AUDIO_VAE_PREFETCH": True}
++
++
++def bsa_check_calls():
++    """SOL_H3_BSA_CHECK_CALLS: how many of the first request's selected-attention calls are checked against the
++    Triton reference (default 8, at most upstream's 200)."""
++    return min(200, whole_number("SOL_H3_BSA_CHECK_CALLS", 8, minimum=1))
++
++
++def check_settings():
++    """lf-studio: every SOL_H3_* setting a session reads at start, checked without loading anything (no torch,
++    no CUDA): the RTX 5090 patch's folders, switches and numbers, and the Stage-1/Stage-2 settings shared with the
++    Spark patch. Returns a list of problems, one line each naming its variable; empty when all are fine. The studio's
++    launcher and server call it before they start a session."""
++    checks = [lambda: folder_setting("SOL_H3_FILEBACKED_DIR", ""), lambda: folder_setting("SOL_H3_LTX_BLOCKS", ""),
++              lambda: folder_setting("SOL_H3_STAGE1_SNAPSHOTS", "")]
++    checks += [lambda name=name, default=default: switch(name, default) for name, default in SWITCHES.items()]
++    checks += [lambda: whole_number("SOL_H3_STAGE1_SNAPSHOTS_KEEP", 2, minimum=1),
++               lambda: whole_number("SOL_H3_LTX_READ_AHEAD", 3, minimum=1),
++               lambda: decimal_number("SOL_H3_LTX_RAM_RESERVE_GIB", 12.0),
++               ltx_resident_blocks_setting, bsa_check_calls,
++               stage2_audio_mode, prompt_tokens_mode, compile_dynamic, dynamic_text_length]
++    problems = []
++    for check in checks:
++        try:
++            check()
++        except ValueError as error:
++            problems.append(str(error))
++    return problems
 +
 +
 +# lf-studio: Stage-2 audio policy (runtime/stage2.py). "frozen" (default): Stage 2 refines the video against the
@@ -657,7 +758,7 @@ index d14e6f8..9c1a4e9 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
-index f3f15bb..cf97820 100644
+index f3f15bb..4ef29ae 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
 @@ -1,5 +1,8 @@
@@ -763,9 +864,9 @@ index f3f15bb..cf97820 100644
  
      component_loader.maybe_load_fsdp_model = cpu_load
 +    import os
-+    from .config import stage1_scratch_dir
++    from .config import stage1_scratch_dir, switch
 +    FILEBACKED_DIR = stage1_scratch_dir()
-+    READ_AHEAD = os.environ.get("SOL_H3_STAGE1_READ_AHEAD", "1") != "0"
++    READ_AHEAD = switch("SOL_H3_STAGE1_READ_AHEAD", True)
 +    if FILEBACKED_DIR:
 +        os.makedirs(FILEBACKED_DIR, exist_ok=True)
  
@@ -825,11 +926,12 @@ index f3f15bb..cf97820 100644
                  block._sol_h3_offload_state = state
                  self.states.append(state)
                  ModuleHookManager.get_from_or_default(block).append_forward_hook(Hook(state))
-@@ -141,6 +246,41 @@ def install_stage1_loader():
+@@ -141,6 +246,42 @@ def install_stage1_loader():
                      lambda module, args, output, state=state: state.release(), always_call=True))
              self.stats["fp8_buffer_count"] = sum(
                  name.endswith("_fp8_weight") for state in self.states for name, _ in state.module.named_buffers())
-+            if os.environ.get("SOL_H3_STAGE1_PIN", "1") != "0":
++            from .config import switch
++            if switch("SOL_H3_STAGE1_PIN", True):
 +                self.pin_idle_blocks()
 +
 +        def adopt_pinned(self, pinned):
@@ -1453,7 +1555,7 @@ index fa18e02..f5cb753 100644
 +                finally:
 +                    self._close_resident_qwen()    # lf-studio: one whose start began before `closing` was set
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
-index b2ef6f5..3bdf678 100644
+index b2ef6f5..89794aa 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
 @@ -10,6 +10,9 @@ import time
@@ -1466,16 +1568,17 @@ index b2ef6f5..3bdf678 100644
  
  
  def atomic_json(path, value):
-@@ -85,6 +88,8 @@ def weight_snapshot(model, torch):
+@@ -85,6 +88,9 @@ def weight_snapshot(model, torch):
  
  def load_resident_checkpoint(checkpoint, torch):
      """Reuse verified O_DIRECT chunks to avoid whole-checkpoint CPU mmap peaks."""
-+    if os.environ.get("SOL_H3_QWEN_FAST_LOAD", "1") != "0":
++    from .config import switch
++    if switch("SOL_H3_QWEN_FAST_LOAD", True):
 +        return load_resident_checkpoint_windows(checkpoint, torch)
      from safetensors import safe_open
      from .qwen_ops.direct_io import (
          DIRECT_CHUNK_BYTES, DIRECT_ALIGNMENT_BYTES, read_safetensors_records,
-@@ -140,9 +145,145 @@ def load_resident_checkpoint(checkpoint, torch):
+@@ -140,9 +146,145 @@ def load_resident_checkpoint(checkpoint, torch):
              empty_host_cache()
  
  
@@ -1621,7 +1724,7 @@ index b2ef6f5..3bdf678 100644
          checkpoint = Path(paths['qwen_checkpoint']).expanduser().resolve(strict=True)
          comfy_root = Path(paths['comfy_root']).expanduser().resolve(strict=True)
          self.work_dir = Path(work_dir).resolve()
-@@ -182,6 +323,9 @@ class Session:
+@@ -182,6 +324,9 @@ class Session:
          finally:
              utils.load_torch_file = original_load
          self.clip = self.owner.clip
@@ -1631,7 +1734,7 @@ index b2ef6f5..3bdf678 100644
          import comfy.model_management as management
          management.load_models_gpu([self.clip.patcher], force_full_load=True)
          self.clip.cond_stage_model.eval().requires_grad_(False)
-@@ -222,7 +366,7 @@ class Session:
+@@ -222,7 +367,7 @@ class Session:
              'checkpoint_page_cache_advice': self.checkpoint_page_cache_advice,
              'startup_checkpoint_reads': self.startup_checkpoint_reads,
              'startup_reader': self.startup_reader,
@@ -1640,7 +1743,7 @@ index b2ef6f5..3bdf678 100644
  
      def release_idle_cache(self):
          """Protocol name reused for metadata-only residency evidence; no offload."""
-@@ -239,6 +383,20 @@ class Session:
+@@ -239,6 +384,20 @@ class Session:
              'weight_storage_unchanged': True, 'weight_residency': info,
              'resources': resource_snapshot(self.torch)}
  
@@ -1661,7 +1764,7 @@ index b2ef6f5..3bdf678 100644
      def run(self, case, output_root):
          if self.closed or self.failed:
              raise RuntimeError('Qwen resident session is unavailable')
-@@ -250,18 +408,31 @@ class Session:
+@@ -250,18 +409,31 @@ class Session:
          root.mkdir(parents=True, exist_ok=False)
          torch = self.torch
          try:
@@ -1694,7 +1797,7 @@ index b2ef6f5..3bdf678 100644
              payload = {'prompt': case['prompt'], **identity,
                  'prompt_embeds': value.cond, 'text_token_tags': value.minimax_token_tags}
              path = root / 'conditioning.pt'
-@@ -269,12 +440,15 @@ class Session:
+@@ -269,12 +441,15 @@ class Session:
              with temporary.open('xb') as stream:
                  torch.save(payload, stream)
              temporary.replace(path)
@@ -1710,7 +1813,7 @@ index b2ef6f5..3bdf678 100644
                  'producer_mode': 'resident', 'model_load_count': self.model_load_count,
                  'request_index': self.completed_requests, 'residency_before': before,
                  'residency_after': after, 'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
-@@ -284,6 +458,7 @@ class Session:
+@@ -284,6 +459,7 @@ class Session:
                  'completion_protocol': 'resident_RPC_after_atomic_payload_commit'}
              receipt['conditioning_path'] = str((root / 'conditioning.json').resolve())
              receipt['request_wall_s'] = (receipt['completed_monotonic_ns'] - started_ns) / 1e9
@@ -1897,7 +2000,7 @@ index 0000000..193da85
 +    ids = [entry[0] for entry in entries if isinstance(entry[0], int)]
 +    return {"text_tokens": int(token_tags.sum()), "minimax_tokens": sum(1 for i in ids if i in MINIMAX_EXTRA_IDS)}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
-index a1dd805..3d2fe6a 100644
+index a1dd805..1a4b277 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 @@ -3,17 +3,24 @@ from __future__ import annotations
@@ -1922,7 +2025,7 @@ index a1dd805..3d2fe6a 100644
 +# reshape (another clip length or orientation in a running session) and the Stage-1 snapshot (the finished transformer
 +# saved once and restored by later sessions; stage1_ops/snapshot.py); see "lf-studio:" notes.
 +from . import geometry
-+from .config import DYNAMIC_TEXT_LENGTH, compile_dynamic, dynamic_text_length
++from .config import DYNAMIC_TEXT_LENGTH, compile_dynamic, dynamic_text_length, switch
  
  
  def install_reference_image_size(reference_module, target_area):
@@ -1998,7 +2101,7 @@ index a1dd805..3d2fe6a 100644
 +    # use; the saving there is not measured. SOL_H3_VAE_ON_DEVICE=0 builds them on the CPU as upstream.
 +    import fastvideo.models.loader.component_loader as _fv_component_loader
 +    _fv_component_loader.safetensors_load_file = fastload.load_file
-+    if os.environ.get("SOL_H3_VAE_ON_DEVICE", "1") == "1":
++    if switch("SOL_H3_VAE_ON_DEVICE", True):
 +        for _loader_name in ("VAELoader", "AudioDecoderLoader"):
 +            _loader_cls = getattr(_fv_component_loader, _loader_name, None)
 +            if _loader_cls is None or getattr(_loader_cls.load, "_spark_on_device", False):
@@ -2049,7 +2152,7 @@ index a1dd805..3d2fe6a 100644
 +            # lf-studio (RTX 5090): this session only encodes keyframes and references, never decodes, and the
 +            # decoder is 9.7 of the VAE's 10.4 GB (FP32) that CPU offload otherwise keeps in RAM next to H3. Encoding
 +            # uses the encoder and quant_conv only. SOL_H3_KEEP_VAE_DECODER=1 keeps it.
-+            if os.environ.get("SOL_H3_KEEP_VAE_DECODER", "0") != "1" and isinstance(
++            if not switch("SOL_H3_KEEP_VAE_DECODER", False) and isinstance(
 +                    getattr(model, "decoder", None), torch.nn.Module):
 +                freed = sum(p.numel() * p.element_size() for p in model.decoder.parameters())
 +                model.decoder = torch.nn.Module()
@@ -2159,7 +2262,7 @@ index a1dd805..3d2fe6a 100644
 +    # loads lazily after the denoise, ~5.7 s on the critical path of every cold start. Joined before audio decode.
 +    audio_prefetch = {}
 +    audio_lazy, transformer_lazy = pipe.modules.get("audio_vae"), pipe.modules["transformer"]
-+    prefetch_audio = is_lazy_module(audio_lazy) and os.environ.get("SOL_H3_AUDIO_VAE_PREFETCH", "1") == "1"
++    prefetch_audio = is_lazy_module(audio_lazy) and switch("SOL_H3_AUDIO_VAE_PREFETCH", True)
 +    if prefetch_audio:
 +        import threading
 +        def load_audio_vae():
@@ -2860,10 +2963,10 @@ index 7553e35..dd06a8b 100644
 +            "dynamic": "packed rows (hidden states, AdaLN rows, RoPE, untile index), tile count, tile buffer rows"}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py
 new file mode 100644
-index 0000000..01a1cf0
+index 0000000..c600e75
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py
-@@ -0,0 +1,1341 @@
+@@ -0,0 +1,1357 @@
 +"""lf-studio: Stage-1 snapshot, the finished H3 transformer saved once and restored instead of rebuilt.
 +
 +Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -2899,8 +3002,9 @@ index 0000000..01a1cf0
 +
 +A snapshot that does not fit (SnapshotMismatch, at the restore or in a check after it) is retired: its data is
 +deleted and its index kept as rejected.json with a count; the next worker builds and saves again, and an identity
-+rejected MAX_REJECTIONS times is built without saving. A failure that is not the snapshot's (memory, environment
-+checks, an interrupt) keeps it (Controller.failed).
++rejected MAX_REJECTIONS times is built without saving. A corrupt snapshot (SnapshotCorrupt: wrong sizes, a SHA-256
++mismatch) has its files deleted at once and is saved again after this worker's build (Controller.drop_data). A
++failure that is not the snapshot's (memory, environment checks, an interrupt) keeps it (Controller.failed).
 +"""
 +from __future__ import annotations
 +
@@ -2920,7 +3024,7 @@ index 0000000..01a1cf0
 +THREADS = 8
 +BLOCKS_FILE, NON_BLOCK_FILE, INDEX_FILE = "blocks.bin", "non_block.bin", "index.json"
 +REJECTED_FILE = "rejected.json"     # the index of a snapshot that did not fit, with a count (Controller.reject)
-+MAX_REJECTIONS = 2          # an identity rejected this often is built without saving (no 31 GB write per session)
++MAX_REJECTIONS = 2          # an identity rejected this often is built without saving (no 22 GiB write per session)
 +SNAPSHOT_FILES = (BLOCKS_FILE, NON_BLOCK_FILE, INDEX_FILE, REJECTED_FILE)
 +BLOCKS = "transformer_blocks"
 +MIN_FREE_BYTES = 2 << 30    # left free on the snapshot disk after a save
@@ -3803,6 +3907,8 @@ index 0000000..01a1cf0
 +                  "building from the checkpoint", flush=True)
 +            traceback.print_exc()
 +            self.model = self.pinned_blocks = self.lookup_record = None
++            if isinstance(error, SnapshotCorrupt):
++                self.drop_data()
 +            if isinstance(error, SnapshotMismatch):
 +                self.index = index
 +                self.reject(error)
@@ -3861,6 +3967,22 @@ index 0000000..01a1cf0
 +    def restored(self, model):
 +        return self.model is not None and model is self.model
 +
++    def drop_data(self):
++        """A corrupt snapshot's files go at once (rejected.json, if any, stays): its ~22 GiB would otherwise count as
++        used when the snapshot built in its place is saved, so on a nearly full disk every session would read it,
++        fail, build for minutes and then report too little disk space."""
++        dropped = 0
++        for name in (INDEX_FILE, BLOCKS_FILE, NON_BLOCK_FILE):
++            path = self.dir / name
++            try:
++                if path.is_file() and not path.is_symlink():
++                    size = path.stat().st_size
++                    path.unlink()
++                    dropped += size
++            except OSError:
++                pass
++        self.record["dropped_bytes"] = dropped
++
 +    def reject(self, error):
 +        """The snapshot does not fit (SnapshotMismatch at the restore, or a snapshot check after it): retire it
 +        (index.json becomes rejected.json with a rejection count), so the next worker builds from the checkpoint and
@@ -3875,7 +3997,7 @@ index 0000000..01a1cf0
 +                tmp = self.dir / f".{REJECTED_FILE}.tmp-{os.getpid()}"
 +                tmp.write_text(json.dumps(rejected, indent=1, default=str))
 +                os.replace(tmp, self.dir / REJECTED_FILE)
-+                # only the small rejected.json stays (the marker the rejection count lives in); the ~31 GB of data
++                # only the small rejected.json stays (the marker the rejection count lives in); the ~22 GiB of data
 +                # is of no use any more (a restored model already holds its copy in memory)
 +                for name in (INDEX_FILE, BLOCKS_FILE, NON_BLOCK_FILE):
 +                    (self.dir / name).unlink(missing_ok=True)
@@ -4016,19 +4138,16 @@ index 0000000..01a1cf0
 +
 +def controller(state, task, pipe):
 +    """The worker's Controller, or None when SOL_H3_STAGE1_SNAPSHOTS turns snapshots off (state records which)."""
-+    from ..config import stage1_snapshots_dir
++    from ..config import stage1_snapshots_dir, switch, whole_number
 +    root = stage1_snapshots_dir()
 +    if not root:
 +        state["stage1_snapshot"] = {"status": "OFF"}
 +        return None
-+    if os.environ.get("SOL_H3_STAGE1_PIN", "1") == "0":
++    if not switch("SOL_H3_STAGE1_PIN", True):
 +        state["stage1_snapshot"] = {"status": "OFF", "reason": "SOL_H3_STAGE1_PIN=0"}
 +        return None
-+    raw = os.environ.get("SOL_H3_STAGE1_SNAPSHOTS_KEEP", "").strip() or "2"
-+    if not raw.isdigit() or int(raw) < 1:
-+        raise ValueError(f"SOL_H3_STAGE1_SNAPSHOTS_KEEP must be a whole number of at least 1, not {raw!r}")
-+    keep = int(raw)
-+    verify = os.environ.get("SOL_H3_STAGE1_SNAPSHOT_VERIFY", "1") != "0"
++    keep = whole_number("SOL_H3_STAGE1_SNAPSHOTS_KEEP", 2, minimum=1)
++    verify = switch("SOL_H3_STAGE1_SNAPSHOT_VERIFY", True)
 +    return Controller(state, task, pipe, root, verify=verify, keep=keep)
 +
 +
@@ -4206,10 +4325,10 @@ index 0000000..01a1cf0
 +                f"state {field}: {str(state_a.get(field))[:200]} != {str(state_b.get(field))[:200]}")
 +    return problems, info
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
-index 3b818dc..5787572 100644
+index 3b818dc..2352dd1 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
-@@ -12,8 +12,16 @@ VSA_SOURCE_SHA = "b7c6d4e470ee232b50d16d71c2b21806f414f9baa4447434b2da66c94dc0fa
+@@ -12,8 +12,17 @@ VSA_SOURCE_SHA = "b7c6d4e470ee232b50d16d71c2b21806f414f9baa4447434b2da66c94dc0fa
  COUNTERS = ("vsa_forward_calls", "compression_branch_calls", "block_mask_calls",
              "triton_sparse_kernel_calls", "dense_text_calls", "cudnn_bsa_calls",
              "warmup_reference_calls")
@@ -4218,7 +4337,8 @@ index 3b818dc..5787572 100644
 +# selected-attention calls (each adds a Triton reference pass and two host syncs: ~30 s of every cold start on
 +# Spark). Default here: the first 8 calls (layers 0-7 of the first update, same kernel, real data) - still a
 +# numerical check of the actual kernel on this driver/cuDNN. SOL_H3_BSA_CHECK_CALLS=200 restores upstream.
-+WARMUP_REFERENCE_CALLS = min(200, max(1, int(os.environ.get("SOL_H3_BSA_CHECK_CALLS", "8"))))
++from ..config import bsa_check_calls  # noqa: E402  (a whole number of at least 1, checked at the studio's start)
++WARMUP_REFERENCE_CALLS = bsa_check_calls()
  BSA_ATOL = BSA_RTOL = 0.03
 +# lf-studio: a session can change its clip length or orientation (runtime/pipeline.py reshape). The check then
 +# runs again on the first request of each shape it has not checked yet, as a fresh worker at that shape would:
@@ -4227,7 +4347,7 @@ index 3b818dc..5787572 100644
  
  
  def configure_profile(profile, backend="cudnn_bsa"):
-@@ -82,6 +90,45 @@ def reverse_active_indices(torch, indices, counts):
+@@ -82,6 +91,45 @@ def reverse_active_indices(torch, indices, counts):
      return indices.gather(-1, gather_positions)
  
  
@@ -4273,7 +4393,7 @@ index 3b818dc..5787572 100644
  def validate_request(before, after):
      if after is None or after.get("active_compression_gates") != 50:
          raise RuntimeError("actual official VSA installation/gates missing")
-@@ -99,7 +146,9 @@ def validate_request(before, after):
+@@ -99,7 +147,9 @@ def validate_request(before, after):
              or len(after["step_calls"]) != 4 or len(before["step_calls"]) != 4):
          raise RuntimeError("official VSA counter geometry changed")
      previous_bsa = before.get("cudnn_bsa_calls", 0)
@@ -4284,7 +4404,7 @@ index 3b818dc..5787572 100644
      expected = dict(zip(COUNTERS, (200, 200, 200, 200 if backend == "triton" else 0,
                                     2, 200 if backend == "cudnn_bsa" else 0, expected_reference)))
      delta = {key: after.get(key, 0) - before.get(key, 0) for key in COUNTERS}
-@@ -109,10 +158,11 @@ def validate_request(before, after):
+@@ -109,10 +159,11 @@ def validate_request(before, after):
          raise RuntimeError(f"real VSA request count mismatch: {delta}; layers={per_layer}; steps={per_step}")
      if backend == "cudnn_bsa":
          audit = after.get("warmup_selected_validation", {})
@@ -4298,7 +4418,7 @@ index 3b818dc..5787572 100644
          order = after.get("bsa_index_order", {})
          before_order = before.get("bsa_index_order", {})
          match_order = order.get("match_triton_order", False)
-@@ -188,6 +238,7 @@ def install_model(model, state, backend="cudnn_bsa"):
+@@ -188,6 +239,7 @@ def install_model(model, state, backend="cudnn_bsa"):
          raise RuntimeError("expected original 50 VSA body blocks and two dense text blocks")
      record = {key: 0 for key in COUNTERS}
      record.update(active_compression_gates=50, gates=sorted(gates, key=lambda x: x["layer"]),
@@ -4306,7 +4426,7 @@ index 3b818dc..5787572 100644
                    selected_attention_backend=backend,
                    layer_calls=[0] * 50, step_calls=[0] * 4, observed_metadata={},
                    vsa_source=str(source), vsa_source_sha256=VSA_SOURCE_SHA,
-@@ -262,7 +313,7 @@ def install_model(model, state, backend="cudnn_bsa"):
+@@ -262,7 +314,7 @@ def install_model(model, state, backend="cudnn_bsa"):
                  or any(x.dtype != torch.bfloat16 for x in (q, k, v))
                  or q.shape[-1] != 128 or q.shape != k.shape or k.shape != v.shape):
              raise RuntimeError("BSA integration requires inference-only BF16 MHA/head128")
@@ -4315,7 +4435,7 @@ index 3b818dc..5787572 100644
          bsa_indices = indices
          if match_triton_order:
              bsa_indices = reverse_active_indices(torch, indices, counts)
-@@ -299,9 +350,7 @@ def install_model(model, state, backend="cudnn_bsa"):
+@@ -299,9 +351,7 @@ def install_model(model, state, backend="cudnn_bsa"):
              if not passed:
                  audit["status"] = "FAIL"
                  raise RuntimeError(f"actual BSA warmup reference FAIL: {audit['per_call'][-1]}")
@@ -4748,15 +4868,15 @@ index 4e6e910..fdccb3f 100644
      return output.to(dtype=normalized.dtype)
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
 new file mode 100644
-index 0000000..b5b01ba
+index 0000000..326940e
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
-@@ -0,0 +1,519 @@
+@@ -0,0 +1,582 @@
 +"""lf-studio: LTX refiner blocks with the distilled LoRA fused once, streamed partly from disk.
 +
 +Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +
-+NVIDIA's CPU offload pins all 48 LTX blocks in host RAM (about 40 GB, never swappable) and fuses the LoRA into
++NVIDIA's CPU offload pins all 48 LTX blocks in host RAM (about 39 GiB, never swappable) and fuses the LoRA into
 +them while building, which needs more RAM than a 64 GB workstation has next to H3. Here the fused blocks are
 +written once to a block file (``build``), with the exact calls of LTX's pinned build: the same loader and key
 +renaming, ``fuse_lora_weights`` with the same rule on the same GPU, the same 16-byte layout. A session then pins
@@ -4766,23 +4886,49 @@ index 0000000..b5b01ba
 +
 +File layout: ``<dir>/blocks.bin`` holds each block's buffer image (``carve_buffer`` layout) at a 4096-byte
 +aligned offset; ``<dir>/non_block.safetensors`` the fused non-block weights; ``<dir>/index.json`` the layouts,
-+offsets, SHA-256 of every block and the identity of the inputs.
++offsets, SHA-256 of every block, both files' sizes and the identity of the inputs. A folder whose files don't have
++the recorded sizes (a crash right after a build, a disk filled up) is removed and built again (``BlockFileCorrupt``).
 +"""
 +from __future__ import annotations
 +
 +import ctypes
++import errno
 +import hashlib
 +import json
 +import os
++import shutil
 +import threading
 +import time
 +from concurrent.futures import ThreadPoolExecutor
 +from pathlib import Path
 +
-+FORMAT = "sol-h3-studio-ltx-fused-blocks-v1"   # the studio's name up to 0.4, kept: files on disk carry it
++FORMAT = "sol-h3-studio-ltx-fused-blocks-v2"   # the studio's name up to 0.4, kept in the format name; v2: both
++                                               # files' sizes in the index, checked on every use
 +ALIGN = 4096
 +CHUNK = 64 << 20            # bytes per preadv call
 +READ_THREADS = 8
++MIN_FREE_BYTES = 2 << 30    # left free on the block-file disk after a build
++
++
++class BlockFileCorrupt(RuntimeError):
++    """A block-file folder that is not what its index says (format, inputs, file sizes): built again by ensure()."""
++
++
++def _fsync_path(path):
++    fd = os.open(path, os.O_RDONLY)
++    try:
++        os.fsync(fd)
++    finally:
++        os.close(fd)
++
++
++def require_free_space(directory, needed, what="the LTX fused block file"):
++    """Refuse to start writing ``needed`` bytes under ``directory`` without them (plus MIN_FREE_BYTES) free."""
++    free = shutil.disk_usage(directory).free
++    if free < needed + MIN_FREE_BYTES:
++        raise OSError(errno.ENOSPC, f"not enough disk space for {what} in {directory}: "
++                                    f"{(needed + MIN_FREE_BYTES) / 2**30:.1f} GiB needed, {free / 2**30:.1f} GiB free "
++                                    "(set SOL_H3_LTX_BLOCKS to a folder on a disk with room, or 0 to turn it off)")
 +
 +
 +def _ceil(n, a=ALIGN):
@@ -4880,12 +5026,19 @@ index 0000000..b5b01ba
 +
 +    index = {"format": FORMAT, "identity": identity, "blocks_prefix": builder.blocks_prefix,
 +             "blocks_attr": builder.blocks_attr, "num_blocks": len(blocks), "blocks": []}
++    layouts = []
++    for idx in range(len(blocks)):
++        state = sb._block_state(blocks[idx])
++        layouts.append(derive_layout({name: state[name] for _key, name in block_key_map[idx]}, dtype))
++    # Both files, from the meta model: the block images, and the rest of its weights in bfloat16.
++    block_bytes = sum(_ceil(layout_nbytes(layout)) for layout in layouts)
++    all_bytes = sum(t.numel() * 2 for t in meta_model.state_dict().values())
++    require_free_space(output_dir, block_bytes + max(all_bytes - block_bytes, 0) + (64 << 20))
 +    offset = 0
 +    with open(output_dir / "blocks.bin", "wb") as out:
 +        for idx in range(len(blocks)):
 +            entries = block_key_map[idx]
-+            state = sb._block_state(blocks[idx])
-+            layout = derive_layout({name: state[name] for _key, name in entries}, dtype)
++            layout = layouts[idx]
 +            nbytes = layout_nbytes(layout)
 +            image = torch.zeros(_ceil(nbytes), dtype=torch.uint8)
 +            views = carve_buffer(image, layout)
@@ -4923,13 +5076,16 @@ index 0000000..b5b01ba
 +            non_block_sd[key] = fused
 +    save_file({k: v.detach().to("cpu").contiguous() for k, v in non_block_sd.items()},
 +              str(output_dir / "non_block.safetensors"))
++    _fsync_path(output_dir / "non_block.safetensors")
 +    index["non_block_sha256"] = _sha256_file(output_dir / "non_block.safetensors")
++    index["non_block_nbytes"] = (output_dir / "non_block.safetensors").stat().st_size
 +    index["blocks_nbytes"] = offset
 +    with open(output_dir / "index.json.tmp", "w") as stream:
 +        json.dump(index, stream, indent=1)
 +        stream.flush()
 +        os.fsync(stream.fileno())
 +    os.replace(output_dir / "index.json.tmp", output_dir / "index.json")
++    _fsync_path(output_dir)
 +    return index
 +
 +
@@ -4939,15 +5095,17 @@ index 0000000..b5b01ba
 +
 +def identity_of(paths, prepared, compile_enabled, torch):
 +    """What the fused bytes and their layout depend on: the transformer and LoRA files (by content markers, as the
-+    Stage-1 snapshots identify theirs), the LoRA strength the builder carries, LTX's loading and fusing code, whether
-+    blocks are compiled (it renames their keys), torch and the GPU (the fusing GEMMs run on it)."""
++    Stage-1 snapshots identify theirs), the LoRA strength the builder carries, the code that loads, fuses and lays
++    out the blocks (LTX's builder, fuse_loras and block_streaming.utils, and this module), whether blocks are
++    compiled (it renames their keys), torch and the GPU (the fusing GEMMs run on it)."""
 +    import ltx_core.block_streaming.builder as builder_module
++    import ltx_core.block_streaming.utils as utils_module
 +    import ltx_core.loader.fuse_loras as fuse_module
 +    from ..stage1_ops.snapshot import weight_file
 +    loras = list(getattr(prepared, "loras", ()))
 +    code = hashlib.sha256()
-+    for module in (builder_module, fuse_module):
-+        code.update(Path(module.__file__).read_bytes())
++    for filename in (builder_module.__file__, fuse_module.__file__, utils_module.__file__, __file__):
++        code.update(Path(filename).read_bytes())
 +    return {"format": FORMAT, "transformer": weight_file(paths["transformer"]),
 +            "loras": [{**weight_file(lora.path), "strength": float(lora.strength)} for lora in loras],
 +            "fuse_rule": getattr(getattr(prepared, "fuse_rule", None), "fuse_fn", None).__name__
@@ -4960,9 +5118,27 @@ index 0000000..b5b01ba
 +    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
 +
 +
++def _is_block_folder(path):
++    """A real folder (not a symlink) under the block root: anything else is never read or deleted here."""
++    path = Path(path)
++    return not path.is_symlink() and path.is_dir()
++
++
++def _index_format(directory):
++    """The format named in a folder's index.json, or None when it can't be read."""
++    try:
++        index = json.loads((Path(directory) / "index.json").read_text())
++    except (OSError, ValueError):
++        return None
++    return index.get("format") if isinstance(index, dict) else None
++
++
 +def _remove_known(directory):
-+    """Delete a block-file folder by the names this module writes (nothing else is touched)."""
++    """Delete a block-file folder by the names this module writes (nothing else is touched). A symlink is left
++    alone: the files it points to are outside the block root."""
 +    directory = Path(directory)
++    if not _is_block_folder(directory):
++        return
 +    for name in KNOWN_FILES:
 +        try:
 +            (directory / name).unlink()
@@ -4981,21 +5157,26 @@ index 0000000..b5b01ba
 +    root = Path(root)
 +    root.mkdir(parents=True, exist_ok=True)
 +    target = root / _identity_key(identity)
-+    if (target / "index.json").exists():
-+        load_index(target, identity)
++    if _usable(target, identity, log):
 +        os.utime(target / "index.json")
 +        return target, False
 +    with open(root / ".build.lock", "a+") as lock:
 +        fcntl.flock(lock, fcntl.LOCK_EX)    # another worker may be building the same file
-+        if (target / "index.json").exists():
-+            load_index(target, identity)
++        if _usable(target, identity, log):
 +            return target, False
 +        for stale in root.glob(".tmp-*"):   # a build that died part way
 +            pid = stale.name.rsplit("-", 1)[-1]
-+            if not (pid.isdigit() and Path(f"/proc/{pid}").exists()):
++            if _is_block_folder(stale) and not (pid.isdigit() and Path(f"/proc/{pid}").exists()):
 +                _remove_known(stale)
 +        if (target).exists():
 +            _remove_known(target)           # an earlier incomplete folder (no index.json)
++        # A folder of another format (an earlier version of this module) can never be used again, since the format
++        # is part of the identity: free its space before the build checks for room.
++        for old in root.iterdir():
++            if (old != target and _is_block_folder(old) and (old / "index.json").is_file()
++                    and _index_format(old) != FORMAT):
++                log(f"[ltx-blocks] removing {old}: a block file of another format ({_index_format(old)})")
++                _remove_known(old)
 +        temporary = root / f".tmp-{target.name}-{os.getpid()}"
 +        temporary.mkdir()
 +        from ..stage1_ops.snapshot import set_nocow
@@ -5004,11 +5185,12 @@ index 0000000..b5b01ba
 +        try:
 +            build(prepared, temporary, identity=identity, torch=torch, exist_ok=True)
 +            os.rename(temporary, target)
++            _fsync_path(root)
 +        except BaseException:
 +            _remove_known(temporary)
 +            raise
 +        # keep the newest KEEP folders; older identities (and the flat layout of earlier versions) go
-+        folders = sorted((d for d in root.iterdir() if d.is_dir() and (d / "index.json").exists()),
++        folders = sorted((d for d in root.iterdir() if _is_block_folder(d) and (d / "index.json").exists()),
 +                         key=lambda d: (d / "index.json").stat().st_mtime, reverse=True)
 +        for old in folders[KEEP:]:
 +            _remove_known(old)
@@ -5030,36 +5212,37 @@ index 0000000..b5b01ba
 +
 +
 +def load_index(directory, identity=None):
++    """The folder's index; BlockFileCorrupt when it is unreadable, of another format or other inputs, or when
++    blocks.bin or non_block.safetensors doesn't have the size it records."""
 +    directory = Path(directory)
-+    index = json.loads((directory / "index.json").read_text())
-+    if index.get("format") != FORMAT:
-+        raise RuntimeError(f"{directory}: not a {FORMAT} block file")
++    try:
++        index = json.loads((directory / "index.json").read_text())
++    except (OSError, ValueError) as error:
++        raise BlockFileCorrupt(f"{directory}: unreadable index ({error})") from error
++    if not isinstance(index, dict) or index.get("format") != FORMAT:
++        raise BlockFileCorrupt(f"{directory}: not a {FORMAT} block file")
 +    if identity is not None and index.get("identity") != identity:
-+        raise RuntimeError(f"{directory}: built from other inputs ({index.get('identity')} != {identity})")
++        raise BlockFileCorrupt(f"{directory}: built from other inputs ({index.get('identity')} != {identity})")
++    for name, key in (("blocks.bin", "blocks_nbytes"), ("non_block.safetensors", "non_block_nbytes")):
++        path = directory / name
++        expected = index.get(key)
++        if not path.is_file() or path.stat().st_size != expected:
++            raise BlockFileCorrupt(f"{path}: missing or not {expected} bytes")
 +    return index
 +
 +
-+def setting_int(name, default, minimum=0):
-+    """An integer setting from the environment, with a message naming it when it is not one."""
-+    raw = os.environ.get(name, "").strip()
++def _usable(target, identity, log):
++    """True when ``target`` holds a complete block file for ``identity``. A folder whose index or file sizes are
++    wrong is removed (only the names this module writes), so it is built again."""
++    if not (target / "index.json").exists():
++        return False
 +    try:
-+        value = int(raw) if raw else default
-+    except ValueError:
-+        raise RuntimeError(f"{name}={raw!r}: expected a whole number (default {default})") from None
-+    if value < minimum:
-+        raise RuntimeError(f"{name}={value}: must be at least {minimum}")
-+    return value
-+
-+
-+def setting_float(name, default, minimum=0.0):
-+    raw = os.environ.get(name, "").strip()
-+    try:
-+        value = float(raw) if raw else default
-+    except ValueError:
-+        raise RuntimeError(f"{name}={raw!r}: expected a number (default {default})") from None
-+    if value < minimum:
-+        raise RuntimeError(f"{name}={value}: must be at least {minimum}")
-+    return value
++        load_index(target, identity)
++        return True
++    except BlockFileCorrupt as error:
++        log(f"[ltx-blocks] {error}; removing {target} and building it again")
++        _remove_known(target)
++        return False
 +
 +
 +def available_bytes():
@@ -5272,7 +5455,7 @@ index 0000000..b5b01ba
 +    wrapper.sol_h3_block_source = source
 +    return wrapper
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
-index 04a6f36..6d5d218 100644
+index 04a6f36..0e576d1 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 @@ -7,6 +7,9 @@ pixel-input VAE, LTX upsampler and preview-decoder models.
@@ -5436,7 +5619,7 @@ index 04a6f36..6d5d218 100644
 -        models.streaming_transformer = stage._prepared_builder().build(
 -            device=models.device, dtype=models.dtype)
 +        prepared = stage._prepared_builder()
-+        from ..config import ltx_blocks_dir
++        from ..config import decimal_number, ltx_blocks_dir, ltx_resident_blocks_setting, switch, whole_number
 +        blocks_dir = ltx_blocks_dir()
 +        if blocks_dir:
 +            # lf-studio: LoRA fused once into a block file; some blocks pinned, the rest read from disk.
@@ -5447,14 +5630,14 @@ index 04a6f36..6d5d218 100644
 +            if built:
 +                print(f"[stage2] LTX fused block file built in {time.monotonic() - t0:.1f} s", flush=True)
 +            index = ltx_blocks.load_index(blocks_dir, identity)
-+            depth = ltx_blocks.setting_int("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
-+            resident = ltx_blocks.resident_blocks(index, os.environ.get("SOL_H3_LTX_RESIDENT_BLOCKS", "auto"),
-+                                                  ltx_blocks.setting_float("SOL_H3_LTX_RAM_RESERVE_GIB", 12.0),
++            depth = whole_number("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
++            resident = ltx_blocks.resident_blocks(index, ltx_resident_blocks_setting(),
++                                                  decimal_number("SOL_H3_LTX_RAM_RESERVE_GIB", 12.0),
 +                                                  depth=depth)
 +            models.streaming_transformer = ltx_blocks.build_streaming_wrapper(
 +                prepared, blocks_dir, device=models.device, dtype=models.dtype, resident=resident,
 +                depth=depth, torch=torch,
-+                verify=os.environ.get("SOL_H3_LTX_VERIFY", "0") == "1")
++                verify=switch("SOL_H3_LTX_VERIFY", False))
 +            models.ltx_block_stats = models.streaming_transformer.sol_h3_block_source.stats
 +        else:
 +            models.streaming_transformer = prepared.build(device=models.device, dtype=models.dtype)
@@ -5529,7 +5712,7 @@ index 9264fee..d557151 100644
 +        raise RuntimeError(f"writer chunk16 consumed {receipt['frames']} frames, expected {expected_frames}")
      receipt["complete"] = True
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
-index b90a591..d303afb 100644
+index b90a591..a3af312 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
 @@ -12,6 +12,9 @@ import sys
@@ -5551,8 +5734,8 @@ index b90a591..d303afb 100644
 +    work) back to the system after every operation. Without it the idle footprint of the three workers grew by about
 +    1 GB per clip on an RTX 5090 workstation with 64 GB. SOL_H3_MALLOC_TRIM=0 turns it off."""
 +    import ctypes
-+    import os
-+    if os.environ.get("SOL_H3_MALLOC_TRIM", "1") == "0":
++    from .config import switch
++    if not switch("SOL_H3_MALLOC_TRIM", True):
 +        return
 +    try:
 +        ctypes.CDLL("libc.so.6").malloc_trim(0)
@@ -5579,7 +5762,7 @@ index b90a591..d303afb 100644
                      "status": "FAIL", "error": f"{type(error).__name__}: {error}"})
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/check_stage1_snapshot_gpu.py b/models/minimax_h3/Sol-H3-RTX5090/tests/check_stage1_snapshot_gpu.py
 new file mode 100644
-index 0000000..9b71255
+index 0000000..05ffd7b
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/check_stage1_snapshot_gpu.py
 @@ -0,0 +1,226 @@
@@ -5611,7 +5794,7 @@ index 0000000..9b71255
 +    cd models/minimax_h3/Sol-H3-RTX5090
 +    <stage1 python> tests/check_stage1_snapshot_gpu.py --paths <paths.json> [--task t2va]
 +
-+The snapshot of the check (about 31 GB) goes to <out>/snapshots and is removed at the end (--keep-snapshot keeps it).
++The snapshot of the check (about 22 GiB) goes to <out>/snapshots and is removed at the end (--keep-snapshot keeps it).
 +Exit status 0 = PASS.
 +"""
 +import argparse
@@ -5853,10 +6036,10 @@ index 0000000..7f999ab
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
 new file mode 100644
-index 0000000..b70265b
+index 0000000..d42b20f
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,342 @@
 +"""lf-studio: CPU tests of the fused LTX block file reader (runtime/stage2_ops/ltx_blocks.py).
 +
 +Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -5905,8 +6088,10 @@ index 0000000..b70265b
 +                           "layout": [["w", [nbytes // 2], "bfloat16"]]})
 +            images.append(data[:nbytes])
 +            offset += len(data)
++    (Path(directory) / "non_block.safetensors").write_bytes(b"n" * 100)
 +    index = {"format": ltx_blocks.FORMAT, "identity": {"test": True}, "blocks_prefix": "transformer_blocks",
-+             "blocks_attr": "transformer_blocks", "num_blocks": len(sizes), "blocks": blocks}
++             "blocks_attr": "transformer_blocks", "num_blocks": len(sizes), "blocks": blocks,
++             "blocks_nbytes": offset, "non_block_nbytes": 100}
 +    (Path(directory) / "index.json").write_text(json.dumps(index))
 +    return index, images
 +
@@ -5986,6 +6171,23 @@ index 0000000..b70265b
 +        with self.assertRaisesRegex(RuntimeError, "not a"):
 +            ltx_blocks.load_index(self.dir.name)
 +
++    def test_files_of_another_size_than_recorded_are_corrupt(self):
++        directory = Path(self.dir.name)
++        with open(directory / "blocks.bin", "r+b") as stream:
++            stream.truncate(self.index["blocks_nbytes"] - 4096)        # a crash right after the build
++        with self.assertRaisesRegex(ltx_blocks.BlockFileCorrupt, "blocks.bin: missing or not"):
++            ltx_blocks.load_index(directory, {"test": True})
++        write_block_file(directory, self.sizes)
++        (directory / "non_block.safetensors").write_bytes(b"short")
++        with self.assertRaisesRegex(ltx_blocks.BlockFileCorrupt, "non_block.safetensors: missing or not"):
++            ltx_blocks.load_index(directory)
++        (directory / "non_block.safetensors").unlink()
++        with self.assertRaises(ltx_blocks.BlockFileCorrupt):
++            ltx_blocks.load_index(directory)
++        (directory / "index.json").write_text("{")
++        with self.assertRaisesRegex(ltx_blocks.BlockFileCorrupt, "unreadable index"):
++            ltx_blocks.load_index(directory)
++
 +
 +
 +
@@ -6032,6 +6234,16 @@ index 0000000..b70265b
 +            self.assertEqual(config.ltx_blocks_dir(), "")
 +            os.environ["SOL_H3_LTX_BLOCKS"] = "/elsewhere"
 +            self.assertEqual(config.ltx_blocks_dir(), "/elsewhere")
++
++    def test_not_enough_disk_space_is_refused_before_writing(self):
++        from unittest import mock
++        import errno
++        usage = type("Usage", (), {"free": 10 << 30})()
++        with mock.patch.object(ltx_blocks.shutil, "disk_usage", return_value=usage):
++            ltx_blocks.require_free_space(self.dir.name, 7 << 30)
++            with self.assertRaisesRegex(OSError, "not enough disk space .* 41.0 GiB needed, 10.0 GiB free") as caught:
++                ltx_blocks.require_free_space(self.dir.name, 39 << 30)
++        self.assertEqual(caught.exception.errno, errno.ENOSPC)
 +
 +
 +class StoreTests(unittest.TestCase):
@@ -6091,6 +6303,63 @@ index 0000000..b70265b
 +        self.assertFalse((self.root / "blocks.bin").exists())
 +        self.assertFalse((self.root / "index.json").exists())
 +
++    def test_a_damaged_folder_is_removed_and_built_again(self):
++        logged = []
++        target, _ = ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)
++        size = (target / "blocks.bin").stat().st_size
++        with open(target / "blocks.bin", "r+b") as stream:
++            stream.truncate(size - 4096)
++        again, built = ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=logged.append)
++        self.assertTrue(built)
++        self.assertEqual(again, target)
++        self.assertEqual((target / "blocks.bin").stat().st_size, size)
++        self.assertIn("building it again", logged[0])
++        (target / "non_block.safetensors").unlink()
++        self.assertTrue(ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)[1])
++        self.assertEqual(len(self.builds), 3)
++        self.assertFalse(ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)[1])
++
++    def test_a_folder_of_another_format_goes_before_the_build(self):
++        # An update changes the format, which is part of the identity: the old folder can never be used again, and
++        # its space is freed before the new build checks for room (not kept as one of the KEEP newest).
++        old = self.root / ("0" * 16)
++        old.mkdir()
++        write_block_file(old, [4096])
++        index = json.loads((old / "index.json").read_text())
++        index["format"] = "sol-h3-studio-ltx-fused-blocks-v1"
++        (old / "index.json").write_text(json.dumps(index))
++        seen = []
++        build = ltx_blocks.build
++
++        def checking_build(*args, **kwargs):
++            seen.append(old.exists())
++            return build(*args, **kwargs)
++        from unittest import mock
++        with mock.patch.object(ltx_blocks, "build", checking_build):
++            ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)
++        self.assertEqual(seen, [False])
++        self.assertFalse(old.exists())
++
++    def test_symlinks_are_never_followed(self):
++        # A symlinked folder (or a stale .tmp-* symlink) in the root points outside it: neither is read for pruning
++        # nor has the known file names deleted in its target.
++        outside = tempfile.TemporaryDirectory()
++        self.addCleanup(outside.cleanup)
++        elsewhere = Path(outside.name) / "data"
++        elsewhere.mkdir()
++        write_block_file(elsewhere, [4096])
++        index = json.loads((elsewhere / "index.json").read_text())
++        index["format"] = "something-else"
++        (elsewhere / "index.json").write_text(json.dumps(index))
++        (self.root / ("1" * 16)).symlink_to(elsewhere)
++        (self.root / ".tmp-x-999999999").symlink_to(elsewhere)
++        for i in range(ltx_blocks.KEEP + 1):
++            ltx_blocks.ensure(None, self.root, {"a": i}, torch=torch, log=lambda *_: None)
++        self.assertEqual(sorted(p.name for p in elsewhere.iterdir()),
++                         ["blocks.bin", "index.json", "non_block.safetensors"])
++        ltx_blocks._remove_known(self.root / ("1" * 16))
++        self.assertTrue((elsewhere / "blocks.bin").exists())
++
 +    def test_a_folder_with_foreign_files_is_left_alone(self):
 +        odd = self.root / "mine"
 +        odd.mkdir()
@@ -6100,12 +6369,13 @@ index 0000000..b70265b
 +
 +    def test_bad_settings_name_themselves(self):
 +        from unittest import mock
++        from runtime import config
 +        with mock.patch.dict("os.environ", {"SOL_H3_LTX_READ_AHEAD": "x"}):
-+            with self.assertRaisesRegex(RuntimeError, "SOL_H3_LTX_READ_AHEAD"):
-+                ltx_blocks.setting_int("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
++            with self.assertRaisesRegex(ValueError, "SOL_H3_LTX_READ_AHEAD"):
++                config.whole_number("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
 +        with mock.patch.dict("os.environ", {"SOL_H3_LTX_READ_AHEAD": "0"}):
-+            with self.assertRaisesRegex(RuntimeError, "at least 1"):
-+                ltx_blocks.setting_int("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
++            with self.assertRaisesRegex(ValueError, "at least 1"):
++                config.whole_number("SOL_H3_LTX_READ_AHEAD", 3, minimum=1)
 +        with self.assertRaisesRegex(RuntimeError, "auto or a whole number"):
 +            ltx_blocks.resident_blocks({"num_blocks": 2, "blocks": []}, "lots")
 +
@@ -8687,6 +8957,149 @@ index 0000000..c4aabe0
 +
 +if __name__ == "__main__":
 +    unittest.main()
+diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_settings.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_settings.py
+new file mode 100644
+index 0000000..9b885db
+--- /dev/null
++++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_settings.py
+@@ -0,0 +1,137 @@
++"""lf-studio: CPU tests of the strict settings of the RTX 5090 patch (runtime/config.py: check_settings).
++
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++"""
++import os
++import sys
++import unittest
++from pathlib import Path
++from unittest import mock
++
++PACKAGE = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(PACKAGE))
++
++from runtime import config  # noqa: E402
++
++
++def clean_environ(**values):
++    """os.environ without any SOL_H3_* setting but SOL_H3_SPARK_*, plus ``values``."""
++    env = {k: v for k, v in os.environ.items() if not k.startswith("SOL_H3_") or k.startswith("SOL_H3_SPARK_")}
++    env.update(values)
++    return mock.patch.dict("os.environ", env, clear=True)
++
++
++class FolderSettingTests(unittest.TestCase):
++    def test_off_words_any_case_turn_it_off(self):
++        for value in ("0", "off", " OFF ", "false", "No"):
++            with self.subTest(value=value), clean_environ(SOL_H3_LTX_BLOCKS=value):
++                self.assertEqual(config.ltx_blocks_dir(), "")
++
++    def test_unset_or_empty_is_the_default(self):
++        for env in ({}, {"SOL_H3_FILEBACKED_DIR": "  "}):
++            with self.subTest(env=env), clean_environ(SOL_H3_SPARK_RUNTIME_ROOT="/r", **env):
++                self.assertEqual(config.stage1_scratch_dir(), "/r/scratch")
++                self.assertEqual(config.stage1_snapshots_dir(), "/r/derived/stage1-snapshots")
++
++    def test_on_words_and_relative_paths_are_refused(self):
++        # with the workers' working directory being the package, "on" would put the 39 GiB file inside the checkout
++        for name, function in (("SOL_H3_LTX_BLOCKS", config.ltx_blocks_dir),
++                               ("SOL_H3_FILEBACKED_DIR", config.stage1_scratch_dir),
++                               ("SOL_H3_STAGE1_SNAPSHOTS", config.stage1_snapshots_dir)):
++            for value in ("on", "1", "TRUE", "yes", "scratch", "./x"):
++                with self.subTest(name=name, value=value), clean_environ(**{name: value}):
++                    with self.assertRaisesRegex(ValueError, name):
++                        function()
++
++    def test_absolute_paths_and_home(self):
++        with clean_environ(SOL_H3_STAGE1_SNAPSHOTS=" /data/snap ", SOL_H3_LTX_BLOCKS="~/blocks"):
++            self.assertEqual(config.stage1_snapshots_dir(), "/data/snap")
++            self.assertEqual(config.ltx_blocks_dir(), str(Path.home() / "blocks"))
++
++
++class SwitchTests(unittest.TestCase):
++    def test_words_and_defaults(self):
++        for value, expected in (("1", True), ("on", True), ("Yes", True), (" true ", True),
++                                ("0", False), ("OFF", False), ("no", False), ("false", False)):
++            with self.subTest(value=value), clean_environ(SOL_H3_STAGE1_PIN=value):
++                self.assertIs(config.switch("SOL_H3_STAGE1_PIN", True), expected)
++        with clean_environ():
++            self.assertIs(config.switch("SOL_H3_STAGE1_PIN", True), True)
++            self.assertIs(config.switch("SOL_H3_LTX_VERIFY", False), False)
++        with clean_environ(SOL_H3_LTX_VERIFY=""):
++            self.assertIs(config.switch("SOL_H3_LTX_VERIFY", False), False)
++
++    def test_anything_else_names_the_variable(self):
++        # before: SOL_H3_STAGE1_PIN=off pinned (anything but "0" was on)
++        for value in ("2", "of", "enabled", "-1"):
++            with self.subTest(value=value), clean_environ(SOL_H3_STAGE1_PIN=value):
++                with self.assertRaisesRegex(ValueError, "SOL_H3_STAGE1_PIN"):
++                    config.switch("SOL_H3_STAGE1_PIN", True)
++
++
++class NumberTests(unittest.TestCase):
++    def test_whole_and_decimal_numbers(self):
++        with clean_environ(SOL_H3_STAGE1_SNAPSHOTS_KEEP=" 3 ", SOL_H3_LTX_RAM_RESERVE_GIB="8.5"):
++            self.assertEqual(config.whole_number("SOL_H3_STAGE1_SNAPSHOTS_KEEP", 2, minimum=1), 3)
++            self.assertEqual(config.decimal_number("SOL_H3_LTX_RAM_RESERVE_GIB", 12.0), 8.5)
++        with clean_environ():
++            self.assertEqual(config.whole_number("SOL_H3_STAGE1_SNAPSHOTS_KEEP", 2, minimum=1), 2)
++            self.assertEqual(config.ltx_resident_blocks_setting(), "auto")
++        for name, value in (("SOL_H3_STAGE1_SNAPSHOTS_KEEP", "0"), ("SOL_H3_STAGE1_SNAPSHOTS_KEEP", "two"),
++                            ("SOL_H3_LTX_RAM_RESERVE_GIB", "-1"), ("SOL_H3_LTX_RAM_RESERVE_GIB", "nan")):
++            with self.subTest(name=name, value=value), clean_environ(**{name: value}):
++                with self.assertRaisesRegex(ValueError, name):
++                    (config.whole_number(name, 2, minimum=1) if name.endswith("KEEP")
++                     else config.decimal_number(name, 12.0))
++        with clean_environ(SOL_H3_LTX_RESIDENT_BLOCKS="AUTO"):
++            self.assertEqual(config.ltx_resident_blocks_setting(), "auto")
++        with clean_environ(SOL_H3_LTX_RESIDENT_BLOCKS="20"):
++            self.assertEqual(config.ltx_resident_blocks_setting(), 20)
++        with clean_environ(SOL_H3_LTX_RESIDENT_BLOCKS="lots"), self.assertRaisesRegex(ValueError, "RESIDENT"):
++            config.ltx_resident_blocks_setting()
++
++
++class CheckSettingsTests(unittest.TestCase):
++    def test_defaults_have_no_problems(self):
++        with clean_environ():
++            self.assertEqual(config.check_settings(), [])
++
++    def test_every_problem_is_listed_with_its_variable(self):
++        bad = {"SOL_H3_LTX_BLOCKS": "on", "SOL_H3_FILEBACKED_DIR": "false", "SOL_H3_STAGE1_SNAPSHOTS": "rel/dir",
++               "SOL_H3_STAGE1_PIN": "maybe", "SOL_H3_MALLOC_TRIM": "2", "SOL_H3_STAGE1_SNAPSHOTS_KEEP": "0",
++               "SOL_H3_LTX_READ_AHEAD": "x", "SOL_H3_LTX_RESIDENT_BLOCKS": "many", "SOL_H3_STAGE2_AUDIO": "loud",
++               "SOL_H3_DYNAMIC_TEXT_LENGTH": "yes", "SOL_H3_VAE_ON_DEVICE": "sure", "SOL_H3_AUDIO_VAE_PREFETCH": "2",
++               "SOL_H3_BSA_CHECK_CALLS": "0"}
++        with clean_environ(**bad):
++            problems = config.check_settings()
++        named = {name for name in bad if any(name + "=" in p or p.startswith(name) for p in problems)}
++        # SOL_H3_FILEBACKED_DIR=false is a valid "off"; every other one is reported
++        self.assertEqual(named, set(bad) - {"SOL_H3_FILEBACKED_DIR"}, problems)
++        self.assertEqual(len(problems), len(bad) - 1)
++
++    def test_vae_switches_and_bsa_check_calls(self):
++        # the Stage-1 VAE switches take the same words as the others ("on" was off before); the BSA check count is
++        # a whole number, at most upstream's 200
++        with clean_environ(SOL_H3_VAE_ON_DEVICE="on", SOL_H3_AUDIO_VAE_PREFETCH="OFF"):
++            self.assertTrue(config.switch("SOL_H3_VAE_ON_DEVICE", True))
++            self.assertFalse(config.switch("SOL_H3_AUDIO_VAE_PREFETCH", True))
++        with clean_environ():
++            self.assertEqual(config.bsa_check_calls(), 8)
++        with clean_environ(SOL_H3_BSA_CHECK_CALLS="500"):
++            self.assertEqual(config.bsa_check_calls(), 200)
++        with clean_environ(SOL_H3_BSA_CHECK_CALLS="eight"):
++            with self.assertRaisesRegex(ValueError, "SOL_H3_BSA_CHECK_CALLS"):
++                config.bsa_check_calls()
++
++    def test_it_imports_no_torch(self):
++        # the launcher calls it with the Stage-1 interpreter before a session; it must stay cheap
++        import subprocess
++        code = "import sys; from runtime import config; config.check_settings(); print('torch' in sys.modules)"
++        with clean_environ():
++            out = subprocess.run([sys.executable, "-B", "-c", code], cwd=PACKAGE, capture_output=True, text=True,
++                                 check=True).stdout.strip()
++        self.assertEqual(out, "False")
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_contracts.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_contracts.py
 index 052502f..8df301c 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_contracts.py
@@ -8718,10 +9131,10 @@ index 052502f..8df301c 100644
          missing["layer_calls"][13] -= 1
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_snapshot.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_snapshot.py
 new file mode 100644
-index 0000000..b58694f
+index 0000000..04d1047
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_snapshot.py
-@@ -0,0 +1,1005 @@
+@@ -0,0 +1,1008 @@
 +"""lf-studio: CPU tests of the Stage-1 snapshot (runtime/stage1_ops/snapshot.py) and the shared lookup builder.
 +
 +Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -9252,6 +9665,9 @@ index 0000000..b58694f
 +            self.assertIsNone(corrupt.restore(self.loader, (), dict(self.kwargs)))
 +        self.assertEqual(third["stage1_snapshot"]["status"], "RESTORE_FAILED")
 +        self.assertTrue(third["stage1_snapshot"]["replaced_after_build"])
++        # its data goes at once, so on a nearly full disk its size counts as free for the save after the build
++        self.assertGreater(third["stage1_snapshot"]["dropped_bytes"], 0)
++        self.assertEqual([p.name for p in directory.iterdir()], [])
 +        corrupt.save(model, manager)
 +        self.assertEqual(third["stage1_snapshot"]["status"], "SAVED")
 +        again = snapshot.Controller({}, "t2va", Pipe(), self.root)

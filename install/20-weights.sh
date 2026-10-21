@@ -5,7 +5,8 @@
 # To reuse weights you already have, set LFSTUDIO_CHECKPOINTS to that directory; the script resumes and verifies.
 # The offline weights (INT8 Gemma + INT8 connector, ~37 GB) are only needed once, for 80-prompt-cache.sh.
 # RTX 5090 (LFSTUDIO_BACKEND=rtx5090): the same files and revisions from Sol-H3-RTX5090's download_checkpoints.py, but
-# without the offline weights (~183 GB), since the prompt cache comes from a DGX Spark there (80-prompt-cache.sh).
+# without the offline weights (~220 GB for all three tasks), since the prompt cache comes from a DGX Spark there
+# (80-prompt-cache.sh).
 # Checkpoints a DGX Spark already has can be copied instead (LFSTUDIO_CHECKPOINTS; docs/INSTALL.md, "RTX 5090").
 # Needs: a Hugging Face login whose account accepted the Lightricks/LTX-2.5 terms: $LFSTUDIO_HOME/envs/download/bin/hf
 # auth login (install/00-check.sh prints how to create that venv first), or HF_TOKEN in the environment.

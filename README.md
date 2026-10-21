@@ -148,9 +148,10 @@ Problems: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 **RTX 5090.** The same studio (page, queue, agent API, CLI) also runs on a workstation with one GeForce RTX 5090
 and 64 GB of RAM, x86_64, with NVIDIA's Sol-H3-RTX5090 package (CPU offload) and its own patch, which makes it fit
-64 GB without changing what the models compute. `LFSTUDIO_BACKEND=rtx5090` in the settings file selects it, and the
-install scripts above then set up that machine instead (no Docker; Python from uv; the prompt cache and, if you like,
-the weights copied from a DGX Spark). Measured there, next to a desktop: a 5 s text clip in 27 s, 15 s in 66 s, a
+64 GB without changing what the models compute. `LFSTUDIO_BACKEND=rtx5090` selects it. Its install has its own steps
+and order (no Docker; Python from uv; step 05 first, 80 before 70): follow
+[docs/INSTALL.md](docs/INSTALL.md#rtx-5090), not the list above. It needs a DGX Spark's prompt cache
+(`fixed-prompt.pt`), and the weights can be copied from a Spark too. Measured there, next to a desktop: a 5 s text clip in 27 s, 15 s in 66 s, a
 reference clip in 50 s; launch to the first clip 57 s once the models' snapshots exist. Without the setting
 everything is the DGX Spark's, as above. Details and measurements: [docs/RTX5090.md](docs/RTX5090.md); steps:
 [docs/INSTALL.md](docs/INSTALL.md#rtx-5090).

@@ -96,11 +96,15 @@ case "$LFSTUDIO_BACKEND" in
         PKG_NAME=Sol-H3-Spark
         PATCH_NAME=lf-studio.patch
         BASE_COMMIT_FILE=BASE_COMMIT
+        OTHER_PKG_NAME=Sol-H3-RTX5090
+        OTHER_BACKEND=rtx5090
         ;;
     rtx5090)
         PKG_NAME=Sol-H3-RTX5090
         PATCH_NAME=lf-studio-rtx5090.patch
         BASE_COMMIT_FILE=BASE_COMMIT_RTX5090
+        OTHER_PKG_NAME=Sol-H3-Spark
+        OTHER_BACKEND=spark
         ;;
     *)
         echo "ERROR: LFSTUDIO_BACKEND=$LFSTUDIO_BACKEND: must be spark or rtx5090 (see bin/env.example)" >&2
@@ -131,7 +135,11 @@ if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     PY313_VERSION=3.13.16
     HOST_PY="$UV_PYTHON_INSTALL_DIR/cpython-$PY312_VERSION-linux-x86_64-gnu/bin/python3.12"
     HOST_PY313="$UV_PYTHON_INSTALL_DIR/cpython-$PY313_VERSION-linux-x86_64-gnu/bin/python3.13"   # Stage 2
-    # the RTX 5090 patch's memory features keep their files next to the checkpoints (bin/lf-studio, env.example)
+    # the RTX 5090 patch's memory features keep their files next to the checkpoints (bin/lf-studio, env.example); a
+    # value of only spaces counts as unset, as in the patch's runtime/config.py
+    for _v in SOL_H3_FILEBACKED_DIR SOL_H3_LTX_BLOCKS SOL_H3_STAGE1_SNAPSHOTS; do
+        [[ -n "${!_v:-}" && -z "${!_v//[[:space:]]/}" ]] && unset "$_v"
+    done
     export SOL_H3_FILEBACKED_DIR=${SOL_H3_FILEBACKED_DIR:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/scratch}
     export SOL_H3_LTX_BLOCKS=${SOL_H3_LTX_BLOCKS:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived/ltx-fused-blocks}
     export SOL_H3_STAGE1_SNAPSHOTS=${SOL_H3_STAGE1_SNAPSHOTS:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived/stage1-snapshots}

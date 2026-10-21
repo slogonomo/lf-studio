@@ -153,6 +153,14 @@ else
     else
         current=$(earlier_patch) || current=
     fi
+    # Both backends keep their applied copy under the same name: a checkout patched for the other backend is not an
+    # earlier version of this patch, and converting it would leave the other backend's install without its package.
+    if [[ -n "$current" && "$current" != "$PATCH" ]] &&
+        sana apply --numstat "$current" 2>/dev/null | cut -f3- | grep -q "^models/minimax_h3/$OTHER_PKG_NAME/"; then
+        die "$LFSTUDIO_SANA carries the patch for $OTHER_PKG_NAME (LFSTUDIO_BACKEND=$OTHER_BACKEND), not for $PKG_NAME; nothing was changed.
+Each backend needs its own checkout: set LFSTUDIO_SANA to another directory (or move this one away) and run this again.
+If this machine is meant for $OTHER_PKG_NAME, run the install with LFSTUDIO_BACKEND=$OTHER_BACKEND instead."
+    fi
     # the earlier patch was applied at a known commit (applied_base). If the checkout is still there and
     # patches/BASE_COMMIT (or LFSTUDIO_SANA_COMMIT) now names another commit, move to it.
     old_base=
@@ -227,7 +235,7 @@ if [[ -x "$ENVS/stage1/bin/python" ]]; then
     fi
 else
     tests=135
-    [[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && tests=185
+    [[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && tests=201
     say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the $tests CPU tests"
 fi
 say "done. Next: install/20-weights.sh"
