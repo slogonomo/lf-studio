@@ -102,34 +102,48 @@ fi
 # disk: weights ~224 GB (all three tasks plus the offline weights); envs and sources ~14 GB, the Qwen image ~21 GB
 # (Docker's own disk) plus outputs and caches: ~60 GB. If LFSTUDIO_CHECKPOINTS already holds weights (for example from
 # NVIDIA's own install), only the ~60 GB are needed.
-# RTX 5090: weights ~183 GB (no offline weights: the prompt cache comes from a DGX Spark), envs ~14 GB, the GCC
+# RTX 5090: weights ~220 GB (no offline weights: the prompt cache comes from a DGX Spark), envs ~14 GB, the GCC
 # toolchain ~1.2 GB, the pip cache ~6 GB, plus outputs and caches: ~40 GB (measured on a workstation with one RTX 5090).
+# Next to the checkpoints the RTX 5090 patch also keeps files it derives from them (docs/RTX5090.md): the LTX block
+# folder (42 GB), one H3 snapshot per mode (20-24 GB each), and ~66 GB of scratch while a snapshot is built: ~180 GB.
 rest_gb=60
-[[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && rest_gb=40
+derived_gb=0
+if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
+    rest_gb=40
+    derived_gb=180
+    if [[ -n "$(find "$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived" -mindepth 2 -maxdepth 2 -print -quit 2>/dev/null)" ]]; then
+        derived_gb=0
+        note "derived files found next to the checkpoints; a patch update can rebuild them (up to ~110 GB more for a while)"
+    fi
+fi
 fs_probe() { local p=$1; while [[ ! -e "$p" ]]; do p=$(dirname "$p"); done; printf '%s' "$p"; }
 free_gb_at() { df -B1G --output=avail "$1" | tail -1 | tr -d ' '; }
 home_probe=$(fs_probe "$LFSTUDIO_HOME")
 ckpt_probe=$(fs_probe "$LFSTUDIO_CHECKPOINTS")
 weights_gb=240
-[[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && weights_gb=190
+[[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && weights_gb=220
 if [[ -d "$LFSTUDIO_CHECKPOINTS" ]] &&
     [[ -n "$(find "$LFSTUDIO_CHECKPOINTS" -name '*.safetensors' -print -quit 2>/dev/null)" ]]; then
     weights_gb=0
     note "weights found in $LFSTUDIO_CHECKPOINTS; 20-weights.sh verifies them and downloads only what is missing"
 fi
 if [[ "$(stat -c %d "$home_probe")" == "$(stat -c %d "$ckpt_probe")" ]]; then
-    need=$((weights_gb + rest_gb)); free_gb=$(free_gb_at "$home_probe")
+    need=$((weights_gb + derived_gb + rest_gb)); free_gb=$(free_gb_at "$home_probe")
     (( free_gb >= need )) && ok "${free_gb} GB free at $home_probe (need ~${need} GB)" ||
         bad "only ${free_gb} GB free at $home_probe; need ~${need} GB"
 else
     free_gb=$(free_gb_at "$home_probe")
     (( free_gb >= rest_gb )) && ok "${free_gb} GB free at $home_probe (need ~${rest_gb} GB)" ||
         bad "only ${free_gb} GB free at $home_probe; need ~${rest_gb} GB"
-    if (( weights_gb > 0 )); then
+    need=$((weights_gb + derived_gb))
+    if (( need > 0 )); then
+        what="the weights"
+        (( derived_gb > 0 )) && what="the weights and the files derived from them"
+        (( weights_gb == 0 )) && what="the files derived from the weights"
         free_gb=$(free_gb_at "$ckpt_probe")
-        (( free_gb >= weights_gb )) &&
-            ok "${free_gb} GB free for the weights at $ckpt_probe (need ~${weights_gb} GB)" ||
-            bad "only ${free_gb} GB free for the weights at $ckpt_probe; need ~${weights_gb} GB"
+        (( free_gb >= need )) &&
+            ok "${free_gb} GB free for $what at $ckpt_probe (need ~${need} GB)" ||
+            bad "only ${free_gb} GB free for $what at $ckpt_probe; need ~${need} GB"
     fi
 fi
 
@@ -162,7 +176,9 @@ if (( FAILS > 0 )); then
     exit 1
 fi
 if [[ "$DRY_RUN" == 1 ]]; then
-    echo "Checks done; the docker and Hugging Face checks were skipped in the dry run. Run it without --dry-run."
+    skipped="docker and Hugging Face checks were"
+    [[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && skipped="Hugging Face check was"     # no docker on the RTX 5090 path
+    echo "Checks done; the $skipped skipped in the dry run. Run it without --dry-run."
     exit 0
 fi
 next=install/10-sana.sh

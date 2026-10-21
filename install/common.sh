@@ -25,6 +25,21 @@ FORCE=${FORCE:-0}
 # shellcheck source=./env.sh
 source "$INSTALL_DIR/env.sh"
 
+# A backend that doesn't match this machine (a GB10 set to rtx5090, an RTX 5090 left at spark) stops every step but
+# 00-check.sh, which reports it as a failed check; a dry run only warns. Nothing detected (another GPU): no check.
+if [[ "$(basename -- "$0")" != 00-check.sh ]]; then
+    machine=$(detect_backend)
+    if [[ -n "$machine" && "$machine" != "$LFSTUDIO_BACKEND" ]]; then
+        mismatch="this machine looks like LFSTUDIO_BACKEND=$machine, but the install uses $LFSTUDIO_BACKEND$([[ "$LFSTUDIO_BACKEND_SET" == 1 ]] || echo ' (the default)'): export LFSTUDIO_BACKEND=$machine, then run the install scripts again"
+        if [[ "$DRY_RUN" == 1 ]]; then
+            echo "WARNING: $mismatch (dry run: going on)" >&2
+        else
+            echo "ERROR: $mismatch" >&2
+            exit 1
+        fi
+    fi
+fi
+
 say() { echo ">>> $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARNING: $*" >&2; }

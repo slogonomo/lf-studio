@@ -160,6 +160,7 @@ class LauncherSpark(LauncherTest):
         code, out = self.check(LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0",
                                LFSTUDIO_MIN_FREE_VRAM_GIB="999", FAKE_VRAM_FREE_MIB="10")
         self.assertEqual(code, 0, out)
+        self.assertIn("note: LFSTUDIO_MIN_FREE_VRAM_GIB is set, but only the RTX 5090 reads it", out)
 
     def test_rtx_package_refused(self):
         """A Sol-H3-Spark directory with runtime/offload.py is not the Spark's package."""
@@ -186,18 +187,33 @@ class LauncherRtx5090(LauncherTest):
         self.assertIn("GPU memory check OK: 29 GiB free (need 25)", out)
         self.assertNotIn("docker", out.lower())
 
+    def test_memory_folders(self):
+        """The folders the launcher makes: "~/..." under HOME, a value of only spaces as unset (the default next to the
+        checkpoints), an off word not at all."""
+        home, ckpt = self.d / "home", self.d / "models" / "checkpoints"
+        code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="30000",
+                               HOME=str(home), LFSTUDIO_CHECKPOINTS=str(ckpt), SOL_H3_FILEBACKED_DIR="~/scratch-x",
+                               SOL_H3_STAGE1_SNAPSHOTS="   ", SOL_H3_LTX_BLOCKS=" OFF ")
+        self.assertEqual(code, 0, out)
+        self.assertTrue((home / "scratch-x").is_dir())
+        self.assertTrue((self.d / "models" / "derived" / "stage1-snapshots").is_dir())
+        self.assertFalse((self.d / "models" / "derived" / "ltx-fused-blocks").exists())
+        self.assertFalse(Path("~").exists())
+
     def test_ram_floor(self):
         avail = mem_available_gib()
         code, out = self.check(LFSTUDIO_BACKEND="rtx5090", FAKE_VRAM_FREE_MIB="30000")
-        if avail < 38:
+        if avail < 42:
             self.assertEqual(code, 1, out)
-            self.assertIn("REFUSED - LF Studio needs ~40 GiB free memory", out)
-        elif avail > 42:
+            self.assertIn("REFUSED - LF Studio needs ~42 GiB free memory", out)
+        else:
             self.assertEqual(code, 0, out)
             self.assertIn("(need 42)", out)
         code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MIN_FREE_GIB="100000")
         self.assertEqual(code, 1, out)
         self.assertIn("needs ~100000 GiB free memory", out)
+        self.assertIn("note: LFSTUDIO_MIN_FREE_GIB=100000 is more than this machine's", out)
+        self.assertIn("the default here is 42", out)
 
     def test_vram_floor(self):
         code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="10000")
@@ -242,14 +258,21 @@ class LauncherBackendRefusals(LauncherTest):
 
         rtx = self.d / "sana-rtx"
         rtx_package(rtx)
-        code, out = self.check(LFSTUDIO_SANA=str(rtx), LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0")
+        on_a_5090 = dict(FAKE_ARCH="x86_64", FAKE_GPU="NVIDIA GeForce RTX 5090")
+        code, out = self.check(LFSTUDIO_SANA=str(rtx), LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0",
+                               **on_a_5090)
         self.assertEqual(code, 1, out)
         self.assertIn("carries the patch for Sol-H3-RTX5090, not Sol-H3-Spark: set LFSTUDIO_BACKEND=rtx5090 "
                       "(it is spark, the default)", out)
         code, out = self.check(LFSTUDIO_SANA=str(rtx), LFSTUDIO_BACKEND="spark", LFSTUDIO_TEST_SKIP_DOCKER="1",
-                               LFSTUDIO_MIN_FREE_GIB="0")
+                               LFSTUDIO_MIN_FREE_GIB="0", **on_a_5090)
         self.assertEqual(code, 1, out)
         self.assertIn("set LFSTUDIO_BACKEND=rtx5090 (it is spark), or point", out)       # set by the user: no "default"
+        # On a GB10 the other backend can't run: the checkout is the wrong one, and the answer says so.
+        code, out = self.check(LFSTUDIO_SANA=str(rtx), LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0")
+        self.assertEqual(code, 1, out)
+        self.assertIn("carries the patch for Sol-H3-RTX5090, but this machine needs Sol-H3-Spark", out)
+        self.assertNotIn("set LFSTUDIO_BACKEND=rtx5090", out)
 
         unpatched = self.d / "sana-plain"
         (unpatched / "models/minimax_h3/Sol-H3-RTX5090/runtime").mkdir(parents=True)
@@ -511,7 +534,7 @@ class InstallDryRun(unittest.TestCase):
         text = out["10-sana.sh"][1]
         self.assertIn(f"sol-engine @ {RTX_BASE}", text)
         self.assertIn("patches/lf-studio-rtx5090.patch", text)
-        self.assertIn("185 CPU tests", text)
+        self.assertIn("201 CPU tests", text)
         self.assertIn(f"{py312} -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-RTX5090 &&", out["20-weights.sh"][1])
         self.assertNotIn("--include-offline", out["20-weights.sh"][1])
@@ -744,6 +767,49 @@ class InstallDryRun(unittest.TestCase):
                               f"+ git -C {sana} apply {repo}/patches/lf-studio.patch", text)
                 self.assertIn(f"+ cp {repo}/patches/lf-studio.patch {sana}/.git/lf-studio-applied.patch", text)
                 self.assertNotIn("warn", text.lower())
+
+    def test_machine_mismatch_stops_the_steps(self):
+        """A backend that doesn't match the machine stops every step but 00-check.sh (a dry run only warns)."""
+        code, text = self.run_script("10-sana.sh", FAKE_ARCH="aarch64", FAKE_GPU="NVIDIA GB10",
+                                     LFSTUDIO_BACKEND="rtx5090")
+        self.assertIn("WARNING: this machine looks like LFSTUDIO_BACKEND=spark, but the install uses rtx5090", text)
+        env = clean_env(HOME=str(self.d / "home"), TMPDIR=str(self.d / "tmp"),
+                        LFSTUDIO_ENV=str(self.d / "no-env-file"), LFSTUDIO_HOME=str(self.d / "home" / "sol-h3"),
+                        PATH=f"{self.fake}{os.pathsep}{os.environ['PATH']}",
+                        FAKE_ARCH="aarch64", FAKE_GPU="NVIDIA GB10", LFSTUDIO_BACKEND="rtx5090")
+        run = subprocess.run(["bash", str(REPO / "install" / "20-weights.sh")], env=env, capture_output=True,
+                             text=True, timeout=120)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("ERROR: this machine looks like LFSTUDIO_BACKEND=spark, but the install uses rtx5090", run.stderr)
+        self.assertNotIn("===", run.stdout)                                    # stopped before its first step
+
+    def test_sana_refuses_a_checkout_of_the_other_backend(self):
+        """10-sana.sh with LFSTUDIO_BACKEND=rtx5090 on a checkout carrying a Spark patch changes nothing."""
+        sana = self.d / "sana"
+        sana.mkdir()
+        git = ["git", "-C", str(sana), "-c", "user.name=t", "-c", "user.email=t@t"]
+        pkg = sana / "models/minimax_h3/Sol-H3-Spark/runtime"
+        pkg.mkdir(parents=True)
+        (pkg / "a.py").write_text("a = 1\n")
+        subprocess.run(["git", "init", "-q", str(sana)], check=True)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-qm", "base"], check=True)
+        (pkg / "a.py").write_text("a = 2\n")                                  # the Spark's patch, applied
+        spark_patch = subprocess.run([*git, "diff"], capture_output=True, text=True, check=True).stdout
+        gitdir = sana / ".git"
+        (gitdir / "lf-studio-applied.patch").write_text(spark_patch)
+        before = (pkg / "a.py").read_text()
+        env = clean_env(HOME=str(self.d / "home"), TMPDIR=str(self.d / "tmp"),
+                        LFSTUDIO_ENV=str(self.d / "no-env-file"), LFSTUDIO_HOME=str(self.d / "home" / "sol-h3"),
+                        LFSTUDIO_SANA=str(sana),
+                        PATH=f"{self.fake}{os.pathsep}{os.environ['PATH']}",
+                        FAKE_ARCH="x86_64", FAKE_GPU="NVIDIA GeForce RTX 5090", LFSTUDIO_BACKEND="rtx5090")
+        run = subprocess.run(["bash", str(REPO / "install" / "10-sana.sh")], env=env, capture_output=True,
+                             text=True, timeout=120)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("carries the patch for Sol-H3-Spark (LFSTUDIO_BACKEND=spark), not for Sol-H3-RTX5090; "
+                      "nothing was changed", run.stderr)
+        self.assertEqual((pkg / "a.py").read_text(), before)
 
     def test_invalid_backend(self):
         for name in INSTALL:

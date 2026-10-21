@@ -153,17 +153,34 @@ The same studio on a workstation with one GeForce RTX 5090 (32 GB), x86_64 Linux
 patch, `patches/lf-studio-rtx5090.patch` against `patches/BASE_COMMIT_RTX5090`
 ([RTX5090.md](RTX5090.md)). No Docker, no CUDA toolkit and no system Python are needed: the Qwen prompt encoder runs
 natively in the Stage1 env, `nvcc` comes from pip, and both Pythons come from [uv](https://github.com/astral-sh/uv).
-Nothing is installed with sudo.
+The install steps use no sudo.
 
-Set `LFSTUDIO_BACKEND=rtx5090` for the whole install: export it, or put it in `~/.config/lf-studio/env` before step
-00. `install/00-check.sh` says so if the machine looks like an RTX 5090 and it is not set, and `install/90-env.sh`
-writes it into the settings file. The steps, in this order (80 comes before 70 here):
+What you need:
+
+- The NVIDIA driver 580 or newer, and `git`, `curl`, `tar`, `sha256sum`, `ffmpeg` and `gcc` from your distribution
+  (installed with its package manager, with sudo, before step 00).
+- 64 GB of RAM. Disk, for all three modes: ~220 GB of weights, ~180 GB of files derived from them next to the
+  checkpoints (the LTX block folder 42 GB, one H3 snapshot per mode 20-24 GB each, ~66 GB of scratch while a snapshot is
+  built), and ~40 GB under `~/sol-h3` ([RTX5090.md](RTX5090.md)).
+- A DGX Spark's `fixed-prompt.pt` (the prompt cache, below): it can't be built on the RTX 5090.
+- A Hugging Face login whose account accepted the Lightricks/LTX-2.5 terms. The login step above uses
+  `python3.12`, which the RTX 5090 path doesn't need: after step 05, make the download venv with uv's Python instead,
+  `~/sol-h3/python/cpython-3.12.15-linux-x86_64-gnu/bin/python3.12 -m venv ~/sol-h3/envs/download`, then the same
+  `pip install` and `hf auth login`; or `export HF_TOKEN=<your read token>`. Not needed if you copy the weights from
+  a Spark (below).
+
+Set `LFSTUDIO_BACKEND=rtx5090` for the whole install: `export LFSTUDIO_BACKEND=rtx5090` in the shell that runs the steps
+(or put it in `~/.config/lf-studio/env` before step 00). `install/00-check.sh` says so if the machine looks like an
+RTX 5090 and it is not set, and the other steps refuse to run with a backend that doesn't match the machine.
+`install/90-env.sh` writes it into a new settings file; an existing settings file is kept as it is, so add the line
+there yourself (or rewrite the file with `FORCE=1 install/90-env.sh`). The steps, in this order (80 comes before 70
+here):
 
 | Step | On the RTX 5090 | Time / size measured |
 |---|---|---|
 | `install/00-check.sh` | Checks x86_64, the RTX 5090, driver 580 or newer, git, curl, tar, sha256sum, ffmpeg, gcc, disk, HF access. | - |
 | `install/05-python.sh` | uv 0.13.1 (the release binary, SHA-256 pinned) into `~/sol-h3/bin`, CPython 3.12.15 and 3.13.16 into `~/sol-h3/python`. | under 1 min, ~270 MB (~230 MB of it the Pythons) |
-| `install/10-sana.sh` | Sana at `patches/BASE_COMMIT_RTX5090` (`801f040`), `patches/lf-studio-rtx5090.patch`, its 143 CPU tests. | - |
+| `install/10-sana.sh` | Sana at `patches/BASE_COMMIT_RTX5090` (`801f040`), `patches/lf-studio-rtx5090.patch`, its 201 CPU tests. | - |
 | `install/20-weights.sh` | The same weights and revisions as the Spark's, without the offline weights (the prompt cache comes from a Spark). | - (or a copy, below) |
 | `install/30-sources.sh` | The same pinned sources (FastVideo, flash-attention, ComfyUI v0.30.0, LTX-2, H3 upscaler). | ~1 min |
 | `install/40-stage1.sh` | Stage1 venv with Python 3.12.15: torch 2.12+cu130, FastVideo, ComfyUI's requirements, comfy-kitchen (the native Qwen encoder), no fastvideo-kernel; the FA4 target. | ~25 min, most of it downloads at ~9 MB/s; ~7.7 GB |
@@ -178,7 +195,9 @@ Measured on a workstation with one RTX 5090, 64 GB of RAM and one NVMe disk, Arc
 
 **Weights from a DGX Spark.** The checkpoints are the same files and revisions on both machines, so instead of
 step 20 you can copy a Spark's `$LFSTUDIO_CHECKPOINTS` (or point `LFSTUDIO_CHECKPOINTS` at a shared copy) and then run
-step 20, which verifies them and downloads only what is missing. Copying 205 GB from a Spark over 1 GbE took 47 min.
+step 20, which verifies them and downloads only what is missing. Copying the 220 GB (205 GiB) from a Spark over 1 GbE
+took 47 min. With `LFSTUDIO_CHECKPOINTS` pointing at a shared copy, the derived files (`derived/`, `scratch/`) are written
+next to it.
 
 **The prompt cache.** NVIDIA's cache builder requires an SM121 GPU (a DGX Spark), so step 80 cannot build the cache
 on the RTX 5090. Copy `fixed-prompt.pt` from a Spark install (`~/sol-h3/fixed-prompt.pt` there; its step 80 builds
@@ -200,7 +219,8 @@ pinned) into `~/sol-h3/bin` and GCC 14 from conda-forge into `~/sol-h3/toolchain
 **Start.** `bin/lf-studio` as on the Spark. It skips the Docker checks, and refuses to start below
 `LFSTUDIO_MIN_FREE_GIB` of free RAM (default 42 GiB on the RTX 5090) or `LFSTUDIO_MIN_FREE_VRAM_GIB` of free GPU memory
 (default 25 GiB, from `nvidia-smi`), measured on every mode ([RTX5090.md](RTX5090.md)); 0 turns
-a check off. The page says "on one RTX 5090", and its clip times are marked as estimates until they are measured.
+a check off. The page says "on one RTX 5090", with clip times measured there at 3, 5, 10 and 15 s (other lengths
+interpolated).
 
 Under `~/sol-h3` the RTX 5090 install also has `bin/` (uv, uvx, micromamba), `python/` (uv's CPythons),
 `toolchains/` (the GCC 14 toolchain, only with a newer system gcc), `cache/downloads/` (the checked downloads) and
@@ -357,4 +377,7 @@ From 0.1 to 0.2: the first start imports the clip history (`jobs.json`) into `jo
 Stop the studio, then remove `~/sol-h3` (or your `$LFSTUDIO_HOME`), `~/.config/lf-studio`,
 `~/.local/state/lf-studio` (an install from before 0.5 may still use `~/.config/sol-h3-studio` and
 `~/.local/state/sol-h3-studio`, or links there: remove those too) and the images: `docker rmi sol-h3-spark-qwen
-sol-h3-spark-qwen:base` (the RTX 5090 install has no images; uv's own cache is in `~/.cache/uv`).
+sol-h3-spark-qwen:base` (the RTX 5090 install has no images, and keeps uv's cache in `~/sol-h3/cache/uv`). The RTX
+5090 install also writes files derived from the weights next to `$LFSTUDIO_CHECKPOINTS`: `derived/` (the LTX block
+folder and the H3 snapshots, ~110 GB) and `scratch/` (empty between starts); remove them too, also when the
+checkpoints are a shared copy that stays.

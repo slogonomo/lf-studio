@@ -146,17 +146,22 @@ export LFSTUDIO_PORT=${LFSTUDIO_PORT:-8190}
 export LFSTUDIO_HOST=${LFSTUDIO_HOST:-127.0.0.1}
 export LFSTUDIO_PRELOAD=${LFSTUDIO_PRELOAD:-1}
 # refuse to start below this MemAvailable (0 = no check), and on the RTX 5090 below this free GPU memory (GiB).
-# RTX 5090 (docs/RTX5090.md): every mode, length and orientation ran in a 48 GiB RAM limit (43.3 GiB peak, the rest page
-# cache; 5 s text clips also in 44 GiB) and needed at most 24.8 GiB of GPU memory next to the desktop.
+# RTX 5090 (docs/RTX5090.md): every mode, length and orientation ran in a 48 GiB RAM limit (the workers' anonymous
+# memory peaked at 39.6 GiB, 43.3 before the Ref2VA and malloc_trim fixes; 5 s text clips also ran in 44 GiB) and
+# needed at most 24.8 GiB of GPU memory next to the desktop.
 if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     MIN_FREE_GIB=${LFSTUDIO_MIN_FREE_GIB:-42}
     MIN_FREE_VRAM_GIB=${LFSTUDIO_MIN_FREE_VRAM_GIB:-25}
     # the memory features' files (runtime/config.py of the RTX 5090 patch): next to the checkpoints by default, on a
-    # disk without compression or copy-on-write (O_DIRECT reads); new directories get chattr +C where that works
+    # disk without compression or copy-on-write (O_DIRECT reads); new directories get chattr +C where that works.
+    # A value of only spaces counts as unset, as in the patch's runtime/config.py.
+    for _v in SOL_H3_FILEBACKED_DIR SOL_H3_LTX_BLOCKS SOL_H3_STAGE1_SNAPSHOTS; do
+        [[ -n "${!_v:-}" && -z "${!_v//[[:space:]]/}" ]] && unset "$_v"
+    done
     export SOL_H3_FILEBACKED_DIR=${SOL_H3_FILEBACKED_DIR:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/scratch}
     export SOL_H3_LTX_BLOCKS=${SOL_H3_LTX_BLOCKS:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived/ltx-fused-blocks}
     export SOL_H3_STAGE1_SNAPSHOTS=${SOL_H3_STAGE1_SNAPSHOTS:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived/stage1-snapshots}
-    export SOL_H3_STAGE1_SNAPSHOTS_KEEP=${SOL_H3_STAGE1_SNAPSHOTS_KEEP:-1}   # one per mode (23 GB each)
+    export SOL_H3_STAGE1_SNAPSHOTS_KEEP=${SOL_H3_STAGE1_SNAPSHOTS_KEEP:-1}   # one per mode (20-24 GB each)
 else
     MIN_FREE_GIB=${LFSTUDIO_MIN_FREE_GIB:-110}
     MIN_FREE_VRAM_GIB=0       # the DGX Spark's GPU shares the RAM checked above
@@ -266,6 +271,17 @@ except OSError:
 
 refuse() { say "REFUSED - $*"; exit 1; }
 
+# detect_backend: the backend this machine looks like (as in install/env.sh): spark (aarch64 and an NVIDIA GB10),
+# rtx5090 (x86_64 and an RTX 5090), or nothing
+detect_backend() {
+    local gpu
+    gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+    case "$(uname -m):$gpu" in
+        aarch64:*GB10*) echo spark ;;
+        x86_64:*"RTX 5090"*) echo rtx5090 ;;
+    esac
+}
+
 run_checks() {
     local t f rc found=0 missing=() have free other vram
     [[ -x "$LFSTUDIO_PYTHON" ]] || refuse "no Python at LFSTUDIO_PYTHON=$LFSTUDIO_PYTHON (install/40-stage1.sh, or set it in $ENV_FILE)"
@@ -276,6 +292,11 @@ run_checks() {
     # runtime/offload.py, Sol-H3-Spark does not. A checkout with the other backend's patch is named as such.
     other="$LFSTUDIO_SANA/models/minimax_h3/$OTHER_NAME"
     if [[ ! -f "$PKG/runtime/geometry.py" && -f "$other/runtime/geometry.py" ]]; then
+        # Suggest the other backend only where it can run: on a machine that looks like this backend's, the
+        # checkout is the wrong one.
+        if [[ "$(detect_backend)" == "$LFSTUDIO_BACKEND" ]]; then
+            refuse "$LFSTUDIO_SANA carries the patch for $OTHER_NAME, but this machine needs $PKG_NAME (LFSTUDIO_BACKEND=$LFSTUDIO_BACKEND): point LFSTUDIO_SANA at a checkout patched for it (install/10-sana.sh with another LFSTUDIO_SANA)"
+        fi
         refuse "$LFSTUDIO_SANA carries the patch for $OTHER_NAME, not $PKG_NAME: set LFSTUDIO_BACKEND=$OTHER_BACKEND (it is $LFSTUDIO_BACKEND$([[ "$BACKEND_SET" == 1 ]] || echo ', the default')), or point LFSTUDIO_SANA at the $PKG_NAME checkout"
     fi
     if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
@@ -290,8 +311,9 @@ run_checks() {
     # the patch's own settings checks: (name, check, default, what a patch without the setting does, the version
     # that added it). A bad value exits 3 with the message. An older patch lacks some of them (0.3's has no
     # SOL_H3_PROMPT_TOKENS, SOL_H3_STATIC_SHAPES or SOL_H3_DYNAMIC_TEXT_LENGTH): any value but what it does, set or the
-    # default, exits 4 (the checkout needs the current patch). Any other error exits non-zero with Python's
-    # traceback, whose last line names it
+    # default, exits 4 (the checkout needs the current patch). Then the patch's check_settings() (the RTX 5090
+    # patch's: its folders, switches and numbers), whose problems exit 3 too. Any other error exits non-zero with
+    # Python's traceback, whose last line names it
     f=$(cd "$PKG" && "$LFSTUDIO_PYTHON" -B -c 'import os, sys
 import runtime.config as config
 for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
@@ -307,7 +329,11 @@ for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_m
         check and check()
     except ValueError as error:
         print(error)
-        sys.exit(3)' 2>&1)
+        sys.exit(3)
+problems = getattr(config, "check_settings", list)()
+if problems:
+    print("; ".join(problems))
+    sys.exit(3)' 2>&1)
     rc=$?
     f=$(grep . <<<"$f" | tail -n 1)
     case $rc in
@@ -319,8 +345,15 @@ for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_m
     [[ "$SOL_H3_SPARK_RUNTIME_ROOT" == /* ]] || refuse "SOL_H3_SPARK_RUNTIME_ROOT must be an absolute path"
     mkdir -p "$SOL_H3_SPARK_RUNTIME_ROOT" || refuse "cannot create SOL_H3_SPARK_RUNTIME_ROOT=$SOL_H3_SPARK_RUNTIME_ROOT"
     if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
-        for d in "$SOL_H3_FILEBACKED_DIR" "$(dirname -- "$SOL_H3_LTX_BLOCKS")" "$SOL_H3_STAGE1_SNAPSHOTS"; do
-            [[ "$d" == 0 || "$d" == off || "$d" == . ]] && continue
+        # the folders that are on (checked above: an absolute path, or 0/off/false/no in any case for off); the LTX
+        # block folder is made by the patch inside its parent
+        local v d
+        for v in SOL_H3_FILEBACKED_DIR SOL_H3_LTX_BLOCKS SOL_H3_STAGE1_SNAPSHOTS; do
+            d=$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"${!v:-}")
+            case "${d,,}" in ""|0|off|false|no) continue ;; esac
+            [[ "$d" == "~" || "$d" == "~/"* ]] && d=$HOME${d:1}
+            [[ "$d" == /* ]] || continue        # ~user/...: the patch expands it and makes the folder itself
+            [[ "$v" == SOL_H3_LTX_BLOCKS ]] && d=$(dirname -- "$d")
             if [[ ! -d "$d" ]]; then
                 mkdir -p "$d" || refuse "cannot create $d (SOL_H3_FILEBACKED_DIR / SOL_H3_LTX_BLOCKS / SOL_H3_STAGE1_SNAPSHOTS)"
                 chattr +C "$d" 2>/dev/null || true   # btrfs: no copy-on-write or compression, so O_DIRECT reads work
@@ -350,6 +383,19 @@ for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_m
     fi
     if port_in_use; then
         refuse "port $LFSTUDIO_PORT is already in use$(p=$(port_users); [[ -n "$p" ]] && echo " by $p"); stop that first or set LFSTUDIO_PORT"
+    fi
+    # Settings meant for the other backend do nothing here (a settings file copied from the other machine): say so.
+    local v total
+    if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
+        for v in SOL_H3_SPARK_QWEN_IMAGE SOL_H3_SPARK_QWEN_WEIGHTS_ROOT; do
+            [[ -n "${!v:-}" ]] && log "note: $v is set, but only the DGX Spark reads it (the RTX 5090 runs the Qwen encoder without a container)"
+        done
+    elif [[ -n "${LFSTUDIO_MIN_FREE_VRAM_GIB:-}" ]]; then
+        log "note: LFSTUDIO_MIN_FREE_VRAM_GIB is set, but only the RTX 5090 reads it (the DGX Spark's GPU uses its RAM)"
+    fi
+    total=$(mem_gib MemTotal)
+    if (( MIN_FREE_GIB > total )); then
+        log "note: LFSTUDIO_MIN_FREE_GIB=$MIN_FREE_GIB is more than this machine's $total GiB of RAM (another machine's value? the default here is $([[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && echo 42 || echo 110))"
     fi
     if (( MIN_FREE_GIB > 0 )); then
         have=$(mem_gib MemAvailable)
