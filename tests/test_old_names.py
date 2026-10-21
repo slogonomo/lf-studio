@@ -1,19 +1,25 @@
 """Until 0.6: an install made with 0.4, when the studio was called Sol-H3 Studio, keeps working with no action
 (docs/INSTALL.md, "From 0.4 to 0.5"): the settings' old names SOLH3_* in the environment and in the settings file, the
 old places of the settings file, the state directory and the MCP server's clips, the old executables bin/sol-h3-studio
-and bin/sol-h3 (shims), the launcher's check for a running copy, and the page's old localStorage keys. The old name of
-install/10-sana.sh's applied copy is tested in test_backend.py and test_replay.py. This file goes with the old names
-in 0.6.
+and bin/sol-h3 (shims), the launcher's check for a running copy, a full launcher run with the settings of the 0.4
+spark-switchboard service file, the integration files under their 0.4 names, and the page's old localStorage keys. The
+old names of install/10-sana.sh's applied copy and of the patch in the repo history are tested in test_backend.py and
+test_replay.py. This file goes with the old names in 0.6.
 
 CPU only, everything in temp directories (HOME too, wherever a default place is read).
 """
+import ast
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -25,6 +31,22 @@ from studio import StubStudio, free_port  # noqa: E402  (test_backend put tests/
 OLD_LAUNCHER = REPO / "bin" / "sol-h3-studio"
 OLD_BIN = REPO / "bin" / "sol-h3"
 WARNING = "settings under their 0.4 names, which work until 0.6"
+OLD_SERVICE = REPO / "integrations" / "spark-switchboard" / "sol-h3-studio.toml"
+OLD_UNIT = REPO / "integrations" / "systemd" / "sol-h3-studio.service"
+# a stand-in server for a full launcher run: it answers /health on the launcher's host and port, writes its
+# environment and pid to a file, and stops on SIGTERM
+HEALTH_SERVER = '''import http.server, json, os, signal, sys
+with open({seen!r}, "w") as f:
+    json.dump({{"pid": os.getpid(), "env": dict(os.environ)}}, f)
+class Health(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200 if self.path == "/health" else 404)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+signal.signal(signal.SIGTERM, lambda *args: sys.exit(0))
+http.server.HTTPServer((os.environ["LFSTUDIO_HOST"], int(os.environ["LFSTUDIO_PORT"])), Health).serve_forever()
+'''
 
 try:
     from playwright.sync_api import sync_playwright
@@ -74,7 +96,11 @@ class LauncherSettings(LauncherTest):
                  ("SOLH3_MIN_FREE_GIB=0\nLFSTUDIO_MIN_FREE_GIB=995\n", {}, 995, wins),
                  # spark-switchboard's 0.4 service file passes old names, which win over the file's new ones
                  ("LFSTUDIO_MIN_FREE_GIB=999\n", {"SOLH3_MIN_FREE_GIB": "994"}, 994, "SOLH3_MIN_FREE_GIB."),
-                 ("SOLH3_MIN_FREE_GIB=999\n", {"LFSTUDIO_MIN_FREE_GIB": "993"}, 993, None)]
+                 ("SOLH3_MIN_FREE_GIB=999\n", {"SOLH3_MIN_FREE_GIB": "990"}, 990, "SOLH3_MIN_FREE_GIB."),
+                 # the new name in the environment wins over the file's old one, which still needs renaming
+                 ("SOLH3_MIN_FREE_GIB=999\n", {"LFSTUDIO_MIN_FREE_GIB": "993"}, 993, wins),
+                 ("SOLH3_MIN_FREE_GIB=999\n", {"LFSTUDIO_MIN_FREE_GIB": "989", "SOLH3_MIN_FREE_GIB": "0"}, 989, wins),
+                 ("LFSTUDIO_MIN_FREE_GIB=999\n", {"LFSTUDIO_MIN_FREE_GIB": "988"}, 988, None)]
         for content, environment, floor, warning in cases:
             with self.subTest(content=content, environment=environment):
                 env_file.write_text(content)
@@ -151,6 +177,73 @@ class LauncherSettings(LauncherTest):
                 self.assertEqual(code, 1, out)
                 self.assertIn(f"REFUSED - another lf-studio launcher is running (pid {other.pid}", out)
 
+    def test_switchboard_0_4_service(self):
+        """spark-switchboard's 0.4 service file runs bin/sol-h3-studio and passes the port, host, pidfile and stop wait
+        by their 0.4 names: the server gets the port and host under the new names, the launcher writes its pid to that
+        pidfile and keeps its old name on its command line (switchboard re-adopts a running launcher only if the
+        command line names the service's command), and a stop gives the server that long and removes the pidfile."""
+        import tomllib
+        service = tomllib.loads(OLD_SERVICE.read_text())
+        passed = service["run"]["env"]
+        self.assertEqual(sorted(passed), ["SOLH3_HOST", "SOLH3_PIDFILE", "SOLH3_PORT", "SOLH3_STOP_WAIT_S"])
+        self.assertEqual(os.path.basename(service["run"]["command"][-1]), "sol-h3-studio")
+        home = self.d / "home"
+        self.port = free_port()                        # not the file's 18190, which may be in use on this machine
+        passed = {k: v.replace("~", str(home)) for k, v in passed.items()}     # switchboard expands ~
+        passed["SOLH3_PORT"] = str(self.port)
+        pidfile = Path(passed["SOLH3_PIDFILE"])
+        seen = self.d / "server.json"
+        server = self.d / "server.py"
+        server.write_text(HEALTH_SERVER.format(seen=str(seen)))
+        env = self.launch_env("", HOME=str(home), SWITCHBOARD="1", LFSTUDIO_SERVER=str(server),
+                              LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0", LFSTUDIO_GUARD_GIB="0",
+                              **passed)
+        del env["LFSTUDIO_HOST"], env["LFSTUDIO_PORT"]
+        launcher = subprocess.Popen(["bash", str(OLD_LAUNCHER)], env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True)
+
+        def stop():                                    # whatever happens: no launcher or server left running
+            if launcher.poll() is None:
+                launcher.terminate()
+                try:
+                    launcher.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    launcher.kill()
+                    launcher.wait()
+            try:
+                os.kill(json.loads(seen.read_text())["pid"], signal.SIGKILL)
+            except (OSError, ValueError, KeyError):
+                pass
+        self.addCleanup(stop)
+        health = f"http://127.0.0.1:{self.port}/health"
+        deadline = time.monotonic() + 60
+        while not (seen.exists() and pidfile.exists()):
+            if launcher.poll() is not None:
+                self.fail(f"the launcher exited ({launcher.returncode}):\n{launcher.stdout.read()}")
+            self.assertLess(time.monotonic(), deadline, "the server did not start within 60 s")
+            time.sleep(0.2)
+        while True:
+            try:
+                with urllib.request.urlopen(health, timeout=2) as answer:
+                    if answer.status == 200:
+                        break
+            except OSError:
+                pass
+            self.assertLess(time.monotonic(), deadline, "the server did not answer within 60 s")
+            time.sleep(0.2)
+        self.assertEqual(pidfile.read_text().strip(), str(launcher.pid))
+        argv = Path(f"/proc/{launcher.pid}/cmdline").read_bytes().split(b"\0")
+        self.assertEqual(argv[0].decode(), str(OLD_LAUNCHER))
+        server_env = json.loads(seen.read_text())["env"]
+        self.assertEqual((server_env["LFSTUDIO_HOST"], server_env["LFSTUDIO_PORT"]), ("127.0.0.1", str(self.port)))
+        self.assertEqual([k for k in server_env if k.startswith("SOLH3_")], [])
+        launcher.send_signal(signal.SIGTERM)
+        out = launcher.communicate(timeout=60)[0]
+        self.assertEqual(launcher.returncode, 0, out)
+        self.assertIn(f"{WARNING}: SOLH3_HOST, SOLH3_PIDFILE, SOLH3_PORT, SOLH3_STOP_WAIT_S. Rename", out)
+        self.assertIn(f"stopping: the server closes its pipeline (up to {passed['SOLH3_STOP_WAIT_S']} s)", out)
+        self.assertFalse(pidfile.exists())
+
 
 class Shims(LauncherTest):
     """bin/sol-h3-studio and bin/sol-h3 run the new files with the same arguments: the same stdout and exit code,
@@ -179,6 +272,20 @@ class Shims(LauncherTest):
         run = self.compare(["bash", str(OLD_LAUNCHER)], ["bash", str(LAUNCHER)], env, "--help", line=line)
         self.assertEqual(run.returncode, 0)
         self.assertTrue(run.stdout.startswith("lf-studio: start the LF Studio web UI"))
+
+    def test_launcher_keeps_its_name(self):
+        """The launcher shim keeps its own path first on the command line, whatever the checkout's directory is
+        called: spark-switchboard re-adopts a running launcher only when its command line names the service's command
+        (the 0.4 service file's is .../bin/sol-h3-studio)."""
+        bin_dir = self.d / "studio" / "bin"
+        bin_dir.mkdir(parents=True)
+        shim = bin_dir / "sol-h3-studio"
+        shutil.copy(OLD_LAUNCHER, shim)
+        (bin_dir / "lf-studio").write_text('tr "\\0" "\\n" < /proc/$$/cmdline\n')   # a stand-in that prints it
+        run = subprocess.run(["bash", str(shim), "--check", "two words"], capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.splitlines(),
+                         [str(shim), os.path.realpath(bin_dir / "lf-studio"), "--check", "two words"])
 
     def test_client(self):
         line = 'sol-h3: renamed to bin/lf-cli; the old name works until 0.6 (docs/INSTALL.md, "From 0.4 to 0.5")\n'
@@ -244,11 +351,24 @@ class Install(unittest.TestCase):
         self.assertIn(f"{WARNING}: SOLH3_TASKS (LFSTUDIO_TASKS wins).", out)
         code, out = self.run_script("20-weights.sh", "--dry-run", LFSTUDIO_TASKS="ref2va")
         self.assertNotIn(WARNING, out)
+        # the settings file's old name, with the new one in the environment: the environment wins, and the warning
+        # names the file's old name
+        env_file = self.d / "env"
+        env_file.write_text("SOLH3_TASKS=t2va\n")
+        code, out = self.run_script("20-weights.sh", "--dry-run", LFSTUDIO_ENV=str(env_file), LFSTUDIO_TASKS="fl2va")
+        self.assertIn("weights for fl2va", out)
+        self.assertNotIn("weights for t2va", out)
+        self.assertIn(f"{WARNING}: SOLH3_TASKS (LFSTUDIO_TASKS wins).", out)
         # the dry-run switch by its old name (05-python.sh does nothing on a Spark, dry run or not)
         code, out = self.run_script("05-python.sh", SOLH3_DRY_RUN="1")
         self.assertEqual(code, 0, out)
         self.assertIn("(dry run: commands that change something are printed, not run)", out)
         self.assertIn(f"{WARNING}: SOLH3_DRY_RUN.", out)
+        # the new name set, even empty, wins as for every other setting
+        code, out = self.run_script("05-python.sh", SOLH3_DRY_RUN="1", LFSTUDIO_DRY_RUN="")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("(dry run", out)
+        self.assertIn(f"{WARNING}: SOLH3_DRY_RUN (LFSTUDIO_DRY_RUN wins).", out)
 
     def test_old_places(self):
         """90-env.sh keeps the 0.4 settings file and state directory while the new ones do not exist."""
@@ -343,10 +463,65 @@ class McpClipsDirectory(McpTest):
         (self.work / "lf-clips" / "notes.txt").write_text("x\n")
         self.assertEqual(self.clip_dir()[0], self.work / "lf-clips")
 
+    def test_setting_wins(self):
+        """A set LFSTUDIO_OUT_DIR (or SOLH3_OUT_DIR) is used as it is, even when it names the default."""
+        (self.work / "sol-h3-clips").mkdir()
+        for name in ("LFSTUDIO_OUT_DIR", "SOLH3_OUT_DIR"):
+            with self.subTest(name=name):
+                where, log = self.clip_dir(**{name: "lf-clips"})
+                self.assertEqual(where, self.work / "lf-clips")
+                self.assertNotIn("sol-h3-clips", log.read_text())
+                shutil.rmtree(self.work / "lf-clips")
+
     def test_old_setting(self):
         where, log = self.clip_dir(SOLH3_OUT_DIR=str(self.dir / "clips"))
         self.assertEqual(where, self.dir / "clips")
         self.assertIn(f"{WARNING}: SOLH3_OUT_DIR.", log.read_text())
+
+
+class OldSettingsLists(unittest.TestCase):
+    """The settings that have a 0.4 name are listed by hand four times (AGENTS.md): the launcher and install/env.sh
+    read the same list; the server and the client read parts of it."""
+
+    @staticmethod
+    def bash_list(path):
+        return re.search(r'^OLD_SETTINGS="([^"]*)"', path.read_text(), re.M).group(1).split()
+
+    @staticmethod
+    def python_list(path):
+        return list(ast.literal_eval(re.search(r"^OLD_SETTINGS = (\(.*?\))", path.read_text(), re.M | re.S).group(1)))
+
+    def test_lists(self):
+        launcher = self.bash_list(LAUNCHER)
+        self.assertEqual(self.bash_list(REPO / "install" / "env.sh"), launcher)
+        self.assertEqual(len(launcher), len(set(launcher)))
+        # spark-switchboard's four, and the client's, are the ones other people's setups pass
+        for name in ("PORT", "HOST", "PIDFILE", "STOP_WAIT_S", "URL", "OUT_DIR", "MCP_WAIT_S", "MCP_MAX_WAIT_S",
+                     "MCP_OUT_ANYWHERE", "ENV", "STATE_DIR", "HOME"):
+            self.assertIn(name, launcher)
+        for path in (REPO / "webui" / "server.py", BIN):
+            with self.subTest(path=path.name):
+                names = self.python_list(path)
+                self.assertTrue(names)
+                self.assertEqual(sorted(set(names) - set(launcher)), [])
+
+
+class Integrations(unittest.TestCase):
+    """The integration files under their 0.4 names stay as they were in 0.4, with a first line saying they are
+    deprecated and naming the new file: they run bin/sol-h3-studio, which a checkout pulled from 0.4 has."""
+
+    def test_deprecated_files(self):
+        import tomllib
+        for old, new in ((OLD_SERVICE, "lf-studio.toml"), (OLD_UNIT, "lf-studio.service")):
+            with self.subTest(old=old.name):
+                first = old.read_text().splitlines()[0]
+                self.assertTrue(first.startswith("# DEPRECATED: the 0.4 file, kept unchanged until 0.6"), first)
+                self.assertIn(f"Use {new}.", first)
+                self.assertTrue((old.parent / new).is_file())
+        run = tomllib.loads(OLD_SERVICE.read_text())["run"]
+        self.assertEqual(run["command"], ["bash", "~/src/sol-h3-studio/bin/sol-h3-studio"])
+        self.assertEqual(run["kill_command"], ["bash", "~/src/sol-h3-studio/bin/sol-h3-studio", "--kill"])
+        self.assertIn("\nExecStart=/bin/bash %h/src/sol-h3-studio/bin/sol-h3-studio\n", OLD_UNIT.read_text())
 
 
 class ServerSettings(unittest.TestCase):

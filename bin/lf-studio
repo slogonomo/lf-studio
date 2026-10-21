@@ -87,7 +87,10 @@ load_env_file() {
         value=${BASH_REMATCH[3]}
         x=${key#*_}
         if [[ "$key" == SOLH3_* && -n "${old[$x]:-}" ]]; then                     # until 0.6: an old name
-            [[ -n "${preset[LFSTUDIO_$x]:-}" ]] && continue
+            if [[ -n "${preset[LFSTUDIO_$x]:-}" ]]; then                          # the environment's wins
+                [[ -n "${OLD_USED[$key]+set}" ]] || OLD_USED[$key]=" (LFSTUDIO_$x wins)"
+                continue
+            fi
             if [[ -n "${new_line[$x]:-}" ]]; then OLD_USED[$key]=" (LFSTUDIO_$x wins)"; continue; fi
             OLD_USED[$key]=
             key=LFSTUDIO_$x
@@ -405,8 +408,8 @@ health() {
 
 # A second launcher with the same pidfile is refused before any trap is set, so the refusal cannot run the
 # cleanup below (which would stop the workers and the Qwen container of the copy that is running).
-# A launcher started by its 0.4 name (bin/sol-h3-studio, a shim until 0.6) runs as bin/lf-studio; one that predates
-# the update still has the old name.
+# A launcher started by its 0.4 name (bin/sol-h3-studio, a shim until 0.6) has both names on its command line; one
+# that predates the update has only the old name.
 if [[ -n "$PIDFILE" ]]; then
     old=$(cat "$PIDFILE" 2>/dev/null)
     if [[ -n "$old" && "$old" != "$$" ]] && kill -0 "$old" 2>/dev/null &&

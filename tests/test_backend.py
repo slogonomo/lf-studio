@@ -307,7 +307,7 @@ class LauncherWorkers(LauncherTest):
 
 class ServerBackend(unittest.TestCase):
     """The server reports LFSTUDIO_BACKEND in /api/state ("backend", spark when unset), names it in the page's
-    sol-h3-backend meta tag, and refuses another value. Nothing else depends on it."""
+    lf-studio-backend meta tag, and refuses another value. Nothing else depends on it."""
 
     def setUp(self):
         self.d = Path(tempfile.mkdtemp(prefix="lf-studio-backend-"))
@@ -325,7 +325,7 @@ class ServerBackend(unittest.TestCase):
             self.assertEqual(s.state()["backend"], "spark")
             page = s.get("/")[2].decode()
             self.assertEqual(page, (REPO / "webui" / "index.html").read_text())     # the Spark's page as it is
-            self.assertIn('<meta name="sol-h3-backend" content="spark">', page)
+            self.assertIn('<meta name="lf-studio-backend" content="spark">', page)
         finally:
             s.stop()
 
@@ -334,7 +334,7 @@ class ServerBackend(unittest.TestCase):
         try:
             self.assertEqual(s.state()["backend"], "rtx5090")
             page = s.get("/")[2].decode()
-            self.assertIn('<meta name="sol-h3-backend" content="rtx5090">', page)
+            self.assertIn('<meta name="lf-studio-backend" content="rtx5090">', page)
             self.assertNotIn('content="spark"', page)
         finally:
             s.stop()
@@ -430,12 +430,12 @@ class InstallDryRun(unittest.TestCase):
         (self.d / "home").mkdir()
         (self.d / "tmp").mkdir()
 
-    def run_script(self, name, **settings):
+    def run_script(self, name, repo=REPO, **settings):
         env = clean_env(HOME=str(self.d / "home"), TMPDIR=str(self.d / "tmp"), LFSTUDIO_ENV=str(self.d / "no-env-file"),
                         LFSTUDIO_HOME=str(self.d / "home" / "sol-h3"),
                         PATH=f"{self.fake}{os.pathsep}{os.environ['PATH']}")
         env.update(settings)
-        run = subprocess.run(["bash", str(REPO / "install" / name), "--dry-run"], env=env, capture_output=True,
+        run = subprocess.run(["bash", str(Path(repo) / "install" / name), "--dry-run"], env=env, capture_output=True,
                              text=True, timeout=120)
         return run.returncode, run.stdout + run.stderr
 
@@ -696,6 +696,54 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn(f"+ git -C {sana} apply -R {old}\n+ git -C {sana} apply {REPO}/patches/lf-studio.patch", text)
         self.assertIn(f"+ cp {REPO}/patches/lf-studio.patch {sana}/.git/lf-studio-applied.patch", text)
         self.assertNotIn("warn", text.lower())
+
+    def test_sana_patch_in_history(self):
+        """A checkout that carries an earlier version of the patch and no copy of it (patched by hand, docs/PATCH.md):
+        10-sana.sh finds that version in this repo's history, under the patch's name and, until 0.6, under its 0.4
+        name patches/sol-h3-studio.patch. The repo here is a copy of install/ and patches/BASE_COMMIT* with a history
+        of three made-up patch versions: 0.4's, renamed to lf-studio.patch in the next commit, then changed again."""
+        repo = self.d / "repo"
+        shutil.copytree(REPO / "install", repo / "install", ignore=shutil.ignore_patterns("__pycache__"))
+        (repo / "patches").mkdir()
+        for name in ("BASE_COMMIT", "BASE_COMMIT_RTX5090"):
+            shutil.copy(REPO / "patches" / name, repo / "patches" / name)
+        sana = self.d / "home/sol-h3/Sana"
+        config = ["-c", "user.name=test", "-c", "user.email=test@example.invalid"]
+
+        def git(where, *args):
+            return subprocess.run(["git", "-C", str(where), *config, *args], capture_output=True, text=True,
+                                  check=True).stdout
+        for where in (repo, sana):
+            subprocess.run(["git", "init", "-q", str(where)], check=True)
+        upstream = "print('upstream')\n"
+        (sana / "infer.py").write_text(upstream)
+        git(sana, "add", "infer.py")
+        git(sana, "commit", "-qm", "base")
+        head = git(sana, "rev-parse", "HEAD").strip()
+        versions = []                                  # (file name, patched infer.py, commit in repo)
+        for name, patched in (("sol-h3-studio.patch", "# Modified by sol-h3-studio\nprint('0.4')\n"),
+                              ("lf-studio.patch", "# Modified by lf-studio\nprint('0.5 draft')\n"),
+                              ("lf-studio.patch", "# Modified by lf-studio\nprint('0.5')\n")):
+            (sana / "infer.py").write_text(patched)
+            for old in (repo / "patches").glob("*.patch"):
+                old.unlink()
+            (repo / "patches" / name).write_text(git(sana, "diff"))
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", name)
+            versions.append((name, patched, git(repo, "rev-parse", "HEAD").strip()))
+        for name, patched, commit in versions[:2]:
+            with self.subTest(name=name):
+                (sana / "infer.py").write_text(patched)
+                code, text = self.run_script("10-sana.sh", repo=repo, LFSTUDIO_SANA_COMMIT=head)
+                self.assertEqual(code, 0, text)
+                found = re.search(r"the checkout carries an earlier version of the patch "
+                                  r"\((/\S+/patch-\d+-(\w+)\.patch)\); replacing it", text)
+                self.assertIsNotNone(found, text)
+                self.assertEqual(found.group(2), commit[:7])
+                self.assertIn(f"+ git -C {sana} apply -R {found.group(1)}\n"
+                              f"+ git -C {sana} apply {repo}/patches/lf-studio.patch", text)
+                self.assertIn(f"+ cp {repo}/patches/lf-studio.patch {sana}/.git/lf-studio-applied.patch", text)
+                self.assertNotIn("warn", text.lower())
 
     def test_invalid_backend(self):
         for name in INSTALL:

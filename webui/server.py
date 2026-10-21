@@ -1167,11 +1167,11 @@ def worker_loop():
 
 # ------------------------------------------------------------------------------------------ HTTP
 PAGE_FILE = Path(__file__).resolve().parent / "index.html"   # read per request: page edits need no restart
-PAGE_BACKEND = '<meta name="sol-h3-backend" content="spark">'   # the page's texts follow it (and /api/state)
+PAGE_BACKEND = '<meta name="lf-studio-backend" content="spark">'   # the page's texts follow it (and /api/state)
 
 
 def page_html():
-    """The page, naming this studio's backend in its sol-h3-backend meta tag, so its first paint already has the
+    """The page, naming this studio's backend in its lf-studio-backend meta tag, so its first paint already has the
     machine's texts. On the Spark it goes out unchanged."""
     return PAGE_FILE.read_text().replace(PAGE_BACKEND, PAGE_BACKEND.replace('"spark"', f'"{BACKEND}"'), 1)
 

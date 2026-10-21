@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # sol-h3-studio: the launcher's name up to 0.4, kept until 0.6. It runs bin/lf-studio with the same arguments, in this
-# process (exec: the same pid for pidfiles and process managers). Nothing goes to stdout.
+# process (exec: the same pid for pidfiles and process managers), and keeps this name first on the command line:
+# spark-switchboard re-adopts a running launcher only when its command line names the service's command (the 0.4
+# service file: .../bin/sol-h3-studio). Nothing goes to stdout.
 echo "sol-h3-studio: renamed to bin/lf-studio; the old name works until 0.6 (docs/INSTALL.md, \"From 0.4 to 0.5\")" >&2
-exec bash "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/lf-studio" "$@"
+exec -a "$0" bash "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/lf-studio" "$@"

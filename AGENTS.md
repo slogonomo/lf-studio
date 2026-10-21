@@ -62,8 +62,9 @@ the GCC 14 toolchain kept on `FORCE=1`, the adoption of a venv whose fake `pip f
 the dated prompt-cache backup. Add a test there for every backend change.
 
 `tests/test_old_names.py` covers the names up to 0.4 that work until 0.6: the old setting names in the environment
-and the settings file, the old places, the shims, the launcher's check for a running copy, the install steps and the
-page's old localStorage keys. It goes with them in 0.6.
+and the settings file (and that the four `OLD_SETTINGS` lists agree), the old places, the shims, the launcher's check
+for a running copy, a launcher run with the 0.4 spark-switchboard service file's settings, the deprecated integration
+files, the install steps and the page's old localStorage keys. It goes with them in 0.6.
 
 `tests/test_replay.py` covers the Stage-2 replay bench (`bench/replay.sh`, `bench/replay/`) on the CPU: the draft
 store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch, a `run` with a stand-in Stage-2

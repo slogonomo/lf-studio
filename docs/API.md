@@ -495,7 +495,8 @@ The studio answers errors as `{"error": "<text>"}` (some add `"job"`); spark-swi
 `bin/lf-cli` is one Python file: standard library only, Python 3.9 or later, and it reads no other file of this
 repo. On another machine, get it as in the [Quick start](#quick-start) (or copy it from a checkout). On the Spark,
 `bin/lf-studio <command> ...` runs it with the settings of the studio's env file. Up to 0.4 it was `bin/sol-h3`: until
-0.6 that name runs `bin/lf-cli` (with a note on stderr), and a 0.4 copy on another machine works with this studio.
+0.6 that name runs `bin/lf-cli` (with a note on stderr), and a 0.4 copy on another machine works with this studio. A
+new download from the 0.4 address gets only that shim, which says where to get `bin/lf-cli`.
 
 ```
 lf-cli generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
@@ -599,8 +600,9 @@ From the MCP process's environment (the host's server config):
 | `LFSTUDIO_MCP_OUT_ANYWHERE` | unset | `1` lets `out` point outside `LFSTUDIO_OUT_DIR` and the working directory |
 
 Until 0.6 each also works by its 0.4 name (`SOLH3_URL` and so on; the new name wins), with one warning on stderr, and
-`./sol-h3-clips` is the default while it exists and `./lf-clips` is missing or empty. A host registered with
-`sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; the server now calls itself `lf-studio` (`serverInfo`).
+with `LFSTUDIO_OUT_DIR` unset, `./sol-h3-clips` is the default while it exists and `./lf-clips` is missing or empty. A
+host registered with `sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; the server now calls itself
+`lf-studio` (`serverInfo`).
 
 ### Tools
 
