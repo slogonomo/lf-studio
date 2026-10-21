@@ -49,7 +49,10 @@ load_env_file() {
         value=${BASH_REMATCH[3]}
         x=${key#*_}
         if [[ "$key" == SOLH3_* && -n "${old[$x]:-}" ]]; then                     # until 0.6: an old name
-            [[ -n "${preset[LFSTUDIO_$x]:-}" ]] && continue
+            if [[ -n "${preset[LFSTUDIO_$x]:-}" ]]; then                          # the environment's wins
+                [[ -n "${OLD_USED[$key]+set}" ]] || OLD_USED[$key]=" (LFSTUDIO_$x wins)"
+                continue
+            fi
             if [[ -n "${new_line[$x]:-}" ]]; then OLD_USED[$key]=" (LFSTUDIO_$x wins)"; continue; fi
             OLD_USED[$key]=
             key=LFSTUDIO_$x

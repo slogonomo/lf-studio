@@ -1518,9 +1518,10 @@ class McpServer:
         self.studio = Studio(studio_url(url), AGENT + " (mcp)")
         self.wait_s = env_seconds("LFSTUDIO_MCP_WAIT_S", 50.0)
         self.max_wait_s = env_seconds("LFSTUDIO_MCP_MAX_WAIT_S", 1800.0)
-        out = os.environ.get("LFSTUDIO_OUT_DIR") or "lf-clips"
-        # until 0.6: 0.4's default while it exists and the new one is missing or empty
-        if out == "lf-clips" and os.path.isdir("sol-h3-clips") and not (os.path.isdir(out) and os.listdir(out)):
+        explicit = os.environ.get("LFSTUDIO_OUT_DIR")
+        out = explicit or "lf-clips"
+        # until 0.6: 0.4's default while it exists and the new one is missing or empty (a setting always wins)
+        if not explicit and os.path.isdir("sol-h3-clips") and not (os.path.isdir(out) and os.listdir(out)):
             out = "sol-h3-clips"
             self.log(f"using {os.path.abspath(out)}: {os.path.abspath('lf-clips')} is missing or empty (the old "
                      "default works until 0.6; LFSTUDIO_OUT_DIR sets another)")

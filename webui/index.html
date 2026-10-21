@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="sol-h3-backend" content="spark">
+<meta name="lf-studio-backend" content="spark">
 <title>LF Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23d98a3a'/%3E%3Ccircle cx='12' cy='12' r='4.5' fill='%23fff'/%3E%3C/svg%3E">
 <style>
@@ -335,10 +335,11 @@ const HINT={t2va:"H3 base format",fl2va:"start with the alignment line",ref2va:"
 const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","non_diegetic_music: N/A"],
   fl2va:["alignment line","integrated_multimodal_description:","overall_soundscape:"],
   ref2va:["subject_definitions:","summary: [reference generation]","retention_analysis:","detailed_description: [Shot 1]","overall_soundscape:","non_diegetic_music: N/A"]};
-// The machine (LFSTUDIO_BACKEND; the server names it in the sol-h3-backend meta tag and in /api/state "backend"): its
-// name in the header, the note on times, and the seconds per clip once the models are loaded (t2va 16:9). The DGX
-// Spark's are measured (clips over 10 s also reload the prompt encoder each time). The RTX 5090's are a provisional
-// estimate until they are measured there (docs/RTX5090.md). JSON between the markers: tests/test_backend.py reads it.
+// The machine (LFSTUDIO_BACKEND; the server names it in the lf-studio-backend meta tag and in /api/state
+// "backend"): its name in the header, the note on times, and the seconds per clip once the models are loaded (t2va
+// 16:9). The DGX Spark's are measured (clips over 10 s also reload the prompt encoder each time). The RTX 5090's are a
+// provisional estimate until they are measured there (docs/RTX5090.md). JSON between the markers:
+// tests/test_backend.py reads it.
 const MACHINES=/*machines*/{
 "spark":{"name":"one DGX Spark","times":["Times shown are ","measured on a DGX Spark"," with nothing else running."],
   "eta":{"3":40,"4":45,"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
@@ -349,7 +350,7 @@ let ETA=MACHINES.spark.eta,machine='spark';
 function applyMachine(b){const m=MACHINES[b];if(!m||b===machine)return;machine=b;ETA=m.eta;
   setText($('machine'),m.name);const n=$('timesnote');
   setText(n.firstChild,m.times[0]);setText(n.querySelector('b'),m.times[1]);setText(n.lastChild,m.times[2]);}
-applyMachine((document.querySelector('meta[name="sol-h3-backend"]')||{}).content||'spark');
+applyMachine((document.querySelector('meta[name="lf-studio-backend"]')||{}).content||'spark');
 const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
 // durations: whole seconds first (none, negative or not a number: 0), then minutes and seconds, so 119.6 s reads
 // 2:00 and never 1:60 (#26); fmtS rounds ("45 s", "2:05 min"), clock counts up like a stopwatch (floors)

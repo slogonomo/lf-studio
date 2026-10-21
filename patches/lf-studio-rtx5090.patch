@@ -2860,7 +2860,7 @@ index 7553e35..dd06a8b 100644
 +            "dynamic": "packed rows (hidden states, AdaLN rows, RoPE, untile index), tile count, tile buffer rows"}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py
 new file mode 100644
-index 0000000..410dd0c
+index 0000000..01a1cf0
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py
 @@ -0,0 +1,1341 @@
@@ -2913,7 +2913,7 @@ index 0000000..410dd0c
 +import time
 +import traceback
 +
-+FORMAT = "sol-h3-studio-stage1-snapshot-v1"   # the studio's name up to 0.4, kept: files on disk carry it
++FORMAT = "sol-h3-studio-stage1-snapshot-v1"   # 0.4's name, kept; a patch update still rebuilds (CODE_FILES)
 +ALIGN = 4096                # file offsets, buffer addresses and lengths (O_DIRECT)
 +SPAN_ALIGN = 64             # tensor offsets inside a block buffer (pin_idle_blocks' rule)
 +CHUNK = 64 << 20            # bytes per pwritev call

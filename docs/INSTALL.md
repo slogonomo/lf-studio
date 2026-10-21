@@ -241,9 +241,10 @@ If spark-switchboard runs the studio, bring your copy in switchboard's `services
 to date when `integrations/spark-switchboard/lf-studio.toml` changes: for 0.3, add `"cancelled"` to its `idle_values`
 (the busy probe must count the new status as idle); for 0.4, set its `passive_paths` to `["/health", "/api/state",
 "/api/jobs", "/api/jobs/*", "/poster/*"]` (without it, a script that reads a clip's state or waits for it starts a
-stopped studio); for 0.5, see below. Or replace its contents with the new file and keep its file name and your path
-edits. Then `spark-switchboard check`, and restart switchboard. A config made from switchboard's own example (in its
-`examples/services/`) needs the same `passive_paths` while the example lists only `"/health"`.
+stopped studio); for 0.5, see below. Or replace its contents with the new file, keep its file name, and set your
+checkout's path in `command` and `kill_command` (the file assumes `~/src/lf-studio`). Then `spark-switchboard check`,
+and restart switchboard. A config made from switchboard's own example (in its `examples/services/`) needs the same
+`passive_paths` while the example lists only `"/health"`.
 
 A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a released version of the patch is
 found the same way. Any other patch: reverse it with the file you applied (`git -C "$LFSTUDIO_SANA" apply -R <that
@@ -271,7 +272,8 @@ Nothing else needs to change for a working install. Until 0.6:
 
 - `bin/sol-h3-studio` and `bin/sol-h3` run the new files with the same arguments (after a note on stderr), so NVIDIA
   Sync apps, systemd units, spark-switchboard services, scripts and MCP registrations (`sol-h3 mcp`) keep working. A
-  copy of the 0.4 `bin/sol-h3` on another machine works with the new studio as it is.
+  copy of the 0.4 `bin/sol-h3` on another machine works with the new studio as it is; downloaded again from its 0.4
+  address, it is only the shim, which says where to get `bin/lf-cli`.
 - Every setting is also read by its 0.4 name, from the settings file and from the environment, with one warning that
   lists the old names used. Where both names are set, the new one wins; the environment still wins over the file.
 - `~/.config/sol-h3-studio/env` is used while `~/.config/lf-studio/env` does not exist, `~/.local/state/sol-h3-studio`
@@ -280,8 +282,8 @@ Nothing else needs to change for a working install. Until 0.6:
   empty, each with a note naming both. Nothing is moved; a new install uses the new places.
 - Venvs that 0.4 marked as built (`.sol-h3-studio-done`) count as built, and the page takes over the settings it kept in
   the browser (`solh3.*`).
-- `integrations/spark-switchboard/sol-h3-studio.toml` (unchanged) and `integrations/systemd/sol-h3-studio.service` stay
-  for this release, marked as deprecated.
+- `integrations/spark-switchboard/sol-h3-studio.toml` and `integrations/systemd/sol-h3-studio.service` stay for this
+  release as they were in 0.4, marked as deprecated.
 
 Change these when convenient, before 0.6:
 
@@ -289,19 +291,27 @@ Change these when convenient, before 0.6:
   `LFSTUDIO_X`. For the file: `sed -i 's/\bSOLH3_/LFSTUDIO_/g' <your settings file>`.
 - MCP: register the server under its new name, for example `claude mcp add --scope user --transport stdio lf-studio -e
   LFSTUDIO_URL=http://<spark-host>:8190 -- python3 /path/to/lf-cli mcp` ([API.md](API.md#mcp-server-lf-cli-mcp)), and
-  remove the `sol-h3` entry. On other machines, download `bin/lf-cli` ([API.md](API.md#cli-binlf-cli)).
-- spark-switchboard: replace your service file's contents with `integrations/spark-switchboard/lf-studio.toml` (the
-  command `bin/lf-studio`, `LFSTUDIO_*` in `env`, the pidfile under `~/.local/state/lf-studio`) and keep your path
-  edits. The file name is the service name, so a new name also changes it for `delegate.sh`
-  ([nvidia-sync.md](nvidia-sync.md)). Then `spark-switchboard check`, and restart switchboard.
-- NVIDIA Sync and systemd: the command `bash ~/src/lf-studio/bin/lf-studio` (with your checkout's path), and
-  `integrations/systemd/lf-studio.service`.
+  remove the old entry (`sol-h3`; `sol_h3` in Hermes). On other machines, download `bin/lf-cli`
+  ([API.md](API.md#cli-binlf-cli)).
+- spark-switchboard, with the studio stopped (Stop in switchboard; one left running keeps its pid in the 0.4 pidfile,
+  so the restarted switchboard would not find it and would never stop it): replace your service file's contents with
+  `integrations/spark-switchboard/lf-studio.toml` (the command `bin/lf-studio`, `LFSTUDIO_*` in `env`, the pidfile
+  under `~/.local/state/lf-studio`) and set your checkout's path in `command` and `kill_command`. The file assumes
+  `~/src/lf-studio`; a checkout cloned before 0.5 is still at `~/src/sol-h3-studio` unless you moved it, so the
+  command becomes `~/src/sol-h3-studio/bin/lf-studio`. The file name is the service name, so a new name also changes
+  it for `delegate.sh` ([nvidia-sync.md](nvidia-sync.md)). Then `spark-switchboard check`, and restart switchboard.
+- NVIDIA Sync: the command `bash <checkout>/bin/lf-studio`. systemd: `systemctl --user disable --now sol-h3-studio`,
+  then set up `integrations/systemd/lf-studio.service` as its comment says, with your checkout's path in `ExecStart`
+  (it assumes `~/src/lf-studio`).
 - Optional: move the settings file and the state to the new places, with the studio stopped, and leave a link at each
-  old place for anything that still names it (the pidfile of a 0.4 service file):
+  old place for anything that still names it (the pidfile of a 0.4 service file). `mv -T` takes the place of an empty
+  new directory (the new spark-switchboard file leaves an empty `~/.local/state/lf-studio` behind) and refuses one that
+  holds anything, changing nothing; if it refuses, look at what the new directory holds (a `launcher.pid` left by a
+  killed launcher can go) before you run the line again:
 
 ```bash
-mv ~/.config/sol-h3-studio ~/.config/lf-studio && ln -s ~/.config/lf-studio ~/.config/sol-h3-studio
-mv ~/.local/state/sol-h3-studio ~/.local/state/lf-studio && ln -s ~/.local/state/lf-studio ~/.local/state/sol-h3-studio
+mv -T ~/.config/sol-h3-studio ~/.config/lf-studio && ln -s ~/.config/lf-studio ~/.config/sol-h3-studio
+mv -T ~/.local/state/sol-h3-studio ~/.local/state/lf-studio && ln -s ~/.local/state/lf-studio ~/.local/state/sol-h3-studio
 ```
 
 Leave `~/sol-h3` where it is: its venvs hold absolute paths. The repository is now github.com/slogonomo/lf-studio;
@@ -342,5 +352,6 @@ From 0.1 to 0.2: the first start imports the clip history (`jobs.json`) into `jo
 ## Uninstall
 
 Stop the studio, then remove `~/sol-h3` (or your `$LFSTUDIO_HOME`), `~/.config/lf-studio`,
-`~/.local/state/lf-studio` and the images: `docker rmi sol-h3-spark-qwen sol-h3-spark-qwen:base` (the RTX 5090
-install has no images; uv's own cache is in `~/.cache/uv`).
+`~/.local/state/lf-studio` (an install from before 0.5 may still use `~/.config/sol-h3-studio` and
+`~/.local/state/sol-h3-studio`, or links there: remove those too) and the images: `docker rmi sol-h3-spark-qwen
+sol-h3-spark-qwen:base` (the RTX 5090 install has no images; uv's own cache is in `~/.cache/uv`).

@@ -1,21 +1,21 @@
-# DEPRECATED: the 0.4 name of this file, kept until 0.6. Use lf-studio.service, which this copy equals.
-# LF Studio as a systemd user service.
-#   mkdir -p ~/.config/systemd/user && cp lf-studio.service ~/.config/systemd/user/
-#   systemctl --user daemon-reload && systemctl --user start lf-studio
-#   systemctl --user enable lf-studio               # start at login
+# DEPRECATED: the 0.4 file, kept unchanged until 0.6 (it runs the bin/sol-h3-studio shim). Use lf-studio.service.
+# Sol-H3 Studio as a systemd user service.
+#   mkdir -p ~/.config/systemd/user && cp sol-h3-studio.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user start sol-h3-studio
+#   systemctl --user enable sol-h3-studio          # start at login
 #   sudo loginctl enable-linger "$USER"             # optional: start at boot, without a login
-# Settings: ~/.config/lf-studio/env. Logs: journalctl --user -u lf-studio, plus ~/.local/state/lf-studio/.
-# The service refuses to start (and stays failed) when less than LFSTUDIO_MIN_FREE_GIB is free; there is no automatic
+# Settings: ~/.config/sol-h3-studio/env. Logs: journalctl --user -u sol-h3-studio, plus ~/.local/state/sol-h3-studio/.
+# The service refuses to start (and stays failed) when less than SOLH3_MIN_FREE_GIB is free; there is no automatic
 # restart on purpose, so it never fights another app for memory. Don't combine it with spark-switchboard
 # (https://github.com/slogonomo/spark-switchboard) or NVIDIA Sync managing the same studio. Paths assume the repo
-# at ~/src/lf-studio.
+# at ~/src/sol-h3-studio.
 [Unit]
-Description=LF Studio (unofficial web UI for NVIDIA Sol-H3-Spark)
+Description=Sol-H3 Studio (unofficial web UI for NVIDIA Sol-H3-Spark)
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash %h/src/lf-studio/bin/lf-studio
+ExecStart=/bin/bash %h/src/sol-h3-studio/bin/sol-h3-studio
 # SIGTERM to the launcher only; it stops the server (which closes its pipeline), the workers and the Qwen container.
 KillMode=mixed
 KillSignal=SIGTERM
