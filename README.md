@@ -4,7 +4,7 @@ Unofficial web studio and faster cold start for NVIDIA's Sol-H3 video+audio pipe
 or, since 0.5, Sol-H3-RTX5090 on one GeForce RTX 5090 with 64 GB of RAM ([docs/RTX5090.md](docs/RTX5090.md)).
 Formerly Sol-H3 Studio, renamed in 0.5 because NVIDIA's own front end for Sol-H3 has that name.
 
-![LF Studio interface with generation controls and a gallery of queued, generating, and completed clips](docs/images/lf-studio.jpeg)
+![LF Studio interface with generation controls and a gallery of finished clips](docs/images/lf-studio.jpeg)
 
 Not affiliated with or endorsed by NVIDIA, MiniMax or Lightricks. Model weights are not included; you download
 them yourself under each model's own terms ([Model terms](#model-terms)).
