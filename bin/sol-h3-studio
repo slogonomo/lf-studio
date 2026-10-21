@@ -228,11 +228,11 @@ run_checks() {
     if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
         [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-RTX5090 package at $PKG (SOLH3_SANA must be the Sana checkout patched for the RTX 5090; SOLH3_BACKEND=rtx5090 install/10-sana.sh)"
         [[ -f "$PKG/runtime/offload.py" ]] || refuse "$PKG is not NVIDIA's Sol-H3-RTX5090 package (runtime/offload.py missing)"
-        [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio-rtx5090.patch (install/10-sana.sh)"
+        [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/lf-studio-rtx5090.patch (install/10-sana.sh)"
     else
         [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-Spark package at $PKG (SOLH3_SANA must be the patched Sana checkout; install/10-sana.sh)"
         [[ ! -f "$PKG/runtime/offload.py" ]] || refuse "$PKG has runtime/offload.py, which only Sol-H3-RTX5090 has; this is not the Sol-H3-Spark package"
-        [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio.patch"
+        [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/lf-studio.patch"
     fi
     # the patch's own settings checks: (name, check, default, what a patch without the setting does, the version
     # that added it). A bad value exits 3 with the message. An older patch lacks some of them (0.3's has no

@@ -250,7 +250,7 @@ class LauncherBackendRefusals(LauncherTest):
         (unpatched / "models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py").write_text("")
         code, out = self.check(SOLH3_SANA=str(unpatched), SOLH3_BACKEND="rtx5090", SOLH3_MIN_FREE_GIB="0")
         self.assertEqual(code, 1, out)
-        self.assertIn("is not patched (runtime/geometry.py missing); apply patches/sol-h3-studio-rtx5090.patch", out)
+        self.assertIn("is not patched (runtime/geometry.py missing); apply patches/lf-studio-rtx5090.patch", out)
 
         code, out = self.check(SOLH3_SANA=str(self.d / "nothing"), SOLH3_BACKEND="rtx5090", SOLH3_MIN_FREE_GIB="0")
         self.assertEqual(code, 1, out)
@@ -458,7 +458,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertEqual(out["05-python.sh"][0], 0)
         self.assertIn("nothing to do", out["05-python.sh"][1])
         self.assertIn(f"sol-engine @ {base}", out["10-sana.sh"][1])
-        self.assertIn("patches/sol-h3-studio.patch", out["10-sana.sh"][1])
+        self.assertIn("patches/lf-studio.patch", out["10-sana.sh"][1])
         self.assertIn("135 CPU tests", out["10-sana.sh"][1])
         self.assertIn("python3.12 -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-Spark &&", out["20-weights.sh"][1])
@@ -501,7 +501,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("python install --no-bin 3.12.15 3.13.16", text)
         text = out["10-sana.sh"][1]
         self.assertIn(f"sol-engine @ {RTX_BASE}", text)
-        self.assertIn("patches/sol-h3-studio-rtx5090.patch", text)
+        self.assertIn("patches/lf-studio-rtx5090.patch", text)
         self.assertIn("185 CPU tests", text)
         self.assertIn(f"{py312} -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-RTX5090 &&", out["20-weights.sh"][1])
@@ -665,6 +665,27 @@ class InstallDryRun(unittest.TestCase):
         code, text = self.run_script("90-env.sh", FAKE_ARCH="x86_64", FAKE_GPU="NVIDIA GeForce RTX 4090")
         self.assertEqual(code, 0, text)                                     # nothing detected: spark, as before
         self.assertIn("SOLH3_BACKEND=spark", text)
+
+    def test_sana_old_applied_copy(self):
+        """Until 0.6: a checkout last patched by 0.4 keeps its copy of the patch as sol-h3-studio-applied.patch.
+        10-sana.sh finds the earlier patch there, replaces it and keeps the new copy under the new name."""
+        sana = self.d / "home/sol-h3/Sana"
+        git = ["git", "-C", str(sana), "-c", "user.name=test", "-c", "user.email=test@example.invalid"]
+        subprocess.run(["git", "init", "-q", str(sana)], check=True)
+        (sana / "infer.py").write_text("print('upstream')\n")
+        subprocess.run(git + ["add", "infer.py"], check=True)
+        subprocess.run(git + ["commit", "-qm", "base"], check=True)
+        head = subprocess.run(git + ["rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        (sana / "infer.py").write_text("# Modified by sol-h3-studio\nprint('patched')\n")
+        old = sana / ".git/sol-h3-studio-applied.patch"
+        old.write_text(subprocess.run(git + ["diff"], capture_output=True, text=True, check=True).stdout)
+        (sana / ".git/sol-h3-studio-applied.patch.base").write_text(head + "\n")
+        code, text = self.run_script("10-sana.sh", SOLH3_SANA_COMMIT=head)
+        self.assertEqual(code, 0, text)
+        self.assertIn(f"the checkout carries an earlier version of the patch ({old}); replacing it", text)
+        self.assertIn(f"+ git -C {sana} apply -R {old}\n+ git -C {sana} apply {REPO}/patches/lf-studio.patch", text)
+        self.assertIn(f"+ cp {REPO}/patches/lf-studio.patch {sana}/.git/lf-studio-applied.patch", text)
+        self.assertNotIn("warn", text.lower())
 
     def test_invalid_backend(self):
         for name in INSTALL:

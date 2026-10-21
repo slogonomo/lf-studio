@@ -47,12 +47,12 @@ export SOLH3_BACKEND=${SOLH3_BACKEND:-spark}
 case "$SOLH3_BACKEND" in
     spark)
         PKG_NAME=Sol-H3-Spark
-        PATCH_NAME=sol-h3-studio.patch
+        PATCH_NAME=lf-studio.patch
         BASE_COMMIT_FILE=BASE_COMMIT
         ;;
     rtx5090)
         PKG_NAME=Sol-H3-RTX5090
-        PATCH_NAME=sol-h3-studio-rtx5090.patch
+        PATCH_NAME=lf-studio-rtx5090.patch
         BASE_COMMIT_FILE=BASE_COMMIT_RTX5090
         ;;
     *)

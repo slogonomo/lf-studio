@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # 10-sana.sh: clone NVlabs/Sana (branch sol-engine) at patches/BASE_COMMIT into $SOLH3_SANA, apply
-# patches/sol-h3-studio.patch, and run the package's CPU tests with the Stage1 python if it exists.
-# With SOLH3_BACKEND=rtx5090 the same with patches/BASE_COMMIT_RTX5090 and patches/sol-h3-studio-rtx5090.patch,
+# patches/lf-studio.patch, and run the package's CPU tests with the Stage1 python if it exists.
+# With SOLH3_BACKEND=rtx5090 the same with patches/BASE_COMMIT_RTX5090 and patches/lf-studio-rtx5090.patch,
 # which changes Sol-H3-RTX5090 (docs/RTX5090.md). Everything below applies to either pair: updating the patch file
 # (and its BASE_COMMIT file) in this repo and running this script again is all an update needs.
 # Idempotent: an existing checkout is reused; an already applied patch is detected and left alone.
-# Updates: a copy of the applied patch is kept with the checkout (sol-h3-studio-applied.patch in its git directory,
+# Updates: a copy of the applied patch is kept with the checkout (lf-studio-applied.patch in its git directory,
 # so each clone and each git worktree has its own). After a `git pull` of this repo, run this script again. If the
 # checkout carries an earlier patch and nothing else, it reverses that patch, checks out the new
-# patches/BASE_COMMIT if it changed, and applies the new patch. The earlier patch is found as that copy, else as
-# $SOLH3_HOME/applied.patch (where versions up to 0.2 kept it), else among the earlier versions of
-# patches/sol-h3-studio.patch in this repo's history. Any other local change in the checkout stops it with a
+# patches/BASE_COMMIT if it changed, and applies the new patch. The earlier patch is found as that copy (until 0.6
+# also as sol-h3-studio-applied.patch, its name up to 0.4), else as $SOLH3_HOME/applied.patch (where versions up to
+# 0.2 kept it), else among the earlier versions of patches/lf-studio.patch in this repo's history, and of
+# patches/sol-h3-studio.patch (its name up to 0.4). Any other local change in the checkout stops it with a
 # message, before anything is changed.
 # SOLH3_SANA_COMMIT overrides the commit (the patch also applies to sol-engine 670482d, checked 2026-10-09).
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
@@ -29,11 +30,12 @@ have_commit() {
     [[ "$DRY_RUN" == 1 ]] || sana cat-file -e "$1^{commit}" 2>/dev/null
 }
 
-# applied_copy: where this checkout keeps the patch as it was applied last time, for the next update
+# applied_copy [NAME]: where this checkout keeps the patch as it was applied last time, for the next update
+# (applied_copy sol-h3-studio: the copy's name up to 0.4, still read until 0.6)
 applied_copy() {
     local dir
     dir=$(git -C "$SOLH3_SANA" rev-parse --absolute-git-dir 2>/dev/null) || dir="$SOLH3_SANA/.git"   # (dry run)
-    echo "$dir/sol-h3-studio-applied.patch"
+    echo "$dir/${1:-lf-studio}-applied.patch"
 }
 
 # keep_copy: remember the patch that is now applied, and the commit it is applied at (<copy>.base)
@@ -49,15 +51,17 @@ keep_copy() {
 }
 
 # applied_base [PATCH]: the commit the earlier patch was applied at: the record next to the copy, else the base named
-# in the first line of the copy, of the 0.2 copy, or of PATCH (the earlier patch found)
+# in the first line of the copy, of the 0.2 copy, or of PATCH (the earlier patch found). Until 0.6 the copy may have
+# its 0.4 name.
 applied_base() {
     local f copy
-    copy=$(applied_copy)
-    if [[ -s "$copy.base" ]]; then
-        tr -d '[:space:]' < "$copy.base"
-        return 0
-    fi
-    for f in "$copy" "$LEGACY_APPLIED" "${1:-}"; do
+    for copy in "$(applied_copy)" "$(applied_copy sol-h3-studio)"; do
+        if [[ -s "$copy.base" ]]; then
+            tr -d '[:space:]' < "$copy.base"
+            return 0
+        fi
+    done
+    for f in "$(applied_copy)" "$(applied_copy sol-h3-studio)" "$LEGACY_APPLIED" "${1:-}"; do
         [[ -n "$f" && -f "$f" ]] || continue
         sed -n '1s/.*base commit \([0-9a-f]\{40\}\).*/\1/p' "$f"
         return 0
@@ -68,14 +72,17 @@ applied_base() {
 # history. The first candidate that the checkout differs from HEAD by exactly wins; else the first that only
 # reverse-applies (the caller then lists the other local changes). Prints its file name.
 earlier_patch() {
-    local f sha n=0 first=
-    local -a candidates=("$(applied_copy)" "$LEGACY_APPLIED")
+    local f sha name n=0 first=
+    local -a candidates=("$(applied_copy)" "$(applied_copy sol-h3-studio)" "$LEGACY_APPLIED")
     if git -C "$SOLH3_REPO" rev-parse --git-dir >/dev/null 2>&1; then
-        while read -r sha; do
-            n=$((n + 1))
-            f="$HISTORY/patch-$n-${sha:0:7}.patch"
-            git -C "$SOLH3_REPO" show "$sha:patches/$PATCH_NAME" > "$f" 2>/dev/null && candidates+=("$f")
-        done < <(git -C "$SOLH3_REPO" log --format=%H -- "patches/$PATCH_NAME")
+        # the patch's versions under its name, then under its name up to 0.4 (until 0.6)
+        for name in "$PATCH_NAME" "${PATCH_NAME/lf-studio/sol-h3-studio}"; do
+            while read -r sha; do
+                n=$((n + 1))
+                f="$HISTORY/patch-$n-${sha:0:7}.patch"
+                git -C "$SOLH3_REPO" show "$sha:patches/$name" > "$f" 2>/dev/null && candidates+=("$f")
+            done < <(git -C "$SOLH3_REPO" log --format=%H -- "patches/$name")
+        done
     fi
     for f in "${candidates[@]}"; do
         [[ -f "$f" ]] && sana apply --reverse --check "$f" 2>/dev/null || continue
