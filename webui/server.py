@@ -31,6 +31,10 @@ For agents and scripts (#29; docs/API.md):
   clip is still queued or running when S has passed, 409 with it for a failed or cancelled clip.
 - /video/<id> downloads as lf-studio_<task>_<seconds>s_seed<seed>_<id6>.mp4.
 - The small JSON POSTs (/api/cancel, /api/delete, /api/undelete, /api/load, /api/unload) answer 413 above 64 KiB.
+- LFSTUDIO_API=0 turns this API off (#58): a JSON submit, a submit with an X-LFStudio-Client header (bin/lf-cli sends
+  its form with one) and GET or HEAD /api/jobs/<id>[/video] answer 403 (API_OFF). The page uses none of them: its form
+  submit, /api/state ("api": false), /api/jobs?before=, the files and the small POSTs work as before. Not access
+  control: a script can still send the page's form.
 
 Run it with cwd = the patched Sol-H3-Spark package (models/minimax_h3/Sol-H3-Spark in the patched Sana checkout), or
 Sol-H3-RTX5090 with LFSTUDIO_BACKEND=rtx5090: it imports runtime.config and runtime.pipeline from there. Both packages
@@ -62,6 +66,8 @@ Environment:
                              for good (default 7)
   LFSTUDIO_MAX_QUEUED        clips that may wait in the queue (default 20; the running one does not count). Another
                              submit gets 429 until one has started.
+  LFSTUDIO_API               1 (default, as in 0.4): the API for programs above is on. 0: off, the page only (403 for
+                             what it does not use). Any other value stops the server.
   LFSTUDIO_LAUNCHER_PID      set by bin/lf-studio: the server stops (closing its pipeline) when that process dies.
 Until 0.6 these settings may also have their names up to 0.4 (SOLH3_HOST for LFSTUDIO_HOST, and so on; not
 LFSTUDIO_LAUNCHER_PID): an old name counts where the new one is not set, with one warning. The default state
@@ -241,6 +247,14 @@ try:
     assert MAX_QUEUED >= 1
 except (ValueError, AssertionError):
     fail(f"LFSTUDIO_MAX_QUEUED must be a whole number, 1 or more (got {os.environ.get('LFSTUDIO_MAX_QUEUED')!r})")
+# the API for programs (#58; the docstring). Off: a JSON submit, a program's form submit (API_CLIENT) and
+# /api/jobs/<id>[/video] get 403 API_OFF. bin/lf-studio checks the value with the same words.
+API_SETTING = os.environ.get("LFSTUDIO_API") or "1"
+if API_SETTING not in ("0", "1"):
+    fail(f"LFSTUDIO_API={API_SETTING}: must be 1 (on, the default) or 0 (off) (see bin/env.example)")
+API = API_SETTING == "1"
+API_OFF = {"error": "the API for programs is off on this studio (LFSTUDIO_API=0)"}
+API_CLIENT = "X-LFStudio-Client"    # a program's form submit (bin/lf-cli): refused with the API off, as JSON is
 for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -1690,7 +1704,7 @@ class H(BaseHTTPRequestHandler):
                 window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
                 warmable = [t for t in ready if mode_warmup_case(t)]     # modes "Load selected now" can warm up
                 state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS, "warmable": warmable,
-                         "reshape": RESHAPE, "backend": BACKEND,
+                         "reshape": RESHAPE, "backend": BACKEND, "api": API,
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
                                                                  "takeover_until", "load_eta", "warm_s",
                                                                  "switching_to")},
@@ -1759,6 +1773,8 @@ class H(BaseHTTPRequestHandler):
             return self.send_file(mp4, name=clip_name(job))
         m = re.fullmatch(r"/api/jobs/([0-9a-f]{32})(/video)?", path)
         if m:
+            if not API:                    # LFSTUDIO_API=0: the page never asks for these
+                return self.send(403, API_OFF)
             return self.job_reply(m.group(1), video=bool(m.group(2)))
         self.send(404, {"error": "not found"})
 
@@ -2021,6 +2037,8 @@ class H(BaseHTTPRequestHandler):
         raw = self.rfile.read(n)                       # read first, so the client gets the answer below
         if kind not in ("multipart/form-data", "application/json"):
             return self.send(415, {"error": "send multipart/form-data or application/json"})
+        if not API and (kind == "application/json" or self.headers.get(API_CLIENT) is not None):
+            return self.send(403, API_OFF)             # LFSTUDIO_API=0: only the page's own form
         with lock:
             full = queue_full()
         if full:
@@ -2105,6 +2123,9 @@ def main():
     stop_with_launcher()
     for name, value in IGNORED_ENV.items():
         log(f"ignoring {name}={value}: it is an infer.py default; the studio sets length and format per job")
+    if not API:
+        log("the API for programs is off (LFSTUDIO_API=0): JSON submits, submits from bin/lf-cli and "
+            "/api/jobs/<id> answer 403; the page works as usual")
     log(f"LF Studio on http://{HOST}:{PORT}/ (package {PKG}, state {STATE_DIR})")
     try:
         srv.serve_forever()
