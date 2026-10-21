@@ -361,6 +361,9 @@ if problems:
         done
     fi
     [[ "$LFSTUDIO_PATHS" == *"{task}"* ]] || refuse "LFSTUDIO_PATHS must contain {task}"
+    # the API for programs (webui/server.py checks it with the same words); empty counts as unset
+    [[ "${LFSTUDIO_API:-1}" == [01] ]] ||
+        refuse "LFSTUDIO_API=$LFSTUDIO_API: must be 1 (on, the default) or 0 (off) (see bin/env.example)"
     for t in t2va fl2va ref2va; do
         f=${LFSTUDIO_PATHS//\{task\}/$t}
         if [[ -f "$f" ]]; then found=$((found + 1)); else missing+=("$t"); fi

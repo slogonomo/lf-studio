@@ -35,12 +35,12 @@ python3 tests/ui_test.py http://127.0.0.1:18299/   # a general check of the page
 ```
 
 `tests/test_server.py` drives the server over HTTP, and `tests/test_api.py` its API for programs (JSON submit,
-`/api/jobs/<id>?wait=`, labels, limits). `tests/test_cli.py` and `tests/test_mcp.py` run `bin/lf-cli` as a CLI and
-as an MCP server against the stub and against small fake spark-switchboard servers (ports 18820-18839), and check
-that it stays a lone Python 3.9 file. `tests/test_page.py` drives the page in WebKit, also running
-`tests/ui_test.py` against a stub studio with a session loaded (`LFSTUDIO_RESHAPE` 1 and 0), and is skipped without
-Playwright (`pip install playwright && playwright install webkit`). One touch test uses Chromium
-(`playwright install chromium`) and is skipped without it.
+`/api/jobs/<id>?wait=`, labels, limits, and the API turned off with `LFSTUDIO_API=0`). `tests/test_cli.py` and
+`tests/test_mcp.py` run `bin/lf-cli` as a CLI and as an MCP server against the stub and against small fake
+spark-switchboard servers (ports 18820-18839), and check that it stays a lone Python 3.9 file. `tests/test_page.py`
+drives the page in WebKit, also running `tests/ui_test.py` against a stub studio with a session loaded
+(`LFSTUDIO_RESHAPE` 1 and 0, and `LFSTUDIO_API=0`), and is skipped without Playwright (`pip install playwright &&
+playwright install webkit`). One touch test uses Chromium (`playwright install chromium`) and is skipped without it.
 
 `tests/stub/runtime/` stands in for the patched `runtime` package: loading and generating are `sleep` processes
 (`STUB_LOAD_S`, `STUB_CLIP_S`), each clip is a small ffmpeg test pattern in the requested format and length, and a

@@ -288,6 +288,9 @@ Run `install/10-sana.sh` after the pull: the patch is now `patches/lf-studio.pat
 on the RTX 5090), its changes marked "lf-studio". The script replaces the 0.4 patch in the checkout as for any update
 and keeps its copy as `lf-studio-applied.patch`.
 
+New and optional: `LFSTUDIO_API`, on (`1`) by default as in 0.4; `0` turns the API for programs off and leaves the
+studio to its page ([API.md](API.md#turning-the-api-off)).
+
 Nothing else needs to change for a working install. Until 0.6:
 
 - `bin/sol-h3-studio` and `bin/sol-h3` run the new files with the same arguments (after a note on stderr), so NVIDIA

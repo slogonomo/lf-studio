@@ -21,9 +21,9 @@ http://127.0.0.1:8190. Behind spark-switchboard, use its public port (8190).
 stdout carries the result and nothing else: the saved MP4's absolute path, the id (generate without waiting), or the
 status; --json makes it one JSON object. Progress goes to stderr (--quiet turns it off).
 Exit codes: 0 done (and saved), queued, or ok; 1 the clip failed or was cancelled; 2 a usage error, a local file
-check, or the studio refused the request; 3 the studio can't be reached or isn't available, or it is stopped (fetch
-without --wake); 4 --timeout ran out (the clip still runs; its id is on stdout); 130 interrupted (the clip still
-runs).
+check, or the studio refused the request (also a studio with its API for programs off, LFSTUDIO_API=0); 3 the studio
+can't be reached or isn't available, or it is stopped (fetch without --wake); 4 --timeout ran out (the clip still runs;
+its id is on stdout); 130 interrupted (the clip still runs).
 
 MCP settings (the MCP process's environment): LFSTUDIO_URL; LFSTUDIO_OUT_DIR, where MP4s go (default ./lf-clips);
 LFSTUDIO_MCP_WAIT_S, how long generate and wait wait by default (50); LFSTUDIO_MCP_MAX_WAIT_S, the cap on any wait_s
@@ -85,6 +85,13 @@ POLL_S = 15                      # one GET /api/jobs/<id>/video?wait=
 RETRY_S = 120                    # while waiting: how long connection trouble and switchboard 503s are retried
 SIDE_S = 10                      # the poster and other small reads after a download
 ID = re.compile(r"[0-9a-f]{32}")
+# A studio with its API for programs off (LFSTUDIO_API=0) answers 403 with a message naming the setting to the submits,
+# waits, reads and downloads of this client: its form submit carries API_CLIENT, so it is refused before anything is
+# queued. The page's endpoints (status without an id, cancel) still work.
+API_CLIENT = "X-LFStudio-Client"
+API_OFF = ("the studio's API for programs is off (LFSTUDIO_API=0 in the studio's settings): it takes no clips, waits, "
+           "clip status reads or downloads from lf-cli and agents. To turn it on, set LFSTUDIO_API=1 there and restart "
+           "the studio; its web page works either way.")
 
 GUIDE = """\
 LF Studio gives your prompt to MiniMax-H3 unchanged; nothing rewrites it. H3 was trained on a structured
@@ -550,6 +557,8 @@ def refusal(status, headers, raw):
         message = err
     else:
         message = raw.decode("utf-8", "replace").strip()[:300] or f"HTTP {status}"
+    if status == 403 and isinstance(err, str) and "LFSTUDIO_API=0" in err:
+        message = API_OFF
     if status == 429 and headers.get("Retry-After"):
         message += f" (Retry-After: {headers.get('Retry-After')} s)"
     code = 2 if 400 <= status < 500 and status != 429 else 3
@@ -825,7 +834,8 @@ def submit(studio, req, hold, sent=None):
     """POST /api/generate. switchboard holds the request up to `hold` seconds while it starts the studio (a 503 from
     it means the clip was NOT submitted). Returns the studio's answer {"id", "job"}. Raises Fail."""
     parts, ctype = multipart(req["fields"], req["files"])
-    headers = {"Content-Type": ctype, "X-Switchboard-Wait": str(int(max(0, min(3600, hold))))}
+    headers = {"Content-Type": ctype, "X-Switchboard-Wait": str(int(max(0, min(3600, hold)))),
+               API_CLIENT: studio.agent}          # a studio with the API off refuses it (API_OFF)
     timeout = hold + 120 + req["bytes"] / 1e6        # per socket operation; the upload itself may take longer
     try:
         status, rh, raw = studio.call("POST", "/api/generate", parts, headers, timeout, sent)
@@ -1276,6 +1286,7 @@ def cmd_status(studio, args, output):
         except Fail as error:
             if error.http_status == 404:
                 raise Fail(f"no clip with id {jid} on the studio (it may have been deleted)", 2, 404, jid) from None
+            error.jid = error.jid or jid                     # --json names the clip, as wait and fetch do
             raise
         output.result(status_line(rec), rec)
         return 0

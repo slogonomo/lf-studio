@@ -109,9 +109,11 @@ def text(result):
 
 
 class McpTest(unittest.TestCase):
-    """One fresh stub studio and one MCP server per test; the MCP server runs in self.work."""
+    """One fresh stub studio (with studio_env's settings) and one MCP server per test; the MCP server runs in
+    self.work."""
     load_s, clip_s = 1, 0.5
     studio_needed = True
+    studio_env = {}
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-mcp-"))
@@ -120,7 +122,7 @@ class McpTest(unittest.TestCase):
         self.studio = None
         if self.studio_needed:
             self.studio = StubStudio(self.dir / "studio", port=free_port(), load_s=self.load_s, clip_s=self.clip_s,
-                                     preload=False).start()
+                                     preload=False, env=self.studio_env).start()
         self.servers = []
 
     def mcp(self, url=None, cwd=None, **env):
@@ -451,6 +453,32 @@ class Tools(McpTest):
         self.assertEqual(text(r), f"first_frame: no such file: nothere.png (looked for {self.work / 'nothere.png'})")
         r = m.call("generate", {"prompt": "x", "first_frame": self.frame(), "out": "mine.mp4", "wait_s": 30})
         self.assertEqual(Path(r["structuredContent"]["path"]), self.work / "mine.mp4")
+
+
+class ApiOff(McpTest):
+    """A studio with LFSTUDIO_API=0 (#58): generate, wait, status with an id and fetch are tool errors with the CLI's
+    text, which names the setting; generate queues nothing. status without an id reads the page's /api/state."""
+    studio_env = {"LFSTUDIO_API": "0"}
+
+    def test_tool_errors(self):
+        off = load_cli().API_OFF
+        m = self.mcp()
+        for args in ({"prompt": "x"}, {"prompt": "x", "wait_s": 0}, {"prompt": "x", "first_frame": self.frame()}):
+            r = m.call("generate", args)
+            self.assertTrue(r["isError"], text(r))
+            self.assertTrue(text(r).endswith(off), text(r))
+            self.assertNotIn("structuredContent", r)
+        self.assertEqual(self.studio.state()["jobs"], [])                         # nothing was queued
+        jid = self.studio.generate()[1]["id"]                                     # a clip made in the page
+        self.studio.wait([jid], timeout=30)
+        for tool, args in (("wait", {"id": jid}), ("wait", {"id": jid, "wait_s": 0}), ("status", {"id": jid}),
+                           ("fetch", {"id": jid})):
+            r = m.call(tool, args)
+            self.assertEqual((r["isError"], r["content"]), (True, [{"type": "text", "text": off}]), tool)
+        self.assertFalse((self.work / "lf-clips").exists() and any((self.work / "lf-clips").iterdir()))
+        r = m.call("status")
+        self.assertFalse(r["isError"], text(r))
+        self.assertIn(f"{jid}  done", text(r))
 
 
 class LongClips(McpTest):
