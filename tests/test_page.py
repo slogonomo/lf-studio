@@ -1333,5 +1333,28 @@ class QueuePicture(PageTest):
                     self.assertGreaterEqual(ratio, least, f"{part} on the {scheme} {jid == a and 'running' or 'queued'} card")
 
 
+class MachineTexts(PageTest):
+    """SOLH3_BACKEND (docs/RTX5090.md): the header and the note on times name the machine, and the clip-time
+    estimates follow its table. Unset = the DGX Spark, as before. tests/test_backend.py checks the table and the
+    page's applyMachine without a browser."""
+    backend = None
+
+    def seed(self):
+        self.studio.env.pop("SOLH3_BACKEND", None)
+        if self.backend:
+            self.studio.env["SOLH3_BACKEND"] = self.backend
+
+    def test_texts(self):
+        m = self.page.evaluate("MACHINES")[self.backend or "spark"]
+        self.assertEqual(self.page.inner_text("#machine"), m["name"])
+        self.assertEqual(self.page.inner_text("#timesnote"), "".join(m["times"]))
+        self.pick("seconds", "5")
+        self.assertIn(f"~{m['eta']['5']} s per clip", self.page.inner_text("#lenout"))
+
+
+class MachineTextsRtx5090(MachineTexts):
+    backend = "rtx5090"
+
+
 if __name__ == "__main__":
     unittest.main()

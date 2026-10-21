@@ -12,7 +12,8 @@ H3 takes its prompt in a structured format, and nothing in the studio rewrites a
 [prompt guide](#prompt-guide) at the end says how to write one; it is also `sol-h3 guide` and the MCP tool
 `prompt_guide`.
 
-Times on this page were measured on one DGX Spark ([PERFORMANCE.md](PERFORMANCE.md)). Every curl, CLI and
+Times on this page were measured on one DGX Spark ([PERFORMANCE.md](PERFORMANCE.md)); a studio on a workstation
+with one RTX 5090 (`SOLH3_BACKEND=rtx5090`, [RTX5090.md](RTX5090.md)) has the same API. Every curl, CLI and
 MCP-registration example was run against the stub studio (`tests/stub/studio.py`), which makes small test clips
 without a GPU.
 
@@ -179,9 +180,9 @@ How a client behaves well:
    way.
 6. **Before fetching an older clip, read `GET /__switchboard/status`**, which never starts anything. If its
    `state` is `stopped`, `stopping` or `failed`, or `paused` is true, a GET of `/video/<id>` would start the studio,
-   which takes about 110 GiB of the Spark's memory from other apps (and preloads the models). Do that only on
-   purpose. A studio without switchboard answers that path with 404 `{"error": "not found"}`: no switchboard, and
-   the request cost nothing.
+   which takes most of the machine's memory from other apps (about 110 GiB on a DGX Spark) and preloads the
+   models. Do that only on purpose. A studio without switchboard answers that path with 404 `{"error": "not
+   found"}`: no switchboard, and the request cost nothing.
 7. **Always send `Content-Length`.** A chunked upload arrives empty, and the studio answers 411.
 
 **Agents whose own model runs on the same Spark** (an LLM served there through switchboard): the studio needs
@@ -415,7 +416,7 @@ call) never cancels the clip.
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "session", "jobs", "done", "more", "deleted"}`. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`SOLH3_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
+| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "session", "jobs", "done", "more", "deleted"}`. `backend` is the machine, `spark` (the default) or `rtx5090` (`SOLH3_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`SOLH3_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
 | `GET /api/jobs?before=<created>&limit=<n>` | Older clips, newest first: `{"jobs": [...], "more": true/false}`. `before` is a `created` time (default: now), `limit` 1-100 (default 24). Records as stored. |
 | `GET /api/inputs/<id>` | A clip's input files, for Remix: `{"task", "inputs": {"<zone>": [{"name", "index", "url"}]}, "missing": [...]}` |
 | `GET /input/<id>/<zone>/<index>` | One input file (reference videos as converted). 404 `no such input`. |
@@ -511,9 +512,10 @@ errors and switchboard's `loading`, `waiting` and `upstream_down` answers are re
 The MP4 is written to a `.part` file, checked against `Content-Length` and then renamed.
 
 **With spark-switchboard**, `status`, `wait`, `cancel` and `fetch` read `/__switchboard/status` first and never
-start a stopped studio. `fetch` then refuses (exit 3, "fetching would start it (it needs about 110 GiB). Add
---wake."); `fetch --wake` starts it, holding up to 900 s. If switchboard stops the studio while `wait` or `generate
---wait` waits, the clip most likely finished first; the CLI says so and how to get it (`sol-h3 fetch <id> --wake`).
+start a stopped studio. `fetch` then refuses (exit 3, "fetching would start it (it needs most of the machine's
+memory). Add --wake."); `fetch --wake` starts it, holding up to 900 s. If switchboard stops the studio while `wait`
+or `generate --wait` waits, the clip most likely finished first; the CLI says so and how to get it (`sol-h3 fetch
+<id> --wake`).
 
 **Output:** stdout carries the result only: the saved MP4's absolute path, the id (generate without waiting), or
 the status lines. Everything else goes to stderr; `--quiet` drops the progress lines. With `--json`, stdout is one

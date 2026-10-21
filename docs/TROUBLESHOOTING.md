@@ -31,6 +31,20 @@ even after you were added. The launcher falls back to `sg docker` when the socke
 that fallback to the Qwen worker; that works as soon as `/etc/group` lists you. `install/00-check.sh` says which
 case you are in.
 
+**`REFUSED - SOLH3_BACKEND=...: must be spark or rtx5090`.** The settings file or the environment has another
+value. Leave it unset on a DGX Spark; set `rtx5090` on a workstation with one RTX 5090 ([RTX5090.md](RTX5090.md)).
+
+**`REFUSED - ... carries the patch for Sol-H3-RTX5090, not Sol-H3-Spark: set SOLH3_BACKEND=rtx5090`** (or the
+other way round). The Sana checkout in `SOLH3_SANA` was patched for the other machine. Set `SOLH3_BACKEND` to the one
+the message names, or point `SOLH3_SANA` at the right checkout. `no Sol-H3-RTX5090 package at ...` means the checkout
+is older than NVIDIA's RTX 5090 package (a DGX Spark's, at `patches/BASE_COMMIT`): run `install/10-sana.sh` with
+`SOLH3_BACKEND=rtx5090` into its own `SOLH3_SANA`.
+
+**RTX 5090: `REFUSED - Sol-H3 Studio needs ~N GiB free GPU memory, only M GiB free`.** Other apps hold GPU memory
+(`nvidia-smi` lists them; so does the launcher). Close them, or set `SOLH3_MIN_FREE_VRAM_GIB` lower (0 turns the
+check off) at your own risk: every mode needed at most 24.8 GiB ([RTX5090.md](RTX5090.md)); below
+that a clip can fail with a CUDA out-of-memory error.
+
 **`>>> STATUS: ERROR: the server exited ...`** or **`... did not answer ... within 60 s`.** The launcher shows
 the last lines of `server.log`; the full log is in `$SOLH3_STATE_DIR`.
 
@@ -71,6 +85,20 @@ edit and installs nothing (plain `install/50-stage2.sh` would reinstall the whol
 both to 13.2. In an existing env:
 `envs/stage2/bin/pip install "nvidia-nvvm==13.2.*" "nvidia-cuda-crt==13.2.*" "nvidia-cuda-nvcc==13.2.*"`, then
 rebuild ltx-kernels (`FORCE=1 install/50-stage2.sh`).
+
+**RTX 5090: ltx-kernels does not build with the system's GCC.** nvcc 13.2 accepts host compilers up to GCC 15. With
+GCC 16 (Arch Linux) its host-compiler check refuses the build, and with `-allow-unsupported-compiler` it fails in
+GCC 16's own headers (`/usr/include/c++/16/bits/shared_ptr_base.h(2118): error: type name is not allowed`,
+`identifier "__builtin_is_virtual_base_of" is undefined`). A newer nvcc is no way out: nvcc 13.4 rejects torch's
+CUDA 13.2 headers (`CUDA compiler and CUDA toolkit headers are incompatible`). With `SOLH3_BACKEND=rtx5090`,
+`install/50-stage2.sh` therefore builds with GCC 14 from conda-forge (micromamba, in `$SOLH3_HOME/toolchains/gcc14`)
+whenever the system's gcc is newer than 15, through `CC`, `CXX` and `NVCC_CCBIN`. It also sets `CFLAGS=-w
+CXXFLAGS=-w`: glibc 2.44 defines `_POSIX_C_SOURCE` differently from Python's `pyconfig.h`, and the extension builds
+with `-Werror` (`error: '_POSIX_C_SOURCE' redefined [-Werror]`); these are warnings only. Found on a workstation with
+one RTX 5090 (Arch Linux, GCC 16, glibc 2.44). To build by hand, use the command `install/50-stage2.sh --dry-run`
+prints. Keep the toolchain afterwards: the built extensions carry an RPATH to `toolchains/gcc14/lib` and load its
+libstdc++ at run time. `FORCE=1` keeps it; `FORCE=1 FORCE_TOOLCHAIN=1 install/50-stage2.sh` installs it again (the
+old one is moved to `$SOLH3_HOME/cache` first) and rebuilds the extensions against it.
 
 **`torchaudio is a stub in the sol-h3-spark-qwen image`.** Something in the Qwen container tried to use audio.
 The prompt encoder never should; report it with the worker log.

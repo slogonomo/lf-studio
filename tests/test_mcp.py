@@ -532,7 +532,8 @@ class FakeStudio(McpTest):
         self.assertIn(f'Call fetch with id "{self.JID}" and wake: true', text(r))
         r = m.call("fetch", {"id": self.JID})
         self.assertTrue(r["isError"])
-        self.assertIn("fetching would start it (it needs about 110 GiB). Call fetch again with wake: true", text(r))
+        self.assertIn("fetching would start it (it needs most of the machine's memory). Call fetch again with wake: "
+                      "true", text(r))
         r = m.call("status", {"id": self.JID})
         self.assertFalse(r["isError"])
         self.assertIn("the studio is stopped", text(r))

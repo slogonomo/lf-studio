@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Sol-H3 Studio: a small web front end for NVIDIA Research's Sol-H3-Spark pipeline (unofficial).
+"""Sol-H3 Studio: a small web front end for NVIDIA Research's Sol-H3-Spark pipeline (unofficial), and for its
+Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (SOLH3_BACKEND=rtx5090; docs/RTX5090.md).
 
 - One job at a time (FIFO queue). Models stay loaded between jobs with the same task (one Pipeline session). A
   clip with another length or orientation changes the loaded session's shape in place (Pipeline.reshape: Stage 1
@@ -31,11 +32,15 @@ For agents and scripts (#29; docs/API.md):
 - /video/<id> downloads as sol-h3_<task>_<seconds>s_seed<seed>_<id6>.mp4.
 - The small JSON POSTs (/api/cancel, /api/delete, /api/undelete, /api/load, /api/unload) answer 413 above 64 KiB.
 
-Run it with cwd = the patched Sol-H3-Spark package (models/minimax_h3/Sol-H3-Spark in the patched Sana checkout):
-it imports runtime.config and runtime.pipeline from there. Standard library only; this process needs no torch.
+Run it with cwd = the patched Sol-H3-Spark package (models/minimax_h3/Sol-H3-Spark in the patched Sana checkout), or
+Sol-H3-RTX5090 with SOLH3_BACKEND=rtx5090: it imports runtime.config and runtime.pipeline from there. Both packages
+have the same runtime API, so the server does the same on both. Standard library only; this process needs no torch.
 bin/sol-h3-studio does all of this for you.
 
 Environment:
+  SOLH3_BACKEND              spark (default) or rtx5090: the machine. It changes only what /api/state reports
+                             ("backend") and so what the page says (the machine's name, its clip-time estimates);
+                             any other value stops the server. bin/sol-h3-studio picks the package and checks by it.
   SOL_H3_SPARK_RUNTIME_ROOT  required. Uploads and session outputs go under it (the Qwen container sees only it).
   SOLH3_HOME                 default ~/sol-h3. Only used for the default manifest path.
   SOLH3_PATHS                manifest path with {task}; default $SOLH3_HOME/paths-{task}.json
@@ -104,6 +109,12 @@ def fail(message):
 # infer.py defaults (see the docstring); the studio sets length and format per job
 IGNORED_ENV = {name: os.environ.pop(name) for name in ("SOL_H3_SECONDS", "SOL_H3_ORIENTATION") if name in os.environ}
 
+# the machine (docs/RTX5090.md): only the page's texts and /api/state depend on it
+BACKENDS = {"spark": "Sol-H3-Spark", "rtx5090": "Sol-H3-RTX5090"}
+BACKEND = os.environ.get("SOLH3_BACKEND", "").strip() or "spark"
+if BACKEND not in BACKENDS:
+    fail(f"SOLH3_BACKEND={BACKEND}: must be spark or rtx5090 (see bin/env.example)")
+
 PKG = Path.cwd()
 sys.path.insert(0, str(PKG))
 try:
@@ -111,8 +122,8 @@ try:
     from runtime.pipeline import Pipeline  # noqa: E402
     from runtime.geometry import ORIENTATIONS  # noqa: E402  (exists only in the patched package)
 except ImportError as error:
-    fail(f"cannot import the patched Sol-H3-Spark runtime from {PKG} ({error}). Start the server with the "
-         "working directory set to models/minimax_h3/Sol-H3-Spark inside the patched Sana checkout.")
+    fail(f"cannot import the patched {BACKENDS[BACKEND]} runtime from {PKG} ({error}). Start the server with the "
+         f"working directory set to models/minimax_h3/{BACKENDS[BACKEND]} inside the patched Sana checkout.")
 
 # the patch's settings: (name, its check in runtime/config.py, default, what a patch without the setting does, the
 # version that added it). A bad value stops the studio here, not every clip. An older patch lacks some of them and
@@ -1106,6 +1117,13 @@ def worker_loop():
 
 # ------------------------------------------------------------------------------------------ HTTP
 PAGE_FILE = Path(__file__).resolve().parent / "index.html"   # read per request: page edits need no restart
+PAGE_BACKEND = '<meta name="sol-h3-backend" content="spark">'   # the page's texts follow it (and /api/state)
+
+
+def page_html():
+    """The page, naming this studio's backend in its sol-h3-backend meta tag, so its first paint already has the
+    machine's texts. On the Spark it goes out unchanged."""
+    return PAGE_FILE.read_text().replace(PAGE_BACKEND, PAGE_BACKEND.replace('"spark"', f'"{BACKEND}"'), 1)
 
 
 def parse_multipart(ctype, body):
@@ -1623,7 +1641,7 @@ class H(BaseHTTPRequestHandler):
             return
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
-            return self.send(200, PAGE_FILE.read_text(), "text/html; charset=utf-8")
+            return self.send(200, page_html(), "text/html; charset=utf-8")
         if path == "/health":
             return self.send(200, {"ok": True})
         if path == "/api/state":
@@ -1636,7 +1654,7 @@ class H(BaseHTTPRequestHandler):
                 window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
                 warmable = [t for t in ready if mode_warmup_case(t)]     # modes "Load selected now" can warm up
                 state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS, "warmable": warmable,
-                         "reshape": RESHAPE,
+                         "reshape": RESHAPE, "backend": BACKEND,
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
                                                                  "takeover_until", "load_eta", "warm_s",
                                                                  "switching_to")},

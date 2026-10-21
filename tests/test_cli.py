@@ -476,7 +476,8 @@ class Switchboard(unittest.TestCase):
         for args, words in [(["status"], "the studio is stopped"), (["status", jid], "the studio is stopped"),
                             (["wait", jid], f"Get it with: sol-h3 fetch {jid} --wake"),
                             (["cancel", jid], "no clip is queued or running there"),
-                            (["fetch", jid], "fetching would start it (it needs about 110 GiB). Add --wake.")]:
+                            (["fetch", jid],
+                             "fetching would start it (it needs most of the machine's memory). Add --wake.")]:
             p = self.sol(fake, *args)
             self.assertEqual(p.returncode, 3, (args, p.stderr))
             self.assertIn(words, p.stderr)
