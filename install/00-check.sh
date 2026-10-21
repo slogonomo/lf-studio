@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # 00-check.sh: check the prerequisites before installing. Changes nothing.
-# DGX Spark (SOLH3_BACKEND=spark, the default): aarch64, NVIDIA GB10, driver, CUDA 13 at /usr/local/cuda, python3.12
-# with venv, git, ffmpeg/ffprobe, curl, docker access, free disk (~300 GB; ~60 GB if SOLH3_CHECKPOINTS already holds
+# DGX Spark (LFSTUDIO_BACKEND=spark, the default): aarch64, NVIDIA GB10, driver, CUDA 13 at /usr/local/cuda, python3.12
+# with venv, git, ffmpeg/ffprobe, curl, docker access, free disk (~300 GB; ~60 GB if LFSTUDIO_CHECKPOINTS already holds
 # the weights), Hugging Face login (hf auth login or HF_TOKEN) and access to the gated Lightricks/LTX-2.5 repo.
-# RTX 5090 (SOLH3_BACKEND=rtx5090): x86_64, one RTX 5090, driver, git, curl, tar, sha256sum, ffmpeg/ffprobe, the
+# RTX 5090 (LFSTUDIO_BACKEND=rtx5090): x86_64, one RTX 5090, driver, git, curl, tar, sha256sum, ffmpeg/ffprobe, the
 # host C++ compiler (a GCC newer than 15 gets a GCC 14 toolchain in 50-stage2.sh), free disk, Hugging Face as above.
 # No CUDA toolkit, system Python or Docker is needed there.
-# It also says which backend this machine looks like (SOLH3_BACKEND, see bin/env.example).
+# It also says which backend this machine looks like (LFSTUDIO_BACKEND, see bin/env.example).
 # --dry-run skips the docker and Hugging Face checks (this script changes nothing either way).
 # Validated on DGX OS (Ubuntu 24.04 aarch64), driver 580.178.04, CUDA 13.0; and on Arch Linux x86_64 with one
 # RTX 5090.
@@ -18,15 +18,16 @@ ok() { echo "  ok    $*"; }
 bad() { echo "  FAIL  $*"; FAILS=$((FAILS + 1)); }
 note() { echo "  note  $*"; }
 
-step "prerequisites (SOLH3_HOME=$SOLH3_HOME)"
+step "prerequisites (LFSTUDIO_HOME=$LFSTUDIO_HOME)"
 detected=$(detect_backend)
-if [[ -n "$detected" && "$detected" != "$SOLH3_BACKEND" ]]; then
-    bad "this machine looks like SOLH3_BACKEND=$detected, but the install uses $SOLH3_BACKEND$([[ "$SOLH3_BACKEND_SET" == 1 ]] || echo ' (the default)'):
-        export SOLH3_BACKEND=$detected, then run the install scripts again (90-env.sh writes it into the settings file)"
+if [[ -n "$detected" && "$detected" != "$LFSTUDIO_BACKEND" ]]; then
+    bad "this machine looks like LFSTUDIO_BACKEND=$detected, but the install uses $LFSTUDIO_BACKEND$([[ "$LFSTUDIO_BACKEND_SET" == 1 ]] || echo ' (the default)'):
+        export LFSTUDIO_BACKEND=$detected, then run the install scripts again (90-env.sh writes it into the settings
+        file)"
 elif [[ -n "$detected" ]]; then
-    ok "SOLH3_BACKEND=$SOLH3_BACKEND"
+    ok "LFSTUDIO_BACKEND=$LFSTUDIO_BACKEND"
 fi
-if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
+if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     [[ "$(uname -m)" == x86_64 ]] && ok "x86_64" || bad "this is $(uname -m); Sol-H3-RTX5090 targets x86_64"
     if command -v nvidia-smi >/dev/null; then
         mapfile -t gpus < <(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null)
@@ -99,7 +100,7 @@ else
 fi
 
 # disk: weights ~224 GB (all three tasks plus the offline weights); envs and sources ~14 GB, the Qwen image ~21 GB
-# (Docker's own disk) plus outputs and caches: ~60 GB. If SOLH3_CHECKPOINTS already holds weights (for example from
+# (Docker's own disk) plus outputs and caches: ~60 GB. If LFSTUDIO_CHECKPOINTS already holds weights (for example from
 # NVIDIA's own install), only the ~60 GB are needed.
 # RTX 5090: weights ~220 GB (no offline weights: the prompt cache comes from a DGX Spark), envs ~14 GB, the GCC
 # toolchain ~1.2 GB, the pip cache ~6 GB, plus outputs and caches: ~40 GB (measured on a workstation with one RTX 5090).
@@ -107,24 +108,24 @@ fi
 # folder (42 GB), one H3 snapshot per mode (20-24 GB each), and ~66 GB of scratch while a snapshot is built: ~180 GB.
 rest_gb=60
 derived_gb=0
-if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
+if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     rest_gb=40
     derived_gb=180
-    if [[ -n "$(find "$(dirname -- "$SOLH3_CHECKPOINTS")/derived" -mindepth 2 -maxdepth 2 -print -quit 2>/dev/null)" ]]; then
+    if [[ -n "$(find "$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived" -mindepth 2 -maxdepth 2 -print -quit 2>/dev/null)" ]]; then
         derived_gb=0
         note "derived files found next to the checkpoints; a patch update can rebuild them (up to ~110 GB more for a while)"
     fi
 fi
 fs_probe() { local p=$1; while [[ ! -e "$p" ]]; do p=$(dirname "$p"); done; printf '%s' "$p"; }
 free_gb_at() { df -B1G --output=avail "$1" | tail -1 | tr -d ' '; }
-home_probe=$(fs_probe "$SOLH3_HOME")
-ckpt_probe=$(fs_probe "$SOLH3_CHECKPOINTS")
+home_probe=$(fs_probe "$LFSTUDIO_HOME")
+ckpt_probe=$(fs_probe "$LFSTUDIO_CHECKPOINTS")
 weights_gb=240
-[[ "$SOLH3_BACKEND" == rtx5090 ]] && weights_gb=220
-if [[ -d "$SOLH3_CHECKPOINTS" ]] &&
-    [[ -n "$(find "$SOLH3_CHECKPOINTS" -name '*.safetensors' -print -quit 2>/dev/null)" ]]; then
+[[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && weights_gb=220
+if [[ -d "$LFSTUDIO_CHECKPOINTS" ]] &&
+    [[ -n "$(find "$LFSTUDIO_CHECKPOINTS" -name '*.safetensors' -print -quit 2>/dev/null)" ]]; then
     weights_gb=0
-    note "weights found in $SOLH3_CHECKPOINTS; 20-weights.sh verifies them and downloads only what is missing"
+    note "weights found in $LFSTUDIO_CHECKPOINTS; 20-weights.sh verifies them and downloads only what is missing"
 fi
 if [[ "$(stat -c %d "$home_probe")" == "$(stat -c %d "$ckpt_probe")" ]]; then
     need=$((weights_gb + derived_gb + rest_gb)); free_gb=$(free_gb_at "$home_probe")
@@ -153,7 +154,7 @@ token=${HF_TOKEN:-}
 if [[ "$DRY_RUN" == 1 ]]; then
     echo "+ curl -I <one small file of Lightricks/LTX-2.5 with your HF token>   (dry run: not run)"
 elif [[ -z "$token" ]]; then
-    bad "no Hugging Face token. Log in with the download tool (the same venv 20-weights.sh uses$([[ "$SOLH3_BACKEND" == rtx5090 ]] && echo "; after install/05-python.sh")):
+    bad "no Hugging Face token. Log in with the download tool (the same venv 20-weights.sh uses$([[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && echo "; after install/05-python.sh")):
           $HOST_PY -m venv $ENVS/download && $ENVS/download/bin/pip install huggingface-hub==1.29.0
           $ENVS/download/bin/hf auth login
         or export HF_TOKEN=<a read token> for this shell."
@@ -176,10 +177,10 @@ if (( FAILS > 0 )); then
 fi
 if [[ "$DRY_RUN" == 1 ]]; then
     skipped="docker and Hugging Face checks were"
-    [[ "$SOLH3_BACKEND" == rtx5090 ]] && skipped="Hugging Face check was"     # no docker on the RTX 5090 path
+    [[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && skipped="Hugging Face check was"     # no docker on the RTX 5090 path
     echo "Checks done; the $skipped skipped in the dry run. Run it without --dry-run."
     exit 0
 fi
 next=install/10-sana.sh
-[[ "$SOLH3_BACKEND" == rtx5090 ]] && next=install/05-python.sh   # uv and its Pythons first
+[[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && next=install/05-python.sh   # uv and its Pythons first
 echo "All checks passed. Next: $next"

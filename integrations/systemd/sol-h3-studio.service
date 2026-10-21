@@ -1,3 +1,4 @@
+# DEPRECATED: the 0.4 file, kept unchanged until 0.6 (it runs the bin/sol-h3-studio shim). Use lf-studio.service.
 # Sol-H3 Studio as a systemd user service.
 #   mkdir -p ~/.config/systemd/user && cp sol-h3-studio.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user start sol-h3-studio

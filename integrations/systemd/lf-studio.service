@@ -1,0 +1,25 @@
+# LF Studio as a systemd user service.
+#   mkdir -p ~/.config/systemd/user && cp lf-studio.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user start lf-studio
+#   systemctl --user enable lf-studio               # start at login
+#   sudo loginctl enable-linger "$USER"             # optional: start at boot, without a login
+# Settings: ~/.config/lf-studio/env. Logs: journalctl --user -u lf-studio, plus ~/.local/state/lf-studio/.
+# The service refuses to start (and stays failed) when less than LFSTUDIO_MIN_FREE_GIB is free; there is no automatic
+# restart on purpose, so it never fights another app for memory. Don't combine it with spark-switchboard
+# (https://github.com/slogonomo/spark-switchboard) or NVIDIA Sync managing the same studio. Paths assume the repo
+# at ~/src/lf-studio.
+[Unit]
+Description=LF Studio (unofficial web UI for NVIDIA Sol-H3-Spark)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash %h/src/lf-studio/bin/lf-studio
+# SIGTERM to the launcher only; it stops the server (which closes its pipeline), the workers and the Qwen container.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Restart=no
+
+[Install]
+WantedBy=default.target

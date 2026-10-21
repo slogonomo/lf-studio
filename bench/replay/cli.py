@@ -158,14 +158,14 @@ def group_env(cache):
     if cache != "session":
         env.setdefault("TRITON_CACHE_AUTOTUNING", "1")
     env["SOL_H3_COMPILE_CACHE"] = cache
-    env["PYTHONPATH"] = os.pathsep.join([setting("SOLH3_PKG"), str(BENCH)])
+    env["PYTHONPATH"] = os.pathsep.join([setting("LFSTUDIO_PKG"), str(BENCH)])
     return env
 
 
 def cmd_add(a):
     store = draftlib.store_dir(runtime_root())
     store.mkdir(parents=True, exist_ok=True)
-    geometry = draftlib.load_geometry(setting("SOLH3_PKG"))
+    geometry = draftlib.load_geometry(setting("LFSTUDIO_PKG"))
     info = draftlib.add(store, a.name, a.case_dir, geometry, dialogue=a.dialogue, turns=a.turns, mouth=a.mouth,
                         note=a.note or "", force=a.force)
     print("added " + draftlib.describe(info))
@@ -198,11 +198,11 @@ def make_plan(a, out):
     if not names:
         raise SystemExit(f"replay: no drafts in {store}; add some with bench/replay.sh add NAME CASE_DIR")
     selected = [draftlib.load(store, n) for n in names]
-    package = setting("SOLH3_PKG")
+    package = setting("LFSTUDIO_PKG")
     geometry = draftlib.load_geometry(package)
-    info = planlib.package_info(package, setting("SOLH3_SANA"), setting("SOLH3_REPO"))
+    info = planlib.package_info(package, setting("LFSTUDIO_SANA"), setting("LFSTUDIO_REPO"))
     return planlib.build(selected, planlib.parse_arms(a.arms or "baseline", a.repeats), package=package,
-                         geometry=geometry, paths_template=setting("SOLH3_PATHS"), out=out, label=a.label or "",
+                         geometry=geometry, paths_template=setting("LFSTUDIO_PATHS"), out=out, label=a.label or "",
                          stop_at=a.stop_at, info=info)
 
 
@@ -218,7 +218,7 @@ def cmd_run(a):
     if a.dry:
         print("dry run: nothing was started or written")
         return 0
-    need = float(setting("SOLH3_MIN_FREE_GIB", "110"))
+    need = float(setting("LFSTUDIO_MIN_FREE_GIB", "110"))
     out.mkdir(parents=True)
     (out / "logs").mkdir()
     print(f"run directory {out}", flush=True)

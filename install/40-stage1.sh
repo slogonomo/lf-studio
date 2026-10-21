@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 40-stage1.sh: build the Stage1 venv ($SOLH3_HOME/envs/stage1, Python 3.12) and the isolated FA4 target.
+# 40-stage1.sh: build the Stage1 venv ($LFSTUDIO_HOME/envs/stage1, Python 3.12) and the isolated FA4 target.
 # Stage1 = MiniMax-H3 draft: torch 2.12.0+cu130, patched FastVideo (editable, from sources/), fastvideo-kernel
 # 0.3.5 built for SM121, cuDNN frontend 1.27.0 + cuDNN 9.20.0.48 for the BSA kernel. ~22 min measured, ~7 GB.
 # Pins: install/constraints/stage1-constraints.txt (the observed working set; upstream's requirements/*-observed.txt
@@ -7,35 +7,36 @@
 #   - flashinfer-python is not installed: its release needs cudnn-frontend >= 1.29; the H3 path does not use it.
 #   - FA4 target: apache-tvm-ffi 0.1.13 instead of 0.1.13rc1 (not on PyPI). PyPI marks 0.1.13 as yanked; pip prints
 #     a warning and installs it anyway because the pin is exact.
-# RTX 5090 (SOLH3_BACKEND=rtx5090): the venv comes from uv (Python 3.12.15, 05-python.sh) and also runs the Qwen
+# RTX 5090 (LFSTUDIO_BACKEND=rtx5090): the venv comes from uv (Python 3.12.15, 05-python.sh) and also runs the Qwen
 # prompt encoder natively (no Docker), so it gets ComfyUI's requirements, comfy-kitchen and comfy-aimdo too. No
 # fastvideo-kernel (Sol-H3-RTX5090 does not use it; its PyPI wheel bundles its own libcuda) and no CUDA toolkit.
 # Pins: install/constraints/stage1-rtx5090-constraints.txt. ~25 min measured on a workstation with one RTX 5090,
 # most of it downloads at ~9 MB/s; ~8 GB.
-# Idempotent: skipped when $ENVS/stage1/.sol-h3-studio-done exists (FORCE=1 rebuilds into the same venv). On the
-# RTX 5090 a venv without that marker whose pip freeze is install/freeze/stage1-rtx5090-freeze.txt (one built by hand
-# to the same recipe) is adopted: nothing is installed, and the marker is written once the import check passes.
+# Idempotent: skipped when $ENVS/stage1/.lf-studio-done (until 0.6 also .sol-h3-studio-done, its name up to 0.4) exists
+# (FORCE=1 rebuilds into the same venv). On the RTX 5090 a venv without that marker whose pip freeze is
+# install/freeze/stage1-rtx5090-freeze.txt (one built by hand to the same recipe) is adopted: nothing is installed, and
+# the marker is written once the import check passes.
 # Do not run 40 and 50 at the same time: two nvcc builds at once can exhaust unified memory.
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 [[ -d "$SOURCES/FastVideo" || "$DRY_RUN" == 1 ]] || die "no $SOURCES/FastVideo; run 30-sources.sh first"
 need_host_py "sudo apt install python3.12-venv"
-if [[ "$SOLH3_BACKEND" == spark ]]; then
+if [[ "$LFSTUDIO_BACKEND" == spark ]]; then
     [[ -x /usr/local/cuda/bin/nvcc ]] || die "CUDA 13 toolkit not found at /usr/local/cuda"
 fi
 V="$ENVS/stage1"
 C="$INSTALL_DIR/constraints/stage1-constraints.txt"
-[[ "$SOLH3_BACKEND" == rtx5090 ]] && C="$INSTALL_DIR/constraints/stage1-rtx5090-constraints.txt"
+[[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && C="$INSTALL_DIR/constraints/stage1-rtx5090-constraints.txt"
 TORCH_IDX=https://download.pytorch.org/whl/cu130
-DONE="$V/.sol-h3-studio-done"
+DONE="$V/.lf-studio-done"
 ADOPT=0
 
-if [[ -f "$DONE" && "$FORCE" != 1 ]]; then
+if [[ (-f "$DONE" || -f "$V/.sol-h3-studio-done") && "$FORCE" != 1 ]]; then    # (the 0.4 marker: until 0.6)
     say "Stage1 env already built ($V); FORCE=1 to rebuild"
-elif [[ "$SOLH3_BACKEND" == rtx5090 && "$FORCE" != 1 ]] &&
+elif [[ "$LFSTUDIO_BACKEND" == rtx5090 && "$FORCE" != 1 ]] &&
         freeze_matches "$V/bin/python" "$INSTALL_DIR/freeze/stage1-rtx5090-freeze.txt"; then
     say "Stage1 env $V has no marker but matches install/freeze/stage1-rtx5090-freeze.txt: adopted as it is (FORCE=1 rebuilds)"
     ADOPT=1
-elif [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
+elif [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     step "Stage1 venv $V (Python $PY312_VERSION from uv; also the Qwen prompt encoder's)"
     [[ -x "$V/bin/python" ]] || run "$UV" venv --seed --python "$HOST_PY" "$V"
     P=("$V/bin/python" -m pip)
@@ -113,9 +114,9 @@ else
         nvidia-cutlass-dsl==4.6.0.dev0 nvidia-cutlass-dsl-libs-base==4.6.0.dev0 nvidia-cutlass-dsl-libs-cu13==4.6.0.dev0 \
         quack-kernels==0.5.3 apache-tvm-ffi==0.1.13 torch-c-dlpack-ext==0.1.5
 fi
-EXISTING="$SOLH3_HOME/existing-paths.json"
+EXISTING="$LFSTUDIO_HOME/existing-paths.json"
 if [[ ! -f "$EXISTING" || "$FORCE" == 1 ]]; then
-    if [[ "$SOLH3_BACKEND" == rtx5090 ]]; then
+    if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
         # Sol-H3-RTX5090 also names the CuTe DSL packages of the Stage1 env (its docs/setup.md)
         CUTE="$V/lib/python$(cut -d. -f1,2 <<<"$PY312_VERSION")/site-packages/nvidia_cutlass_dsl/dsl_packages"
         echo "+ write $EXISTING (fa4_dependencies -> $DEPS/fa4, stage1_dependencies -> $CUTE)"
@@ -135,7 +136,7 @@ step "quick import check (CPU only)"
 # `import fastvideo` needs a visible GPU (Triton picks its driver at import), so FastVideo is only located here,
 # and fastvideo-kernel's compiled extension is loaded (that needs no GPU).
 # RTX 5090: no fastvideo-kernel; comfy_kitchen and ComfyUI's dependencies are checked instead (the Qwen encoder).
-if [[ "$DRY_RUN" != 1 && "$SOLH3_BACKEND" == rtx5090 ]]; then
+if [[ "$DRY_RUN" != 1 && "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     CUDA_VISIBLE_DEVICES='' "$V/bin/python" -B -c '
 import importlib.util, torch, torchvision, torchaudio, diffusers, transformers, cudnn, comfy_kitchen  # noqa: F401
 assert importlib.util.find_spec("fastvideo"), "fastvideo is not installed"

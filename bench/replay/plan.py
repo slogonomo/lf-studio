@@ -87,11 +87,13 @@ def package_info(package, sana, repo):
     info = {"package": str(package), "sana": str(sana)}
     code, count = stage2_code_sha256(package)
     info.update(stage2_code_sha256=code, stage2_code_files=count)
-    repo_patch = Path(repo) / "patches" / "sol-h3-studio.patch"
+    repo_patch = Path(repo) / "patches" / "lf-studio.patch"
     info["repo_patch_sha256"] = media_sha(repo_patch)
     gitdir = git("-C", str(sana), "rev-parse", "--absolute-git-dir")
     info["sana_head"] = git("-C", str(sana), "rev-parse", "HEAD")
-    copy = Path(gitdir) / "sol-h3-studio-applied.patch" if gitdir else None
+    copy = Path(gitdir) / "lf-studio-applied.patch" if gitdir else None
+    if copy is not None and not copy.is_file():      # until 0.6: the copy's name up to 0.4
+        copy = copy.with_name("sol-h3-studio-applied.patch")
     if copy is not None and copy.is_file():
         info["patch_sha256"] = media_sha(copy)
         base = copy.with_name(copy.name + ".base")
@@ -108,7 +110,7 @@ def media_sha(path):
 
 
 def stage2_paths(paths_template, task):
-    """The Stage-2 entries of a task's path manifest (SOLH3_PATHS, {task} = t2va/fl2va/ref2va)."""
+    """The Stage-2 entries of a task's path manifest (LFSTUDIO_PATHS, {task} = t2va/fl2va/ref2va)."""
     manifest = Path(paths_template.replace("{task}", task)).expanduser()
     if not manifest.is_file():
         raise FileNotFoundError(f"no path manifest {manifest} for {task} (install/70-manifests.sh)")
@@ -202,7 +204,7 @@ def describe(plan):
     if pi:
         patch = pi.get("patch_sha256")
         lines.append(f"  patch {patch[:12] if patch else 'unknown (no applied copy in the checkout)'}"
-                     + (f", same as this checkout's patches/sol-h3-studio.patch: "
+                     + (f", same as this checkout's patches/lf-studio.patch: "
                         f"{'yes' if pi.get('patch_same_as_repo') else 'no'}" if patch else "")
                      + f"; Stage-2 code {pi.get('stage2_code_sha256', '')[:12]} ({pi.get('stage2_code_files')} files)")
     lines.append(f"drafts ({len(plan['drafts'])}):")

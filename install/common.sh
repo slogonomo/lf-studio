@@ -1,14 +1,18 @@
 # shellcheck shell=bash disable=SC2034  # variables here are used by the scripts that source this file
 # Shared by install/NN-*.sh. Not run directly.
-# Loads the settings (install/env.sh: ${SOLH3_ENV:-~/.config/sol-h3-studio/env}, defaults under $SOLH3_HOME,
+# Loads the settings (install/env.sh: ${LFSTUDIO_ENV:-~/.config/lf-studio/env}, defaults under $LFSTUDIO_HOME,
 # default ~/sol-h3) and provides run/step helpers.
-# Every script accepts --dry-run (or SOLH3_DRY_RUN=1): it prints the commands that change something instead of
+# Every script accepts --dry-run (or LFSTUDIO_DRY_RUN=1): it prints the commands that change something instead of
 # running them. Read-only checks still run. FORCE=1 redoes steps that are already done.
 set -uo pipefail
 
 INSTALL_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd -- "$INSTALL_DIR/.." && pwd)
-DRY_RUN=${SOLH3_DRY_RUN:-0}
+if [[ -n "${LFSTUDIO_DRY_RUN+set}" ]]; then   # set, even empty, the new name wins (as in env.sh)
+    DRY_RUN=${LFSTUDIO_DRY_RUN:-0}
+else
+    DRY_RUN=${SOLH3_DRY_RUN:-0}                 # SOLH3_DRY_RUN: its name up to 0.4, until 0.6
+fi
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
@@ -25,8 +29,8 @@ source "$INSTALL_DIR/env.sh"
 # 00-check.sh, which reports it as a failed check; a dry run only warns. Nothing detected (another GPU): no check.
 if [[ "$(basename -- "$0")" != 00-check.sh ]]; then
     machine=$(detect_backend)
-    if [[ -n "$machine" && "$machine" != "$SOLH3_BACKEND" ]]; then
-        mismatch="this machine looks like SOLH3_BACKEND=$machine, but the install uses $SOLH3_BACKEND$([[ "$SOLH3_BACKEND_SET" == 1 ]] || echo ' (the default)'): export SOLH3_BACKEND=$machine, then run the install scripts again"
+    if [[ -n "$machine" && "$machine" != "$LFSTUDIO_BACKEND" ]]; then
+        mismatch="this machine looks like LFSTUDIO_BACKEND=$machine, but the install uses $LFSTUDIO_BACKEND$([[ "$LFSTUDIO_BACKEND_SET" == 1 ]] || echo ' (the default)'): export LFSTUDIO_BACKEND=$machine, then run the install scripts again"
         if [[ "$DRY_RUN" == 1 ]]; then
             echo "WARNING: $mismatch (dry run: going on)" >&2
         else
