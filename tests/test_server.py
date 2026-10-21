@@ -47,7 +47,7 @@ class StudioTest(unittest.TestCase):
     load_s, clip_s, preload = 2, 1, False
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="sol-h3-test-"))
+        self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
         self.studio = StubStudio(self.dir, load_s=self.load_s, clip_s=self.clip_s, preload=self.preload)
         self.seed()
         self.studio.start()
@@ -91,7 +91,7 @@ class StubStart(unittest.TestCase):
     on that port answers /health too, and everything the tests or a reviewer then sent went to it."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="sol-h3-stub-"))
+        self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-stub-"))
         self.first = StubStudio(self.dir / "first", preload=False).start()
         self.others = []
 
@@ -121,7 +121,7 @@ class StubStart(unittest.TestCase):
             third = self.other("third", self.first.port).start()
             with self.assertRaisesRegex(RuntimeError, "Address already in use"):
                 self.first.start()
-        self.assertEqual(self.first.log.read_text().count("Sol-H3 Studio on"), 1)
+        self.assertEqual(self.first.log.read_text().count("LF Studio on"), 1)
         self.assertEqual(third.state()["jobs"], [])                              # nothing went to the third studio
 
     def command(self, port, name):
@@ -195,7 +195,7 @@ class Basics(StudioTest):
 class HostCheck(StudioTest):
     """#29: a request for a host name the studio does not answer to gets 421, whatever the method: a web page on a
     name of its own that resolves to the studio's address (DNS rebinding) gets nothing. IP addresses, localhost, names
-    without a dot and local suffixes pass; SOLH3_ALLOWED_HOSTS adds names, or turns the check off with *."""
+    without a dot and local suffixes pass; LFSTUDIO_ALLOWED_HOSTS adds names, or turns the check off with *."""
     load_s, clip_s = 1, 0.5
 
     def ask(self, host, method="GET", path="/api/state", **headers):
@@ -207,12 +207,12 @@ class HostCheck(StudioTest):
         code, data = self.ask(host, method, path, **headers)
         self.assertEqual(code, 421, (host, method, path, data))
         if method != "HEAD":
-            self.assertIn(b"add it to SOLH3_ALLOWED_HOSTS", data)
+            self.assertIn(b"add it to LFSTUDIO_ALLOWED_HOSTS", data)
         return json.loads(data or b"{}").get("error")
 
     def test_unknown_names_refused_for_every_method(self):
         self.assertEqual(self.refused("Evil.Example:8190"),
-                         "unknown host name evil.example; add it to SOLH3_ALLOWED_HOSTS")
+                         "unknown host name evil.example; add it to LFSTUDIO_ALLOWED_HOSTS")
         self.refused("evil.example", "HEAD")
         self.refused("evil.example", "GET", "/")
         self.refused("evil.example", "GET", f"/video/{'f' * 32}")
@@ -240,7 +240,7 @@ class HostCheck(StudioTest):
 
     def test_allowed_hosts_setting(self):
         self.studio.stop()
-        self.studio.env["SOLH3_ALLOWED_HOSTS"] = " Studio.Example.com:8443 , other.example"
+        self.studio.env["LFSTUDIO_ALLOWED_HOSTS"] = " Studio.Example.com:8443 , other.example"
         self.studio.start()
         for host in ("studio.example.com", "STUDIO.example.com:8190", "other.example:80"):
             self.assertEqual(self.ask(host)[0], 200, host)
@@ -248,7 +248,7 @@ class HostCheck(StudioTest):
         self.refused("evil.example")
         self.refused("example.com")
         self.studio.stop()
-        self.studio.env["SOLH3_ALLOWED_HOSTS"] = "*"
+        self.studio.env["LFSTUDIO_ALLOWED_HOSTS"] = "*"
         self.studio.start()
         self.assertEqual(self.ask("evil.example")[0], 200)
         self.assertEqual(self.ask("evil.example", "POST", "/api/cancel")[0], 404)
@@ -256,7 +256,7 @@ class HostCheck(StudioTest):
 
 def mp4(seconds=3):
     """A small test video with sound (reference videos must be at least 2 s)."""
-    out = Path(tempfile.mkdtemp(prefix="sol-h3-mp4-")) / "ref.mp4"
+    out = Path(tempfile.mkdtemp(prefix="lf-studio-mp4-")) / "ref.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s=320x180:r=24:d={seconds}", "-f",
                     "lavfi", "-i", f"sine=duration={seconds}", "-shortest", "-pix_fmt", "yuv420p", str(out)], check=True)
     data = out.read_bytes()
@@ -741,7 +741,7 @@ class HistoryOrder(StudioTest):
 
     def test_slow_upload_does_not_hide_a_clip(self):
         import threading
-        big = Path(tempfile.mkdtemp(prefix="sol-h3-big-")) / "big.mp4"
+        big = Path(tempfile.mkdtemp(prefix="lf-studio-big-")) / "big.mp4"
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24:d=12",
                         "-f", "lavfi", "-i", "sine=duration=12", "-shortest", "-pix_fmt", "yuv420p", str(big)],
                        check=True)
@@ -766,7 +766,7 @@ class Delete(StudioTest):
     env = {}
 
     def setUp(self):
-        self.publish = Path(tempfile.mkdtemp(prefix="sol-h3-publish-"))
+        self.publish = Path(tempfile.mkdtemp(prefix="lf-studio-publish-"))
         super().setUp()
 
     def tearDown(self):
@@ -774,7 +774,7 @@ class Delete(StudioTest):
         shutil.rmtree(self.publish, ignore_errors=True)
 
     def seed(self):
-        self.studio.env.update(SOLH3_PUBLISH_DIR=str(self.publish), **self.env)
+        self.studio.env.update(LFSTUDIO_PUBLISH_DIR=str(self.publish), **self.env)
 
     def delete(self, jid, path="/api/delete"):
         return self.studio.post(path, json_body={"id": jid})
@@ -907,7 +907,7 @@ class ReleaseReview(StudioTest):
     load_s, clip_s, preload = 2, 0.5, True
 
     def setUp(self):
-        self.share = Path(tempfile.mkdtemp(prefix="sol-h3-share-", dir="/dev/shm"))     # another filesystem
+        self.share = Path(tempfile.mkdtemp(prefix="lf-studio-share-", dir="/dev/shm"))     # another filesystem
         super().setUp()
 
     def tearDown(self):
@@ -915,7 +915,7 @@ class ReleaseReview(StudioTest):
         shutil.rmtree(self.share, ignore_errors=True)
 
     def seed(self):
-        self.studio.env.update(STUB_CLOSE_S="2", SOLH3_PUBLISH_DIR=str(self.share))
+        self.studio.env.update(STUB_CLOSE_S="2", LFSTUDIO_PUBLISH_DIR=str(self.share))
         self.old = self.share / "20260923-113128_t2va_portrait_seed11_4f969b.mp4"   # a 0.1 clip: its only copy
         self.old.write_bytes(os.urandom(600_000))
         self.old.with_suffix(".jpg").write_bytes(b"jpg")
@@ -1058,8 +1058,8 @@ class FixReview(ReleaseReview):
 
 class SymlinkedRuntime(StudioTest):
     def setUp(self):
-        self.real = Path(tempfile.mkdtemp(prefix="sol-h3-real-"))
-        link = Path(tempfile.mkdtemp(prefix="sol-h3-link-")) / "root"
+        self.real = Path(tempfile.mkdtemp(prefix="lf-studio-real-"))
+        link = Path(tempfile.mkdtemp(prefix="lf-studio-link-")) / "root"
         link.symlink_to(self.real)
         self.link = link
         self.dir = link
@@ -1082,12 +1082,12 @@ class SymlinkedRuntime(StudioTest):
 
 class BadTrashDays(unittest.TestCase):
     def test_refused_at_start(self):
-        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-bad-"))
         try:
-            studio = StubStudio(d, env={"SOLH3_TRASH_DAYS": "inf"})
+            studio = StubStudio(d, env={"LFSTUDIO_TRASH_DAYS": "inf"})
             with self.assertRaises(RuntimeError) as e:
                 studio.start()
-            self.assertIn("SOLH3_TRASH_DAYS", str(e.exception))
+            self.assertIn("LFSTUDIO_TRASH_DAYS", str(e.exception))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -1096,7 +1096,7 @@ class BadStage2Audio(unittest.TestCase):
     """SOL_H3_STAGE2_AUDIO (a patch setting) is checked at start, not when every clip fails."""
 
     def test_refused_at_start(self):
-        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-bad-"))
         try:
             with self.assertRaises(RuntimeError) as e:
                 StubStudio(d / "a", env={"SOL_H3_STAGE2_AUDIO": "noised"}).start()
@@ -1115,7 +1115,7 @@ class BadDynamicTextLength(unittest.TestCase):
     stops the studio instead of failing every Stage-1 load once the transformer is in memory."""
 
     def test_refused_at_start(self):
-        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-bad-"))
         try:
             for i, value in enumerate(("on", "2", "true")):
                 with self.assertRaises(RuntimeError) as e:
@@ -1176,7 +1176,7 @@ class BadPromptTokens(unittest.TestCase):
         """A checkout with an older patch would ignore the setting: the studio refuses any value but what that
         patch does anyway, the default (minimax) included. Without this, a git pull without install/10-sana.sh
         started fine and every clip came out plain (#38)."""
-        d = Path(tempfile.mkdtemp(prefix="sol-h3-old-"))
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-old-"))
         try:
             packages = {version: older_patch_package(d, version) for version in ("0.3", "0.2")}
             for i, (version, settings, refused) in enumerate(OLDER_PATCH_CASES):
@@ -1194,7 +1194,7 @@ class BadPromptTokens(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
     def test_refused_at_start(self):
-        d = Path(tempfile.mkdtemp(prefix="sol-h3-bad-"))
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-bad-"))
         try:
             with self.assertRaises(RuntimeError) as e:
                 StubStudio(d / "a", env={"SOL_H3_PROMPT_TOKENS": "special"}).start()
@@ -1207,12 +1207,12 @@ class BadPromptTokens(unittest.TestCase):
 
 
 class LauncherSettingsCheck(unittest.TestCase):
-    """bin/sol-h3-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS,
+    """bin/lf-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS,
     SOL_H3_STATIC_SHAPES, SOL_H3_DYNAMIC_TEXT_LENGTH) in the package, here the stub runtime, and refuses a bad value
     with its message, or a value an older patch can't give (#38)."""
 
     def setUp(self):
-        self.d = Path(tempfile.mkdtemp(prefix="sol-h3-check-"))
+        self.d = Path(tempfile.mkdtemp(prefix="lf-studio-check-"))
         self.addCleanup(shutil.rmtree, self.d, True)
         (self.d / "sana/models/minimax_h3").mkdir(parents=True)
         (self.d / "sana/models/minimax_h3/Sol-H3-Spark").symlink_to(Path(__file__).resolve().parent / "stub")
@@ -1220,13 +1220,14 @@ class LauncherSettingsCheck(unittest.TestCase):
             (self.d / f"paths-{task}.json").write_text("{}")
 
     def check(self, **settings):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "SOLH3_"))}
-        env.update(SOLH3_ENV=str(self.d / "no-env-file"), SOLH3_SANA=str(self.d / "sana"), SOLH3_PYTHON=sys.executable,
-                   SOLH3_PATHS=str(self.d / "paths-{task}.json"), SOL_H3_SPARK_RUNTIME_ROOT=str(self.d / "runtime"),
-                   SOLH3_STATE_DIR=str(self.d / "state"), SOLH3_HOST="127.0.0.1", SOLH3_PORT=str(free_port()),
-                   SOLH3_TEST_SKIP_DOCKER="1", SOLH3_MIN_FREE_GIB="0", PYTHONDONTWRITEBYTECODE="1")
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "LFSTUDIO_", "SOLH3_"))}
+        env.update(LFSTUDIO_ENV=str(self.d / "no-env-file"), LFSTUDIO_SANA=str(self.d / "sana"),
+                   LFSTUDIO_PYTHON=sys.executable, LFSTUDIO_PATHS=str(self.d / "paths-{task}.json"),
+                   SOL_H3_SPARK_RUNTIME_ROOT=str(self.d / "runtime"), LFSTUDIO_STATE_DIR=str(self.d / "state"),
+                   LFSTUDIO_HOST="127.0.0.1", LFSTUDIO_PORT=str(free_port()),
+                   LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0", PYTHONDONTWRITEBYTECODE="1")
         env.update(settings)
-        run = subprocess.run(["bash", str(Path(__file__).resolve().parents[1] / "bin/sol-h3-studio"), "--check"],
+        run = subprocess.run(["bash", str(Path(__file__).resolve().parents[1] / "bin/lf-studio"), "--check"],
                              env=env, capture_output=True, text=True, timeout=120)
         return run.returncode, run.stdout + run.stderr
 
@@ -1255,7 +1256,7 @@ class LauncherSettingsCheck(unittest.TestCase):
             sana = self.d / f"sana-{i}"
             (sana / "models/minimax_h3").mkdir(parents=True)
             (sana / "models/minimax_h3/Sol-H3-Spark").symlink_to(older_patch_package(sana, version))
-            code, out = self.check(SOLH3_SANA=str(sana), **older_patch_settings(settings))
+            code, out = self.check(LFSTUDIO_SANA=str(sana), **older_patch_settings(settings))
             if refused is None:
                 self.assertEqual(code, 0, out)
                 continue
@@ -1265,7 +1266,7 @@ class LauncherSettingsCheck(unittest.TestCase):
 
 
 class TrashPurge(Delete):
-    env = {"SOLH3_TRASH_DAYS": "0.00001"}                                  # under a second
+    env = {"LFSTUDIO_TRASH_DAYS": "0.00001"}                                  # under a second
 
     def test_purged_at_start(self):
         jid = self.generate()
@@ -1284,12 +1285,12 @@ class TrashPurge(Delete):
 
 class LoadSelected(StudioTest):
     """#3: POST /api/load warms up chosen settings on request: it replaces what is loaded or warming up, never runs
-    while clips are queued or running, and needs an earlier clip of the mode for fl2va/ref2va. With SOLH3_RESHAPE=0,
+    while clips are queued or running, and needs an earlier clip of the mode for fl2va/ref2va. With LFSTUDIO_RESHAPE=0,
     so that another length or format of the loaded mode closes the session too (ReshapeLoadSelected: the default)."""
     load_s, clip_s, preload = 2, 1, True
 
     def seed(self):
-        self.studio.env["SOLH3_RESHAPE"] = "0"
+        self.studio.env["LFSTUDIO_RESHAPE"] = "0"
         self.write_state([finished_job()])
 
     def load(self, task="t2va", orientation="portrait", seconds=10):
@@ -1339,7 +1340,7 @@ class LoadDuringClose(StudioTest):
     load_s, clip_s, preload = 2, 1, True
 
     def seed(self):
-        self.studio.env.update(STUB_CLOSE_S="3", SOLH3_RESHAPE="0")     # length/format changes close the session too
+        self.studio.env.update(STUB_CLOSE_S="3", LFSTUDIO_RESHAPE="0")     # length/format changes close the session too
         self.write_state([finished_job()])
 
     def load(self, orientation="portrait", seconds=10):
@@ -1517,10 +1518,10 @@ class ReshapeDuringUnload(StudioTest):
 
 
 class ReshapeOff(StudioTest):
-    """SOLH3_RESHAPE=0: any other task, length or orientation closes the session and loads the models again."""
+    """LFSTUDIO_RESHAPE=0: any other task, length or orientation closes the session and loads the models again."""
 
     def seed(self):
-        self.studio.env["SOLH3_RESHAPE"] = "0"
+        self.studio.env["LFSTUDIO_RESHAPE"] = "0"
 
     def test_a_new_length_reloads(self):
         self.assertFalse(self.studio.state()["reshape"])
@@ -1648,12 +1649,12 @@ class PipelineNotMade(StudioTest):
 class WarmUp(StudioTest):
     """The start-up warm-up and the takeover rule (docs/PERFORMANCE.md): a same-settings job submitted before
     takeover_until stops the warm-up and loads the models itself; later it waits; other settings stop it. With
-    SOLH3_RESHAPE=0, so that another length or format counts as other settings (ReshapeWarmUp: the default)."""
+    LFSTUDIO_RESHAPE=0, so that another length or format counts as other settings (ReshapeWarmUp: the default)."""
     load_s, clip_s, preload = 4, 1, True
     times = {"t2va/landscape/5": 4}
 
     def seed(self):
-        self.studio.env["SOLH3_RESHAPE"] = "0"
+        self.studio.env["LFSTUDIO_RESHAPE"] = "0"
         self.write_state([finished_job()], self.times)
 
     def warming(self):
@@ -1737,7 +1738,7 @@ def worker_groups(pid):
 
 def idle_values():
     """spark-switchboard's busy probe: the statuses it counts as idle (integrations/spark-switchboard/)."""
-    toml = (Path(__file__).resolve().parents[1] / "integrations/spark-switchboard/sol-h3-studio.toml").read_text()
+    toml = (Path(__file__).resolve().parents[1] / "integrations/spark-switchboard/lf-studio.toml").read_text()
     return json.loads(re.search(r"^idle_values\s*=\s*(\[[^\]]*\])", toml, re.M).group(1))
 
 
@@ -1981,7 +1982,7 @@ class CancelRace(CancelTest):
     load_s, clip_s = 1, 1
 
     def setUp(self):
-        self.publish = Path(tempfile.mkdtemp(prefix="sol-h3-publish-"))
+        self.publish = Path(tempfile.mkdtemp(prefix="lf-studio-publish-"))
         super().setUp()
 
     def tearDown(self):
@@ -1998,7 +1999,7 @@ class CancelRace(CancelTest):
         (bindir / "ffmpeg").chmod(0o755)
         self.poster = self.dir / "poster-started"
         self.studio.env.update(PATH=f"{bindir}:{os.environ['PATH']}", POSTER_MARK=str(self.poster),
-                               STUB_FINISH_S="2", SOLH3_PUBLISH_DIR=str(self.publish))
+                               STUB_FINISH_S="2", LFSTUDIO_PUBLISH_DIR=str(self.publish))
 
     def finishing(self, jid):
         """Wait until the stub's worker has ended and the clip is about to come back."""

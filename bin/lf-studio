@@ -1,0 +1,547 @@
+#!/usr/bin/env bash
+# lf-studio: start the LF Studio web UI and stay in the foreground until stopped.
+# Unofficial; not affiliated with or endorsed by NVIDIA. See README.md.
+#
+# Usage:
+#   lf-studio            start; Ctrl-C, SIGTERM or SIGHUP stops the server and cleans up
+#   lf-studio --check    run the start-up checks only, then exit (0 = would start)
+#   lf-studio --kill     force-stop leftovers: server, pipeline workers, Qwen containers (no checks)
+#   lf-studio --help
+#   lf-studio generate|wait|status|cancel|fetch|guide|mcp ...
+#                            the client (bin/lf-cli, see docs/API.md) with this env file's settings
+#
+# Settings come from ${LFSTUDIO_ENV:-~/.config/lf-studio/env}: one KEY=VALUE per line, shell quoting,
+# $VAR and ~ expand (see bin/env.example). Variables already set in the environment win over the file, so a
+# manager such as spark-switchboard can pass LFSTUDIO_PORT / LFSTUDIO_HOST. Within the file, a later line for the same
+# key overrides an earlier one. Until 0.6 the names up to 0.4 work too (bin/sol-h3-studio, SOLH3_*,
+# ~/.config/sol-h3-studio/env, and ~/.local/state/sol-h3-studio while the new state has no jobs.db; docs/INSTALL.md,
+# "From 0.4 to 0.5").
+#
+# Progress lines start with ">>> STATUS:"; refusals contain REFUSED, failures ERROR. Exit code 0 = stopped on
+# request, non-zero = refused or failed.
+# LFSTUDIO_BACKEND (spark, the default, or rtx5090; docs/RTX5090.md) picks the package (Sol-H3-Spark or Sol-H3-RTX5090)
+# and the checks: Docker and the Qwen container on the Spark only; free RAM, and on the RTX 5090 free GPU memory.
+# Run modes:
+#   terminal            foreground; Ctrl-C stops it
+#   NVIDIA Sync         custom app command "bash ~/src/lf-studio/bin/lf-studio"; exits when Sync's
+#                       wrapper goes away (re-parenting), unless SWITCHBOARD is set
+#   spark-switchboard   sets SWITCHBOARD=1; then the launcher never exits because of re-parenting
+#                       (https://github.com/slogonomo/spark-switchboard, integrations/spark-switchboard/)
+set -uo pipefail
+
+REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+MODE=start
+case "${1:-}" in
+    "") ;;
+    --check) MODE="check" ;;
+    --kill) MODE="kill" ;;
+    generate|wait|status|cancel|fetch|guide|mcp) MODE="client" ;;
+    -h|--help) sed -n '2,/^set -uo pipefail/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
+esac
+
+# ---- settings ---------------------------------------------------------------------------------------------------
+# Same rules as install/env.sh: variables set before the file is read win (they are snapshotted first); for the
+# rest, later lines override earlier ones. A line that does not evaluate (bad quoting, an unset $VAR) stops the
+# launcher with the file name and line number.
+# Until 0.6 a setting may also have its name up to 0.4, SOLH3_X for LFSTUDIO_X (OLD_SETTINGS; not the test hooks),
+# in the environment and in the file. The new name wins over the old one; one warning lists the old names used.
+OLD_SETTINGS="ALLOWED_HOSTS BACKEND BENCH_LOGS CHECKPOINTS DRY_RUN ENV GUARD_GIB HOME HOST LOG MAX_QUEUED MCP_MAX_WAIT_S
+    MCP_OUT_ANYWHERE MCP_WAIT_S MIN_FREE_GIB MIN_FREE_VRAM_GIB OUT_DIR PATHS PIDFILE PORT PRELOAD PROMPT_CACHE_FROM
+    PUBLISH_DIR PYTHON RESHAPE SANA SANA_COMMIT SANA_URL START_TIMEOUT_S STATE_DIR STOP_WAIT_S TASKS TRASH_DAYS URL"
+declare -A OLD_USED=()    # SOLH3_X -> "" (used) or " (LFSTUDIO_X wins)"
+old_env_settings() {      # until 0.6: the environment's SOLH3_X as LFSTUDIO_X, before the file is read
+    local x old new
+    for x in $OLD_SETTINGS; do
+        old=SOLH3_$x new=LFSTUDIO_$x
+        [[ -n "${!old+set}" ]] || continue
+        if [[ -z "${!new+set}" ]]; then export "$new=${!old}"; OLD_USED[$old]=; else OLD_USED[$old]=" ($new wins)"; fi
+        unset "$old"
+    done
+}
+old_settings_warning() {  # until 0.6
+    local k list=
+    (( ${#OLD_USED[@]} > 0 )) || return 0
+    for k in $(printf '%s\n' "${!OLD_USED[@]}" | sort); do list+="${list:+, }$k${OLD_USED[$k]}"; done
+    echo "lf-studio: settings under their 0.4 names, which work until 0.6: $list. Rename them LFSTUDIO_*" >&2
+}
+# old_path VAR OLD [FILE]: until 0.6, the default place in VAR gives way to OLD, its place up to 0.4, while OLD has
+# FILE and the default does not (without FILE: while OLD exists and the default does not)
+old_path() {
+    [[ ! -e "${!1}${3:+/$3}" && -e "$2${3:+/$3}" ]] || return 0
+    echo "lf-studio: using $2: ${!1} ${3:+has no }${3:-does not exist}" \
+        "(the old place works until 0.6; docs/INSTALL.md)" >&2
+    printf -v "$1" '%s' "$2"
+}
+load_env_file() {
+    local file=$1 line key value n=0 x
+    [[ -r "$file" ]] || return 0
+    local -A preset=() old=() new_line=()
+    while IFS= read -r key; do preset[$key]=1; done < <(compgen -v)
+    for x in $OLD_SETTINGS; do old[$x]=1; local -n "SOLH3_$x=LFSTUDIO_$x"; done   # until 0.6: $SOLH3_X in a value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1))
+        line=${line%$'\r'}
+        [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        key=${BASH_REMATCH[2]}
+        value=${BASH_REMATCH[3]}
+        x=${key#*_}
+        if [[ "$key" == SOLH3_* && -n "${old[$x]:-}" ]]; then                     # until 0.6: an old name
+            if [[ -n "${preset[LFSTUDIO_$x]:-}" ]]; then                          # the environment's wins
+                [[ -n "${OLD_USED[$key]+set}" ]] || OLD_USED[$key]=" (LFSTUDIO_$x wins)"
+                continue
+            fi
+            if [[ -n "${new_line[$x]:-}" ]]; then OLD_USED[$key]=" (LFSTUDIO_$x wins)"; continue; fi
+            OLD_USED[$key]=
+            key=LFSTUDIO_$x
+        elif [[ "$key" == LFSTUDIO_* && -z "${preset[$key]:-}" ]]; then          # wins over an old-name line
+            new_line[$x]=1
+            [[ -n "${OLD_USED[SOLH3_$x]+set}" ]] && OLD_USED[SOLH3_$x]=" ($key wins)"
+        fi
+        [[ -n "${preset[$key]:-}" ]] && continue
+        # try it in a subshell first: under set -u an unset $VAR would otherwise end the script without this message
+        if ! (set -u; eval "export ${key}=${value}") || ! eval "export ${key}=${value}"; then
+            echo "lf-studio: cannot parse $file line $n: $line" >&2
+            exit 2
+        fi
+    done < "$file"
+}
+old_env_settings
+ENV_FILE=${LFSTUDIO_ENV:-$HOME/.config/lf-studio/env}
+[[ -n "${LFSTUDIO_ENV:-}" ]] || old_path ENV_FILE "$HOME/.config/sol-h3-studio/env"
+load_env_file "$ENV_FILE"
+old_settings_warning
+# the client: it finds the studio from LFSTUDIO_URL, or LFSTUDIO_HOST and LFSTUDIO_PORT (the public port under
+# switchboard)
+if [[ "$MODE" == client ]]; then exec python3 "$REPO/bin/lf-cli" "$@"; fi
+
+# defaults: the same as install/env.sh
+BACKEND_SET=0
+[[ -n "${LFSTUDIO_BACKEND:-}" ]] && BACKEND_SET=1      # set by the user (a refusal below says so)
+export LFSTUDIO_BACKEND=${LFSTUDIO_BACKEND:-spark}
+case "$LFSTUDIO_BACKEND" in
+    spark) PKG_NAME=Sol-H3-Spark; OTHER_NAME=Sol-H3-RTX5090; OTHER_BACKEND=rtx5090 ;;
+    rtx5090) PKG_NAME=Sol-H3-RTX5090; OTHER_NAME=Sol-H3-Spark; OTHER_BACKEND=spark ;;
+    *) PKG_NAME= ;;      # refused below, once the log is set up
+esac
+export LFSTUDIO_HOME=${LFSTUDIO_HOME:-$HOME/sol-h3}
+export LFSTUDIO_SANA=${LFSTUDIO_SANA:-$LFSTUDIO_HOME/Sana}
+export LFSTUDIO_CHECKPOINTS=${LFSTUDIO_CHECKPOINTS:-$LFSTUDIO_HOME/checkpoints}
+export LFSTUDIO_PYTHON=${LFSTUDIO_PYTHON:-$LFSTUDIO_HOME/envs/stage1/bin/python}
+export SOL_H3_SPARK_RUNTIME_ROOT=${SOL_H3_SPARK_RUNTIME_ROOT:-$LFSTUDIO_HOME/runtime}
+if [[ "$LFSTUDIO_BACKEND" == spark ]]; then   # the RTX 5090 runs the Qwen encoder natively, without a container
+    export SOL_H3_SPARK_QWEN_IMAGE=${SOL_H3_SPARK_QWEN_IMAGE:-sol-h3-spark-qwen}
+    # extra read-only mounts of the Qwen container (qwen_python.sh): the NVFP4 encoder checkpoint and ComfyUI
+    export SOL_H3_SPARK_QWEN_WEIGHTS_ROOT=${SOL_H3_SPARK_QWEN_WEIGHTS_ROOT:-$LFSTUDIO_CHECKPOINTS/Comfy-MiniMax-H3}
+fi
+export SOL_H3_SPARK_COMFY_ROOT=${SOL_H3_SPARK_COMFY_ROOT:-$LFSTUDIO_HOME/sources/ComfyUI}
+[[ -n "${LFSTUDIO_PATHS:-}" ]] || LFSTUDIO_PATHS="$LFSTUDIO_HOME/paths-{task}.json"   # {task} = t2va, fl2va or ref2va
+export LFSTUDIO_PATHS
+if [[ -z "${LFSTUDIO_STATE_DIR:-}" ]]; then
+    LFSTUDIO_STATE_DIR=$HOME/.local/state/lf-studio
+    old_path LFSTUDIO_STATE_DIR "$HOME/.local/state/sol-h3-studio" jobs.db   # (the clip history decides)
+fi
+export LFSTUDIO_STATE_DIR
+export LFSTUDIO_PORT=${LFSTUDIO_PORT:-8190}
+export LFSTUDIO_HOST=${LFSTUDIO_HOST:-127.0.0.1}
+export LFSTUDIO_PRELOAD=${LFSTUDIO_PRELOAD:-1}
+# refuse to start below this MemAvailable (0 = no check), and on the RTX 5090 below this free GPU memory (GiB).
+# RTX 5090 (docs/RTX5090.md): every mode, length and orientation ran in a 48 GiB RAM limit (43.3 GiB peak, the rest page
+# cache; 5 s text clips also in 44 GiB) and needed at most 24.8 GiB of GPU memory next to the desktop.
+if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
+    MIN_FREE_GIB=${LFSTUDIO_MIN_FREE_GIB:-42}
+    MIN_FREE_VRAM_GIB=${LFSTUDIO_MIN_FREE_VRAM_GIB:-25}
+    # the memory features' files (runtime/config.py of the RTX 5090 patch): next to the checkpoints by default, on a
+    # disk without compression or copy-on-write (O_DIRECT reads); new directories get chattr +C where that works
+    export SOL_H3_FILEBACKED_DIR=${SOL_H3_FILEBACKED_DIR:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/scratch}
+    export SOL_H3_LTX_BLOCKS=${SOL_H3_LTX_BLOCKS:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived/ltx-fused-blocks}
+    export SOL_H3_STAGE1_SNAPSHOTS=${SOL_H3_STAGE1_SNAPSHOTS:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived/stage1-snapshots}
+    export SOL_H3_STAGE1_SNAPSHOTS_KEEP=${SOL_H3_STAGE1_SNAPSHOTS_KEEP:-1}   # one per mode (23 GB each)
+else
+    MIN_FREE_GIB=${LFSTUDIO_MIN_FREE_GIB:-110}
+    MIN_FREE_VRAM_GIB=0       # the DGX Spark's GPU shares the RAM checked above
+fi
+GUARD_GIB=${LFSTUDIO_GUARD_GIB:-4}               # stop when MemAvailable stays below this for 3 s (0 = no guard)
+STOP_WAIT_S=${LFSTUDIO_STOP_WAIT_S:-90}          # how long the server may take to close its pipeline
+START_TIMEOUT_S=${LFSTUDIO_START_TIMEOUT_S:-60}  # until /health answers
+PKG="$LFSTUDIO_SANA/models/minimax_h3/$PKG_NAME"
+SERVER=${LFSTUDIO_SERVER:-$REPO/webui/server.py}          # test hook: a stub server
+CONTAINER_PREFIX=${LFSTUDIO_CONTAINER_PREFIX:-sol-h3-qwen-} # test hook: qwen_python.sh names its containers so
+SKIP_DOCKER=${LFSTUDIO_TEST_SKIP_DOCKER:-0}               # test hook: skip the docker checks
+[[ "$LFSTUDIO_BACKEND" == spark ]] || SKIP_DOCKER=1        # no Docker on the RTX 5090: no checks, no container cleanup
+LOG=${LFSTUDIO_LOG:-$LFSTUDIO_STATE_DIR/server.log}
+LAUNCH_LOG="$LFSTUDIO_STATE_DIR/launcher.log"
+PIDFILE=${LFSTUDIO_PIDFILE:-}
+mkdir -p "$LFSTUDIO_STATE_DIR" 2>/dev/null
+
+log() { local m; m="[$(date '+%F %T')] $*"; echo "$m" 2>/dev/null; echo "$m" >>"$LAUNCH_LOG" 2>/dev/null; }
+say() { echo ">>> STATUS: $*" 2>/dev/null; echo "[$(date '+%F %T')] >>> STATUS: $*" >>"$LAUNCH_LOG" 2>/dev/null; }
+
+if [[ -z "$PKG_NAME" ]]; then
+    say "REFUSED - LFSTUDIO_BACKEND=$LFSTUDIO_BACKEND: must be spark or rtx5090 (see bin/env.example)"
+    exit 1
+fi
+
+# NVIDIA Sync keeps one SSH login whose group list is frozen when it starts. If that login predates being added
+# to the docker group, plain `docker` fails; `sg docker` works. Exported so qwen_python.sh (started by the
+# pipeline through Python) inherits the fallback.
+docker() {
+    if [[ -w /var/run/docker.sock ]]; then
+        command docker "$@"
+    else
+        sg docker -c "$(printf '%q ' docker "$@")"
+    fi
+}
+export -f docker
+
+re_escape() { printf '%s' "$1" | sed 's/[][\.*^$+?(){}|]/\\&/g'; }
+# path_re PATH: a regex group matching PATH as given (without trailing slashes) and fully resolved (realpath -m),
+# since the pipeline names its workers' files under the resolved runtime root
+path_re() {
+    local given=$1 real
+    while [[ "$given" == */ && "$given" != / ]]; do given=${given%/}; done
+    real=$(realpath -m -- "$given" 2>/dev/null || printf '%s' "$given")
+    if [[ "$real" == "$given" ]]; then
+        printf '%s' "$(re_escape "$given")"
+    else
+        printf '(%s|%s)' "$(re_escape "$given")" "$(re_escape "$real")"
+    fi
+}
+# Pipeline workers run in their own sessions, so stopping the server's process group does not reach them.
+# Their command lines name runtime.worker and an options file under this runtime root's web-UI outputs.
+WORKER_RE="($(path_re "$PKG")/(runtime|qwen_python\.sh)|runtime\.worker --module [a-z0-9]+ --options $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/)"
+SERVER_RE="$(path_re "$SERVER")"
+
+stop_containers() {   # $1 = docker stop | docker rm -f
+    [[ "$LFSTUDIO_BACKEND" == spark ]] || return 0
+    [[ "$SKIP_DOCKER" == 1 && "$CONTAINER_PREFIX" == sol-h3-qwen- ]] && return 0
+    command -v docker >/dev/null || return 0
+    local ids
+    mapfile -t ids < <(docker ps -q --filter "name=^${CONTAINER_PREFIX}" 2>/dev/null)
+    (( ${#ids[@]} > 0 )) || return 0
+    log "removing leftover containers ${CONTAINER_PREFIX}*: ${ids[*]}"
+    if [[ "$1" == rm ]]; then docker rm -f "${ids[@]}" >/dev/null 2>&1; else docker stop -t 5 "${ids[@]}" >/dev/null 2>&1; fi
+}
+
+if [[ "$MODE" == kill ]]; then
+    pkill -KILL -f "$SERVER_RE" 2>/dev/null
+    pkill -KILL -f "$WORKER_RE" 2>/dev/null
+    stop_containers rm
+    exit 0
+fi
+
+# ---- checks -------------------------------------------------------------------------------------------------------
+mem_gib() { awk -v k="$1:" '$1==k{printf "%d", $2/1048576}' /proc/meminfo; }
+
+memory_users() {   # the biggest users, so a refusal says what to close
+    if command -v nvidia-smi >/dev/null; then
+        nvidia-smi --query-compute-apps=pid,used_memory,process_name --format=csv,noheader,nounits 2>/dev/null |
+            awk -F', *' 'NF>=3{printf "    GPU  %6.1f GiB  pid %-8s %s\n", $2/1024, $1, $3}'
+    fi
+    ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null | head -5 |
+        awk '{printf "    RAM  %6.1f GiB  pid %-8s %s\n", $1/1048576, $2, $3}'
+    if [[ "$SKIP_DOCKER" != 1 ]] && command -v docker >/dev/null; then
+        docker stats --no-stream --format '    container {{.Name}}: {{.MemUsage}}' 2>/dev/null | head -5
+    fi
+}
+
+port_users() {
+    command -v ss >/dev/null || return 0
+    ss -ltnpH "( sport = :$LFSTUDIO_PORT )" 2>/dev/null | grep -oE 'users:\(\("[^"]+",pid=[0-9]+' | head -1 |
+        sed -E 's/users:\(\("([^"]+)",pid=([0-9]+)/\1 (pid \2)/'
+}
+
+port_in_use() {
+    if command -v ss >/dev/null; then
+        ss -ltnH "( sport = :$LFSTUDIO_PORT )" 2>/dev/null | grep -q .
+    else
+        ! "$LFSTUDIO_PYTHON" -c 'import socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind((sys.argv[1], int(sys.argv[2])))
+except OSError:
+    sys.exit(1)' "$LFSTUDIO_HOST" "$LFSTUDIO_PORT" 2>/dev/null
+    fi
+}
+
+refuse() { say "REFUSED - $*"; exit 1; }
+
+run_checks() {
+    local t f rc found=0 missing=() have free other vram
+    [[ -x "$LFSTUDIO_PYTHON" ]] || refuse "no Python at LFSTUDIO_PYTHON=$LFSTUDIO_PYTHON (install/40-stage1.sh, or set it in $ENV_FILE)"
+    "$LFSTUDIO_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null ||
+        refuse "LFSTUDIO_PYTHON=$LFSTUDIO_PYTHON is not a working Python 3.10+"
+    [[ -f "$SERVER" ]] || refuse "server not found: $SERVER"
+    # the package of this backend, patched (runtime/geometry.py is new in both patches). Sol-H3-RTX5090 has
+    # runtime/offload.py, Sol-H3-Spark does not. A checkout with the other backend's patch is named as such.
+    other="$LFSTUDIO_SANA/models/minimax_h3/$OTHER_NAME"
+    if [[ ! -f "$PKG/runtime/geometry.py" && -f "$other/runtime/geometry.py" ]]; then
+        refuse "$LFSTUDIO_SANA carries the patch for $OTHER_NAME, not $PKG_NAME: set LFSTUDIO_BACKEND=$OTHER_BACKEND (it is $LFSTUDIO_BACKEND$([[ "$BACKEND_SET" == 1 ]] || echo ', the default')), or point LFSTUDIO_SANA at the $PKG_NAME checkout"
+    fi
+    if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
+        [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-RTX5090 package at $PKG (LFSTUDIO_SANA must be the Sana checkout patched for the RTX 5090; LFSTUDIO_BACKEND=rtx5090 install/10-sana.sh)"
+        [[ -f "$PKG/runtime/offload.py" ]] || refuse "$PKG is not NVIDIA's Sol-H3-RTX5090 package (runtime/offload.py missing)"
+        [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/lf-studio-rtx5090.patch (install/10-sana.sh)"
+    else
+        [[ -d "$PKG/runtime" ]] || refuse "no Sol-H3-Spark package at $PKG (LFSTUDIO_SANA must be the patched Sana checkout; install/10-sana.sh)"
+        [[ ! -f "$PKG/runtime/offload.py" ]] || refuse "$PKG has runtime/offload.py, which only Sol-H3-RTX5090 has; this is not the Sol-H3-Spark package"
+        [[ -f "$PKG/runtime/geometry.py" ]] || refuse "$PKG is not patched (runtime/geometry.py missing); apply patches/lf-studio.patch"
+    fi
+    # the patch's own settings checks: (name, check, default, what a patch without the setting does, the version
+    # that added it). A bad value exits 3 with the message. An older patch lacks some of them (0.3's has no
+    # SOL_H3_PROMPT_TOKENS, SOL_H3_STATIC_SHAPES or SOL_H3_DYNAMIC_TEXT_LENGTH): any value but what it does, set or the
+    # default, exits 4 (the checkout needs the current patch). Any other error exits non-zero with Python's
+    # traceback, whose last line names it
+    f=$(cd "$PKG" && "$LFSTUDIO_PYTHON" -B -c 'import os, sys
+import runtime.config as config
+for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
+                                         ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4"),
+                                         ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4"),
+                                         ("SOL_H3_DYNAMIC_TEXT_LENGTH", "dynamic_text_length", "1", "0", "0.4")):
+    check, value = getattr(config, name, None), os.environ.get(var, "")
+    if check is None and (value.strip().lower() or default) != older:
+        asked = f"{var}={value}" if value.strip() else f"{var}={default} (the default since {since})"
+        print(f"{asked} needs a newer patch than the one applied in {os.getcwd()}")
+        sys.exit(4)
+    try:
+        check and check()
+    except ValueError as error:
+        print(error)
+        sys.exit(3)' 2>&1)
+    rc=$?
+    f=$(grep . <<<"$f" | tail -n 1)
+    case $rc in
+        0) ;;
+        3) refuse "$f (see bin/env.example)" ;;
+        4) refuse "$f; run install/10-sana.sh" ;;
+        *) refuse "cannot run the settings check in $PKG/runtime/config.py: ${f:-exit code $rc}" ;;
+    esac
+    [[ "$SOL_H3_SPARK_RUNTIME_ROOT" == /* ]] || refuse "SOL_H3_SPARK_RUNTIME_ROOT must be an absolute path"
+    mkdir -p "$SOL_H3_SPARK_RUNTIME_ROOT" || refuse "cannot create SOL_H3_SPARK_RUNTIME_ROOT=$SOL_H3_SPARK_RUNTIME_ROOT"
+    if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
+        for d in "$SOL_H3_FILEBACKED_DIR" "$(dirname -- "$SOL_H3_LTX_BLOCKS")" "$SOL_H3_STAGE1_SNAPSHOTS"; do
+            [[ "$d" == 0 || "$d" == off || "$d" == . ]] && continue
+            if [[ ! -d "$d" ]]; then
+                mkdir -p "$d" || refuse "cannot create $d (SOL_H3_FILEBACKED_DIR / SOL_H3_LTX_BLOCKS / SOL_H3_STAGE1_SNAPSHOTS)"
+                chattr +C "$d" 2>/dev/null || true   # btrfs: no copy-on-write or compression, so O_DIRECT reads work
+            fi
+        done
+    fi
+    [[ "$LFSTUDIO_PATHS" == *"{task}"* ]] || refuse "LFSTUDIO_PATHS must contain {task}"
+    for t in t2va fl2va ref2va; do
+        f=${LFSTUDIO_PATHS//\{task\}/$t}
+        if [[ -f "$f" ]]; then found=$((found + 1)); else missing+=("$t"); fi
+    done
+    (( found > 0 )) || refuse "no path manifests ($LFSTUDIO_PATHS); run install/70-manifests.sh"
+    (( ${#missing[@]} == 0 )) || log "no manifest for ${missing[*]}; those modes are unavailable"
+    if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+        refuse "ffmpeg/ffprobe not found (sudo apt install ffmpeg)"
+    fi
+    if [[ "$SKIP_DOCKER" != 1 ]]; then
+        command -v docker >/dev/null || refuse "docker not found; the Qwen prompt encoder runs in a container"
+        docker info >/dev/null 2>&1 ||
+            refuse "cannot talk to docker as $(id -un); add yourself to the docker group (sudo usermod -aG docker \$USER), then log in again"
+        docker image inspect "$SOL_H3_SPARK_QWEN_IMAGE" >/dev/null 2>&1 ||
+            refuse "docker image $SOL_H3_SPARK_QWEN_IMAGE not found; run install/60-qwen-image.sh"
+        [[ "$SOL_H3_SPARK_RUNTIME_ROOT" != / ]] || refuse "SOL_H3_SPARK_RUNTIME_ROOT must be a dedicated directory"
+    fi
+    if port_in_use; then
+        refuse "port $LFSTUDIO_PORT is already in use$(p=$(port_users); [[ -n "$p" ]] && echo " by $p"); stop that first or set LFSTUDIO_PORT"
+    fi
+    if (( MIN_FREE_GIB > 0 )); then
+        have=$(mem_gib MemAvailable)
+        if (( have < MIN_FREE_GIB )); then
+            say "REFUSED - LF Studio needs ~${MIN_FREE_GIB} GiB free memory, only ${have} GiB available. Biggest users:"
+            memory_users | while IFS= read -r l; do echo "$l" 2>/dev/null; echo "$l" >>"$LAUNCH_LOG"; done
+            say "close those apps (or set LFSTUDIO_MIN_FREE_GIB=0 to start anyway), then try again"
+            exit 1
+        fi
+        log "memory check OK: ${have} GiB available (need ${MIN_FREE_GIB})"
+    fi
+    if (( MIN_FREE_VRAM_GIB > 0 )); then     # RTX 5090 only: the desktop and other apps share its 32 GB
+        command -v nvidia-smi >/dev/null ||
+            refuse "nvidia-smi not found, so the free GPU memory is unknown (set LFSTUDIO_MIN_FREE_VRAM_GIB=0 to start anyway)"
+        vram=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+        [[ "$vram" =~ ^[0-9]+$ ]] ||
+            refuse "cannot read the free GPU memory from nvidia-smi (got '${vram}'; set LFSTUDIO_MIN_FREE_VRAM_GIB=0 to start anyway)"
+        vram=$((vram / 1024))
+        if (( vram < MIN_FREE_VRAM_GIB )); then
+            say "REFUSED - LF Studio needs ~${MIN_FREE_VRAM_GIB} GiB free GPU memory, only ${vram} GiB free. Biggest users:"
+            memory_users | while IFS= read -r l; do echo "$l" 2>/dev/null; echo "$l" >>"$LAUNCH_LOG"; done
+            say "close those apps (or set LFSTUDIO_MIN_FREE_VRAM_GIB=0 to start anyway), then try again"
+            exit 1
+        fi
+        log "GPU memory check OK: ${vram} GiB free (need ${MIN_FREE_VRAM_GIB})"
+    fi
+    free=$(mem_gib MemFree)
+    if [[ "$LFSTUDIO_BACKEND" == spark ]] && (( free < 20 )); then     # the Spark's GPU allocates from the same RAM
+        log "note: MemFree is ${free} GiB (the rest is page cache). If CUDA reports out of memory while the models load,"
+        log "      drop the page cache first: sync; echo 1 | sudo tee /proc/sys/vm/drop_caches (docs/TROUBLESHOOTING.md)"
+    fi
+}
+
+say "checking (package $PKG, port $LFSTUDIO_HOST:$LFSTUDIO_PORT)"
+run_checks
+if [[ "$MODE" == check ]]; then
+    say "checks passed"
+    exit 0
+fi
+
+# ---- run ----------------------------------------------------------------------------------------------------------
+case "$LFSTUDIO_HOST" in
+    0.0.0.0|"") HEALTH_HOST=127.0.0.1 ;;
+    ::|"[::]") HEALTH_HOST="[::1]" ;;
+    *:*) HEALTH_HOST="[$LFSTUDIO_HOST]" ;;
+    *) HEALTH_HOST=$LFSTUDIO_HOST ;;
+esac
+HEALTH_URL="http://$HEALTH_HOST:$LFSTUDIO_PORT/health"
+health() {
+    if command -v curl >/dev/null; then
+        curl -fsS -m 5 -o /dev/null "$HEALTH_URL" 2>/dev/null
+    else
+        "$LFSTUDIO_PYTHON" -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5)' "$HEALTH_URL" 2>/dev/null
+    fi
+}
+
+# A second launcher with the same pidfile is refused before any trap is set, so the refusal cannot run the
+# cleanup below (which would stop the workers and the Qwen container of the copy that is running).
+# A launcher started by its 0.4 name (bin/sol-h3-studio, a shim until 0.6) has both names on its command line; one
+# that predates the update has only the old name.
+if [[ -n "$PIDFILE" ]]; then
+    old=$(cat "$PIDFILE" 2>/dev/null)
+    if [[ -n "$old" && "$old" != "$$" ]] && kill -0 "$old" 2>/dev/null &&
+        grep -qE 'lf-studio|sol-h3-studio' "/proc/$old/cmdline" 2>/dev/null; then
+        refuse "another lf-studio launcher is running (pid $old, $PIDFILE)"
+    fi
+fi
+
+SRV_PID=
+FOLLOW_PID=
+STARTED=0     # 1 once this launcher starts a server; before that, cleanup leaves workers and containers alone
+RC=0
+CLEANED=0
+cleanup() {
+    local code=$?
+    [[ $CLEANED == 1 ]] && return
+    CLEANED=1
+    trap '' INT TERM HUP
+    (( RC == 0 && code != 0 )) && RC=$code
+    if [[ -n "$SRV_PID" ]] && kill -0 "$SRV_PID" 2>/dev/null; then
+        say "stopping: the server closes its pipeline (up to ${STOP_WAIT_S} s)"
+        kill -TERM "$SRV_PID" 2>/dev/null
+        local i
+        for ((i = 0; i < STOP_WAIT_S; i++)); do
+            kill -0 "$SRV_PID" 2>/dev/null || break
+            sleep 1
+        done
+        if kill -0 "$SRV_PID" 2>/dev/null; then
+            log "server did not stop within ${STOP_WAIT_S} s; killing it"
+            kill -KILL "$SRV_PID" 2>/dev/null
+            (( RC == 0 )) && RC=1
+        fi
+        wait "$SRV_PID" 2>/dev/null
+    fi
+    if (( STARTED == 1 )); then
+        if pgrep -f "$WORKER_RE" >/dev/null 2>&1; then
+            log "stopping leftover pipeline workers"
+            pkill -TERM -f "$WORKER_RE" 2>/dev/null
+            sleep 3
+            pkill -KILL -f "$WORKER_RE" 2>/dev/null
+        fi
+        stop_containers stop
+    fi
+    [[ -n "$FOLLOW_PID" ]] && kill "$FOLLOW_PID" 2>/dev/null
+    if [[ -n "$PIDFILE" && "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]]; then rm -f "$PIDFILE"; fi
+    (( STARTED == 1 )) && say "LF Studio stopped"
+    exit "$RC"
+}
+on_signal() { log "received SIG$1"; exit 0; }   # exit runs the EXIT trap (cleanup)
+trap '' PIPE                 # a closed SSH channel (NVIDIA Sync) must not kill us before cleanup
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+trap 'on_signal HUP' HUP
+trap cleanup EXIT
+
+if [[ -n "$PIDFILE" ]]; then
+    mkdir -p "$(dirname "$PIDFILE")" && echo $$ >"$PIDFILE"
+fi
+
+log "launcher pid $$ (parent $PPID${SWITCHBOARD:+, run by switchboard}); server log $LOG"
+[[ -w /var/run/docker.sock || "$SKIP_DOCKER" == 1 ]] || log "this session lacks the docker group; using 'sg docker'"
+say "starting LF Studio$([[ "$LFSTUDIO_PRELOAD" == 1 ]] && echo "; it warms up your last settings in the background")"
+log_start=$(( $(stat -c %s "$LOG" 2>/dev/null || echo 0) + 1 ))
+STARTED=1
+# The server runs in its own session (setsid), so a signal to this launcher's process group (a closed terminal or
+# SSH session, Ctrl-C) reaches only the launcher, which then stops the server in order. The server stops by itself
+# if this launcher dies without cleaning up (LFSTUDIO_LAUNCHER_PID; see webui/server.py).
+(
+    cd "$PKG" || exit 2
+    trap - INT TERM HUP PIPE EXIT
+    export LFSTUDIO_LAUNCHER_PID=$$ PYTHONUNBUFFERED=1
+    # a background subshell of a script is never a process-group leader, so setsid does not fork: $! stays the server
+    command -v setsid >/dev/null && exec setsid "$LFSTUDIO_PYTHON" "$SERVER"
+    exec "$LFSTUDIO_PYTHON" "$SERVER"
+) >>"$LOG" 2>&1 </dev/null &
+SRV_PID=$!
+if [[ -t 1 ]]; then              # in a terminal, show the server's output too
+    tail -c "+$log_start" -F "$LOG" 2>/dev/null &
+    FOLLOW_PID=$!
+fi
+
+waited=0
+until health; do
+    if ! kill -0 "$SRV_PID" 2>/dev/null; then
+        wait "$SRV_PID" 2>/dev/null; code=$?
+        say "ERROR: the server exited during start-up (code $code); see $LOG. Last lines:"
+        tail -n 20 "$LOG" 2>/dev/null
+        SRV_PID=
+        RC=1; exit 1
+    fi
+    if (( waited >= START_TIMEOUT_S )); then
+        say "ERROR: the server did not answer $HEALTH_URL within ${START_TIMEOUT_S} s; see $LOG"
+        RC=1; exit 1
+    fi
+    sleep 1 & wait $!
+    waited=$((waited + 1))
+done
+case "$LFSTUDIO_HOST" in
+    127.*|localhost|::1) say "LF Studio ready on http://localhost:$LFSTUDIO_PORT" ;;
+    *) say "LF Studio ready on http://$(hostname):$LFSTUDIO_PORT (listening on $LFSTUDIO_HOST; no login, keep it on a trusted network)" ;;
+esac
+
+# Foreground: watch memory, the server, and (unless run by switchboard) our parent.
+orig_ppid=$PPID
+low=0
+n=0
+fails=0
+while :; do
+    sleep 1 & wait $!
+    n=$((n + 1))
+    if ! kill -0 "$SRV_PID" 2>/dev/null; then
+        wait "$SRV_PID" 2>/dev/null; code=$?
+        say "ERROR: the server exited (code $code); see $LOG"
+        SRV_PID=
+        RC=1; exit 1
+    fi
+    if (( GUARD_GIB > 0 )); then
+        if (( $(mem_gib MemAvailable) < GUARD_GIB )); then low=$((low + 1)); else low=0; fi
+        if (( low >= 3 )); then
+            say "ERROR: LF Studio is running out of memory (MemAvailable < ${GUARD_GIB} GiB for 3 s) - stopping it so the box does not hang"
+            memory_users >>"$LAUNCH_LOG" 2>&1
+            RC=1; exit 1
+        fi
+    fi
+    if [[ -z "${SWITCHBOARD:-}" ]]; then
+        cur=$(sed 's/.*) //' "/proc/$$/stat" 2>/dev/null | cut -d' ' -f2)
+        if [[ -n "$cur" && "$cur" != "$orig_ppid" ]]; then
+            log "parent process $orig_ppid went away (now $cur); shutting down"
+            exit 0
+        fi
+    fi
+    if (( n % 30 == 0 )); then
+        if health; then fails=0; else
+            fails=$((fails + 1)); log "health check failed ($fails/4)"
+            (( fails >= 4 )) && { say "ERROR: the server stopped answering; stopping"; RC=1; exit 1; }
+        fi
+    fi
+done

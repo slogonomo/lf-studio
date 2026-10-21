@@ -1,4 +1,4 @@
-# Exact versions pip resolves against in install/40-stage1.sh with SOLH3_BACKEND=rtx5090 (observed working set on a
+# Exact versions pip resolves against in install/40-stage1.sh with LFSTUDIO_BACKEND=rtx5090 (observed working set on a
 # workstation with one RTX 5090, x86_64). The DGX Spark's set is stage1-constraints.txt.
 torch==2.12.0+cu130
 torchvision==0.27.0+cu130

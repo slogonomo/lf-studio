@@ -1,39 +1,41 @@
 #!/usr/bin/env bash
-# 10-sana.sh: clone NVlabs/Sana (branch sol-engine) at patches/BASE_COMMIT into $SOLH3_SANA, apply
-# patches/sol-h3-studio.patch, and run the package's CPU tests with the Stage1 python if it exists.
-# With SOLH3_BACKEND=rtx5090 the same with patches/BASE_COMMIT_RTX5090 and patches/sol-h3-studio-rtx5090.patch,
+# 10-sana.sh: clone NVlabs/Sana (branch sol-engine) at patches/BASE_COMMIT into $LFSTUDIO_SANA, apply
+# patches/lf-studio.patch, and run the package's CPU tests with the Stage1 python if it exists.
+# With LFSTUDIO_BACKEND=rtx5090 the same with patches/BASE_COMMIT_RTX5090 and patches/lf-studio-rtx5090.patch,
 # which changes Sol-H3-RTX5090 (docs/RTX5090.md). Everything below applies to either pair: updating the patch file
 # (and its BASE_COMMIT file) in this repo and running this script again is all an update needs.
 # Idempotent: an existing checkout is reused; an already applied patch is detected and left alone.
-# Updates: a copy of the applied patch is kept with the checkout (sol-h3-studio-applied.patch in its git directory,
+# Updates: a copy of the applied patch is kept with the checkout (lf-studio-applied.patch in its git directory,
 # so each clone and each git worktree has its own). After a `git pull` of this repo, run this script again. If the
 # checkout carries an earlier patch and nothing else, it reverses that patch, checks out the new
-# patches/BASE_COMMIT if it changed, and applies the new patch. The earlier patch is found as that copy, else as
-# $SOLH3_HOME/applied.patch (where versions up to 0.2 kept it), else among the earlier versions of
-# patches/sol-h3-studio.patch in this repo's history. Any other local change in the checkout stops it with a
+# patches/BASE_COMMIT if it changed, and applies the new patch. The earlier patch is found as that copy (until 0.6
+# also as sol-h3-studio-applied.patch, its name up to 0.4), else as $LFSTUDIO_HOME/applied.patch (where versions up to
+# 0.2 kept it), else among the earlier versions of patches/lf-studio.patch in this repo's history, and of
+# patches/sol-h3-studio.patch (its name up to 0.4). Any other local change in the checkout stops it with a
 # message, before anything is changed.
-# SOLH3_SANA_COMMIT overrides the commit (the patch also applies to sol-engine 670482d, checked 2026-10-09).
+# LFSTUDIO_SANA_COMMIT overrides the commit (the patch also applies to sol-engine 670482d, checked 2026-10-09).
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 need_cmd git
-COMMIT=${SOLH3_SANA_COMMIT:-$BASE_COMMIT}
-LEGACY_APPLIED="$SOLH3_HOME/applied.patch"   # up to 0.2: one copy per SOLH3_HOME, shared by its checkouts
+COMMIT=${LFSTUDIO_SANA_COMMIT:-$BASE_COMMIT}
+LEGACY_APPLIED="$LFSTUDIO_HOME/applied.patch"   # up to 0.2: one copy per LFSTUDIO_HOME, shared by its checkouts
 HISTORY=$(mktemp -d) || die "cannot create a temporary directory (TMPDIR=${TMPDIR:-/tmp})"   # earlier patch versions
 trap 'rm -rf "$HISTORY"' EXIT
 
-sana() { git -C "$SOLH3_SANA" "$@"; }
+sana() { git -C "$LFSTUDIO_SANA" "$@"; }
 
 # have_commit COMMIT: make sure the clone has COMMIT, fetching it if needed (before anything in the checkout changes)
 have_commit() {
     sana cat-file -e "$1^{commit}" 2>/dev/null && return 0
-    run git -C "$SOLH3_SANA" fetch --filter=blob:none origin "$1" || return 1
+    run git -C "$LFSTUDIO_SANA" fetch --filter=blob:none origin "$1" || return 1
     [[ "$DRY_RUN" == 1 ]] || sana cat-file -e "$1^{commit}" 2>/dev/null
 }
 
-# applied_copy: where this checkout keeps the patch as it was applied last time, for the next update
+# applied_copy [NAME]: where this checkout keeps the patch as it was applied last time, for the next update
+# (applied_copy sol-h3-studio: the copy's name up to 0.4, still read until 0.6)
 applied_copy() {
     local dir
-    dir=$(git -C "$SOLH3_SANA" rev-parse --absolute-git-dir 2>/dev/null) || dir="$SOLH3_SANA/.git"   # (dry run)
-    echo "$dir/sol-h3-studio-applied.patch"
+    dir=$(git -C "$LFSTUDIO_SANA" rev-parse --absolute-git-dir 2>/dev/null) || dir="$LFSTUDIO_SANA/.git"   # (dry run)
+    echo "$dir/${1:-lf-studio}-applied.patch"
 }
 
 # keep_copy: remember the patch that is now applied, and the commit it is applied at (<copy>.base)
@@ -42,22 +44,24 @@ keep_copy() {
     copy=$(applied_copy)
     cmp -s "$PATCH" "$copy" 2>/dev/null || run cp "$PATCH" "$copy"
     if [[ "$DRY_RUN" == 1 ]]; then
-        echo "+ git -C $SOLH3_SANA rev-parse HEAD > $copy.base"
+        echo "+ git -C $LFSTUDIO_SANA rev-parse HEAD > $copy.base"
     else
         sana rev-parse HEAD > "$copy.base"
     fi
 }
 
 # applied_base [PATCH]: the commit the earlier patch was applied at: the record next to the copy, else the base named
-# in the first line of the copy, of the 0.2 copy, or of PATCH (the earlier patch found)
+# in the first line of the copy, of the 0.2 copy, or of PATCH (the earlier patch found). Until 0.6 the copy may have
+# its 0.4 name.
 applied_base() {
     local f copy
-    copy=$(applied_copy)
-    if [[ -s "$copy.base" ]]; then
-        tr -d '[:space:]' < "$copy.base"
-        return 0
-    fi
-    for f in "$copy" "$LEGACY_APPLIED" "${1:-}"; do
+    for copy in "$(applied_copy)" "$(applied_copy sol-h3-studio)"; do
+        if [[ -s "$copy.base" ]]; then
+            tr -d '[:space:]' < "$copy.base"
+            return 0
+        fi
+    done
+    for f in "$(applied_copy)" "$(applied_copy sol-h3-studio)" "$LEGACY_APPLIED" "${1:-}"; do
         [[ -n "$f" && -f "$f" ]] || continue
         sed -n '1s/.*base commit \([0-9a-f]\{40\}\).*/\1/p' "$f"
         return 0
@@ -68,14 +72,17 @@ applied_base() {
 # history. The first candidate that the checkout differs from HEAD by exactly wins; else the first that only
 # reverse-applies (the caller then lists the other local changes). Prints its file name.
 earlier_patch() {
-    local f sha n=0 first=
-    local -a candidates=("$(applied_copy)" "$LEGACY_APPLIED")
-    if git -C "$SOLH3_REPO" rev-parse --git-dir >/dev/null 2>&1; then
-        while read -r sha; do
-            n=$((n + 1))
-            f="$HISTORY/patch-$n-${sha:0:7}.patch"
-            git -C "$SOLH3_REPO" show "$sha:patches/$PATCH_NAME" > "$f" 2>/dev/null && candidates+=("$f")
-        done < <(git -C "$SOLH3_REPO" log --format=%H -- "patches/$PATCH_NAME")
+    local f sha name n=0 first=
+    local -a candidates=("$(applied_copy)" "$(applied_copy sol-h3-studio)" "$LEGACY_APPLIED")
+    if git -C "$LFSTUDIO_REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        # the patch's versions under its name, then under its name up to 0.4 (until 0.6)
+        for name in "$PATCH_NAME" "${PATCH_NAME/lf-studio/sol-h3-studio}"; do
+            while read -r sha; do
+                n=$((n + 1))
+                f="$HISTORY/patch-$n-${sha:0:7}.patch"
+                git -C "$LFSTUDIO_REPO" show "$sha:patches/$name" > "$f" 2>/dev/null && candidates+=("$f")
+            done < <(git -C "$LFSTUDIO_REPO" log --format=%H -- "patches/$name")
+        done
     fi
     for f in "${candidates[@]}"; do
         [[ -f "$f" ]] && sana apply --reverse --check "$f" 2>/dev/null || continue
@@ -108,8 +115,8 @@ only_changes_of() {
     if (( rc == 0 )); then
         for f in "${touched[@]}"; do
             if [[ -e "$tmp/$f" ]]; then
-                cmp -s "$tmp/$f" "$SOLH3_SANA/$f" || { echo "  changed beyond the patch: $f" >&2; rc=1; }
-            elif [[ -e "$SOLH3_SANA/$f" ]]; then
+                cmp -s "$tmp/$f" "$LFSTUDIO_SANA/$f" || { echo "  changed beyond the patch: $f" >&2; rc=1; }
+            elif [[ -e "$LFSTUDIO_SANA/$f" ]]; then
                 echo "  present although the patch deletes it: $f" >&2; rc=1
             fi
         done
@@ -118,24 +125,25 @@ only_changes_of() {
     return "$rc"
 }
 
-step "NVlabs/Sana sol-engine @ $COMMIT -> $SOLH3_SANA"
-if [[ ! -e "$SOLH3_SANA/.git" ]]; then   # a file in a git worktree
-    [[ -e "$SOLH3_SANA" ]] && die "$SOLH3_SANA exists but is not a git checkout; move it away or set SOLH3_SANA"
-    run mkdir -p "$(dirname "$SOLH3_SANA")"
+step "NVlabs/Sana sol-engine @ $COMMIT -> $LFSTUDIO_SANA"
+if [[ ! -e "$LFSTUDIO_SANA/.git" ]]; then   # a file in a git worktree
+    [[ -e "$LFSTUDIO_SANA" ]] &&
+        die "$LFSTUDIO_SANA exists but is not a git checkout; move it away or set LFSTUDIO_SANA"
+    run mkdir -p "$(dirname "$LFSTUDIO_SANA")"
     # blob-less clone of the branch: full history (BASE_COMMIT is behind the branch head), files fetched on checkout
-    run git clone --filter=blob:none --no-checkout --single-branch -b sol-engine "$SANA_URL" "$SOLH3_SANA"
+    run git clone --filter=blob:none --no-checkout --single-branch -b sol-engine "$SANA_URL" "$LFSTUDIO_SANA"
     if [[ "$DRY_RUN" != 1 ]] && ! sana cat-file -e "$COMMIT^{commit}" 2>/dev/null; then
-        run git -C "$SOLH3_SANA" fetch --filter=blob:none origin "$COMMIT"
+        run git -C "$LFSTUDIO_SANA" fetch --filter=blob:none origin "$COMMIT"
     fi
-    run git -C "$SOLH3_SANA" checkout --detach "$COMMIT"
+    run git -C "$LFSTUDIO_SANA" checkout --detach "$COMMIT"
 else
     say "existing checkout at $(sana rev-parse HEAD)"
 fi
 
 step "apply patches/$PATCH_NAME"
-if [[ "$DRY_RUN" == 1 && ! -e "$SOLH3_SANA/.git" ]]; then
-    run git -C "$SOLH3_SANA" apply --check "$PATCH"
-    run git -C "$SOLH3_SANA" apply "$PATCH"
+if [[ "$DRY_RUN" == 1 && ! -e "$LFSTUDIO_SANA/.git" ]]; then
+    run git -C "$LFSTUDIO_SANA" apply --check "$PATCH"
+    run git -C "$LFSTUDIO_SANA" apply "$PATCH"
     keep_copy
 else
     head=$(sana rev-parse HEAD)
@@ -146,7 +154,7 @@ else
         current=$(earlier_patch) || current=
     fi
     # the earlier patch was applied at a known commit (applied_base). If the checkout is still there and
-    # patches/BASE_COMMIT (or SOLH3_SANA_COMMIT) now names another commit, move to it.
+    # patches/BASE_COMMIT (or LFSTUDIO_SANA_COMMIT) now names another commit, move to it.
     old_base=
     if [[ -n "$current" ]]; then
         if [[ "$current" == "$PATCH" ]]; then old_base=$(applied_base); else old_base=$(applied_base "$current"); fi
@@ -166,33 +174,34 @@ else
                 say "the checkout carries an earlier version of the patch ($current); replacing it"
             fi
             only_changes_of "$current" ||
-                die "$SOLH3_SANA has local changes besides the patch (listed above); nothing was changed.
-Move them away (or commit them elsewhere), or start from a fresh clone: move $SOLH3_SANA away and run this again."
+                die "$LFSTUDIO_SANA has local changes besides the patch (listed above); nothing was changed.
+Move them away (or commit them elsewhere), or start from a fresh clone: move $LFSTUDIO_SANA away and run this again."
             if [[ "$move" == 1 ]]; then        # fetch before anything changes, so a failed fetch changes nothing
                 have_commit "$COMMIT" || die "cannot get $COMMIT from origin ($(sana remote get-url origin 2>/dev/null)); nothing was changed"
             fi
-            run git -C "$SOLH3_SANA" apply -R "$current"
+            run git -C "$LFSTUDIO_SANA" apply -R "$current"
             replaced=1
             if [[ "$move" == 1 ]]; then
                 say "moving the checkout from $head to $COMMIT"
-                run git -C "$SOLH3_SANA" checkout --detach "$COMMIT" ||
-                    die "checkout of $COMMIT failed; the earlier patch is reversed. Put it back with: git -C $SOLH3_SANA apply $current"
+                run git -C "$LFSTUDIO_SANA" checkout --detach "$COMMIT" ||
+                    die "checkout of $COMMIT failed; the earlier patch is reversed. Put it back with: git -C $LFSTUDIO_SANA apply $current"
                 [[ "$DRY_RUN" == 1 ]] && head=$COMMIT || head=$(sana rev-parse HEAD)
             fi
         fi
         [[ "$head" == "$COMMIT" ]] || warn "the checkout is at $head, not $COMMIT"
         if [[ "$DRY_RUN" == 1 && "$replaced" == 1 ]]; then
-            run git -C "$SOLH3_SANA" apply "$PATCH"      # cannot be checked before the earlier patch is reversed
+            run git -C "$LFSTUDIO_SANA" apply "$PATCH"      # cannot be checked before the earlier patch is reversed
             keep_copy
         elif sana apply --check "$PATCH" 2>/dev/null; then
-            run git -C "$SOLH3_SANA" apply "$PATCH"
+            run git -C "$LFSTUDIO_SANA" apply "$PATCH"
             keep_copy
         else
             sana status --short | head -20
-            die "the patch does not apply to $SOLH3_SANA (local changes, or a different commit). git apply --check says:
+            die "the patch does not apply to $LFSTUDIO_SANA (local changes, or a different commit).
+git apply --check says:
 $(sana apply --check "$PATCH" 2>&1 | head -5)
 If the checkout carries a patch that is neither this one nor an earlier version from this repo, reverse it with
-that patch file (git -C $SOLH3_SANA apply -R <that patch>), or move $SOLH3_SANA away and run this again."
+that patch file (git -C $LFSTUDIO_SANA apply -R <that patch>), or move $LFSTUDIO_SANA away and run this again."
         fi
     fi
 fi
@@ -218,7 +227,7 @@ if [[ -x "$ENVS/stage1/bin/python" ]]; then
     fi
 else
     tests=135
-    [[ "$SOLH3_BACKEND" == rtx5090 ]] && tests=185
+    [[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && tests=185
     say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the $tests CPU tests"
 fi
 say "done. Next: install/20-weights.sh"

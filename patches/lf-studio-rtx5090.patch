@@ -1,17 +1,17 @@
-sol-h3-studio patch for NVlabs/Sana, branch sol-engine, base commit 801f04055badca8cc1f3644e973188068f14ad98.
-Apply from the root of a Sana checkout:  git apply /path/to/sol-h3-studio-rtx5090.patch
-What it changes: docs/RTX5090.md, and docs/PATCH.md for each part and how to switch it off, in the sol-h3-studio repository.
+lf-studio patch for NVlabs/Sana, branch sol-engine, base commit 801f04055badca8cc1f3644e973188068f14ad98.
+Apply from the root of a Sana checkout:  git apply /path/to/lf-studio-rtx5090.patch
+What it changes: docs/RTX5090.md, and docs/PATCH.md for each part and how to switch it off, in the lf-studio repository.
 License: Apache-2.0 (the files it modifies are Apache-2.0 NVlabs/Sana code).
 
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/infer.py b/models/minimax_h3/Sol-H3-RTX5090/infer.py
-index 19c4db6..b4e16aa 100644
+index 19c4db6..898756d 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/infer.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/infer.py
 @@ -8,6 +8,8 @@ import signal
  
  from runtime.config import (TASKS, REF_IMAGE_MATCH_CHOICES, REF_STAGE1_ATTN_CHOICES,
                              load_paths, normalize_case, read_cases)
-+# Modified by sol-h3-studio: adds --orientation, --seconds and --deliver-first.
++# Modified by lf-studio: adds --orientation, --seconds and --deliver-first.
 +from runtime.geometry import ORIENTATIONS
  from runtime.pipeline import Pipeline
  
@@ -23,9 +23,9 @@ index 19c4db6..b4e16aa 100644
 +    parser.add_argument("--orientation", choices=ORIENTATIONS, default=None,
 +                        help="landscape 1344x768 (default; env SOL_H3_ORIENTATION) or portrait 768x1344")
 +    parser.add_argument("--seconds", type=float, default=None,
-+                        help="clip length 3-15 s (sol-h3-studio extension; default: frozen 5 s route)")
++                        help="clip length 3-15 s (lf-studio extension; default: frozen 5 s route)")
 +    parser.add_argument("--deliver-first", action="store_true",
-+                        help="sol-h3-studio: the model-loading pass renders the first case instead of a throwaway warmup")
++                        help="lf-studio: the model-loading pass renders the first case instead of a throwaway warmup")
      parser.add_argument("--output-dir", type=Path, required=True, help="New directory; existing runs are never overwritten")
      parser.add_argument("--offload", choices=("cpu",), default="cpu",
                          help="CPU offload for one RTX 5090 (default: cpu)")
@@ -39,7 +39,7 @@ index 19c4db6..b4e16aa 100644
 -        print("Loading models and running one full warmup (reported separately).", flush=True)
 -        pipeline.start(cases[0])
 -        for case in cases:
-+        if args.deliver_first:   # sol-h3-studio: the loading pass renders cases[0] for real (web-UI behaviour)
++        if args.deliver_first:   # lf-studio: the loading pass renders cases[0] for real (web-UI behaviour)
 +            print("Loading models; the first case doubles as the warmup.", flush=True)
 +            print(json.dumps(pipeline.start(cases[0], deliver=True), ensure_ascii=False), flush=True)
 +        else:
@@ -50,30 +50,30 @@ index 19c4db6..b4e16aa 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
-index 0327a69..de4ceee 100644
+index 0327a69..ecd0437 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 @@ -6,6 +6,10 @@ import os
  from pathlib import Path
  import re
  
-+# Modified by sol-h3-studio: portrait orientation, clip length, the persistent compile-cache location, the Stage-2
++# Modified by lf-studio: portrait orientation, clip length, the persistent compile-cache location, the Stage-2
 +# audio setting, the prompt-token setting, static-shape compiles and the Stage-1 prompt-length setting.
 +from .geometry import ORIENTATIONS, orient_recipe
 +
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,149 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,166 @@ REQUIRED_PATHS = (
  )
  
  
 -def load_recipe(task="t2va", *, ref_image_match=None, ref_stage1_attn=None):
 +def compile_cache_root():
-+    """sol-h3-studio: Inductor/Triton cache root kept across sessions; "session" restores upstream's per-session caches.
++    """lf-studio: Inductor/Triton cache root kept across sessions; "session" restores upstream's per-session caches.
 +
 +    SOL_H3_COMPILE_CACHE wins. Otherwise $SOL_H3_SPARK_RUNTIME_ROOT/cache/compile when that is set,
-+    else ~/.cache/sol-h3-studio/compile.
++    else ~/.cache/lf-studio/compile (studio_cache).
 +    """
 +    explicit = os.environ.get("SOL_H3_COMPILE_CACHE")
 +    if explicit:
@@ -81,19 +81,36 @@ index 0327a69..de4ceee 100644
 +    runtime_root = os.environ.get("SOL_H3_SPARK_RUNTIME_ROOT")
 +    if runtime_root:
 +        return str(Path(runtime_root) / "cache" / "compile")
-+    return str(Path.home() / ".cache" / "sol-h3-studio" / "compile")
++    return str(studio_cache() / "compile")
++
++
++_noted = set()
++
++
++def studio_cache():
++    """lf-studio: ~/.cache/lf-studio. Until 0.6 ~/.cache/sol-h3-studio (the studio's name up to 0.4) while the new one
++    is missing or empty, with one note on stderr."""
++    new, old = Path.home() / ".cache" / "lf-studio", Path.home() / ".cache" / "sol-h3-studio"
++    if not old.is_dir() or (new.is_dir() and any(new.iterdir())):
++        return new
++    if old not in _noted:
++        import sys
++        _noted.add(old)
++        print(f"[lf-studio] using {old}: {new} is missing or empty (the old name works until 0.6)", file=sys.stderr,
++              flush=True)
++    return old
 +
 +
 +def data_root():
-+    """sol-h3-studio: where the RTX 5090 memory features keep their files (scratch pages, the fused LTX blocks):
-+    $SOL_H3_SPARK_RUNTIME_ROOT when set, else ~/.cache/sol-h3-studio. Put it on a disk without compression or
++    """lf-studio: where the RTX 5090 memory features keep their files (scratch pages, the fused LTX blocks):
++    $SOL_H3_SPARK_RUNTIME_ROOT when set, else ~/.cache/lf-studio (studio_cache). Put it on a disk without compression or
 +    copy-on-write (O_DIRECT reads; btrfs: chattr +C on the directory)."""
 +    runtime_root = os.environ.get("SOL_H3_SPARK_RUNTIME_ROOT")
-+    return Path(runtime_root) if runtime_root else Path.home() / ".cache" / "sol-h3-studio"
++    return Path(runtime_root) if runtime_root else studio_cache()
 +
 +
 +def stage1_scratch_dir():
-+    """sol-h3-studio: SOL_H3_FILEBACKED_DIR, the folder for H3's construction pages ("0": anonymous memory, as
++    """lf-studio: SOL_H3_FILEBACKED_DIR, the folder for H3's construction pages ("0": anonymous memory, as
 +    upstream). Default <data root>/scratch."""
 +    value = os.environ.get("SOL_H3_FILEBACKED_DIR", "")
 +    if value in ("0", "off"):
@@ -102,7 +119,7 @@ index 0327a69..de4ceee 100644
 +
 +
 +def ltx_blocks_dir():
-+    """sol-h3-studio: SOL_H3_LTX_BLOCKS, the fused LTX block file ("0": upstream's all-pinned build).
++    """lf-studio: SOL_H3_LTX_BLOCKS, the fused LTX block file ("0": upstream's all-pinned build).
 +    Default <data root>/derived/ltx-fused-blocks; built on first use (about 40 GB, about a minute)."""
 +    value = os.environ.get("SOL_H3_LTX_BLOCKS", "")
 +    if value in ("0", "off"):
@@ -111,7 +128,7 @@ index 0327a69..de4ceee 100644
 +
 +
 +def stage1_snapshots_dir():
-+    """sol-h3-studio: SOL_H3_STAGE1_SNAPSHOTS, the folder of Stage-1 snapshots ("0"/"off": every session builds
++    """lf-studio: SOL_H3_STAGE1_SNAPSHOTS, the folder of Stage-1 snapshots ("0"/"off": every session builds
 +    H3 from the checkpoint, as upstream). Default <data root>/derived/stage1-snapshots. Each snapshot is one
 +    subfolder <task>-<identity hash> (about 31 GB), written once after a normal build and read by later sessions
 +    with the same inputs instead of the checkpoint (runtime/stage1_ops/snapshot.py). Needs CPU offload with pinned
@@ -125,7 +142,7 @@ index 0327a69..de4ceee 100644
 +    return value or str(data_root() / "derived" / "stage1-snapshots")
 +
 +
-+# sol-h3-studio: Stage-2 audio policy (runtime/stage2.py). "frozen" (default): Stage 2 refines the video against the
++# lf-studio: Stage-2 audio policy (runtime/stage2.py). "frozen" (default): Stage 2 refines the video against the
 +# H3 audio held clean and fixed; "joint": upstream, the audio is re-noised and regenerated with the video, then
 +# discarded. Read here so a bad value fails when a Pipeline is made, before any worker loads (and again in Stage 2).
 +STAGE2_AUDIO_MODES = ("frozen", "joint")
@@ -140,7 +157,7 @@ index 0327a69..de4ceee 100644
 +    return mode
 +
 +
-+# sol-h3-studio: MiniMax's prompt tokens (runtime/qwen_ops/prompt_tokens.py). "minimax" (default since 0.4): the 7
++# lf-studio: MiniMax's prompt tokens (runtime/qwen_ops/prompt_tokens.py). "minimax" (default since 0.4): the 7
 +# tokens of MiniMax's tokenizer_config.json are added, so each tag is one token as in H3's training; "plain": the
 +# pinned ComfyUI's Qwen tokenizer splits <d> and </d> into ordinary text tokens, as up to 0.3. The host reads the
 +# setting here and passes it in the recipe (stage1.prompt_tokens), so every Qwen worker (the warmup one and each
@@ -158,7 +175,7 @@ index 0327a69..de4ceee 100644
 +
 +
 +def compile_dynamic():
-+    """sol-h3-studio: the torch.compile `dynamic` flag for Stage1's regions and Stage2's blocks.
++    """lf-studio: the torch.compile `dynamic` flag for Stage1's regions and Stage2's blocks.
 +
 +    False (default): a new shape (prompt length, clip length, orientation) compiles its own static graph, the graph a
 +    fresh worker compiles for that shape, so a worker's output does not depend on the shapes it ran before. A
@@ -174,7 +191,7 @@ index 0327a69..de4ceee 100644
 +    return False if value == "1" else None
 +
 +
-+# sol-h3-studio: Stage 1's prompt lengths (runtime/stage1_ops/regional.py). "1" (default since 0.4): the 50 body
++# lf-studio: Stage 1's prompt lengths (runtime/stage1_ops/regional.py). "1" (default since 0.4): the 50 body
 +# regions of the H3 DiT compile once per session for any prompt length; "0": a new prompt length compiles new graphs,
 +# as up to 0.3. Read here so a bad value fails when a Pipeline is made and when the studio starts, before any worker
 +# loads (and again where Stage 1 installs its regions).
@@ -198,32 +215,32 @@ index 0327a69..de4ceee 100644
      canonical = json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()
      if hashlib.sha256(canonical).hexdigest() != FROZEN_RECIPE_SHA256:
          raise ValueError("The frozen recipe record was modified; it would not describe this implementation")
-+    # sol-h3-studio: portrait is derived after the hash check, like the Ref2VA options below.
++    # lf-studio: portrait is derived after the hash check, like the Ref2VA options below.
 +    orientation = os.environ.get("SOL_H3_ORIENTATION", "landscape") if orientation is None else orientation
 +    if orientation not in ORIENTATIONS:
 +        raise ValueError(f"orientation must be one of {ORIENTATIONS}")
 +    recipe = orient_recipe(recipe, orientation)
-+    # sol-h3-studio: optional duration (3-15 s), derived after the hash check; None/5.17 s keeps the frozen 124 -> 121.
++    # lf-studio: optional duration (3-15 s), derived after the hash check; None/5.17 s keeps the frozen 124 -> 121.
 +    seconds = os.environ.get("SOL_H3_SECONDS") if seconds is None else seconds
 +    if seconds not in (None, ""):
 +        from .geometry import draft_frames_for_seconds, frame_geometry
 +        frames = frame_geometry(draft_frames_for_seconds(seconds))
 +        recipe["stage1"]["frames"], recipe["output"]["frames"] = frames["draft_frames"], frames["output_frames"]
 +        recipe["duration_s"] = round(frames["output_frames"] / 24, 2)
-+    # sol-h3-studio: the prompt-token mode for the Qwen worker, derived after the hash check; a bad value fails here.
++    # lf-studio: the prompt-token mode for the Qwen worker, derived after the hash check; a bad value fails here.
 +    recipe["stage1"]["prompt_tokens"] = prompt_tokens_mode(prompt_tokens)
      if task not in TASKS:
          raise ValueError(f"task must be one of {TASKS}")
      if task != "ref2va" and (ref_image_match is not None or ref_stage1_attn is not None):
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/fastload.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/fastload.py
 new file mode 100644
-index 0000000..7f502dd
+index 0000000..0a1a526
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/fastload.py
 @@ -0,0 +1,281 @@
-+"""sol-h3-studio: faster safetensors -> GPU weight loading on DGX Spark (GB10).
++"""lf-studio: faster safetensors -> GPU weight loading on DGX Spark (GB10).
 +
-+Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +
 +On GB10 a host->GPU copy whose source is a file-backed mmap runs at ~1 GiB/s, versus ~18 GiB/s from
 +anonymous RAM (measured on a DGX Spark with a warm page cache; any loader that copies straight from an
@@ -504,13 +521,13 @@ index 0000000..7f502dd
 +    return patched
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/geometry.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/geometry.py
 new file mode 100644
-index 0000000..6868840
+index 0000000..93e9c89
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/geometry.py
 @@ -0,0 +1,99 @@
 +"""Canvas geometry derived from the recipe. Importing this module loads no GPU framework.
 +
-+Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +
 +The frozen record (configs/default.json) describes the landscape 672x384 ->
 +1344x768 route. Portrait is an opt-in derived recipe with width/height (and
@@ -527,7 +544,7 @@ index 0000000..6868840
 +MIN_SECONDS, MAX_SECONDS = 3.0, 15.0
 +
 +
-+# sol-h3-studio duration extension ---------------------------------------------------------
++# lf-studio duration extension ---------------------------------------------------------
 +def draft_frames_for_seconds(seconds):
 +    """H3 frame count for a duration: 24 fps snapped UP to H3's 17k+5 grid (the ComfyUI template rule)."""
 +    seconds = float(seconds)
@@ -608,7 +625,7 @@ index 0000000..6868840
 +                  "width": {"tile_size": tiles["width"], "overlap": tiles["width_overlap"]}},
 +    }
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/latent_transfer.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/latent_transfer.py
-index d14e6f8..2aca017 100644
+index d14e6f8..9c1a4e9 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/latent_transfer.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/latent_transfer.py
 @@ -10,7 +10,9 @@ from .config import TASKS
@@ -616,7 +633,7 @@ index d14e6f8..2aca017 100644
  H3_SHAPE = (1, 24, 37, 24, 42)
  AUDIO_SHAPE = (1, 2, 161333)
 -MAX_PAYLOAD_BYTES = 4 * 1024**2
-+# Modified by sol-h3-studio: payload cap for 15 s clips (15 s latent + PCM ~9 MB; was 4 MiB for 5 s) and
++# Modified by lf-studio: payload cap for 15 s clips (15 s latent + PCM ~9 MB; was 4 MiB for 5 s) and
 +# shape arguments for load_payload (clip length, orientation).
 +MAX_PAYLOAD_BYTES = 32 * 1024**2
  WIRE_METADATA = {
@@ -640,14 +657,14 @@ index d14e6f8..2aca017 100644
          if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape
                  or value.dtype != dtype or not bool(torch.isfinite(value).all())):
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
-index f3f15bb..183572c 100644
+index f3f15bb..cf97820 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/offload.py
 @@ -1,5 +1,8 @@
  """Single-card CPU placement without changing the released sampling recipe."""
  from contextlib import contextmanager, nullcontext
-+# Modified by sol-h3-studio: file-backed construction pages, read-ahead and one page-locked buffer per idle block
-+# (see the "sol-h3-studio:" notes); a Stage-1 snapshot (stage1_ops/snapshot.py) hands the loader a finished model
++# Modified by lf-studio: file-backed construction pages, read-ahead and one page-locked buffer per idle block
++# (see the "lf-studio:" notes); a Stage-1 snapshot (stage1_ops/snapshot.py) hands the loader a finished model
 +# (install_stage1_loader(restore=...)) whose blocks already sit in such buffers (Manager.adopt_pinned).
  
  
@@ -685,7 +702,7 @@ index f3f15bb..183572c 100644
 +
 +
 +def _will_need(torch, module):
-+    """sol-h3-studio: ask the kernel to start reading a CPU module's tensors (checkpoint mmap or scratch pages) in the
++    """lf-studio: ask the kernel to start reading a CPU module's tensors (checkpoint mmap or scratch pages) in the
 +    background, so the next block's copy to the GPU does not fault its pages in one by one. Values are untouched."""
 +    import ctypes
 +    import mmap
@@ -700,7 +717,7 @@ index f3f15bb..183572c 100644
 +
 +
 +def _log_gpu_holders(torch):
-+    """sol-h3-studio: on a CUDA out-of-memory, print what this process holds on the GPU (diagnostics only)."""
++    """lf-studio: on a CUDA out-of-memory, print what this process holds on the GPU (diagnostics only)."""
 +    import gc
 +    import sys
 +    try:
@@ -715,11 +732,11 @@ index f3f15bb..183572c 100644
 +            except Exception:               # fake/functional tensors from compile tracing
 +                continue
 +        big = sorted(sizes.values(), reverse=True)
-+        print(f"[sol-h3-studio] GPU out of memory: {torch.cuda.memory_allocated() / 2**30:.2f} GiB allocated, "
++        print(f"[lf-studio] GPU out of memory: {torch.cuda.memory_allocated() / 2**30:.2f} GiB allocated, "
 +              f"{sum(n for n, _s, _d in big) / 2**30:.2f} GiB in {len(big)} live tensor storages; largest: "
 +              + "; ".join(f"{n / 2**20:.0f} MiB {s} {d}" for n, s, d in big[:25]), file=sys.stderr, flush=True)
 +    except Exception as error:          # diagnostics must not hide the original error
-+        print(f"[sol-h3-studio] GPU holder listing failed: {error}", file=sys.stderr, flush=True)
++        print(f"[lf-studio] GPU holder listing failed: {error}", file=sys.stderr, flush=True)
 +
 +
 +def install_stage1_loader(restore=None):
@@ -729,7 +746,7 @@ index f3f15bb..183572c 100644
      installing offload. Its original offloader also omits quantized buffers.
      These substitutions are limited to this dedicated FastVideo worker.
 +
-+    sol-h3-studio: ``restore(original_load, args, kwargs)`` may return the finished transformer from a Stage-1
++    lf-studio: ``restore(original_load, args, kwargs)`` may return the finished transformer from a Stage-1
 +    snapshot instead of the checkpoint load (None: load as usual).
      """
      import torch
@@ -756,7 +773,7 @@ index f3f15bb..183572c 100644
          def __init__(self, module, stats):
              self.module, self.stats = module, stats
              self.saved = None
-+            self.pinned = None        # sol-h3-studio: the block's page-locked buffer and layout (pin_idle_blocks)
++            self.pinned = None        # lf-studio: the block's page-locked buffer and layout (pin_idle_blocks)
              module.to("cpu")
  
          @torch.compiler.disable
@@ -816,7 +833,7 @@ index f3f15bb..183572c 100644
 +                self.pin_idle_blocks()
 +
 +        def adopt_pinned(self, pinned):
-+            """sol-h3-studio: blocks restored from a Stage-1 snapshot already sit in their page-locked buffers,
++            """lf-studio: blocks restored from a Stage-1 snapshot already sit in their page-locked buffers,
 +            in the layout pin_idle_blocks makes; pin_idle_blocks then checks them instead of copying."""
 +            from .stage1_ops import snapshot
 +            if len(pinned) != len(self.states):
@@ -830,7 +847,7 @@ index f3f15bb..183572c 100644
 +            # full speed. Same bytes, so the same results.
 +            # One exact page-locked buffer per block (cudaHostRegister on ordinary memory, as LTX's
 +            # block streaming does): Tensor.pin_memory() would round every tensor up to a power of two.
-+            # sol-h3-studio: the layout, the buffer (4096-aligned, padded to 4096 bytes for O_DIRECT) and the
++            # lf-studio: the layout, the buffer (4096-aligned, padded to 4096 bytes for O_DIRECT) and the
 +            # carving are shared with the Stage-1 snapshot (stage1_ops/snapshot.py), which writes these buffers to
 +            # disk once and reads them back in later sessions.
 +            from .stage1_ops import snapshot
@@ -851,14 +868,14 @@ index f3f15bb..183572c 100644
          def release_all(self):
              for state in self.states:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
-index fa18e02..de92d95 100644
+index fa18e02..f5cb753 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 @@ -6,9 +6,16 @@ from pathlib import Path
  import signal
  import subprocess
  import time
-+# Modified by sol-h3-studio: overlapped loading, deliver-first start(), transient Qwen for long clips,
++# Modified by lf-studio: overlapped loading, deliver-first start(), transient Qwen for long clips,
 +# persistent compile caches, the mimalloc purge setting for workers, the prompt-token setting and reshape() (clip
 +# length and orientation changed in place). Under CPU offload: Qwen per request for every clip, no overlapped
 +# loading, and the execution block kept across reshape().
@@ -877,14 +894,14 @@ index fa18e02..de92d95 100644
      return receipt
  
  
-+# sol-h3-studio: MemAvailable can show a cache release a moment after the release has answered (bench trace: +6.6 GiB
++# lf-studio: MemAvailable can show a cache release a moment after the release has answered (bench trace: +6.6 GiB
 +# between two 0.25 s samples around the answer), so the check before an early resident Qwen (start(), reshape())
 +# reads it for up to 1 s.
 +MEM_SETTLE_S = 1.0
 +
 +
 +def mem_available_gib():
-+    """sol-h3-studio: MemAvailable from /proc/meminfo in GiB, or None where it can't be read."""
++    """lf-studio: MemAvailable from /proc/meminfo in GiB, or None where it can't be read."""
 +    try:
 +        with open("/proc/meminfo") as meminfo:
 +            for line in meminfo:
@@ -903,24 +920,24 @@ index fa18e02..de92d95 100644
      elif name == "stage2":
          env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 +    if name == "stage1":
-+        # sol-h3-studio (RTX 5090): a Ref2VA first clip ran out of GPU memory with 1 GiB of it reserved but fragmented
++        # lf-studio (RTX 5090): a Ref2VA first clip ran out of GPU memory with 1 GiB of it reserved but fragmented
 +        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-+    # sol-h3-studio: persistent Stage1 compile cache (default /tmp is wiped on reboot)
++    # lf-studio: persistent Stage1 compile cache (default /tmp is wiped on reboot)
 +    cache = compile_cache_root()
 +    if name == "stage1" and cache != "session":
 +        for var, part in (("TORCHINDUCTOR_CACHE_DIR", "inductor"), ("TRITON_CACHE_DIR", "triton")):
 +            Path(cache, "stage1", part).mkdir(parents=True, exist_ok=True)
 +            env[var] = str(Path(cache, "stage1", part))
-+    # sol-h3-studio: PyTorch's aarch64 wheels allocate CPU tensors with a bundled mimalloc that, by default, never
++    # lf-studio: PyTorch's aarch64 wheels allocate CPU tensors with a bundled mimalloc that, by default, never
 +    # returns freed memory to the OS while the process idles (MemAvailable stays down by every transient CPU buffer:
 +    # staging copies, decoded frames, ...). Purge immediately instead - on unified memory that RAM is also VRAM.
 +    # A wheel without the bundled mimalloc ignores the variable.
 +    env.setdefault("MIMALLOC_PURGE_DELAY", "0")
 +    if cache != "session" and name in ("stage1", "stage2"):
-+        # sol-h3-studio: keep Triton autotune winners on disk too (sol_attn / block-sparse autotune re-ran on every cold
++        # lf-studio: keep Triton autotune winners on disk too (sol_attn / block-sparse autotune re-ran on every cold
 +        # start; measured first clip 127 -> 124 s)
 +        env.setdefault("TRITON_CACHE_AUTOTUNING", "1")
-+    # sol-h3-studio (RTX 5090): the driver's JIT cache defaults to 1 GiB, which Stage 1, Stage 2 and Qwen together
++    # lf-studio (RTX 5090): the driver's JIT cache defaults to 1 GiB, which Stage 1, Stage 2 and Qwen together
 +    # overflow, so each session compiled Qwen's PTX-only kernels again (~9 s of the first clip after loading).
 +    env.setdefault("CUDA_CACHE_MAXSIZE", str(4 << 30))
 +    if name in ("stage1", "stage2"):
@@ -945,7 +962,7 @@ index fa18e02..de92d95 100644
  
 -    A full warmup precedes permanent Qwen residency to bound Stage2's initial
 -    loading peak. It is reported separately; the first formal request counts.
-+    sol-h3-studio: a full warmup pass loads the models. The resident Qwen starts during its Stage2 refine, after
++    lf-studio: a full warmup pass loads the models. The resident Qwen starts during its Stage2 refine, after
 +    Stage2's initial loading peak, if memory allows (start()). The warmup is reported separately; the first formal
 +    request counts. With offload_mode="cpu" (the default here) there is no resident Qwen: every request loads its
 +    own, and the stages load one after another.
@@ -957,7 +974,7 @@ index fa18e02..de92d95 100644
 +                 worker_factory=Worker):
          self.paths = paths
          self.task = task
-+        # sol-h3-studio: a bad SOL_H3_PROMPT_TOKENS (or prompt_tokens) fails in load_recipe, before any worker loads
++        # lf-studio: a bad SOL_H3_PROMPT_TOKENS (or prompt_tokens) fails in load_recipe, before any worker loads
          self.config = load_recipe(task, ref_image_match=ref_image_match,
 -                                  ref_stage1_attn=ref_stage1_attn)
 +                                  ref_stage1_attn=ref_stage1_attn, orientation=orientation,
@@ -969,21 +986,21 @@ index fa18e02..de92d95 100644
 -            self.config["execution"] = {"offload": "cpu", "gpu_count": 1,
 -                                        "qwen_lifetime": "one_request", "overlap_stages": False}
 +        self._with_execution(self.config)
-+        # sol-h3-studio (reshape): what stays when the shape changes; the prompt-token mode as resolved here, so a
++        # lf-studio (reshape): what stays when the shape changes; the prompt-token mode as resolved here, so a
 +        # Qwen worker started after a reshape gets this session's mode
 +        self.recipe_options = {"ref_image_match": ref_image_match, "ref_stage1_attn": ref_stage1_attn,
 +                               "prompt_tokens": self.config["stage1"]["prompt_tokens"]}
-+        stage2_audio_mode()     # sol-h3-studio: a bad SOL_H3_STAGE2_AUDIO fails here, before any worker loads
-+        compile_dynamic()       # sol-h3-studio: the same for SOL_H3_STATIC_SHAPES
-+        dynamic_text_length()   # sol-h3-studio: and for SOL_H3_DYNAMIC_TEXT_LENGTH
++        stage2_audio_mode()     # lf-studio: a bad SOL_H3_STAGE2_AUDIO fails here, before any worker loads
++        compile_dynamic()       # lf-studio: the same for SOL_H3_STATIC_SHAPES
++        dynamic_text_length()   # lf-studio: and for SOL_H3_DYNAMIC_TEXT_LENGTH
 +        self.transient_qwen = self._transient(self.config)
-+        self._plan_resident_qwen()      # sol-h3-studio: a bad SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB fails here, too
++        self._plan_resident_qwen()      # lf-studio: a bad SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB fails here, too
          self.root = Path(output_root).resolve()
          self.root.mkdir(parents=True, exist_ok=False)
          self.worker_factory = worker_factory
          self.stage1 = self.stage2 = self.qwen = None
 +        self.started = False
-+        # sol-h3-studio (reshape): a failed reshape leaves the workers in mixed shapes; close() sets `closing` first,
++        # lf-studio (reshape): a failed reshape leaves the workers in mixed shapes; close() sets `closing` first,
 +        # under the lock that reshape's resident-Qwen start also takes, so nothing starts on a closing pipeline.
 +        self.reshape_error = None
 +        self.closing = False
@@ -991,7 +1008,7 @@ index fa18e02..de92d95 100644
 +        self.resident_qwen_after_next_clip = False
 +        self.qwen_loads = self.qwen_restarts = 0
 +        self._qwen_future = None
-+        self._qwen_closes = []      # sol-h3-studio: an Event per resident-Qwen close in progress (_close_resident_qwen)
++        self._qwen_closes = []      # lf-studio: an Event per resident-Qwen close in progress (_close_resident_qwen)
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
@@ -1001,7 +1018,7 @@ index fa18e02..de92d95 100644
  
 -    def start(self, case):
 +    def _with_execution(self, config):
-+        """Add the CPU-offload execution block that every worker reads (runtime/offload.py). sol-h3-studio: also to
++        """Add the CPU-offload execution block that every worker reads (runtime/offload.py). lf-studio: also to
 +        each recipe reshape() loads, so its workers and the per-request Qwen keep the offload."""
 +        if self.cpu_offload:
 +            config["execution"] = {"offload": "cpu", "gpu_count": 1,
@@ -1010,7 +1027,7 @@ index fa18e02..de92d95 100644
 +
 +    @staticmethod
 +    def _transient(config):
-+        """sol-h3-studio: clips longer than 10 s don't fit with Qwen resident next to Stage1+Stage2 on one Spark
++        """lf-studio: clips longer than 10 s don't fit with Qwen resident next to Stage1+Stage2 on one Spark
 +        (15 s hit MemAvailable 4 GiB in the Stage2 refine). Those clips load Qwen per request instead. Under CPU
 +        offload (execution.qwen_lifetime one_request) every clip does."""
 +        from . import geometry as _geometry
@@ -1020,7 +1037,7 @@ index fa18e02..de92d95 100644
 +                > int(os.environ.get("SOL_H3_RESIDENT_QWEN_MAX_FRAMES", "241")))
 +
 +    def _plan_resident_qwen(self):
-+        """sol-h3-studio: where start() loads the resident Qwen, for the current recipe. It loads while start()'s
++        """lf-studio: where start() loads the resident Qwen, for the current recipe. It loads while start()'s
 +        Stage2 refines, so the next clip finds it ready, if MemAvailable after Stage2's cache release is at least the
 +        minimum (_early_qwen_minimum). Otherwise, and with SOL_H3_RESIDENT_QWEN_EARLY=0, it loads after start()'s
 +        MP4, as before. Sessions over SOL_H3_RESIDENT_QWEN_MAX_FRAMES load it per request (_transient)."""
@@ -1032,7 +1049,7 @@ index fa18e02..de92d95 100644
 +                              if not self.early_qwen else {"spawn": "first_refine"})
 +
 +    def _early_qwen_minimum(self, config=None):
-+        """sol-h3-studio: the MemAvailable minimum for loading the resident Qwen while other workers hold their
++        """lf-studio: the MemAvailable minimum for loading the resident Qwen while other workers hold their
 +        caches (during start()'s refine, or right after a reshape back to a resident length), and where it comes
 +        from: 32 GiB up to 121 output frames (5 s), 34 GiB above (measured on a test studio: Qwen plus a first
 +        refine took 23.1-23.8 GiB at 5 s, 26.7 GiB at fl2va 10 s; so ~7-9 GiB would be left at the minimum, above
@@ -1053,7 +1070,7 @@ index fa18e02..de92d95 100644
 +            34.0, "default for over 121 output frames")
 +
 +    def _shape(self, config=None):
-+        """sol-h3-studio: the clip shape of a recipe (default: the current one), for results.json."""
++        """lf-studio: the clip shape of a recipe (default: the current one), for results.json."""
 +        from . import geometry as _geometry
 +        shape = _geometry.from_recipe(config or self.config)
 +        return {key: shape[key] for key in ("orientation", "output_width", "output_height", "draft_frames",
@@ -1063,9 +1080,9 @@ index fa18e02..de92d95 100644
 +        """Load every model with one full pass through the pipeline.
 +
 +        deliver=False: the pass is a warmup (seed 999, reported separately), as upstream.
-+        deliver=True (sol-h3-studio web UI): the pass *is* the first request, so its MP4 is returned as a normal
++        deliver=True (lf-studio web UI): the pass *is* the first request, so its MP4 is returned as a normal
 +        row instead of being thrown away - the first clip arrives one whole generation sooner.
-+        sol-h3-studio overlap (same peaks as upstream's sequential order, measured): the warmup Qwen encodes
++        lf-studio overlap (same peaks as upstream's sequential order, measured): the warmup Qwen encodes
 +        while Stage1 spawns; Stage2 loads while Stage1 compiles, but only after Stage1's BF16 load and FP8
 +        conversion finished; the resident Qwen loads in the background once Stage1 has returned and Stage2 is
 +        built, while Stage2 refines (after the MP4 with SOL_H3_RESIDENT_QWEN_EARLY=0). Under CPU offload none of this
@@ -1078,7 +1095,7 @@ index fa18e02..de92d95 100644
 -        temporary_qwen = self.worker_factory("qwen", self.root / "warmup-qwen-worker", self.paths, self.config)
 -        warmup = dict(case, seed=999, request_id="warmup")
 -        request = self.root / "warmup"
-+        # sol-h3-studio: under CPU offload (execution.overlap_stages False) the stages load one after another, as
++        # lf-studio: under CPU offload (execution.overlap_stages False) the stages load one after another, as
 +        # upstream's RTX 5090 order: Stage1, the warmup Qwen, Stage1's pass, then Stage2
 +        overlap = self.config.get("execution", {}).get("overlap_stages", True)
 +        pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sol-h3-spawn")
@@ -1123,7 +1140,7 @@ index fa18e02..de92d95 100644
 +            self.stage2 = (stage2.result() if overlap else
 +                           self.worker_factory("stage2", self.root / "stage2-worker", self.paths, self.config))
 +            if self.early_qwen:
-+                # sol-h3-studio: both load peaks are over. From its load until the release after the first MP4,
++                # lf-studio: both load peaks are over. From its load until the release after the first MP4,
 +                # Stage2 holds ~12 GiB that the release frees (MemAvailable +12-14 GiB at that release at 5, 10 and
 +                # 15 s, measured). Release it now, as generate() does before each clip, and load the resident Qwen
 +                # during this refine if there is room for it.
@@ -1133,7 +1150,7 @@ index fa18e02..de92d95 100644
 +                if room:
 +                    self._spawn_resident_qwen(pool=pool)
 +                else:
-+                    print(f"[sol-h3-studio] the resident Qwen loads after the first clip: {reading['reason']}",
++                    print(f"[lf-studio] the resident Qwen loads after the first clip: {reading['reason']}",
 +                          flush=True)
 +            self.stage2.call("prepare", request_id=request_id, output_root=str(request / "stage2"))
 +            s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
@@ -1184,7 +1201,7 @@ index fa18e02..de92d95 100644
 +        return self.worker_factory("stage2", self.root / "stage2-worker", self.paths, self.config)
 +
 +    def _room_for_early_qwen(self, config=None, *, after):
-+        """sol-h3-studio: whether MemAvailable is at least the minimum (_early_qwen_minimum, for config's length) for
++        """lf-studio: whether MemAvailable is at least the minimum (_early_qwen_minimum, for config's length) for
 +        loading the resident Qwen now: in start() after Stage2's release, in reshape() after the workers released
 +        the previous shape's caches. Reads it for up to MEM_SETTLE_S. Returns (room, the reading for results.json)."""
 +        minimum, source = self._early_qwen_minimum(config)
@@ -1203,7 +1220,7 @@ index fa18e02..de92d95 100644
 +        return room, reading
 +
 +    def _resident_qwen(self):
-+        """sol-h3-studio: the resident Qwen, waiting for one still loading. Its future stays registered until the
++        """lf-studio: the resident Qwen, waiting for one still loading. Its future stays registered until the
 +        worker is in self.qwen, so a close() meanwhile (Unload during a reshape that waits here) finds it, waits for
 +        it and closes it. On a pipeline that is closing this raises: the caller gets no encoder, close() closes it.
 +        Only a failed load ends the registration. An interrupt during the wait (infer.py's SIGINT handler) leaves the
@@ -1226,7 +1243,7 @@ index fa18e02..de92d95 100644
 +        return self.qwen
 +
 +    def _close_resident_qwen(self):
-+        """sol-h3-studio: close the resident Qwen, waiting for one still loading. Returns only once no close of it is
++        """lf-studio: close the resident Qwen, waiting for one still loading. Returns only once no close of it is
 +        in progress, also one another thread began (a reshape to a length over SOL_H3_RESIDENT_QWEN_MAX_FRAMES while
 +        Unload runs close()), so close() never returns while that encoder is still shutting down."""
 +        if self._qwen_future is not None:
@@ -1254,7 +1271,7 @@ index fa18e02..de92d95 100644
 +            other.wait()
 +
 +    def _spawn_resident_qwen(self, config=None, *, pool=None):
-+        """sol-h3-studio: load the resident Qwen in the background, unless the pipeline is closing: on start()'s pool
++        """lf-studio: load the resident Qwen in the background, unless the pipeline is closing: on start()'s pool
 +        (qwen-worker), or on its own after a reshape (qwen-worker-r1, -r2, ...). Never a second one: with one loading
 +        or loaded it keeps that one (a second future would replace the first, and close() would never see it).
 +        Returns whether a resident Qwen is loading or loaded."""
@@ -1276,7 +1293,7 @@ index fa18e02..de92d95 100644
 +            return True
 +
 +    def reshape(self, *, orientation=None, seconds=None):
-+        """sol-h3-studio: another clip length and orientation for the same task, with every model kept loaded.
++        """lf-studio: another clip length and orientation for the same task, with every model kept loaded.
 +
 +        Nothing loaded depends on the shape. Stage1, Stage2 and the resident Qwen get a "reshape" command with the
 +        new recipe and rebind their shape state (Stage1: request size, latent capture, the BSA self-check for a
@@ -1294,7 +1311,7 @@ index fa18e02..de92d95 100644
 +            raise RuntimeError("The pipeline is closing")
 +        if self.reshape_error:
 +            raise RuntimeError(f"A reshape failed ({self.reshape_error}); close this pipeline")
-+        # sol-h3-studio: with the execution block (CPU offload), so the workers keep it and an unchanged shape
++        # lf-studio: with the execution block (CPU offload), so the workers keep it and an unchanged shape
 +        # compares equal
 +        config = self._with_execution(load_recipe(self.task, orientation=orientation, seconds=seconds,
 +                                                  **self.recipe_options))
@@ -1365,7 +1382,7 @@ index fa18e02..de92d95 100644
          # This single parent clock includes fresh Qwen, scheduling, transfer and mux.
          started = time.monotonic_ns()
          row["request_start_monotonic_ns"] = started
-+        per_request = self.transient_qwen or self.resident_qwen_after_next_clip   # sol-h3-studio (reshape)
++        per_request = self.transient_qwen or self.resident_qwen_after_next_clip   # lf-studio (reshape)
          try:
 -            self.stage2.call("release_idle_cache", qwen_resident=True)
 -            if self.cpu_offload:
@@ -1387,7 +1404,7 @@ index fa18e02..de92d95 100644
 -                preparation = self.stage2.submit("prepare", request_id=case["case_id"],
 -                                                 output_root=str(request / "stage2"))
 +                conditioning = self._resident_qwen().call(case=case, output_root=str(request / "qwen"))
-+            # sol-h3-studio: under CPU offload (execution.overlap_stages False) Stage2 prepares after Stage1, as
++            # lf-studio: under CPU offload (execution.overlap_stages False) Stage2 prepares after Stage1, as
 +            # upstream's RTX 5090 order, not alongside it
 +            preparation = None if self.cpu_offload else self.stage2.submit(
 +                "prepare", request_id=case["case_id"], output_root=str(request / "stage2"))
@@ -1408,7 +1425,7 @@ index fa18e02..de92d95 100644
              if self.qwen is not None:
                  self.qwen.call("release_idle_cache")
 +            if self.resident_qwen_after_next_clip and not self.transient_qwen:
-+                self.resident_qwen_after_next_clip = False      # sol-h3-studio: deferred by reshape (memory)
++                self.resident_qwen_after_next_clip = False      # lf-studio: deferred by reshape (memory)
 +                self._spawn_resident_qwen(self.config)
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
@@ -1418,7 +1435,7 @@ index fa18e02..de92d95 100644
  
      def close(self):
 +        with self._lock:
-+            self.closing = True    # sol-h3-studio: no reshape, request or resident Qwen start from here on
++            self.closing = True    # lf-studio: no reshape, request or resident Qwen start from here on
          try:
 -            if self.qwen is not None:
 -                self.qwen.close()
@@ -1434,16 +1451,16 @@ index fa18e02..de92d95 100644
 +                    if self.stage1 is not None:
 +                        self.stage1.close()
 +                finally:
-+                    self._close_resident_qwen()    # sol-h3-studio: one whose start began before `closing` was set
++                    self._close_resident_qwen()    # lf-studio: one whose start began before `closing` was set
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
-index b2ef6f5..2b3decc 100644
+index b2ef6f5..3bdf678 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen.py
 @@ -10,6 +10,9 @@ import time
  
  from .qwen_ops.media import input_spec, prepare_inputs, reference_target_area
  from .offload import validate_device
-+# Modified by sol-h3-studio: the keyframe/reference-video canvas follows the draft size, and MiniMax's prompt tokens
++# Modified by lf-studio: the keyframe/reference-video canvas follows the draft size, and MiniMax's prompt tokens
 +# (SOL_H3_PROMPT_TOKENS, see qwen_ops/prompt_tokens.py).
 +from .qwen_ops.prompt_tokens import apply_prompt_tokens, recipe_mode, request_counts
  
@@ -1462,7 +1479,7 @@ index b2ef6f5..2b3decc 100644
              empty_host_cache()
  
  
-+# sol-h3-studio: the same tensors, read faster. The loader above reads one tensor at a time through one 64 MiB pinned
++# lf-studio: the same tensors, read faster. The loader above reads one tensor at a time through one 64 MiB pinned
 +# slot and waits for each GPU copy before the next disk read (~1.6 GB/s measured on an RTX 5090 workstation). This
 +# one reads the file front to back in large aligned windows with parallel O_DIRECT reads, several windows ahead, and
 +# copies each window's slices to the GPU on a side stream. Every tensor gets the same bytes in a CUDA buffer of the
@@ -1577,7 +1594,7 @@ index b2ef6f5..2b3decc 100644
 +
 +
 +def _major_faults_and_reads():
-+    """sol-h3-studio: (major page faults, bytes read from storage) of this process so far."""
++    """lf-studio: (major page faults, bytes read from storage) of this process so far."""
 +    try:
 +        fields = open('/proc/self/stat').read().rsplit(')', 1)[1].split()
 +        io = dict(line.split(': ') for line in open('/proc/self/io').read().splitlines())
@@ -1587,7 +1604,7 @@ index b2ef6f5..2b3decc 100644
 +        return 0, 0, 0.0, 0.0
 +
 +
-+# sol-h3-studio: the keyframe/reference-video canvas follows the (possibly portrait) draft size and can change in a
++# lf-studio: the keyframe/reference-video canvas follows the (possibly portrait) draft size and can change in a
 +# running session (reshape).
 +def draft_canvas(config):
 +    """(height, width) of the draft: the canvas for keyframes and reference videos."""
@@ -1598,8 +1615,8 @@ index b2ef6f5..2b3decc 100644
  class Session:
      def __init__(self, paths: dict, work_dir: str, config: dict):
          self.reference_target_area = reference_target_area(config)
-+        self.canvas = draft_canvas(config)        # sol-h3-studio
-+        # sol-h3-studio: the prompt-token mode the host read (SOL_H3_PROMPT_TOKENS); a bad value fails before loading.
++        self.canvas = draft_canvas(config)        # lf-studio
++        # lf-studio: the prompt-token mode the host read (SOL_H3_PROMPT_TOKENS); a bad value fails before loading.
 +        self.prompt_tokens_mode = recipe_mode(config)
          checkpoint = Path(paths['qwen_checkpoint']).expanduser().resolve(strict=True)
          comfy_root = Path(paths['comfy_root']).expanduser().resolve(strict=True)
@@ -1608,9 +1625,9 @@ index b2ef6f5..2b3decc 100644
          finally:
              utils.load_torch_file = original_load
          self.clip = self.owner.clip
-+        # sol-h3-studio: add MiniMax's 7 prompt tokens (minimax) or check they are absent (plain).
++        # lf-studio: add MiniMax's 7 prompt tokens (minimax) or check they are absent (plain).
 +        self.prompt_tokens = apply_prompt_tokens(self.clip.tokenizer.qwen3vl_32b, self.prompt_tokens_mode)
-+        print(f'[sol-h3-studio] prompt tokens: {self.prompt_tokens}', flush=True)
++        print(f'[lf-studio] prompt tokens: {self.prompt_tokens}', flush=True)
          import comfy.model_management as management
          management.load_models_gpu([self.clip.patcher], force_full_load=True)
          self.clip.cond_stage_model.eval().requires_grad_(False)
@@ -1628,7 +1645,7 @@ index b2ef6f5..2b3decc 100644
              'resources': resource_snapshot(self.torch)}
  
 +    def reshape(self, config):
-+        """sol-h3-studio: the keyframe/reference-video canvas and reference budget of another clip shape (same task).
++        """lf-studio: the keyframe/reference-video canvas and reference budget of another clip shape (same task).
 +        Only fl2va/ref2va inputs use them; the text encoding does not depend on the shape. The prompt-token mode is
 +        the session's: a recipe with another one is refused."""
 +        if self.closed or self.failed:
@@ -1648,7 +1665,7 @@ index b2ef6f5..2b3decc 100644
          root.mkdir(parents=True, exist_ok=False)
          torch = self.torch
          try:
-+            phases = {}                         # sol-h3-studio: where the request time goes
++            phases = {}                         # lf-studio: where the request time goes
 +            mark = time.monotonic()
              before = self.release_idle_cache()
              torch.cuda.reset_peak_memory_stats()
@@ -1688,7 +1705,7 @@ index b2ef6f5..2b3decc 100644
                  'prompt': case['prompt'], 'case_id': case['case_id'], 'seed': case['seed'],
                  'payload': str(path), 'payload_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                  'shape': list(value.cond.shape), 'dtype': str(value.cond.dtype),
-+                # sol-h3-studio: the prompt-token mode, the text positions and how many of them are MiniMax tokens
++                # lf-studio: the prompt-token mode, the text positions and how many of them are MiniMax tokens
 +                'prompt_tokens': self.prompt_tokens_mode, **request_counts(tokens, value.minimax_token_tags),
                  'producer_mode': 'resident', 'model_load_count': self.model_load_count,
                  'request_index': self.completed_requests, 'residency_before': before,
@@ -1702,7 +1719,7 @@ index b2ef6f5..2b3decc 100644
              return receipt
          except BaseException:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/media.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/media.py
-index 39080d4..554c8de 100644
+index 39080d4..2f5177d 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/media.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/media.py
 @@ -73,19 +73,22 @@ def prepare_reference_image(image, height, width):
@@ -1711,7 +1728,7 @@ index 39080d4..554c8de 100644
  
 -def resolve_canvas_size(aspect_width, aspect_height):
 +def resolve_canvas_size(aspect_width, aspect_height, short_side=768, max_area=768 * 1344):
-+    # Modified by sol-h3-studio: short_side/max_area default to H3's native canvas; sol-h3-studio passes the
++    # Modified by lf-studio: short_side/max_area default to H3's native canvas; lf-studio passes the
 +    # draft canvas for reference videos (like the default Stage1-sized reference images) - see stage1.py.
 +    # prepare_reference_frames and prepare_inputs gained matching canvas arguments.
      if aspect_width <= 0 or aspect_height <= 0:
@@ -1782,13 +1799,13 @@ index 39080d4..554c8de 100644
                  items.append({"type": "audio"})
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/prompt_tokens.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/prompt_tokens.py
 new file mode 100644
-index 0000000..e06fee1
+index 0000000..193da85
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/qwen_ops/prompt_tokens.py
 @@ -0,0 +1,93 @@
 +"""MiniMax's prompt tokens for the pinned ComfyUI Qwen tokenizer (SOL_H3_PROMPT_TOKENS). Imports no GPU framework.
 +
-+Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +
 +H3 was trained with the tokenizer files of the MiniMaxAI/MiniMax-H3 repository. Their tokenizer_config.json adds 7
 +special tokens after Qwen2.5's vocabulary; transformers gives them ids 151669-151675. ComfyUI v0.30.0, which
@@ -1798,7 +1815,7 @@ index 0000000..e06fee1
 +
 +Modes (runtime/config.py prompt_tokens_mode, passed to the Qwen worker as recipe["stage1"]["prompt_tokens"]):
 +  minimax  (default) the 7 tokens added, so prompts tokenize as with MiniMax's own tokenizer
-+  plain    the pinned tokenizer as it is (the behaviour up to sol-h3-studio 0.3; a dialogue clip made then
++  plain    the pinned tokenizer as it is (the behaviour up to lf-studio 0.3; a dialogue clip made then
 +           reproduces from its seed only in this mode)
 +A prompt without any of the 7 tokens gets the same ids in both modes.
 +"""
@@ -1880,7 +1897,7 @@ index 0000000..e06fee1
 +    ids = [entry[0] for entry in entries if isinstance(entry[0], int)]
 +    return {"text_tokens": int(token_tags.sum()), "minimax_tokens": sum(1 for i in ids if i in MINIMAX_EXTRA_IDS)}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
-index a1dd805..a125845 100644
+index a1dd805..3d2fe6a 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 @@ -3,17 +3,24 @@ from __future__ import annotations
@@ -1900,10 +1917,10 @@ index a1dd805..a125845 100644
  from . import offload
  from .stage1_ops.tasks import input_spec, native_inputs, ref_lora_alpha, task_of, validate_prepared_media
  from .qwen_ops.media import reference_target_area, resolve_reference_image_size
-+# Modified by sol-h3-studio: clip-length/orientation geometry, O_DIRECT weight loading, VAEs built on the GPU,
++# Modified by lf-studio: clip-length/orientation geometry, O_DIRECT weight loading, VAEs built on the GPU,
 +# audio-VAE side-load, raised recompile limit, reference videos at the draft canvas, static-shape compile and
 +# reshape (another clip length or orientation in a running session) and the Stage-1 snapshot (the finished transformer
-+# saved once and restored by later sessions; stage1_ops/snapshot.py); see "sol-h3-studio:" notes.
++# saved once and restored by later sessions; stage1_ops/snapshot.py); see "lf-studio:" notes.
 +from . import geometry
 +from .config import DYNAMIC_TEXT_LENGTH, compile_dynamic, dynamic_text_length
  
@@ -1914,7 +1931,7 @@ index a1dd805..a125845 100644
  
  
 +def configure_dynamo(config):
-+    """sol-h3-studio: Dynamo settings of the Stage1 worker (torch._dynamo.config).
++    """lf-studio: Dynamo settings of the Stage1 worker (torch._dynamo.config).
 +
 +    Every new prompt length (text tokens) recompiles the fullgraph DiT regions; FastVideo caps recompiles at 16
 +    (layers/lora/linear.py), so a long-lived web-UI session died after ~4 distinct prompt lengths ('Dynamo recompile
@@ -1934,11 +1951,11 @@ index a1dd805..a125845 100644
 +        config.automatic_dynamic_shapes = False
 +
 +
-+SOL_ROUTE_IGNORES_TEXT_LENGTH = f"[sol-h3-studio] {DYNAMIC_TEXT_LENGTH}=1 is ignored on the Ref2VA Sol route"
++SOL_ROUTE_IGNORES_TEXT_LENGTH = f"[lf-studio] {DYNAMIC_TEXT_LENGTH}=1 is ignored on the Ref2VA Sol route"
 +
 +
 +def sol_route_text_length(environ=None):
-+    """sol-h3-studio: the Ref2VA Sol route keeps its per-length graphs; SOL_H3_DYNAMIC_TEXT_LENGTH does not apply.
++    """lf-studio: the Ref2VA Sol route keeps its per-length graphs; SOL_H3_DYNAMIC_TEXT_LENGTH does not apply.
 +
 +    Returns (receipt, log line or None) for that route, from environ (default os.environ). The receipt says the
 +    setting is ignored whenever it is on, the default included; the Stage1 log says so only when it was set to 1, so
@@ -1963,17 +1980,17 @@ index a1dd805..a125845 100644
 +    from fastvideo.layers.quantization.fp8_config import FP8QuantizeMethod, convert_model_to_fp8
 +    import torch._dynamo
 +    configure_dynamo(torch._dynamo.config)
-+    # sol-h3-studio duration extension: FastVideo validates 5.0-15.0 s, which rejects 3-4 s drafts and the 362-frame
++    # lf-studio duration extension: FastVideo validates 5.0-15.0 s, which rejects 3-4 s drafts and the 362-frame
 +    # (15.08 s) grid point that ComfyUI's H3 template uses for 15 s. MiniMax's card lists 4-15 s as trained.
 +    import fastvideo.pipelines.basic.minimax_h3.stages.minimax_h3_input_preparation as _h3_inputs
 +    _h3_inputs.MINIMAX_H3_MIN_DURATION, _h3_inputs.MINIMAX_H3_MAX_DURATION = 3.0, 15.1
-+    # sol-h3-studio: fast safetensors->GPU (O_DIRECT reads, mmap fallback). See runtime/fastload.py.
++    # lf-studio: fast safetensors->GPU (O_DIRECT reads, mmap fallback). See runtime/fastload.py.
 +    from . import fastload
 +    import fastvideo.models.loader.weight_utils as _fv_weight_utils
 +    fastload.install(_fv_weight_utils)
 +    import fastvideo.pipelines.lora_pipeline as _fv_lora_pipeline
 +    _fv_lora_pipeline.load_file = fastload.load_file        # 5.3 GB constructor LoRA adapter, same bytes
-+    # sol-h3-studio: the video VAE (10 GB, fl2va/ref2va) and audio VAE were built on the CPU - random init of every
++    # lf-studio: the video VAE (10 GB, fl2va/ref2va) and audio VAE were built on the CPU - random init of every
 +    # parameter with OMP_NUM_THREADS=1 - then moved, then overwritten by a strict load_state_dict from mmap'd
 +    # files: ~70 s for the video VAE on the DGX Spark. Construct them on the GPU (init there is ~free; every weight
 +    # is still loaded strictly from the checkpoint) and read the files with O_DIRECT. On the RTX 5090 FastVideo
@@ -1999,11 +2016,11 @@ index a1dd805..a125845 100644
               "fp8_route": "native_FastVideo_tensorwise_W8A8_after_original_BF16_LoRA_merge",
 -             "qwen_builtin_materializations": 0, "case": None}
 +             "qwen_builtin_materializations": 0, "case": None,
-+             # sol-h3-studio: the clip shape of the next request; reshape_worker changes it between requests
++             # lf-studio: the clip shape of the next request; reshape_worker changes it between requests
 +             "latent_shape": [int(value) for value in latent_shape], "audio_samples": int(audio_samples)}
      worker._sol_h3_stage1 = state
      state["cpu_offload"] = cpu_offload
-+    # sol-h3-studio: Stage-1 snapshot (CPU offload with pinned blocks only; SOL_H3_STAGE1_SNAPSHOTS, see config.py).
++    # lf-studio: Stage-1 snapshot (CPU offload with pinned blocks only; SOL_H3_STAGE1_SNAPSHOTS, see config.py).
 +    # A matching snapshot replaces the checkpoint load, the LoRA conversion and merge, the lookup computation and
 +    # the FP8 conversion; otherwise the normal build runs and is saved at the end of quantize_after_merge.
 +    snap = None
@@ -2029,7 +2046,7 @@ index a1dd805..a125845 100644
              def no_video_decode(*args, **kwargs):
                  raise RuntimeError("Stage1 latent transfer must not decode generated H3 video")
              model.decode = no_video_decode
-+            # sol-h3-studio (RTX 5090): this session only encodes keyframes and references, never decodes, and the
++            # lf-studio (RTX 5090): this session only encodes keyframes and references, never decodes, and the
 +            # decoder is 9.7 of the VAE's 10.4 GB (FP32) that CPU offload otherwise keeps in RAM next to H3. Encoding
 +            # uses the encoder and quant_conv only. SOL_H3_KEEP_VAE_DECODER=1 keeps it.
 +            if os.environ.get("SOL_H3_KEEP_VAE_DECODER", "0") != "1" and isinstance(
@@ -2067,9 +2084,9 @@ index a1dd805..a125845 100644
 -                module.quant_config = FP8Config()
 -                module.quant_method = FP8QuantizeMethod("tensor")
 -                tagged.append(name)
-+        gc.collect()        # sol-h3-studio: Ref2VA's LoRA wrappers form cycles; free them before the GPU passes below
++        gc.collect()        # lf-studio: Ref2VA's LoRA wrappers form cycles; free them before the GPU passes below
 +        if restored:
-+            # sol-h3-studio: the merge, the exact lookup and the FP8 conversion of the build that saved the snapshot
++            # lf-studio: the merge, the exact lookup and the FP8 conversion of the build that saved the snapshot
 +            # are in its tensors and structure (snapshot.Controller.restore); adopt checks the module tree against
 +            # that build and returns what it recorded, which the checks below hold to the same standard. Its own
 +            # checks raise SnapshotMismatch, the one failure that retires the snapshot (snapshot.Controller.failed).
@@ -2107,7 +2124,7 @@ index a1dd805..a125845 100644
                  regional.install_dense(model, state)
              else:
                  sol.install(model, state, sol_route)
-+                # sol-h3-studio: the Sol route keeps its per-length graphs; SOL_H3_DYNAMIC_TEXT_LENGTH does not apply.
++                # lf-studio: the Sol route keeps its per-length graphs; SOL_H3_DYNAMIC_TEXT_LENGTH does not apply.
 +                text_length, note = sol_route_text_length()
 +                state["sol_regional_compile"]["text_length"] = text_length
 +                if note:
@@ -2117,17 +2134,17 @@ index a1dd805..a125845 100644
              regional.install(model, state)
          if manager is not None:
 +            if restored:
-+                manager.adopt_pinned(snap.pinned_blocks)    # sol-h3-studio: already in their pinned buffers
++                manager.adopt_pinned(snap.pinned_blocks)    # lf-studio: already in their pinned buffers
              manager.install_inference_hooks()
              state["offload"] = manager.stats
 +        if snap is not None and not restored:
-+            snap.save(model, manager)       # sol-h3-studio: once per identity; the outcome is in stage1_snapshot
++            snap.save(model, manager)       # lf-studio: once per identity; the outcome is in stage1_snapshot
          return model
 -    pipe.modules["transformer"].set_materialize_transform(quantize_after_merge)
 +    if snap is None:
 +        pipe.modules["transformer"].set_materialize_transform(quantize_after_merge)
 +    else:
-+        # sol-h3-studio: a restored model that fails in the loader or here because of its snapshot (a SnapshotError)
++        # lf-studio: a restored model that fails in the loader or here because of its snapshot (a SnapshotError)
 +        # retires the snapshot (snapshot.Controller.failed), so the next worker builds from the checkpoint instead
 +        # of failing the same way; other failures (memory, environment checks, interrupts) keep it.
 +        def quantize_or_reject(model):
@@ -2138,7 +2155,7 @@ index a1dd805..a125845 100644
 +                raise
 +        snap.guard_loader(pipe.modules["transformer"])
 +        pipe.modules["transformer"].set_materialize_transform(quantize_or_reject)
-+    # sol-h3-studio: materialize the small audio VAE on a side thread while the first denoise runs. Natively it
++    # lf-studio: materialize the small audio VAE on a side thread while the first denoise runs. Natively it
 +    # loads lazily after the denoise, ~5.7 s on the critical path of every cold start. Joined before audio decode.
 +    audio_prefetch = {}
 +    audio_lazy, transformer_lazy = pipe.modules.get("audio_vae"), pipe.modules["transformer"]
@@ -2183,7 +2200,7 @@ index a1dd805..a125845 100644
  
  
 +def install_reference_canvas(state, reference_area, reference_budget_source):
-+    """sol-h3-studio (ref2va): reference images at the pixel budget, reference VIDEOS at the draft canvas instead of
++    """lf-studio (ref2va): reference images at the pixel budget, reference VIDEOS at the draft canvas instead of
 +    H3's native 768p canvas (identical rule in qwen_ops/media.prepare_inputs). Native size added ~32k tokens per 5 s
 +    reference and made the draft ~13x slower. The canvas follows state["latent_shape"] (reshape)."""
 +    from fastvideo.pipelines.basic.minimax_h3 import reference
@@ -2204,7 +2221,7 @@ index a1dd805..a125845 100644
 +
 +
 +def reshape_worker(worker, latent_shape, audio_samples, reference_area=None, reference_budget_source=None):
-+    """sol-h3-studio RPC: the clip shape of the next request (Session.reshape). The model and its compiled graphs stay;
++    """lf-studio RPC: the clip shape of the next request (Session.reshape). The model and its compiled graphs stay;
 +    the request size, the latent capture's shape checks, the ref2va reference canvas and the BSA self-check follow."""
 +    import gc
 +    import torch
@@ -2237,7 +2254,7 @@ index a1dd805..a125845 100644
 +        self.geometry = geometry.from_recipe(config)
          self.reference_budget_source = config.get("stage1", config).get(
              "reference_image_resize", {}).get("budget_source")
-+        self.shapes_run = set()           # sol-h3-studio: draft shapes this worker has rendered (reshape)
++        self.shapes_run = set()           # lf-studio: draft shapes this worker has rendered (reshape)
          if self.attention == sol.POLICY and self.task != "ref2va":
              raise ValueError("this fixed Sol policy is Ref2VA only")
          self.basic = native.load_official_entry(
@@ -2268,7 +2285,7 @@ index a1dd805..a125845 100644
                  "request_transformer_forwards": forwards,
                  "request_attention_calls": attention_calls,
                  "first_request_compile_included": not bool(before["transformer_forwards"]),
-+                # sol-h3-studio: the first request at this clip shape in this worker (its graphs compile here)
++                # lf-studio: the first request at this clip shape in this worker (its graphs compile here)
 +                "first_request_at_shape": self._draft_shape() not in self.shapes_run,
 +                "draft_shape": list(self._draft_shape()),
                  "conditioning_path": str(conditioning_path), "native_video_saved": False,
@@ -2287,7 +2304,7 @@ index a1dd805..a125845 100644
 +        return self.profile.num_frames, self.profile.height, self.profile.width
 +
 +    def reshape(self, config):
-+        """sol-h3-studio: another clip length and orientation for the same task, the model kept loaded
++        """lf-studio: another clip length and orientation for the same task, the model kept loaded
 +        (runtime/pipeline.py Pipeline.reshape). FastVideo takes height, width and frames per request; the worker
 +        rebinds the latent capture, the ref2va reference canvas and the BSA self-check (reshape_worker)."""
 +        if self.closed or self.failed:
@@ -2316,7 +2333,7 @@ index a1dd805..a125845 100644
          if self.closed or self.failed:
              raise RuntimeError("Stage1 session is unavailable")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/capture.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/capture.py
-index 81e37ba..b232ea5 100644
+index 81e37ba..2cccd13 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/capture.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/capture.py
 @@ -2,7 +2,9 @@
@@ -2324,7 +2341,7 @@ index 81e37ba..b232ea5 100644
  from .tasks import input_spec, task_of
  
 -def install_capture(worker):
-+# Modified by sol-h3-studio: latent shape and audio length are arguments (clip length, orientation), kept in the
++# Modified by lf-studio: latent shape and audio length are arguments (clip length, orientation), kept in the
 +# capture state so that reshape_capture can change them between requests.
 +def install_capture(worker, latent_shape=(1, 24, 37, 24, 42), audio_samples=161333):
      """Install when native lazy decode stages exist; never decode H3 video."""
@@ -2381,7 +2398,7 @@ index 81e37ba..b232ea5 100644
  
  
 +def reshape_capture(worker, latent_shape, audio_samples):
-+    """sol-h3-studio: the H3 latent shape and PCM length that the next request must produce (another clip length or
++    """lf-studio: the H3 latent shape and PCM length that the next request must produce (another clip length or
 +    orientation in the same session). Only between requests."""
 +    state = worker._sol_h3_capture
 +    if state["target"] is not None or "native_normalized" in state:
@@ -2395,7 +2412,7 @@ index 81e37ba..b232ea5 100644
      state = worker._sol_h3_capture
      if state["target"] is not None or "native_normalized" in state:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/lookup.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/lookup.py
-index e3bc890..8d7ce68 100644
+index e3bc890..6cf133c 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/lookup.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/lookup.py
 @@ -1,6 +1,11 @@
@@ -2403,7 +2420,7 @@ index e3bc890..8d7ce68 100644
 +import functools
  import struct
  from ..offload import mutation_scope
-+# Modified by sol-h3-studio: the lookup modules and the steps that install them are shared functions, so that a
++# Modified by lf-studio: the lookup modules and the steps that install them are shared functions, so that a
 +# Stage-1 snapshot (snapshot.py) rebuilds exactly the structure install_exact_t2va_lookup leaves, from saved tensors
 +# instead of computed ones (rebuild_exact_lookup); the FP8 tagging is shared the same way (tag_fp8_linears). The
 +# computation and its checks are unchanged.
@@ -2446,7 +2463,7 @@ index e3bc890..8d7ce68 100644
 +
 +@functools.cache
 +def lookup_modules():
-+    """sol-h3-studio: the two lookup module classes (defined once, so a computed and a restored lookup share them)."""
++    """lf-studio: the two lookup module classes (defined once, so a computed and a restored lookup share them)."""
 +    import torch
  
      class FixedProjection(torch.nn.Module):
@@ -2565,7 +2582,7 @@ index e3bc890..8d7ce68 100644
 -    model.time_proj = lookup
 -    model.time_embedder = identity
 +                replace_projection(target, replacement)
-+                # sol-h3-studio: free the replaced projection's GPU copy now. Something may still reference the old
++                # lf-studio: free the replaced projection's GPU copy now. Something may still reference the old
 +                # module (Ref2VA's LoRA wrappers form reference cycles), and with block offload its weights were just
 +                # moved to the GPU: 50 x 0.5 GiB stayed there until the collector ran, enough to run out of memory.
 +                linear.to("meta")
@@ -2577,7 +2594,7 @@ index e3bc890..8d7ce68 100644
 +
 +
 +def rebuild_exact_lookup(model, record, output_specs, device):
-+    """sol-h3-studio (Stage-1 snapshot): the module structure install_exact_t2va_lookup leaves, built with the same
++    """lf-studio (Stage-1 snapshot): the module structure install_exact_t2va_lookup leaves, built with the same
 +    classes and steps, holding empty tensors on ``device`` (meta) that the snapshot's saved tensors then replace.
 +
 +    record: the saved lookup record (its plans drive FixedSchedule, as the computed record does); output_specs:
@@ -2615,19 +2632,19 @@ index e3bc890..8d7ce68 100644
 +        module.quant_method = FP8QuantizeMethod("tensor")
 +    return tagged
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/regional.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/regional.py
-index 7553e35..2772352 100644
+index 7553e35..dd06a8b 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/regional.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/regional.py
 @@ -1,11 +1,22 @@
  """Compile 52 native H3 regions around opaque SM121 VSA attention."""
-+# Modified by sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH (on by default; 0 = upstream's graphs per prompt length)
-+# compiles the 50 body regions once for any prompt length instead of once per length (see the "sol-h3-studio:" notes
++# Modified by lf-studio: SOL_H3_DYNAMIC_TEXT_LENGTH (on by default; 0 = upstream's graphs per prompt length)
++# compiles the 50 body regions once for any prompt length instead of once per length (see the "lf-studio:" notes
 +# below).
 +import inspect
  from types import MethodType, SimpleNamespace
  from typing import Optional
  
-+# sol-h3-studio: the setting (read and checked in runtime/config.py, where the studio checks it at start too), and the
++# lf-studio: the setting (read and checked in runtime/config.py, where the studio checks it at start too), and the
 +# FastVideo signatures the length wrappers rely on.
 +from ..config import DYNAMIC_TEXT_LENGTH, dynamic_text_length
 +BODY_REGION_ARGS = ("self", "hidden_states", "temb", "adaln_indices", "rotary_emb", "original_seq_len")
@@ -2637,7 +2654,7 @@ index 7553e35..2772352 100644
  def install_dense(model, state):
      """Use native fullgraph regions for the Ref2VA dense FA4 transformer."""
      from fastvideo.models.loader import fsdp_load
-+    dynamic = dynamic_text_length()   # sol-h3-studio
++    dynamic = dynamic_text_length()   # lf-studio
      attention = [module for module in model.modules() if type(module).__name__ == "MiniMaxH3Attention"]
      if len(attention) != 52 or any(module.to_gate_compress is not None for module in attention):
          raise RuntimeError("Ref2VA requires 52 native dense attention modules and no VSA gates")
@@ -2647,7 +2664,7 @@ index 7553e35..2772352 100644
      state["dense_regional_compile"] = {"regions_wrapped": compiled, "attention_modules_enabled": enabled,
 -                                       "fullgraph": True, "attention_backend": "FA4_dense"}
 +                                       "fullgraph": True, "attention_backend": "FA4_dense",
-+                                       "text_length": "dynamic_body" if dynamic else "per_length"}   # sol-h3-studio
++                                       "text_length": "dynamic_body" if dynamic else "per_length"}   # lf-studio
 +    if dynamic:
 +        import torch
 +        _require_one_gpu()
@@ -2659,7 +2676,7 @@ index 7553e35..2772352 100644
      from fastvideo.attention.layer import _attention_compile_explicitly_disabled
      from . import vsa as policy
  
-+    dynamic = dynamic_text_length()   # sol-h3-studio
++    dynamic = dynamic_text_length()   # lf-studio
      audit = state.get("official_vsa", {})
      backend = audit.get("selected_attention_backend")
      if (audit.get("fastvideo_commit") != policy.FASTVIDEO_COMMIT
@@ -2669,7 +2686,7 @@ index 7553e35..2772352 100644
          "body_runtime_calls": 0, "text_runtime_calls": 0,
 -        "inner_vsa_compiled": False, "fullgraph": True}
 +        "inner_vsa_compiled": False, "fullgraph": True,
-+        "text_length": "dynamic_body" if dynamic else "per_length"}   # sol-h3-studio
++        "text_length": "dynamic_body" if dynamic else "per_length"}   # lf-studio
  
      @torch.library.custom_op("sol_h3_spark_vsa::body", mutates_args=(), device_types="cuda")
      def body_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, gate: torch.Tensor,
@@ -2678,7 +2695,7 @@ index 7553e35..2772352 100644
              getattr(attn_metadata, "attn_mask", None), getattr(attn_metadata, "is_causal", False))
  
 +    body_preprocess = None
-+    if dynamic:   # sol-h3-studio: same opaque attention, no length-dependent Python value in the graph
++    if dynamic:   # lf-studio: same opaque attention, no length-dependent Python value in the graph
 +        body_preprocess, body_forward = length_free_body(torch, body_originals, receipt)
      for entries, forward in ((bodies, body_forward), (texts, text_forward)):
          for index, impl in enumerate(entries):
@@ -2693,7 +2710,7 @@ index 7553e35..2772352 100644
      if (enabled, compiled) != (52, 52):
          raise RuntimeError(f"expected native 52 attention modules/regions, got {(enabled, compiled)}")
      receipt.update(attention_modules_enabled=enabled, regions_wrapped=compiled)
-+    if dynamic:   # sol-h3-studio; the BSA route takes BF16 q/k/v/gate only (vsa.py), so the tile buffer is BF16
++    if dynamic:   # lf-studio; the BSA route takes BF16 q/k/v/gate only (vsa.py), so the tile buffer is BF16
 +        _require_one_gpu()
 +        receipt["length_regions"] = mark_length_dynamic(torch, model, tile_dtype=torch.bfloat16)
      state["vsa_regional_compile"] = receipt
@@ -2701,7 +2718,7 @@ index 7553e35..2772352 100644
      return receipt
 +
 +
-+# ---- sol-h3-studio: SOL_H3_DYNAMIC_TEXT_LENGTH=1, the default (0: graphs per prompt length) --------------------------
++# ---- lf-studio: SOL_H3_DYNAMIC_TEXT_LENGTH=1, the default (0: graphs per prompt length) --------------------------
 +# With static shapes every new prompt length compiled new body-block graphs, 5 per length. Dynamo always specializes
 +# ints it reads from a global, here FastVideo's forward context: total_seq_length (the length check in FastVideo's
 +# tile()), num_prefix_tiles, num_video_tiles and current_timestep (passed to the opaque op above), and it branches on
@@ -2843,13 +2860,13 @@ index 7553e35..2772352 100644
 +            "dynamic": "packed rows (hidden states, AdaLN rows, RoPE, untile index), tile count, tile buffer rows"}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py
 new file mode 100644
-index 0000000..e8b5c87
+index 0000000..01a1cf0
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/snapshot.py
 @@ -0,0 +1,1341 @@
-+"""sol-h3-studio: Stage-1 snapshot, the finished H3 transformer saved once and restored instead of rebuilt.
++"""lf-studio: Stage-1 snapshot, the finished H3 transformer saved once and restored instead of rebuilt.
 +
-+Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +
 +A Stage-1 cold start maps the 66 GB BF16 checkpoint, wraps 363 linears in LoRA layers, merges the FastH3 VSA (Ref2VA:
 +Turbo) LoRA, computes the exact AdaLN lookup tables and converts 312 linears to W8A8 FP8, one body block at a time on
@@ -2896,7 +2913,7 @@ index 0000000..e8b5c87
 +import time
 +import traceback
 +
-+FORMAT = "sol-h3-studio-stage1-snapshot-v1"
++FORMAT = "sol-h3-studio-stage1-snapshot-v1"   # 0.4's name, kept; a patch update still rebuilds (CODE_FILES)
 +ALIGN = 4096                # file offsets, buffer addresses and lengths (O_DIRECT)
 +SPAN_ALIGN = 64             # tensor offsets inside a block buffer (pin_idle_blocks' rule)
 +CHUNK = 64 << 20            # bytes per pwritev call
@@ -3288,7 +3305,7 @@ index 0000000..e8b5c87
 +    tmp.mkdir()
 +    nocow = set_nocow(tmp)              # before any file is created in it (btrfs applies +C to new files only)
 +    if nocow is False:
-+        print(f"[sol-h3-studio] Stage1 snapshot: could not set no-copy-on-write (chattr +C) on {root}; O_DIRECT "
++        print(f"[lf-studio] Stage1 snapshot: could not set no-copy-on-write (chattr +C) on {root}; O_DIRECT "
 +              "reads of a compressed or copy-on-write file are not direct (see config.data_root)", flush=True)
 +    from concurrent.futures import ThreadPoolExecutor
 +    hasher = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="stage1-snapshot-sha")
@@ -3759,11 +3776,11 @@ index 0000000..e8b5c87
 +                self.record.update(status="BUILD_NO_SAVE", rejections=self.rejections,
 +                                   reason=f"snapshots of this identity were rejected {self.rejections} times "
 +                                          f"({self.dir / REJECTED_FILE}); remove that folder to try again")
-+                print(f"[sol-h3-studio] Stage1 snapshot: {self.record['reason']}; building without saving",
++                print(f"[lf-studio] Stage1 snapshot: {self.record['reason']}; building without saving",
 +                      flush=True)
 +                return None
 +            self.record["status"] = "BUILD_AND_SAVE"
-+            print(f"[sol-h3-studio] Stage1 snapshot: none for this model yet; building it and saving to {self.dir}",
++            print(f"[lf-studio] Stage1 snapshot: none for this model yet; building it and saving to {self.dir}",
 +                  flush=True)
 +            return None
 +        index = None
@@ -3782,7 +3799,7 @@ index 0000000..e8b5c87
 +            self.save_allowed = isinstance(error, SnapshotCorrupt)
 +            self.record.update(status="RESTORE_FAILED", error=f"{type(error).__name__}: {error}",
 +                               replaced_after_build=self.save_allowed)
-+            print(f"[sol-h3-studio] Stage1 snapshot {self.dir} not restored ({type(error).__name__}: {error}); "
++            print(f"[lf-studio] Stage1 snapshot {self.dir} not restored ({type(error).__name__}: {error}); "
 +                  "building from the checkpoint", flush=True)
 +            traceback.print_exc()
 +            self.model = self.pinned_blocks = self.lookup_record = None
@@ -3837,7 +3854,7 @@ index 0000000..e8b5c87
 +        self.model, self.index, self.pinned_blocks, self.lookup_record = model, index, pinned, record
 +        self.record.update(status="RESTORING", meta_build_s=round(built_s, 3),
 +                           restore_s=round(time.monotonic() - self.load_started, 3), **stats)
-+        print(f"[sol-h3-studio] Stage1 snapshot restored from {self.dir} in {self.record['restore_s']:.1f} s "
++        print(f"[lf-studio] Stage1 snapshot restored from {self.dir} in {self.record['restore_s']:.1f} s "
 +              f"({stats['read_bytes'] / 2**30:.1f} GiB)", flush=True)
 +        return model
 +
@@ -3868,7 +3885,7 @@ index 0000000..e8b5c87
 +                except OSError:
 +                    pass
 +        self.record.update(status="REJECTED", error=f"{type(error).__name__}: {error}", rejections=count)
-+        print(f"[sol-h3-studio] Stage1 snapshot {self.dir} rejected ({type(error).__name__}: {error}); "
++        print(f"[lf-studio] Stage1 snapshot {self.dir} rejected ({type(error).__name__}: {error}); "
 +              "the next session builds from the checkpoint", flush=True)
 +
 +    def failed(self, model, error):
@@ -3970,14 +3987,14 @@ index 0000000..e8b5c87
 +            nbytes = index["blocks_nbytes"] + index["non_block"]["file_nbytes"]
 +            self.record.update(status="SAVED", save_s=round(time.monotonic() - started, 3), bytes=nbytes,
 +                               construction_s=construction["construction_s"], pruned=index["pruned"])
-+            print(f"[sol-h3-studio] Stage1 snapshot saved to {self.dir} ({nbytes / 2**30:.1f} GiB in "
++            print(f"[lf-studio] Stage1 snapshot saved to {self.dir} ({nbytes / 2**30:.1f} GiB in "
 +                  f"{self.record['save_s']:.1f} s)", flush=True)
 +        except SnapshotSkipped as error:
 +            self.record.update(status="SKIPPED", reason=str(error))
-+            print(f"[sol-h3-studio] Stage1 snapshot not saved: {error}", flush=True)
++            print(f"[lf-studio] Stage1 snapshot not saved: {error}", flush=True)
 +        except Exception as error:
 +            self.record.update(status="SAVE_FAILED", error=f"{type(error).__name__}: {error}")
-+            print(f"[sol-h3-studio] Stage1 snapshot not saved ({type(error).__name__}: {error})", flush=True)
++            print(f"[lf-studio] Stage1 snapshot not saved ({type(error).__name__}: {error})", flush=True)
 +            traceback.print_exc()
 +        finally:
 +            # the copies made for writing stay reserved in PyTorch's cache otherwise; a Ref2VA first clip ran out of
@@ -4189,7 +4206,7 @@ index 0000000..e8b5c87
 +                f"state {field}: {str(state_a.get(field))[:200]} != {str(state_b.get(field))[:200]}")
 +    return problems, info
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
-index 3b818dc..1373158 100644
+index 3b818dc..5787572 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
 @@ -12,8 +12,16 @@ VSA_SOURCE_SHA = "b7c6d4e470ee232b50d16d71c2b21806f414f9baa4447434b2da66c94dc0fa
@@ -4197,13 +4214,13 @@ index 3b818dc..1373158 100644
              "triton_sparse_kernel_calls", "dense_text_calls", "cudnn_bsa_calls",
              "warmup_reference_calls")
 -WARMUP_REFERENCE_CALLS = 200
-+# Modified by sol-h3-studio: the first request checks cuDNN BSA against the original Triton kernel. Upstream checks all 200
++# Modified by lf-studio: the first request checks cuDNN BSA against the original Triton kernel. Upstream checks all 200
 +# selected-attention calls (each adds a Triton reference pass and two host syncs: ~30 s of every cold start on
 +# Spark). Default here: the first 8 calls (layers 0-7 of the first update, same kernel, real data) - still a
 +# numerical check of the actual kernel on this driver/cuDNN. SOL_H3_BSA_CHECK_CALLS=200 restores upstream.
 +WARMUP_REFERENCE_CALLS = min(200, max(1, int(os.environ.get("SOL_H3_BSA_CHECK_CALLS", "8"))))
  BSA_ATOL = BSA_RTOL = 0.03
-+# sol-h3-studio: a session can change its clip length or orientation (runtime/pipeline.py reshape). The check then
++# lf-studio: a session can change its clip length or orientation (runtime/pipeline.py reshape). The check then
 +# runs again on the first request of each shape it has not checked yet, as a fresh worker at that shape would:
 +# record["warmup_reference_from"] is the BSA call count where the pending check starts (None: no check pending),
 +# record["bsa_checked_shapes"] the H3 latent shapes whose check passed.
@@ -4215,13 +4232,13 @@ index 3b818dc..1373158 100644
  
  
 +def reference_due(record):
-+    """sol-h3-studio: whether the next BSA call is checked against Triton (a check is armed and not done yet)."""
++    """lf-studio: whether the next BSA call is checked against Triton (a check is armed and not done yet)."""
 +    armed = record["warmup_reference_from"]
 +    return armed is not None and warmup_reference_required(record["cudnn_bsa_calls"] - armed)
 +
 +
 +def reference_passed(record):
-+    """sol-h3-studio: one checked call passed; after WARMUP_REFERENCE_CALLS of them the check is done for its shape."""
++    """lf-studio: one checked call passed; after WARMUP_REFERENCE_CALLS of them the check is done for its shape."""
 +    audit = record["warmup_selected_validation"]
 +    audit["passed_calls"] += 1
 +    if audit["passed_calls"] == WARMUP_REFERENCE_CALLS:
@@ -4231,7 +4248,7 @@ index 3b818dc..1373158 100644
 +
 +
 +def rearm_reference_check(record, shape):
-+    """sol-h3-studio: the BSA self-check for the next request's H3 latent shape: armed if that shape was not checked
++    """lf-studio: the BSA self-check for the next request's H3 latent shape: armed if that shape was not checked
 +    yet, disarmed if it was (a pending check for another shape that never ran is dropped). Between requests only."""
 +    if record is None:
 +        return {"status": "first request checks", "shape": list(shape)}
@@ -4261,7 +4278,7 @@ index 3b818dc..1373158 100644
          raise RuntimeError("official VSA counter geometry changed")
      previous_bsa = before.get("cudnn_bsa_calls", 0)
 -    expected_reference = 200 if backend == "cudnn_bsa" and previous_bsa == 0 else 0
-+    # sol-h3-studio: the first request after the check was armed (the first one, or the first at a new shape)
++    # lf-studio: the first request after the check was armed (the first one, or the first at a new shape)
 +    expected_reference = (WARMUP_REFERENCE_CALLS if backend == "cudnn_bsa"
 +                          and previous_bsa == before.get("warmup_reference_from", 0) else 0)
      expected = dict(zip(COUNTERS, (200, 200, 200, 200 if backend == "triton" else 0,
@@ -4271,7 +4288,7 @@ index 3b818dc..1373158 100644
          raise RuntimeError(f"real VSA request count mismatch: {delta}; layers={per_layer}; steps={per_step}")
      if backend == "cudnn_bsa":
          audit = after.get("warmup_selected_validation", {})
-+        checks = len(after.get("bsa_checked_shapes", [None]))     # sol-h3-studio: one check per shape
++        checks = len(after.get("bsa_checked_shapes", [None]))     # lf-studio: one check per shape
          if (previous_bsa % 200 or audit.get("passed_calls") != WARMUP_REFERENCE_CALLS
                  or audit.get("status") != "PASS"
 -                or after.get("warmup_reference_calls") != WARMUP_REFERENCE_CALLS):
@@ -4310,7 +4327,7 @@ index 3b818dc..1373158 100644
      sparse.triton_block_sparse_attn_forward = counted_sparse
      original_mask = native._build_block_mask
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2.py
-index bf49f84..3dc82c5 100644
+index bf49f84..81064bc 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2.py
 @@ -3,26 +3,58 @@
@@ -4318,7 +4335,7 @@ index bf49f84..3dc82c5 100644
  consumes one same-request normalized H3/PCM bundle and the exact offline generic
  post-connector AV cache. Original PCM is muxed into the final MP4.
 +
-+sol-h3-studio: by default the refiner sees that PCM clean and fixed (SOL_H3_STAGE2_AUDIO, below) instead of a
++lf-studio: by default the refiner sees that PCM clean and fixed (SOL_H3_STAGE2_AUDIO, below) instead of a
 +re-noised copy that it regenerates and then discards.
  """
  from __future__ import annotations
@@ -4332,9 +4349,9 @@ index bf49f84..3dc82c5 100644
  from pathlib import Path
  import time
  
-+# Modified by sol-h3-studio: clip-length/orientation geometry, persistent compile cache, Inductor autotune-cache
++# Modified by lf-studio: clip-length/orientation geometry, persistent compile cache, Inductor autotune-cache
 +# fix, O_DIRECT weight loading, load-timing prints, the Stage-2 audio policy and reshape (another clip length or
-+# orientation in a running session; see "sol-h3-studio:" notes).
++# orientation in a running session; see "lf-studio:" notes).
 +from .config import STAGE2_AUDIO_MODES, compile_cache_root, stage2_audio_mode
  from .latent_transfer import (WIRE_METADATA, load_latent_capture, load_payload,
                                sha256, validate_request_id, write_new)
@@ -4348,7 +4365,7 @@ index bf49f84..3dc82c5 100644
  from .offload import enabled as offload_enabled, validate_device
 +from . import geometry as canvas
 +
-+# sol-h3-studio: Stage-2 audio policy. Upstream (super_acceleration/STAGE2_CONTRACT.md steps 4 and 7) noises the
++# lf-studio: Stage-2 audio policy. Upstream (super_acceleration/STAGE2_CONTRACT.md steps 4 and 7) noises the
 +# encoded H3 audio to the first Stage-2 sigma like the video, denoises both together under the generic prompt, then
 +# discards that audio and muxes the original PCM: the refined lips follow regenerated speech that is never heard
 +# (same rhythm, different sounds, sometimes speech in pauses). "frozen" holds the H3 audio clean and fixed during the
@@ -4385,7 +4402,7 @@ index bf49f84..3dc82c5 100644
              return None
  
 +        def prepare_multimodal_states(self, video_latent, audio_latent, conditionings, seed):
-+            # sol-h3-studio: the upstream states first, so the random draws and the video noise are the same in both
++            # lf-studio: the upstream states first, so the random draws and the video noise are the same in both
 +            # modes; then, unless "joint", the audio state becomes the clean, frozen H3 audio (see STAGE2_AUDIO_MODES)
 +            video_state, audio_state, generator = super().prepare_multimodal_states(
 +                video_latent, audio_latent, conditionings, seed)
@@ -4470,7 +4487,7 @@ index bf49f84..3dc82c5 100644
  
  
 +def _install_autotune_cache_fix(debug=False):
-+    """sol-h3-studio: honour Inductor's saved coordinate-descent results for kernels loaded from the FX graph cache.
++    """lf-studio: honour Inductor's saved coordinate-descent results for kernels loaded from the FX graph cache.
 +
 +    A statically launchable CachingAutotuner is pickled into the FX cache; for some kernels its compile_results
 +    were already pruned to one config, and CachingAutotuner.recheck_autotune_cache (torch 2.13) re-hashes *that*
@@ -4512,7 +4529,7 @@ index bf49f84..3dc82c5 100644
 +        # exactly what check_autotune_cache sets on a hit (best_config, "hit"); the fallback is marked separately
 +        self_.autotune_cache_info = {"best_config": wanted, "autotune_cache_state": "hit", "spark_fallback": True}
 +        if debug:
-+            print(f"[sol-h3-studio] fallback hit {Path(self_.filename).name[:14]} -> {wanted}", flush=True)
++            print(f"[lf-studio] fallback hit {Path(self_.filename).name[:14]} -> {wanted}", flush=True)
 +
 +    recheck._spark_fix = True
 +    th.CachingAutotuner.recheck_autotune_cache = recheck
@@ -4521,7 +4538,7 @@ index bf49f84..3dc82c5 100644
 +
 +
 +def _install_autotune_debug(th):
-+    """sol-h3-studio (SPARK_DEBUG_AUTOTUNE=1): also print every kernel tuned at run time and every tuning result stored.
++    """lf-studio (SPARK_DEBUG_AUTOTUNE=1): also print every kernel tuned at run time and every tuning result stored.
 +    A reduction kernel tuned by timing can pick another block config in another process, which shifts its numerics;
 +    one whose result is stored and read back does not. These lines tell the two apart in worker.log."""
 +    from torch._inductor.runtime.autotune_cache import AutotuneCache
@@ -4543,7 +4560,7 @@ index bf49f84..3dc82c5 100644
 +
 +        def wrapper(self_, *args, **kwargs):
 +            result = original(self_, *args, **kwargs)
-+            print(f"[sol-h3-studio] {report(self_, args, result)}", flush=True)
++            print(f"[lf-studio] {report(self_, args, result)}", flush=True)
 +            return result
 +        wrapper._spark_debug = True
 +        setattr(cls, attribute, wrapper)
@@ -4562,7 +4579,7 @@ index bf49f84..3dc82c5 100644
          self.closed = self.failed = False
          self.prepared = self.current_capture = self.payload = None
          self.completed_requests = 0
-+        self.steady_state_pending = True          # sol-h3-studio: until the first request (at each new shape) is done
++        self.steady_state_pending = True          # lf-studio: until the first request (at each new shape) is done
 +        self.reshapes, self.shapes_run = [], set()
          self.final_mp4_complete_monotonic_ns = None
          self.writer_chunk_receipt = None
@@ -4570,7 +4587,7 @@ index bf49f84..3dc82c5 100644
          self.runtime_config = config
          self.cpu_offload = offload_enabled(config)
 +        self.geometry = canvas.from_recipe(config)
-+        self.stage2_audio = stage2_audio_mode()     # sol-h3-studio: before this worker loads its models
++        self.stage2_audio = stage2_audio_mode()     # lf-studio: before this worker loads its models
          config = config.get("stage2", config)
          self.compile_enabled = config.get("compile", True)
          self.fixed_prompt = config.get("fixed_prompt", FIXED_PROMPT)
@@ -4579,7 +4596,7 @@ index bf49f84..3dc82c5 100644
                  raise FileNotFoundError(path)
          self.work_dir = Path(work_dir).resolve()
 -        cache_root = self.work_dir / "compile"
-+        # sol-h3-studio: persistent compile cache across sessions (was per-session -> Stage2 max-autotune recompiled on
++        # lf-studio: persistent compile cache across sessions (was per-session -> Stage2 max-autotune recompiled on
 +        # every cold start; measured Stage2 warm-up 121 -> 57 s with the cache). Inductor/Triton caches are keyed on
 +        # graph + config + versions, so reuse is safe.
 +        # SOL_H3_COMPILE_CACHE=session restores the original per-session behaviour (runtime/config.py compile_cache_root).
@@ -4591,7 +4608,7 @@ index bf49f84..3dc82c5 100644
              os.environ[env] = str(directory)
 +        if os.environ.get("SPARK_AUTOTUNE_CACHE_FIX", "1") == "1":
 +            _install_autotune_cache_fix(debug=os.environ.get("SPARK_DEBUG_AUTOTUNE") == "1")
-+        # sol-h3-studio: fast safetensors->GPU for the LTX transformer/LoRA/VAEs (runtime/fastload.py)
++        # lf-studio: fast safetensors->GPU for the LTX transformer/LoRA/VAEs (runtime/fastload.py)
 +        from . import fastload
 +        self.fastload_patched = fastload.install()
 +        # (no page-cache prefetch here: Stage2 loads while Stage1 compiles, and a 54 GB read-ahead slowed both)
@@ -4602,15 +4619,15 @@ index bf49f84..3dc82c5 100644
              self._owns_dist = True
          if dist.get_world_size() != 1:
              raise RuntimeError("Spark requires one distributed rank")
-+        print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')} dist ready (+{(time.monotonic_ns() - self.started_ns) / 1e9:.1f}s since Session init)", flush=True)
++        print(f"[lf-studio] {time.strftime('%H:%M:%S')} dist ready (+{(time.monotonic_ns() - self.started_ns) / 1e9:.1f}s since Session init)", flush=True)
          self.prompt_cache = load_cache(self.paths["prompt_cache"], prompt=self.fixed_prompt, torch_module=torch)
 -        base, compat = public_refiner_modules(self.ltx_root)
 +        base, compat = public_refiner_modules(self.ltx_root, self.geometry)
 +        self.base, self.compat = base, compat
-+        if self.stage2_audio == "frozen":     # sol-h3-studio: an LTX-2 without frozen states fails here, not mid-request
++        if self.stage2_audio == "frozen":     # lf-studio: an LTX-2 without frozen states fails here, not mid-request
 +            from ltx_core.types import LatentState
 +            check_frozen_states(LatentState)
-+        print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')} refiner modules imported (+{(time.monotonic_ns() - self.started_ns) / 1e9:.1f}s)", flush=True)
++        print(f"[lf-studio] {time.strftime('%H:%M:%S')} refiner modules imported (+{(time.monotonic_ns() - self.started_ns) / 1e9:.1f}s)", flush=True)
          with torch.inference_mode():
              self.models = _refiner_class(base, compat, self)()
          self.conv_layout_receipt = self.stack.enter_context(installed_direct_upsample_nhwc(torch_module=torch))
@@ -4629,7 +4646,7 @@ index bf49f84..3dc82c5 100644
 +        shape = (self.geometry["orientation"], self.geometry["output_frames"])
          receipt = {"status": "RUNNING", "request_id": request_id, "stage2_started_monotonic_ns": started_ns,
 +            "stage2_audio": self.stage2_audio,
-+            "shape": list(shape), "first_request_at_shape": shape not in self.shapes_run,     # sol-h3-studio
++            "shape": list(shape), "first_request_at_shape": shape not in self.shapes_run,     # lf-studio
              "request_index": self.completed_requests, "preparation": dict(self.prepared),
              "timing_boundary": "run_entry_after_prepare_to_atomic_final_muxed_MP4"}
          try:
@@ -4652,7 +4669,7 @@ index bf49f84..3dc82c5 100644
                  "status", "request_id", "case_id", "output", "output_sha256", "output_bytes",
                  "stage2_started_monotonic_ns", "final_mp4_complete_monotonic_ns", "stage2_request_s")})
 -            if self.completed_requests == 0:
-+            if self.steady_state_pending:          # sol-h3-studio: was completed_requests == 0 (see reshape)
++            if self.steady_state_pending:          # lf-studio: was completed_requests == 0 (see reshape)
                  models.prepare_steady_state()
 +                self.steady_state_pending = False
              self.completed_requests += 1
@@ -4665,7 +4682,7 @@ index bf49f84..3dc82c5 100644
              write_new(root / "stage2_result.json", receipt)
  
 +    def reshape(self, config):
-+        """sol-h3-studio: another clip length and orientation, every model kept (runtime/pipeline.py reshape).
++        """lf-studio: another clip length and orientation, every model kept (runtime/pipeline.py reshape).
 +
 +        Sets what a fresh worker for that shape derives at start: the shared module's shape globals
 +        (models.bind_geometry), the latent tools, decoder tiles and spatial route (models.geometry_tools), and the
@@ -4708,7 +4725,7 @@ index bf49f84..3dc82c5 100644
          if self.closed or self.failed or self.current_capture is not None or self.prepared is not None:
              raise RuntimeError("cache release requires an idle session")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/h3_upscale.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/h3_upscale.py
-index 4e6e910..47a0c62 100644
+index 4e6e910..fdccb3f 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/h3_upscale.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/h3_upscale.py
 @@ -111,7 +111,8 @@ def load_upscaler(source_path, checkpoint_path, *, device, torch_module):
@@ -4716,7 +4733,7 @@ index 4e6e910..47a0c62 100644
  
  
 -def upscale_comfy_normalized_h3(model, normalized):
-+# Modified by sol-h3-studio: target_shape argument (clip length, orientation).
++# Modified by lf-studio: target_shape argument (clip length, orientation).
 +def upscale_comfy_normalized_h3(model, normalized, target_shape=H3_UPSCALED):
      """Match the author node around a normalized Comfy H3 LATENT.
  
@@ -4731,13 +4748,13 @@ index 4e6e910..47a0c62 100644
      return output.to(dtype=normalized.dtype)
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
 new file mode 100644
-index 0000000..af06cec
+index 0000000..b5b01ba
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
 @@ -0,0 +1,519 @@
-+"""sol-h3-studio: LTX refiner blocks with the distilled LoRA fused once, streamed partly from disk.
++"""lf-studio: LTX refiner blocks with the distilled LoRA fused once, streamed partly from disk.
 +
-+Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +
 +NVIDIA's CPU offload pins all 48 LTX blocks in host RAM (about 40 GB, never swappable) and fuses the LoRA into
 +them while building, which needs more RAM than a 64 GB workstation has next to H3. Here the fused blocks are
@@ -4762,7 +4779,7 @@ index 0000000..af06cec
 +from concurrent.futures import ThreadPoolExecutor
 +from pathlib import Path
 +
-+FORMAT = "sol-h3-studio-ltx-fused-blocks-v1"
++FORMAT = "sol-h3-studio-ltx-fused-blocks-v1"   # the studio's name up to 0.4, kept: files on disk carry it
 +ALIGN = 4096
 +CHUNK = 64 << 20            # bytes per preadv call
 +READ_THREADS = 8
@@ -5255,14 +5272,14 @@ index 0000000..af06cec
 +    wrapper.sol_h3_block_source = source
 +    return wrapper
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
-index 04a6f36..52a05a7 100644
+index 04a6f36..6d5d218 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 @@ -7,6 +7,9 @@ pixel-input VAE, LTX upsampler and preview-decoder models.
  from __future__ import annotations
  
  from collections import Counter
-+# Modified by sol-h3-studio: geometry arguments (clip length, orientation), load-timing prints, static-shape compile
++# Modified by lf-studio: geometry arguments (clip length, orientation), load-timing prints, static-shape compile
 +# and reshape (bind_geometry, geometry_tools: another clip shape in a running session).
 +import time
  import gc
@@ -5283,7 +5300,7 @@ index 04a6f36..52a05a7 100644
              sys.path.insert(0, str(path))
 -    os.environ["H3_LTX_SOURCE_FRAMES"] = "124"
 -    os.environ["H3_LTX_OUTPUT_FRAMES"] = "121"
-+    # sol-h3-studio: the shared module reads these at import (once per Stage2 worker process); bind_geometry sets the
++    # lf-studio: the shared module reads these at import (once per Stage2 worker process); bind_geometry sets the
 +    # same values again for another clip shape (reshape)
 +    os.environ["H3_LTX_SOURCE_FRAMES"] = str(geometry["draft_frames"] if geometry else 124)
 +    os.environ["H3_LTX_OUTPUT_FRAMES"] = str(geometry["output_frames"] if geometry else 121)
@@ -5303,7 +5320,7 @@ index 04a6f36..52a05a7 100644
  
  
 -def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_offload=False):
-+# sol-h3-studio: the shared module's shape globals. Its functions read them at call time (pixel shapes, decoder chunk
++# lf-studio: the shared module's shape globals. Its functions read them at call time (pixel shapes, decoder chunk
 +# and output checks, latent shape checks); the import derives them from H3_LTX_SOURCE_FRAMES/H3_LTX_OUTPUT_FRAMES.
 +SHAPE_GLOBALS = ("SOURCE_FRAME_COUNT", "FRAME_COUNT", "LATENT_FRAME_COUNT", "EXPECTED_VIDEO_TOKENS",
 +                 "TARGET_LATENT_SHAPE", "WIDTH", "HEIGHT")
@@ -5366,7 +5383,7 @@ index 04a6f36..52a05a7 100644
 +
 +
 +def compilation_config(base, compile_enabled):
-+    """Per-block torch.compile of the refiner. sol-h3-studio: dynamic=False by default (runtime/config.py
++    """Per-block torch.compile of the refiner. lf-studio: dynamic=False by default (runtime/config.py
 +    compile_dynamic): each clip shape gets its own static graph, as in a fresh worker, not a dynamic one."""
 +    from ..config import compile_dynamic
 +    if not compile_enabled:
@@ -5390,7 +5407,7 @@ index 04a6f36..52a05a7 100644
      models.stage2_sigmas = SIGMAS
      models.sigmas = torch.tensor(SIGMAS, device=models.device, dtype=torch.float32)
      models.last_decoder_stream_info = None
-+    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} upscaler+adapter start", flush=True)
++    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} upscaler+adapter start", flush=True)
      models.h3_upscaler_calls = models.adapter_convert_calls = 0
      models.h3_upscaler, models.h3_spatial_route = load_upscaler(
          paths["h3_upscaler_source"], paths["h3_upscaler_checkpoint"],
@@ -5402,13 +5419,13 @@ index 04a6f36..52a05a7 100644
 -    latent_shape = base.VideoLatentShape.from_pixel_shape(pixel_shape, scale_factors=base.VIDEO_SCALE_FACTORS)
 -    models.video_tools = base.VideoLatentTools(base.VideoLatentPatchifier(patch_size=1),
 -        latent_shape, 24.0, scale_factors=base.VIDEO_SCALE_FACTORS)
-+    # sol-h3-studio: every shape-dependent helper in one place (geometry_tools), so reshape builds the same ones
++    # lf-studio: every shape-dependent helper in one place (geometry_tools), so reshape builds the same ones
 +    geometry_tools(models, base, compat, geometry, paths["output_video_vae"])
      registry = base.ModelRegistry()
 -    compilation = (base.CompilationConfig(mode=base.COMPILE_MODE, fullgraph=False,
 -        dynamic=None, seq_dim_dynamic=False, capture=False) if compile_enabled else None)
 +    compilation = compilation_config(base, compile_enabled)
-+    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} transformer build start", flush=True)
++    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} transformer build start", flush=True)
      lora = base.LoraPathStrengthAndSDOps(str(paths["refiner_lora"]), 0.8, base.LTXV_LORA_COMFY_RENAMING_MAP)
      stage = base.DiffusionStage.from_checkpoint(str(paths["transformer"]), models.dtype,
          models.device, loras=(lora,), quantization=None, registry=registry,
@@ -5422,7 +5439,7 @@ index 04a6f36..52a05a7 100644
 +        from ..config import ltx_blocks_dir
 +        blocks_dir = ltx_blocks_dir()
 +        if blocks_dir:
-+            # sol-h3-studio: LoRA fused once into a block file; some blocks pinned, the rest read from disk.
++            # lf-studio: LoRA fused once into a block file; some blocks pinned, the rest read from disk.
 +            from . import ltx_blocks
 +            identity = ltx_blocks.identity_of(paths, prepared, compile_enabled, torch)
 +            t0 = time.monotonic()
@@ -5448,7 +5465,7 @@ index 04a6f36..52a05a7 100644
              attn_mgr=manager, registry=registry,
              tracker=base.TransformerWeightTracker(group=dist.group.WORLD, no_lora_swap=True))
          models.transformer = stage._build_transformer(video_tools=models.video_tools).requires_grad_(False)
-+    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} transformer built", flush=True)
++    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} transformer built", flush=True)
      models.sol_attention = base.Stage2SolAttention(models.transformer,
          isolate_sol_from_compile=compile_enabled)
      models.sol_backend = base._actual_sol_backend()
@@ -5458,7 +5475,7 @@ index 04a6f36..52a05a7 100644
          device=torch.device("cpu") if cpu_offload else models.device, dtype=models.dtype).eval().requires_grad_(False)
 -    models.audio_tools = compat.AudioLatentTools(compat.AudioPatchifier(patch_size=1),
 -        compat.AudioLatentShape.from_video_pixel_shape(pixel_shape))
-+    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} audio encoder built", flush=True)
++    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} audio encoder built", flush=True)
      decoder_block = compat.VideoDecoder(str(paths["output_video_vae"]), models.dtype,
          models.device, registry=registry, alloc_trim_strategy=base.AllocatorTrimStrategy.DEFER)
 -    # Original explicit Conv tiles. Resolve before constructing decoder weights.
@@ -5473,12 +5490,12 @@ index 04a6f36..52a05a7 100644
          device=torch.device("cpu") if cpu_offload else models.device, dtype=models.dtype).eval().requires_grad_(False)
      if type(models.video_decoder).__name__ != "ConvVideoDecoder":
          raise RuntimeError("the output checkpoint must build the original ConvVideoDecoder")
-+    print(f"[sol-h3-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} video decoder built", flush=True)
++    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} video decoder built", flush=True)
      models.parameter_dtypes = dict(Counter(str(p.dtype) for p in models.transformer.parameters()))
      if (not models.parameter_dtypes.get("torch.bfloat16")
              or not set(models.parameter_dtypes) <= {"torch.bfloat16", "torch.float32"}):
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/writer_chunking.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/writer_chunking.py
-index 9264fee..31b3db2 100644
+index 9264fee..d557151 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/writer_chunking.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/writer_chunking.py
 @@ -1,16 +1,17 @@
@@ -5486,7 +5503,7 @@ index 9264fee..31b3db2 100644
  
  
 -def tracked_writer_chunks(chunks, receipt, *, expected_dtype):
-+# Modified by sol-h3-studio: frame_shape and expected_frames arguments (clip length, orientation).
++# Modified by lf-studio: frame_shape and expected_frames arguments (clip length, orientation).
 +def tracked_writer_chunks(chunks, receipt, *, expected_dtype, frame_shape=(768, 1344, 3), expected_frames=121):
      """Use the gated 16-frame slicing expression without copies or casts.
  
@@ -5512,14 +5529,14 @@ index 9264fee..31b3db2 100644
 +        raise RuntimeError(f"writer chunk16 consumed {receipt['frames']} frames, expected {expected_frames}")
      receipt["complete"] = True
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
-index b90a591..5f4f63c 100644
+index b90a591..d303afb 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/worker.py
 @@ -12,6 +12,9 @@ import sys
  import time
  import traceback
  
-+# Modified by sol-h3-studio: "reshape" changes a running session's clip length and orientation (runtime/pipeline.py).
++# Modified by lf-studio: "reshape" changes a running session's clip length and orientation (runtime/pipeline.py).
 +OPERATIONS = ("run", "prepare", "release_idle_cache", "reshape")
 +
  
@@ -5530,7 +5547,7 @@ index b90a591..5f4f63c 100644
  
  
 +def release_freed_memory():
-+    """sol-h3-studio: give memory that glibc keeps after big transient CPU buffers (decoded frames, latents, compile
++    """lf-studio: give memory that glibc keeps after big transient CPU buffers (decoded frames, latents, compile
 +    work) back to the system after every operation. Without it the idle footprint of the three workers grew by about
 +    1 GB per clip on an RTX 5090 workstation with 64 GB. SOL_H3_MALLOC_TRIM=0 turns it off."""
 +    import ctypes
@@ -5562,14 +5579,14 @@ index b90a591..5f4f63c 100644
                      "status": "FAIL", "error": f"{type(error).__name__}: {error}"})
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/check_stage1_snapshot_gpu.py b/models/minimax_h3/Sol-H3-RTX5090/tests/check_stage1_snapshot_gpu.py
 new file mode 100644
-index 0000000..cc27acf
+index 0000000..9b71255
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/check_stage1_snapshot_gpu.py
 @@ -0,0 +1,226 @@
 +"""Run explicitly in the Stage1 environment on one visible RTX 5090 (not part of the CPU suite).
 +
-+sol-h3-studio: end-to-end check of the Stage-1 snapshot (runtime/stage1_ops/snapshot.py).
-+Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++lf-studio: end-to-end check of the Stage-1 snapshot (runtime/stage1_ops/snapshot.py).
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +
 +1. One Qwen worker encodes the prompt once; every phase below uses that same conditioning file.
 +2. Phase "build": a fresh Stage1 worker with an empty snapshot folder builds H3 from the checkpoint (LoRA merge,
@@ -5794,11 +5811,11 @@ index 0000000..cc27acf
 +    sys.exit(main())
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_geometry.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_geometry.py
 new file mode 100644
-index 0000000..b65dac7
+index 0000000..7f999ab
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_geometry.py
 @@ -0,0 +1,36 @@
-+"""sol-h3-studio: CPU tests of the derived portrait / clip-length geometry (not part of upstream Sol-H3-RTX5090)."""
++"""lf-studio: CPU tests of the derived portrait / clip-length geometry (not part of upstream Sol-H3-RTX5090)."""
 +import unittest
 +
 +from runtime import geometry
@@ -5836,13 +5853,13 @@ index 0000000..b65dac7
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
 new file mode 100644
-index 0000000..6e9e687
+index 0000000..b70265b
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
 @@ -0,0 +1,255 @@
-+"""sol-h3-studio: CPU tests of the fused LTX block file reader (runtime/stage2_ops/ltx_blocks.py).
++"""lf-studio: CPU tests of the fused LTX block file reader (runtime/stage2_ops/ltx_blocks.py).
 +
-+Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +"""
 +import hashlib
 +import os
@@ -6096,7 +6113,7 @@ index 0000000..6e9e687
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
-index 6a8c437..97cd6bf 100644
+index 6a8c437..ed622ef 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 @@ -3,13 +3,16 @@
@@ -6111,7 +6128,7 @@ index 6a8c437..97cd6bf 100644
  from unittest import mock
  
 -from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS
-+# Modified by sol-h3-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location, the
++# Modified by lf-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location, the
 +# Stage-2 audio setting and the prompt-token setting, each also under CPU offload (no resident Qwen, no overlap).
 +from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root
  from runtime.pipeline import Pipeline, await_json, worker_environment
@@ -6139,7 +6156,7 @@ index 6a8c437..97cd6bf 100644
 +
 +
 +def residency_settings(early=None, mem_gib=64.0, min_gib=None):
-+    """sol-h3-studio: the resident-Qwen settings at their defaults (a user's own values would change the order the
++    """lf-studio: the resident-Qwen settings at their defaults (a user's own values would change the order the
 +    tests expect), SOL_H3_RESIDENT_QWEN_EARLY and _EARLY_MIN_GIB as given, and MemAvailable after Stage2's release
 +    as given."""
 +    stack = contextlib.ExitStack()
@@ -6158,7 +6175,7 @@ index 6a8c437..97cd6bf 100644
 +
  class PipelineTests(unittest.TestCase):
 +    def setUp(self):
-+        # sol-h3-studio: start() reads MemAvailable before it loads the resident Qwen early; not this machine's
++        # lf-studio: start() reads MemAvailable before it loads the resident Qwen early; not this machine's
 +        patcher = mock.patch("runtime.pipeline.mem_available_gib", return_value=64.0)
 +        patcher.start()
 +        self.addCleanup(patcher.stop)
@@ -6200,7 +6217,7 @@ index 6a8c437..97cd6bf 100644
 -                self.assertEqual(events.count(("start", "stage2")), 1)
 -            finally:
 -                pipeline.close()
-+        # sol-h3-studio: (SOL_H3_RESIDENT_QWEN_EARLY, clip length, MemAvailable after Stage2's release,
++        # lf-studio: (SOL_H3_RESIDENT_QWEN_EARLY, clip length, MemAvailable after Stage2's release,
 +        # SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB, where the resident Qwen starts, the minimum that applies): 5 s with
 +        # enough and with too little memory (32 GiB); 10 s below and above its 34 GiB; 10 s with the setting; the
 +        # switch off; 15 s (Qwen per request)
@@ -6272,7 +6289,7 @@ index 6a8c437..97cd6bf 100644
 +            self.assertEqual(FakeWorker.events.count(("close", "qwen")), 2)
 +
 +    def test_cpu_offload_loads_one_stage_at_a_time_without_a_resident_qwen(self):
-+        """sol-h3-studio, RTX 5090: under CPU offload (the default) start() loads the stages one after another, in
++        """lf-studio, RTX 5090: under CPU offload (the default) start() loads the stages one after another, in
 +        upstream's order, and starts no resident Qwen at any length or setting; a failed first refine leaves only the
 +        warmup Qwen, which is closed."""
 +        case = {"case_id": "example", "prompt": "A bird glides over a mountain lake.", "seed": 42}
@@ -6316,7 +6333,7 @@ index 6a8c437..97cd6bf 100644
 +
 +    def test_deliver_first_returns_the_first_request_and_reuses_models(self):
 +        case = {"case_id": "first", "prompt": "A bird glides over a mountain lake.", "seed": 7}
-+        # sol-h3-studio: the second Qwen is the resident one ("none", the DGX Spark's path) or the second clip's own
++        # lf-studio: the second Qwen is the resident one ("none", the DGX Spark's path) or the second clip's own
 +        # (CPU offload, the RTX 5090 default)
 +        for offload_mode in ("none", "cpu"):
 +            FakeWorker.events = []
@@ -6355,7 +6372,7 @@ index 6a8c437..97cd6bf 100644
 +            Pipeline({}, Path(directory) / "run", worker_factory=factory)
 +
 +    def test_bad_dynamic_text_length_setting_fails_before_any_worker(self):
-+        """sol-h3-studio: a bad SOL_H3_DYNAMIC_TEXT_LENGTH fails when the Pipeline is made, not when Stage 1 installs
++        """lf-studio: a bad SOL_H3_DYNAMIC_TEXT_LENGTH fails when the Pipeline is made, not when Stage 1 installs
 +        its regions with the transformer in memory."""
 +        made = []
 +        def factory(*args, **kwargs):
@@ -6372,7 +6389,7 @@ index 6a8c437..97cd6bf 100644
 +                Pipeline({}, Path(directory) / name, worker_factory=factory)
 +
 +    def test_bad_early_min_gib_setting_fails_before_any_worker(self):
-+        """sol-h3-studio: SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB that is not a number fails with its name, before the run
++        """lf-studio: SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB that is not a number fails with its name, before the run
 +        directory exists, instead of float()'s message."""
 +        made = []
 +        def factory(*args, **kwargs):
@@ -6447,7 +6464,7 @@ index 6a8c437..97cd6bf 100644
 +                            self.assertGreater(resident_start, events.index(("call", "stage2", "run")), name)
 +                    finally:
 +                        pipeline.close()
-+            # sol-h3-studio, CPU offload (the RTX 5090 default): the warmup Qwen and each request's own get the mode
++            # lf-studio, CPU offload (the RTX 5090 default): the warmup Qwen and each request's own get the mode
 +            for name, setting, argument, mode in (("offload-default", None, None, "minimax"),
 +                                                  ("offload-setting", "Plain", None, "plain"),
 +                                                  ("offload-argument", "plain", "minimax", "minimax")):
@@ -6491,7 +6508,7 @@ index 6a8c437..97cd6bf 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -287,11 +581,26 @@ class PipelineTests(unittest.TestCase):
+@@ -287,11 +581,36 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -6505,9 +6522,19 @@ index 6a8c437..97cd6bf 100644
          self.assertNotIn("HF_TOKEN", env)
  
 +    def test_compile_cache_location(self):
-+        home = str(Path.home())
-+        with mock.patch.dict(os.environ, {"HOME": home}, clear=True):
++        from runtime.config import data_root
++        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}, clear=True):
++            self.assertEqual(compile_cache_root(), str(Path(home, ".cache/lf-studio/compile")))
++            # until 0.6: the cache under the studio's name up to 0.4 while only that exists, with one note
++            Path(home, ".cache/sol-h3-studio").mkdir(parents=True)
++            with contextlib.redirect_stderr(io.StringIO()) as err:
++                self.assertEqual(compile_cache_root(), str(Path(home, ".cache/sol-h3-studio/compile")))
++                self.assertEqual(data_root(), Path(home, ".cache/sol-h3-studio"))
++            self.assertEqual(err.getvalue().count("is missing or empty"), 1)
++            Path(home, ".cache/lf-studio").mkdir()            # an empty new one does not count
 +            self.assertEqual(compile_cache_root(), str(Path(home, ".cache/sol-h3-studio/compile")))
++            Path(home, ".cache/lf-studio/compile").mkdir()
++            self.assertEqual(compile_cache_root(), str(Path(home, ".cache/lf-studio/compile")))
 +        with mock.patch.dict(os.environ, {"SOL_H3_SPARK_RUNTIME_ROOT": "/rt"}, clear=True):
 +            self.assertEqual(compile_cache_root(), "/rt/cache/compile")
 +        with mock.patch.dict(os.environ, {"SOL_H3_SPARK_RUNTIME_ROOT": "/rt", "SOL_H3_COMPILE_CACHE": "session"},
@@ -6521,11 +6548,11 @@ index 6a8c437..97cd6bf 100644
      unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_prompt_tokens.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_prompt_tokens.py
 new file mode 100644
-index 0000000..25c535e
+index 0000000..1edcfff
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_prompt_tokens.py
 @@ -0,0 +1,319 @@
-+"""sol-h3-studio: CPU tests of MiniMax's prompt tokens, SOL_H3_PROMPT_TOKENS (not part of upstream Sol-H3-RTX5090).
++"""lf-studio: CPU tests of MiniMax's prompt tokens, SOL_H3_PROMPT_TOKENS (not part of upstream Sol-H3-RTX5090).
 +
 +The tokenizer tests read the pinned ComfyUI's Qwen2.5 tokenizer files ($SOL_H3_SPARK_COMFY_ROOT/comfy/text_encoders/
 +qwen25_tokenizer) with transformers' Qwen2Tokenizer, as ComfyUI's Qwen3VLSDTokenizer does, and are skipped without
@@ -6554,7 +6581,7 @@ index 0000000..25c535e
 +COMFY_ROOT = os.environ.get("SOL_H3_SPARK_COMFY_ROOT", "")
 +TOKENIZER_DIR = Path(COMFY_ROOT, "comfy", "text_encoders", "qwen25_tokenizer") if COMFY_ROOT else None
 +
-+# The example in sol-h3-studio issue #38: ids from MiniMax's released tokenizer (MiniMaxAI/MiniMax-H3 tokenizer/,
++# The example in lf-studio issue #38: ids from MiniMax's released tokenizer (MiniMaxAI/MiniMax-H3 tokenizer/,
 +# transformers 4.57.1 and 5.17.0) and from the pinned ComfyUI v0.30.0 tokenizer as the studio used it up to 0.3.
 +EXAMPLE = "The woman (S1) says: <d>[English] Welcome to the garden.</d>"
 +EXAMPLE_MINIMAX = [785, 5220, 320, 50, 16, 8, 2727, 25, 220, 151669, 58, 22574, 60, 20166, 311, 279, 13551, 13,
@@ -6739,7 +6766,7 @@ index 0000000..25c535e
 +            self.assertEqual(hf.special, MINIMAX_EXTRA_TOKENS)
 +            self.assertEqual(session.prompt_tokens_mode, "minimax")
 +            self.assertEqual(session.session_receipt["prompt_tokens"]["added"], 7)
-+            self.assertIn("[sol-h3-studio] prompt tokens: {'mode': 'minimax', 'added': 7", log)
++            self.assertIn("[lf-studio] prompt tokens: {'mode': 'minimax', 'added': 7", log)
 +            hf = FakeQwen()
 +            session, log = self.start(directory, load_recipe(prompt_tokens="plain"), hf)
 +            self.assertEqual(hf.special, {})
@@ -6845,7 +6872,7 @@ index 0000000..25c535e
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_qwen_media.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_qwen_media.py
-index 4af9048..7d821d8 100644
+index 4af9048..56f6bd3 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_qwen_media.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_qwen_media.py
 @@ -21,7 +21,9 @@ class FakeComfyClip:
@@ -6853,7 +6880,7 @@ index 4af9048..7d821d8 100644
          self.tags = np.array([1, 0, 0, 1], dtype=np.int64)
          self.cond = np.zeros((1, 4, 5120), dtype=np.float32)
 -        self.tokens = object()
-+        # Modified by sol-h3-studio: CLIP.tokenize's shape ({name: [[(id or vision entry, weight), ...]]}), which the
++        # Modified by lf-studio: CLIP.tokenize's shape ({name: [[(id or vision entry, weight), ...]]}), which the
 +        # receipt's prompt-token counts read; 151669 is MiniMax's <d>.
 +        self.tokens = {"qwen3vl_32b": [[(785, 1.0), (151652, 1.0), ({"type": "image"}, 1.0), (151669, 1.0)]]}
  
@@ -6864,7 +6891,7 @@ index 4af9048..7d821d8 100644
          with patch.object(media, "resolve_canvas_size", return_value=(2, 2)) as canvas:
              prepared = media.prepare_reference_frames(frames)
 -        canvas.assert_called_once_with(1, 1)
-+        canvas.assert_called_once_with(1, 1, 768, 768 * 1344)   # sol-h3-studio: canvas arguments
++        canvas.assert_called_once_with(1, 1, 768, 768 * 1344)   # lf-studio: canvas arguments
          self.assertEqual(prepared.shape, (124, 2, 2, 3))
          np.testing.assert_array_equal(prepared[:, 0, 0, 0], np.arange(124))
  
@@ -6872,7 +6899,7 @@ index 4af9048..7d821d8 100644
          session.completed_requests = 0
          session.model_load_count = 1
          session.reference_target_area = target_area
-+        session.prompt_tokens_mode = "minimax"                  # sol-h3-studio: SOL_H3_PROMPT_TOKENS from the recipe
++        session.prompt_tokens_mode = "minimax"                  # lf-studio: SOL_H3_PROMPT_TOKENS from the recipe
          session.clip = FakeComfyClip(check)
          session.normalize = lambda encoded: SimpleNamespace(
              cond=encoded["cond"], minimax_token_tags=encoded["minimax_token_tags"])
@@ -6880,7 +6907,7 @@ index 4af9048..7d821d8 100644
          for key in ("task", "external_anchor_used", "input_conditioned", "input_spec", "prepared_media"):
              self.assertEqual(payload[key], receipt[key])
          self.assertEqual(json.loads((output / "conditioning.json").read_text()), receipt)
-+        # sol-h3-studio: the mode, the text positions (tag 1) and the MiniMax token ids among them
++        # lf-studio: the mode, the text positions (tag 1) and the MiniMax token ids among them
 +        self.assertEqual((receipt["prompt_tokens"], receipt["text_tokens"], receipt["minimax_tokens"]),
 +                         ("minimax", 2, 1))
          return receipt
@@ -6897,13 +6924,13 @@ index 4af9048..7d821d8 100644
                                                "last_frame": None, "references": refs})
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_regional_length.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_regional_length.py
 new file mode 100644
-index 0000000..3271fa4
+index 0000000..4d4cdd3
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_regional_length.py
 @@ -0,0 +1,597 @@
 +"""CPU checks for SOL_H3_DYNAMIC_TEXT_LENGTH: Stage-1 body regions compiled per session, not per prompt length.
 +
-+Part of sol-h3-studio. The model here is a small stand-in with the shape of FastVideo's H3 regions: a block forward
++Part of lf-studio. The model here is a small stand-in with the shape of FastVideo's H3 regions: a block forward
 +with FastVideo's signature whose attention follows DistributedAttention_VSA at one GPU (stack q/k/v/gate, trim,
 +preprocess_qkv, chunk, attention forward, postprocess_output, pad) and reads FastVideo-style VSA metadata from a
 +global forward context, and a text-refiner forward. The AdaLN table has 1 row in the first denoise step and 2 in the
@@ -7149,7 +7176,7 @@ index 0000000..3271fa4
 +        default included; the Stage1 log line only when it was set to 1, not on every Sol-route load by default."""
 +        from runtime import stage1
 +        name, ignored = regional.DYNAMIC_TEXT_LENGTH, "per_length (setting ignored)"
-+        line = "[sol-h3-studio] SOL_H3_DYNAMIC_TEXT_LENGTH=1 is ignored on the Ref2VA Sol route"
++        line = "[lf-studio] SOL_H3_DYNAMIC_TEXT_LENGTH=1 is ignored on the Ref2VA Sol route"
 +        for environ, expected in (({}, (ignored, None)), ({name: ""}, (ignored, None)),
 +                                  ({name: "0"}, ("per_length", None)), ({name: " 0 "}, ("per_length", None)),
 +                                  ({name: "1"}, (ignored, line)), ({name: " 1 "}, (ignored, line))):
@@ -7500,11 +7527,11 @@ index 0000000..3271fa4
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py
 new file mode 100644
-index 0000000..a51e4fc
+index 0000000..c4aabe0
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py
 @@ -0,0 +1,1156 @@
-+"""sol-h3-studio: CPU tests of reshape, another clip length or orientation in a running session (not part of upstream
++"""lf-studio: CPU tests of reshape, another clip length or orientation in a running session (not part of upstream
 +Sol-H3-RTX5090). Stand-in workers check that every worker sees the shape of each request; the shape state each real
 +worker rebinds is checked against what a fresh worker for that shape has."""
 +import ast
@@ -7608,7 +7635,7 @@ index 0000000..a51e4fc
 +    return config["stage1"].get("task", "t2va")
 +
 +
-+# sol-h3-studio: the settings PipelineReshapeTests expects at their defaults (QwenReshapeTests clears the last two).
++# lf-studio: the settings PipelineReshapeTests expects at their defaults (QwenReshapeTests clears the last two).
 +# install/10-sana.sh runs the tests without the settings file's switches, but a user's own values
 +# (SOL_H3_RESIDENT_QWEN_EARLY=0, a MAX_FRAMES from 0.3, ...) must not change what these check (UserSettingsTests).
 +USER_SETTINGS = ("SOL_H3_RESIDENT_QWEN_EARLY", "SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB", "SOL_H3_RESIDENT_QWEN_MAX_FRAMES",
@@ -8612,12 +8639,12 @@ index 0000000..a51e4fc
 +            fallback.autotune_to_one_config()
 +        lines = out.getvalue().splitlines()
 +        self.assertEqual(lines, [
-+            "[sol-h3-studio] tuned at run time triton_red_fused_rms_norm_8 -> num_warps=16 (cache, save hook: "
++            "[lf-studio] tuned at run time triton_red_fused_rms_norm_8 -> num_warps=16 (cache, save hook: "
 +            "('miss', False))",
-+            "[sol-h3-studio] coordinate descent triton_red_fused_rms_norm_8: num_warps=16 -> num_warps=8 (cache, "
++            "[lf-studio] coordinate descent triton_red_fused_rms_norm_8: num_warps=16 -> num_warps=8 (cache, "
 +            "save hook: ('miss', False))",
-+            "[sol-h3-studio] tuning result stored cj/8b5d.best_config: num_warps=8",
-+            "[sol-h3-studio] tuned at run time triton_red_fused_rms_norm_8 -> num_warps=16 (cache, save hook: "
++            "[lf-studio] tuning result stored cj/8b5d.best_config: num_warps=8",
++            "[lf-studio] tuned at run time triton_red_fused_rms_norm_8 -> num_warps=16 (cache, save hook: "
 +            "('hit (spark fallback)', False))"])
 +
 +
@@ -8661,7 +8688,7 @@ index 0000000..a51e4fc
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_contracts.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_contracts.py
-index 052502f..e4a87c4 100644
+index 052502f..8df301c 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_contracts.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_contracts.py
 @@ -7,12 +7,13 @@ from unittest.mock import Mock, patch
@@ -8669,7 +8696,7 @@ index 052502f..e4a87c4 100644
  from runtime import qwen, stage1
  from runtime.stage1_ops.lookup import require_lookup_step, t2va_lookup_plan
 -from runtime.stage1_ops.vsa import COUNTERS, metadata_contract, validate_request
-+# Modified by sol-h3-studio: the BSA self-check length is configurable (SOL_H3_BSA_CHECK_CALLS).
++# Modified by lf-studio: the BSA self-check length is configurable (SOL_H3_BSA_CHECK_CALLS).
 +from runtime.stage1_ops.vsa import COUNTERS, WARMUP_REFERENCE_CALLS, metadata_contract, validate_request
  from runtime.qwen_ops.direct_io import DirectLoadError, iter_direct_chunks, preadv_fill_chunk
  
@@ -8691,13 +8718,13 @@ index 052502f..e4a87c4 100644
          missing["layer_calls"][13] -= 1
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_snapshot.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_snapshot.py
 new file mode 100644
-index 0000000..c05cb60
+index 0000000..b58694f
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage1_snapshot.py
 @@ -0,0 +1,1005 @@
-+"""sol-h3-studio: CPU tests of the Stage-1 snapshot (runtime/stage1_ops/snapshot.py) and the shared lookup builder.
++"""lf-studio: CPU tests of the Stage-1 snapshot (runtime/stage1_ops/snapshot.py) and the shared lookup builder.
 +
-+Part of sol-h3-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
++Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
 +
 +Tiny fake models stand in for H3: the layout and carving, the file format (write, read, SHA-256, identity and
 +layout refusal, atomic replace, pruning), the lookup/FP8 structure a restore rebuilds, and one save -> restore round
@@ -9701,12 +9728,12 @@ index 0000000..c05cb60
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
-index b1fd3a9..5325134 100644
+index b1fd3a9..81b5ca7 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
 @@ -1,5 +1,9 @@
  """CPU-only handoff, normalization and offline-conditioning behavior checks."""
-+# Modified by sol-h3-studio: Stage-2 audio policy tests (Stage2AudioPolicyTests), autotune-cache fallback tests
++# Modified by lf-studio: Stage-2 audio policy tests (Stage2AudioPolicyTests), autotune-cache fallback tests
 +# (AutotuneCacheFallbackTests), CPU-offload device moves around the shape-generic calls (Stage2OffloadTests).
  import copy
 +from dataclasses import dataclass
@@ -9718,7 +9745,7 @@ index b1fd3a9..5325134 100644
  from runtime import latent_transfer as transfer
  from runtime import prompt_cache as cache
  from runtime import stage2
-+from runtime.config import load_recipe      # sol-h3-studio
++from runtime.config import load_recipe      # lf-studio
  
  
  class Tensor:
@@ -9726,7 +9753,7 @@ index b1fd3a9..5325134 100644
          self.assertEqual(model.encode_highres_first_frame(None), [])
  
  
-+# sol-h3-studio: under CPU offload (the RTX 5090 default) each phase module goes to the GPU only for its call
++# lf-studio: under CPU offload (the RTX 5090 default) each phase module goes to the GPU only for its call
 +class Placed:
 +    """A module stub that logs its moves and, when called, where it was."""
 +    def __init__(self, name, log, result=None):
@@ -9829,7 +9856,7 @@ index b1fd3a9..5325134 100644
 +        self.assertEqual([entry[0] for entry in log], ["chunk"] * 3)     # resident: no moves
 +
 +
-+# sol-h3-studio: Stage-2 audio policy (SOL_H3_STAGE2_AUDIO)
++# lf-studio: Stage-2 audio policy (SOL_H3_STAGE2_AUDIO)
 +@dataclass(frozen=True)
 +class AudioState:
 +    """The fields of ltx_core.types.LatentState that the policy reads or replaces."""
@@ -9900,7 +9927,7 @@ index b1fd3a9..5325134 100644
 +        stage2.check_frozen_states(AudioState)
 +
 +
-+# sol-h3-studio: the Inductor autotune-cache fallback (docs/PATCH.md item 8, issue #51)
++# lf-studio: the Inductor autotune-cache fallback (docs/PATCH.md item 8, issue #51)
 +class AutotuneCacheFallbackTests(unittest.TestCase):
 +    """A Stage-2 reduction loaded from the FX graph cache with its compile results pruned to one config (R0_BLOCK
 +    1024): torch's recheck hashes that one config and misses, and the fallback reads the stored result through the
@@ -10060,7 +10087,7 @@ index b1fd3a9..5325134 100644
 +        self.assertEqual(upstream_hit, {"best_config": stored, "autotune_cache_state": "hit"})
 +        self.assertEqual(info, dict(upstream_hit, spark_fallback=True))
 +        self.assertEqual(self.events, [("ran", 1024), ("ran", 1024)])   # no halving, timing, descent or store
-+        self.assertEqual(lines, [f"[sol-h3-studio] fallback hit cjviewxyz8rms. -> {stored}"])
++        self.assertEqual(lines, [f"[lf-studio] fallback hit cjviewxyz8rms. -> {stored}"])
 +        self.assertEqual(self.stored_block(), 1024)
 +
 +    def test_the_label_before_51_was_tuned_again(self):
@@ -10081,7 +10108,7 @@ index b1fd3a9..5325134 100644
  if __name__ == "__main__":
      unittest.main()
 diff --git a/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py b/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py
-index 74e22a9..fadd48c 100644
+index 74e22a9..7243985 100644
 --- a/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py
 +++ b/models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py
 @@ -73,9 +73,12 @@ try:
@@ -10089,7 +10116,7 @@ index 74e22a9..fadd48c 100644
  except ValueError as exc:
      raise RuntimeError("H3_LTX source/output frame counts must be integers") from exc
 -if (SOURCE_FRAME_COUNT, FRAME_COUNT) not in {(124, 121), (243, 241)}:
-+# Modified by sol-h3-studio: any H3 17k+5 draft -> LTX 8m+1 output (largest 8m+1 not above the draft), 3-15 s.
++# Modified by lf-studio: any H3 17k+5 draft -> LTX 8m+1 output (largest 8m+1 not above the draft), 3-15 s.
 +if (SOURCE_FRAME_COUNT < 73 or (SOURCE_FRAME_COUNT - 5) % 17 or (FRAME_COUNT - 1) % 8
 +        or FRAME_COUNT != ((SOURCE_FRAME_COUNT - 1) // 8) * 8 + 1
 +        or ((FRAME_COUNT - 1) // 8 + 1) * 24 * 42 > 65536):

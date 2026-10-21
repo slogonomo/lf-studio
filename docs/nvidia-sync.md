@@ -1,6 +1,6 @@
 # Run it from NVIDIA Sync
 
-NVIDIA Sync can start Sol-H3 Studio on your DGX Spark and forward its port to your laptop. Which command the
+NVIDIA Sync can start LF Studio on your DGX Spark and forward its port to your laptop. Which command the
 custom app runs depends on whether [spark-switchboard](https://github.com/slogonomo/spark-switchboard) manages
 the studio on that Spark.
 
@@ -10,11 +10,12 @@ Add a custom app in Sync with (field names can differ between Sync versions):
 
 | Field | Value |
 |---|---|
-| Name | Sol-H3 Studio |
+| Name | LF Studio |
 | Port | 8190 |
-| Launch script / command | `bash ~/src/sol-h3-studio/bin/sol-h3-studio` |
+| Launch script / command | `bash ~/src/lf-studio/bin/lf-studio` |
 
-Adjust the path if the repo is elsewhere. Start the app in Sync, wait for "Sol-H3 Studio ready", then open
+Adjust the path if the repo is elsewhere. An app set up for 0.4 (`bash ~/src/sol-h3-studio/bin/sol-h3-studio`) keeps
+working until 0.6 through the old name. Start the app in Sync, wait for "LF Studio ready", then open
 <http://localhost:8190> on the laptop. The launcher's `>>> STATUS:` lines show its progress: checks, start-up,
 refusals (memory, port), and the memory guard.
 
@@ -34,17 +35,18 @@ How the launcher behaves under Sync:
 ## With spark-switchboard
 
 When switchboard manages the studio, switchboard owns port 8190 and starts the studio on demand, so
-`bin/sol-h3-studio` started from Sync is refused ("port 8190 is already in use"). Point the custom app at
+`bin/lf-studio` started from Sync is refused ("port 8190 is already in use"). Point the custom app at
 switchboard's `delegate.sh` instead:
 
 | Field | Value |
 |---|---|
-| Name | Sol-H3 Studio |
+| Name | LF Studio |
 | Port | 8190 |
-| Launch script / command | `bash ~/src/spark-switchboard/examples/launchers/delegate.sh sol-h3-studio` |
+| Launch script / command | `bash ~/src/spark-switchboard/examples/launchers/delegate.sh lf-studio` |
 
-`sol-h3-studio` is the service name (the file name of `integrations/spark-switchboard/sol-h3-studio.toml` without
-`.toml`). `delegate.sh` asks switchboard to start the studio, shows switchboard's progress as `>>> STATUS:` lines
-and stays in the foreground, so Sync keeps the port forwarded. When you close the app in Sync, it asks switchboard
-to stop the studio unless someone used it recently (`stop?if_idle=1`). It never starts the studio itself; if
-switchboard is not running, it says so and exits, and you use the standalone command above.
+`lf-studio` is the service name (the file name of `integrations/spark-switchboard/lf-studio.toml` without `.toml`; a
+service set up for 0.4 is still called `sol-h3-studio`). `delegate.sh` asks switchboard to start the studio, shows
+switchboard's progress as `>>> STATUS:` lines and stays in the foreground, so Sync keeps the port forwarded. When you
+close the app in Sync, it asks switchboard to stop the studio unless someone used it recently (`stop?if_idle=1`). It
+never starts the studio itself; if switchboard is not running, it says so and exits, and you use the standalone command
+above.

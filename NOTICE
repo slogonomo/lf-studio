@@ -1,4 +1,4 @@
-sol-h3-studio
+lf-studio
 Copyright 2026 slogonomo
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
@@ -9,10 +9,10 @@ Lightricks. The names are used only to describe what this project works with.
 
 This repository contains:
 
-- patches/sol-h3-studio.patch: modifications of NVIDIA's Sol-H3-Spark package in NVlabs/Sana
+- patches/lf-studio.patch: modifications of NVIDIA's Sol-H3-Spark package in NVlabs/Sana
   (https://github.com/NVlabs/Sana, branch sol-engine, models/minimax_h3/Sol-H3-Spark, and one shared module,
   models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py). NVlabs/Sana is released by
-  NVIDIA under the Apache License, Version 2.0. Each file the patch modifies is marked "Modified by sol-h3-studio";
+  NVIDIA under the Apache License, Version 2.0. Each file the patch modifies is marked "Modified by lf-studio";
   docs/PATCH.md describes every change.
 - Among the modified files, runtime/qwen_ops/media.py contains code derived from FastVideo
   (https://github.com/hao-ai-lab/FastVideo, by Hao AI Lab), licensed under the Apache License, Version 2.0.

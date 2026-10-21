@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 30-sources.sh: fetch the pinned source trees (FastVideo, flash-attention, ComfyUI v0.30.0, LTX-2, the H3 latent
-# upscaler) into $SOLH3_HOME/sources with NVIDIA's prepare.py --fetch-sources (~770 MB).
+# upscaler) into $LFSTUDIO_HOME/sources with NVIDIA's prepare.py --fetch-sources (~770 MB).
 # prepare.py stops with "Missing required inputs" at this point because the Python envs do not exist yet;
 # that is expected. This script checks the fetched revisions itself. The FastVideo loader patch is applied
 # later, by the first prepare.py run in 70-manifests.sh.
@@ -13,8 +13,8 @@ need_cmd git
 
 step "pinned sources -> $SOURCES"
 run mkdir -p "$SOURCES"
-probe="$SOLH3_HOME/.paths-probe-$$.json"
-run_in "$PKG" "$HOST_PY" prepare.py --fetch-sources --sources "$SOURCES" --checkpoints "$SOLH3_CHECKPOINTS" \
+probe="$LFSTUDIO_HOME/.paths-probe-$$.json"
+run_in "$PKG" "$HOST_PY" prepare.py --fetch-sources --sources "$SOURCES" --checkpoints "$LFSTUDIO_CHECKPOINTS" \
     --output "$probe" || say "prepare.py stopped (expected before the envs exist); checking the sources"
 [[ "$DRY_RUN" == 1 ]] && { say "dry run: skipping the revision check"; exit 0; }
 rm -f "$probe"

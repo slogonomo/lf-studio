@@ -8,7 +8,7 @@
 #                     GPU; --dry prints the processes, shapes, arms and runs and starts nothing
 #   report RUN_DIR    hashes, "same as" columns and summary.md for a run (run does this at its end)
 #   quality RUN_DIR [--lpips PYTHON] [--syncnet CMD]   CPU only: SSIM/PSNR, sheets, side-by-sides, LPIPS, SyncNet
-# run needs the whole box: stop the studio and other GPU apps first. Settings: the same env file as bin/sol-h3-studio.
+# run needs the whole box: stop the studio and other GPU apps first. Settings: the same env file as bin/lf-studio.
 # Drafts: $SOL_H3_SPARK_RUNTIME_ROOT/outputs/bench/replay-drafts/; runs: .../outputs/bench/replay-<time>[-label]/.
 set -uo pipefail
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -16,12 +16,12 @@ HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/../install/env.sh"
 [[ $# -ge 1 && "$1" != -* ]] || { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 unset SOL_H3_SECONDS SOL_H3_ORIENTATION      # as the web server does: format and length come from each draft
-export SOLH3_PKG="$PKG" SOLH3_REPO SOLH3_SANA SOLH3_PATHS SOLH3_HOME
+export LFSTUDIO_PKG="$PKG" LFSTUDIO_REPO LFSTUDIO_SANA LFSTUDIO_PATHS LFSTUDIO_HOME
 command -v ffmpeg >/dev/null || { echo "replay.sh needs ffmpeg" >&2; exit 1; }
 if [[ "$1" == run && " $* " != *" --dry "* ]]; then
-    need=${SOLH3_MIN_FREE_GIB:-110}; have=$(mem_avail_gib)
+    need=${LFSTUDIO_MIN_FREE_GIB:-110}; have=$(mem_avail_gib)
     (( need == 0 || have >= need )) || { echo "only ${have} GiB MemAvailable, need ${need}: stop other apps first" >&2; exit 1; }
-    export SOLH3_MIN_FREE_GIB=$need
+    export LFSTUDIO_MIN_FREE_GIB=$need
 fi
 [[ "$1" == run ]] || export CUDA_VISIBLE_DEVICES=     # every other command is CPU only
 # stdin from /dev/null: nothing here reads it, and a tool that did would eat the input of a caller's `while read` loop
