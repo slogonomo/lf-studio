@@ -153,7 +153,11 @@ if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     MIN_FREE_GIB=${LFSTUDIO_MIN_FREE_GIB:-42}
     MIN_FREE_VRAM_GIB=${LFSTUDIO_MIN_FREE_VRAM_GIB:-25}
     # the memory features' files (runtime/config.py of the RTX 5090 patch): next to the checkpoints by default, on a
-    # disk without compression or copy-on-write (O_DIRECT reads); new directories get chattr +C where that works
+    # disk without compression or copy-on-write (O_DIRECT reads); new directories get chattr +C where that works.
+    # A value of only spaces counts as unset, as in the patch's runtime/config.py.
+    for _v in SOL_H3_FILEBACKED_DIR SOL_H3_LTX_BLOCKS SOL_H3_STAGE1_SNAPSHOTS; do
+        [[ -n "${!_v:-}" && -z "${!_v//[[:space:]]/}" ]] && unset "$_v"
+    done
     export SOL_H3_FILEBACKED_DIR=${SOL_H3_FILEBACKED_DIR:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/scratch}
     export SOL_H3_LTX_BLOCKS=${SOL_H3_LTX_BLOCKS:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived/ltx-fused-blocks}
     export SOL_H3_STAGE1_SNAPSHOTS=${SOL_H3_STAGE1_SNAPSHOTS:-$(dirname -- "$LFSTUDIO_CHECKPOINTS")/derived/stage1-snapshots}
@@ -347,7 +351,8 @@ if problems:
         for v in SOL_H3_FILEBACKED_DIR SOL_H3_LTX_BLOCKS SOL_H3_STAGE1_SNAPSHOTS; do
             d=$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"${!v:-}")
             case "${d,,}" in ""|0|off|false|no) continue ;; esac
-            d=${d/#\~/$HOME}
+            [[ "$d" == "~" || "$d" == "~/"* ]] && d=$HOME${d:1}
+            [[ "$d" == /* ]] || continue        # ~user/...: the patch expands it and makes the folder itself
             [[ "$v" == SOL_H3_LTX_BLOCKS ]] && d=$(dirname -- "$d")
             if [[ ! -d "$d" ]]; then
                 mkdir -p "$d" || refuse "cannot create $d (SOL_H3_FILEBACKED_DIR / SOL_H3_LTX_BLOCKS / SOL_H3_STAGE1_SNAPSHOTS)"

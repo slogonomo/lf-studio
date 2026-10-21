@@ -50,7 +50,7 @@ index 19c4db6..898756d 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
-index 0327a69..d27242f 100644
+index 0327a69..50b278a 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 @@ -6,6 +6,10 @@ import os
@@ -64,7 +64,7 @@ index 0327a69..d27242f 100644
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,261 @@ REQUIRED_PATHS = (
+@@ -19,12 +23,267 @@ REQUIRED_PATHS = (
  )
  
  
@@ -212,7 +212,13 @@ index 0327a69..d27242f 100644
 +# The RTX 5090 patch's on/off switches and their defaults (switch()).
 +SWITCHES = {"SOL_H3_STAGE1_PIN": True, "SOL_H3_STAGE1_READ_AHEAD": True, "SOL_H3_STAGE1_SNAPSHOT_VERIFY": True,
 +            "SOL_H3_QWEN_FAST_LOAD": True, "SOL_H3_MALLOC_TRIM": True, "SOL_H3_LTX_VERIFY": False,
-+            "SOL_H3_KEEP_VAE_DECODER": False}
++            "SOL_H3_KEEP_VAE_DECODER": False, "SOL_H3_VAE_ON_DEVICE": True, "SOL_H3_AUDIO_VAE_PREFETCH": True}
++
++
++def bsa_check_calls():
++    """SOL_H3_BSA_CHECK_CALLS: how many of the first request's selected-attention calls are checked against the
++    Triton reference (default 8, at most upstream's 200)."""
++    return min(200, whole_number("SOL_H3_BSA_CHECK_CALLS", 8, minimum=1))
 +
 +
 +def check_settings():
@@ -226,7 +232,7 @@ index 0327a69..d27242f 100644
 +    checks += [lambda: whole_number("SOL_H3_STAGE1_SNAPSHOTS_KEEP", 2, minimum=1),
 +               lambda: whole_number("SOL_H3_LTX_READ_AHEAD", 3, minimum=1),
 +               lambda: decimal_number("SOL_H3_LTX_RAM_RESERVE_GIB", 12.0),
-+               ltx_resident_blocks_setting,
++               ltx_resident_blocks_setting, bsa_check_calls,
 +               stage2_audio_mode, prompt_tokens_mode, compile_dynamic, dynamic_text_length]
 +    problems = []
 +    for check in checks:
@@ -1994,7 +2000,7 @@ index 0000000..193da85
 +    ids = [entry[0] for entry in entries if isinstance(entry[0], int)]
 +    return {"text_tokens": int(token_tags.sum()), "minimax_tokens": sum(1 for i in ids if i in MINIMAX_EXTRA_IDS)}
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
-index a1dd805..9837431 100644
+index a1dd805..1a4b277 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1.py
 @@ -3,17 +3,24 @@ from __future__ import annotations
@@ -2019,7 +2025,7 @@ index a1dd805..9837431 100644
 +# reshape (another clip length or orientation in a running session) and the Stage-1 snapshot (the finished transformer
 +# saved once and restored by later sessions; stage1_ops/snapshot.py); see "lf-studio:" notes.
 +from . import geometry
-+from .config import DYNAMIC_TEXT_LENGTH, compile_dynamic, dynamic_text_length
++from .config import DYNAMIC_TEXT_LENGTH, compile_dynamic, dynamic_text_length, switch
  
  
  def install_reference_image_size(reference_module, target_area):
@@ -2095,7 +2101,7 @@ index a1dd805..9837431 100644
 +    # use; the saving there is not measured. SOL_H3_VAE_ON_DEVICE=0 builds them on the CPU as upstream.
 +    import fastvideo.models.loader.component_loader as _fv_component_loader
 +    _fv_component_loader.safetensors_load_file = fastload.load_file
-+    if os.environ.get("SOL_H3_VAE_ON_DEVICE", "1") == "1":
++    if switch("SOL_H3_VAE_ON_DEVICE", True):
 +        for _loader_name in ("VAELoader", "AudioDecoderLoader"):
 +            _loader_cls = getattr(_fv_component_loader, _loader_name, None)
 +            if _loader_cls is None or getattr(_loader_cls.load, "_spark_on_device", False):
@@ -2139,14 +2145,13 @@ index a1dd805..9837431 100644
      sol_route = sol.RequestRoute(state) if attention == sol.POLICY else None
      if not is_lazy_module(pipe.modules["transformer"]) or not is_lazy_module(pipe.modules["text_encoder"]):
          raise RuntimeError("existing native lazy construction required")
-@@ -85,6 +169,16 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -85,6 +169,15 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
              def no_video_decode(*args, **kwargs):
                  raise RuntimeError("Stage1 latent transfer must not decode generated H3 video")
              model.decode = no_video_decode
 +            # lf-studio (RTX 5090): this session only encodes keyframes and references, never decodes, and the
 +            # decoder is 9.7 of the VAE's 10.4 GB (FP32) that CPU offload otherwise keeps in RAM next to H3. Encoding
 +            # uses the encoder and quant_conv only. SOL_H3_KEEP_VAE_DECODER=1 keeps it.
-+            from .config import switch
 +            if not switch("SOL_H3_KEEP_VAE_DECODER", False) and isinstance(
 +                    getattr(model, "decoder", None), torch.nn.Module):
 +                freed = sum(p.numel() * p.element_size() for p in model.decoder.parameters())
@@ -2156,7 +2161,7 @@ index a1dd805..9837431 100644
              return model
          vae.set_materialize_transform(record_condition_encoder)
      if task == "ref2va":
-@@ -110,11 +204,14 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -110,11 +203,14 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
          state["transformer_materializations"] += 1
          if state["transformer_materializations"] != 1:
              raise RuntimeError("resident Stage1 transformer was unexpectedly reloaded")
@@ -2171,7 +2176,7 @@ index a1dd805..9837431 100644
                  if not module.merged and not module.disable_lora:
                      raise RuntimeError(f"LoRA not merged before FP8: {name}")
                  if task == "ref2va" and module.merged and (module.lora_alpha, module.lora_rank) != (8, 128):
-@@ -124,24 +221,37 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -124,24 +220,37 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
                  merged += int(module.merged)
          pipe.lora_layers.clear()
          pipe.lora_adapters.clear()
@@ -2218,7 +2223,7 @@ index a1dd805..9837431 100644
          original_model_forward = model.forward
          def observed_model_forward(*args, **kwargs):
              state["transformer_forwards"] += 1
-@@ -161,14 +271,56 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -161,14 +270,56 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
                  regional.install_dense(model, state)
              else:
                  sol.install(model, state, sol_route)
@@ -2257,7 +2262,7 @@ index a1dd805..9837431 100644
 +    # loads lazily after the denoise, ~5.7 s on the critical path of every cold start. Joined before audio decode.
 +    audio_prefetch = {}
 +    audio_lazy, transformer_lazy = pipe.modules.get("audio_vae"), pipe.modules["transformer"]
-+    prefetch_audio = is_lazy_module(audio_lazy) and os.environ.get("SOL_H3_AUDIO_VAE_PREFETCH", "1") == "1"
++    prefetch_audio = is_lazy_module(audio_lazy) and switch("SOL_H3_AUDIO_VAE_PREFETCH", True)
 +    if prefetch_audio:
 +        import threading
 +        def load_audio_vae():
@@ -2276,7 +2281,7 @@ index a1dd805..9837431 100644
      control.install_fa4_audit(worker)  # Native FA4 handles the two text-refiner blocks.
      original_post_init = pipe.post_init
      def post_init():
-@@ -206,13 +358,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
+@@ -206,13 +357,67 @@ def install_worker(worker, task="t2va", attention=None, reference_area=None,
          keep = {id(pipe.modules[name]) for name in ("transformer", "vae", "audio_vae")}
          for stage in pipe._stages:
              stage._lazy_modules_to_release = tuple(m for m in stage._lazy_modules_to_release if id(m) not in keep)
@@ -2345,7 +2350,7 @@ index a1dd805..9837431 100644
  def arm_worker(worker, case, conditioning_path, outputdir):
      import torch
      from .stage1_ops import capture, vsa
-@@ -286,8 +492,10 @@ class Session:
+@@ -286,8 +491,10 @@ class Session:
          self.task = task_of(config.get("stage1", config))
          self.attention = config.get("stage1", config).get("attention")
          self.reference_area = reference_target_area(config)
@@ -2356,7 +2361,7 @@ index a1dd805..9837431 100644
          if self.attention == sol.POLICY and self.task != "ref2va":
              raise ValueError("this fixed Sol policy is Ref2VA only")
          self.basic = native.load_official_entry(
-@@ -295,8 +503,9 @@ class Session:
+@@ -295,8 +502,9 @@ class Session:
          profile = self.basic.parse_args([
              "--model-path", str(Path(paths["h3_model"]).expanduser().resolve(strict=True)),
              "--prompt", "session", "--output", str(self.root), "--num-gpus", "1",
@@ -2368,7 +2373,7 @@ index a1dd805..9837431 100644
              "--no-warmup", "--repeats", "1"])
          if self.task == "ref2va":
              profile.vsa = False
-@@ -345,7 +554,9 @@ class Session:
+@@ -345,7 +553,9 @@ class Session:
              self.rpc(functools.partial(install_worker, task=self.task, attention=self.attention,
                                        reference_area=self.reference_area,
                                        reference_budget_source=self.reference_budget_source,
@@ -2379,7 +2384,7 @@ index a1dd805..9837431 100644
          except BaseException:
              self.generator.shutdown()
              self.closed = True
-@@ -411,17 +622,50 @@ class Session:
+@@ -411,17 +621,50 @@ class Session:
                  "request_transformer_forwards": forwards,
                  "request_attention_calls": attention_calls,
                  "first_request_compile_included": not bool(before["transformer_forwards"]),
@@ -4320,10 +4325,10 @@ index 0000000..c600e75
 +                f"state {field}: {str(state_a.get(field))[:200]} != {str(state_b.get(field))[:200]}")
 +    return problems, info
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
-index 3b818dc..5787572 100644
+index 3b818dc..2352dd1 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/vsa.py
-@@ -12,8 +12,16 @@ VSA_SOURCE_SHA = "b7c6d4e470ee232b50d16d71c2b21806f414f9baa4447434b2da66c94dc0fa
+@@ -12,8 +12,17 @@ VSA_SOURCE_SHA = "b7c6d4e470ee232b50d16d71c2b21806f414f9baa4447434b2da66c94dc0fa
  COUNTERS = ("vsa_forward_calls", "compression_branch_calls", "block_mask_calls",
              "triton_sparse_kernel_calls", "dense_text_calls", "cudnn_bsa_calls",
              "warmup_reference_calls")
@@ -4332,7 +4337,8 @@ index 3b818dc..5787572 100644
 +# selected-attention calls (each adds a Triton reference pass and two host syncs: ~30 s of every cold start on
 +# Spark). Default here: the first 8 calls (layers 0-7 of the first update, same kernel, real data) - still a
 +# numerical check of the actual kernel on this driver/cuDNN. SOL_H3_BSA_CHECK_CALLS=200 restores upstream.
-+WARMUP_REFERENCE_CALLS = min(200, max(1, int(os.environ.get("SOL_H3_BSA_CHECK_CALLS", "8"))))
++from ..config import bsa_check_calls  # noqa: E402  (a whole number of at least 1, checked at the studio's start)
++WARMUP_REFERENCE_CALLS = bsa_check_calls()
  BSA_ATOL = BSA_RTOL = 0.03
 +# lf-studio: a session can change its clip length or orientation (runtime/pipeline.py reshape). The check then
 +# runs again on the first request of each shape it has not checked yet, as a fresh worker at that shape would:
@@ -4341,7 +4347,7 @@ index 3b818dc..5787572 100644
  
  
  def configure_profile(profile, backend="cudnn_bsa"):
-@@ -82,6 +90,45 @@ def reverse_active_indices(torch, indices, counts):
+@@ -82,6 +91,45 @@ def reverse_active_indices(torch, indices, counts):
      return indices.gather(-1, gather_positions)
  
  
@@ -4387,7 +4393,7 @@ index 3b818dc..5787572 100644
  def validate_request(before, after):
      if after is None or after.get("active_compression_gates") != 50:
          raise RuntimeError("actual official VSA installation/gates missing")
-@@ -99,7 +146,9 @@ def validate_request(before, after):
+@@ -99,7 +147,9 @@ def validate_request(before, after):
              or len(after["step_calls"]) != 4 or len(before["step_calls"]) != 4):
          raise RuntimeError("official VSA counter geometry changed")
      previous_bsa = before.get("cudnn_bsa_calls", 0)
@@ -4398,7 +4404,7 @@ index 3b818dc..5787572 100644
      expected = dict(zip(COUNTERS, (200, 200, 200, 200 if backend == "triton" else 0,
                                     2, 200 if backend == "cudnn_bsa" else 0, expected_reference)))
      delta = {key: after.get(key, 0) - before.get(key, 0) for key in COUNTERS}
-@@ -109,10 +158,11 @@ def validate_request(before, after):
+@@ -109,10 +159,11 @@ def validate_request(before, after):
          raise RuntimeError(f"real VSA request count mismatch: {delta}; layers={per_layer}; steps={per_step}")
      if backend == "cudnn_bsa":
          audit = after.get("warmup_selected_validation", {})
@@ -4412,7 +4418,7 @@ index 3b818dc..5787572 100644
          order = after.get("bsa_index_order", {})
          before_order = before.get("bsa_index_order", {})
          match_order = order.get("match_triton_order", False)
-@@ -188,6 +238,7 @@ def install_model(model, state, backend="cudnn_bsa"):
+@@ -188,6 +239,7 @@ def install_model(model, state, backend="cudnn_bsa"):
          raise RuntimeError("expected original 50 VSA body blocks and two dense text blocks")
      record = {key: 0 for key in COUNTERS}
      record.update(active_compression_gates=50, gates=sorted(gates, key=lambda x: x["layer"]),
@@ -4420,7 +4426,7 @@ index 3b818dc..5787572 100644
                    selected_attention_backend=backend,
                    layer_calls=[0] * 50, step_calls=[0] * 4, observed_metadata={},
                    vsa_source=str(source), vsa_source_sha256=VSA_SOURCE_SHA,
-@@ -262,7 +313,7 @@ def install_model(model, state, backend="cudnn_bsa"):
+@@ -262,7 +314,7 @@ def install_model(model, state, backend="cudnn_bsa"):
                  or any(x.dtype != torch.bfloat16 for x in (q, k, v))
                  or q.shape[-1] != 128 or q.shape != k.shape or k.shape != v.shape):
              raise RuntimeError("BSA integration requires inference-only BF16 MHA/head128")
@@ -4429,7 +4435,7 @@ index 3b818dc..5787572 100644
          bsa_indices = indices
          if match_triton_order:
              bsa_indices = reverse_active_indices(torch, indices, counts)
-@@ -299,9 +350,7 @@ def install_model(model, state, backend="cudnn_bsa"):
+@@ -299,9 +351,7 @@ def install_model(model, state, backend="cudnn_bsa"):
              if not passed:
                  audit["status"] = "FAIL"
                  raise RuntimeError(f"actual BSA warmup reference FAIL: {audit['per_call'][-1]}")
@@ -4862,10 +4868,10 @@ index 4e6e910..fdccb3f 100644
      return output.to(dtype=normalized.dtype)
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
 new file mode 100644
-index 0000000..7e3eac2
+index 0000000..326940e
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/ltx_blocks.py
-@@ -0,0 +1,557 @@
+@@ -0,0 +1,582 @@
 +"""lf-studio: LTX refiner blocks with the distilled LoRA fused once, streamed partly from disk.
 +
 +Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -5112,9 +5118,27 @@ index 0000000..7e3eac2
 +    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
 +
 +
++def _is_block_folder(path):
++    """A real folder (not a symlink) under the block root: anything else is never read or deleted here."""
++    path = Path(path)
++    return not path.is_symlink() and path.is_dir()
++
++
++def _index_format(directory):
++    """The format named in a folder's index.json, or None when it can't be read."""
++    try:
++        index = json.loads((Path(directory) / "index.json").read_text())
++    except (OSError, ValueError):
++        return None
++    return index.get("format") if isinstance(index, dict) else None
++
++
 +def _remove_known(directory):
-+    """Delete a block-file folder by the names this module writes (nothing else is touched)."""
++    """Delete a block-file folder by the names this module writes (nothing else is touched). A symlink is left
++    alone: the files it points to are outside the block root."""
 +    directory = Path(directory)
++    if not _is_block_folder(directory):
++        return
 +    for name in KNOWN_FILES:
 +        try:
 +            (directory / name).unlink()
@@ -5142,10 +5166,17 @@ index 0000000..7e3eac2
 +            return target, False
 +        for stale in root.glob(".tmp-*"):   # a build that died part way
 +            pid = stale.name.rsplit("-", 1)[-1]
-+            if not (pid.isdigit() and Path(f"/proc/{pid}").exists()):
++            if _is_block_folder(stale) and not (pid.isdigit() and Path(f"/proc/{pid}").exists()):
 +                _remove_known(stale)
 +        if (target).exists():
 +            _remove_known(target)           # an earlier incomplete folder (no index.json)
++        # A folder of another format (an earlier version of this module) can never be used again, since the format
++        # is part of the identity: free its space before the build checks for room.
++        for old in root.iterdir():
++            if (old != target and _is_block_folder(old) and (old / "index.json").is_file()
++                    and _index_format(old) != FORMAT):
++                log(f"[ltx-blocks] removing {old}: a block file of another format ({_index_format(old)})")
++                _remove_known(old)
 +        temporary = root / f".tmp-{target.name}-{os.getpid()}"
 +        temporary.mkdir()
 +        from ..stage1_ops.snapshot import set_nocow
@@ -5159,7 +5190,7 @@ index 0000000..7e3eac2
 +            _remove_known(temporary)
 +            raise
 +        # keep the newest KEEP folders; older identities (and the flat layout of earlier versions) go
-+        folders = sorted((d for d in root.iterdir() if d.is_dir() and (d / "index.json").exists()),
++        folders = sorted((d for d in root.iterdir() if _is_block_folder(d) and (d / "index.json").exists()),
 +                         key=lambda d: (d / "index.json").stat().st_mtime, reverse=True)
 +        for old in folders[KEEP:]:
 +            _remove_known(old)
@@ -6005,10 +6036,10 @@ index 0000000..7f999ab
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
 new file mode 100644
-index 0000000..5ca5511
+index 0000000..d42b20f
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,342 @@
 +"""lf-studio: CPU tests of the fused LTX block file reader (runtime/stage2_ops/ltx_blocks.py).
 +
 +Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -6287,6 +6318,47 @@ index 0000000..5ca5511
 +        self.assertTrue(ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)[1])
 +        self.assertEqual(len(self.builds), 3)
 +        self.assertFalse(ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)[1])
++
++    def test_a_folder_of_another_format_goes_before_the_build(self):
++        # An update changes the format, which is part of the identity: the old folder can never be used again, and
++        # its space is freed before the new build checks for room (not kept as one of the KEEP newest).
++        old = self.root / ("0" * 16)
++        old.mkdir()
++        write_block_file(old, [4096])
++        index = json.loads((old / "index.json").read_text())
++        index["format"] = "sol-h3-studio-ltx-fused-blocks-v1"
++        (old / "index.json").write_text(json.dumps(index))
++        seen = []
++        build = ltx_blocks.build
++
++        def checking_build(*args, **kwargs):
++            seen.append(old.exists())
++            return build(*args, **kwargs)
++        from unittest import mock
++        with mock.patch.object(ltx_blocks, "build", checking_build):
++            ltx_blocks.ensure(None, self.root, {"a": 1}, torch=torch, log=lambda *_: None)
++        self.assertEqual(seen, [False])
++        self.assertFalse(old.exists())
++
++    def test_symlinks_are_never_followed(self):
++        # A symlinked folder (or a stale .tmp-* symlink) in the root points outside it: neither is read for pruning
++        # nor has the known file names deleted in its target.
++        outside = tempfile.TemporaryDirectory()
++        self.addCleanup(outside.cleanup)
++        elsewhere = Path(outside.name) / "data"
++        elsewhere.mkdir()
++        write_block_file(elsewhere, [4096])
++        index = json.loads((elsewhere / "index.json").read_text())
++        index["format"] = "something-else"
++        (elsewhere / "index.json").write_text(json.dumps(index))
++        (self.root / ("1" * 16)).symlink_to(elsewhere)
++        (self.root / ".tmp-x-999999999").symlink_to(elsewhere)
++        for i in range(ltx_blocks.KEEP + 1):
++            ltx_blocks.ensure(None, self.root, {"a": i}, torch=torch, log=lambda *_: None)
++        self.assertEqual(sorted(p.name for p in elsewhere.iterdir()),
++                         ["blocks.bin", "index.json", "non_block.safetensors"])
++        ltx_blocks._remove_known(self.root / ("1" * 16))
++        self.assertTrue((elsewhere / "blocks.bin").exists())
 +
 +    def test_a_folder_with_foreign_files_is_left_alone(self):
 +        odd = self.root / "mine"
@@ -8887,10 +8959,10 @@ index 0000000..c4aabe0
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_settings.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_settings.py
 new file mode 100644
-index 0000000..927ab7c
+index 0000000..9b885db
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_settings.py
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,137 @@
 +"""lf-studio: CPU tests of the strict settings of the RTX 5090 patch (runtime/config.py: check_settings).
 +
 +Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -8993,13 +9065,28 @@ index 0000000..927ab7c
 +        bad = {"SOL_H3_LTX_BLOCKS": "on", "SOL_H3_FILEBACKED_DIR": "false", "SOL_H3_STAGE1_SNAPSHOTS": "rel/dir",
 +               "SOL_H3_STAGE1_PIN": "maybe", "SOL_H3_MALLOC_TRIM": "2", "SOL_H3_STAGE1_SNAPSHOTS_KEEP": "0",
 +               "SOL_H3_LTX_READ_AHEAD": "x", "SOL_H3_LTX_RESIDENT_BLOCKS": "many", "SOL_H3_STAGE2_AUDIO": "loud",
-+               "SOL_H3_DYNAMIC_TEXT_LENGTH": "yes"}
++               "SOL_H3_DYNAMIC_TEXT_LENGTH": "yes", "SOL_H3_VAE_ON_DEVICE": "sure", "SOL_H3_AUDIO_VAE_PREFETCH": "2",
++               "SOL_H3_BSA_CHECK_CALLS": "0"}
 +        with clean_environ(**bad):
 +            problems = config.check_settings()
 +        named = {name for name in bad if any(name + "=" in p or p.startswith(name) for p in problems)}
 +        # SOL_H3_FILEBACKED_DIR=false is a valid "off"; every other one is reported
 +        self.assertEqual(named, set(bad) - {"SOL_H3_FILEBACKED_DIR"}, problems)
 +        self.assertEqual(len(problems), len(bad) - 1)
++
++    def test_vae_switches_and_bsa_check_calls(self):
++        # the Stage-1 VAE switches take the same words as the others ("on" was off before); the BSA check count is
++        # a whole number, at most upstream's 200
++        with clean_environ(SOL_H3_VAE_ON_DEVICE="on", SOL_H3_AUDIO_VAE_PREFETCH="OFF"):
++            self.assertTrue(config.switch("SOL_H3_VAE_ON_DEVICE", True))
++            self.assertFalse(config.switch("SOL_H3_AUDIO_VAE_PREFETCH", True))
++        with clean_environ():
++            self.assertEqual(config.bsa_check_calls(), 8)
++        with clean_environ(SOL_H3_BSA_CHECK_CALLS="500"):
++            self.assertEqual(config.bsa_check_calls(), 200)
++        with clean_environ(SOL_H3_BSA_CHECK_CALLS="eight"):
++            with self.assertRaisesRegex(ValueError, "SOL_H3_BSA_CHECK_CALLS"):
++                config.bsa_check_calls()
 +
 +    def test_it_imports_no_torch(self):
 +        # the launcher calls it with the Stage-1 interpreter before a session; it must stay cheap

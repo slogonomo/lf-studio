@@ -180,7 +180,7 @@ here):
 |---|---|---|
 | `install/00-check.sh` | Checks x86_64, the RTX 5090, driver 580 or newer, git, curl, tar, sha256sum, ffmpeg, gcc, disk, HF access. | - |
 | `install/05-python.sh` | uv 0.13.1 (the release binary, SHA-256 pinned) into `~/sol-h3/bin`, CPython 3.12.15 and 3.13.16 into `~/sol-h3/python`. | under 1 min, ~270 MB (~230 MB of it the Pythons) |
-| `install/10-sana.sh` | Sana at `patches/BASE_COMMIT_RTX5090` (`801f040`), `patches/lf-studio-rtx5090.patch`, its 198 CPU tests. | - |
+| `install/10-sana.sh` | Sana at `patches/BASE_COMMIT_RTX5090` (`801f040`), `patches/lf-studio-rtx5090.patch`, its 201 CPU tests. | - |
 | `install/20-weights.sh` | The same weights and revisions as the Spark's, without the offline weights (the prompt cache comes from a Spark). | - (or a copy, below) |
 | `install/30-sources.sh` | The same pinned sources (FastVideo, flash-attention, ComfyUI v0.30.0, LTX-2, H3 upscaler). | ~1 min |
 | `install/40-stage1.sh` | Stage1 venv with Python 3.12.15: torch 2.12+cu130, FastVideo, ComfyUI's requirements, comfy-kitchen (the native Qwen encoder), no fastvideo-kernel; the FA4 target. | ~25 min, most of it downloads at ~9 MB/s; ~7.7 GB |

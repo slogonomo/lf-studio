@@ -187,6 +187,19 @@ class LauncherRtx5090(LauncherTest):
         self.assertIn("GPU memory check OK: 29 GiB free (need 25)", out)
         self.assertNotIn("docker", out.lower())
 
+    def test_memory_folders(self):
+        """The folders the launcher makes: "~/..." under HOME, a value of only spaces as unset (the default next to the
+        checkpoints), an off word not at all."""
+        home, ckpt = self.d / "home", self.d / "models" / "checkpoints"
+        code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="30000",
+                               HOME=str(home), LFSTUDIO_CHECKPOINTS=str(ckpt), SOL_H3_FILEBACKED_DIR="~/scratch-x",
+                               SOL_H3_STAGE1_SNAPSHOTS="   ", SOL_H3_LTX_BLOCKS=" OFF ")
+        self.assertEqual(code, 0, out)
+        self.assertTrue((home / "scratch-x").is_dir())
+        self.assertTrue((self.d / "models" / "derived" / "stage1-snapshots").is_dir())
+        self.assertFalse((self.d / "models" / "derived" / "ltx-fused-blocks").exists())
+        self.assertFalse(Path("~").exists())
+
     def test_ram_floor(self):
         avail = mem_available_gib()
         code, out = self.check(LFSTUDIO_BACKEND="rtx5090", FAKE_VRAM_FREE_MIB="30000")
@@ -521,7 +534,7 @@ class InstallDryRun(unittest.TestCase):
         text = out["10-sana.sh"][1]
         self.assertIn(f"sol-engine @ {RTX_BASE}", text)
         self.assertIn("patches/lf-studio-rtx5090.patch", text)
-        self.assertIn("198 CPU tests", text)
+        self.assertIn("201 CPU tests", text)
         self.assertIn(f"{py312} -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-RTX5090 &&", out["20-weights.sh"][1])
         self.assertNotIn("--include-offline", out["20-weights.sh"][1])
