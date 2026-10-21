@@ -9,9 +9,10 @@
 # so each clone and each git worktree has its own). After a `git pull` of this repo, run this script again. If the
 # checkout carries an earlier patch and nothing else, it reverses that patch, checks out the new
 # patches/BASE_COMMIT if it changed, and applies the new patch. The earlier patch is found as that copy (until 0.6
-# also as sol-h3-studio-applied.patch, its name up to 0.4), else as $LFSTUDIO_HOME/applied.patch (where versions up to
-# 0.2 kept it), else among the earlier versions of patches/lf-studio.patch in this repo's history, and of
-# patches/sol-h3-studio.patch (its name up to 0.4). Any other local change in the checkout stops it with a
+# also as sol-h3-studio-applied.patch, its name up to 0.4, which the DGX Spark keeps writing too: docs/INSTALL.md,
+# "Back to 0.4"), else as $LFSTUDIO_HOME/applied.patch (where versions up to 0.2 kept it), else among
+# the earlier versions of patches/lf-studio.patch in this repo's history, and of patches/sol-h3-studio.patch (its
+# name up to 0.4). Any other local change in the checkout stops it with a
 # message, before anything is changed.
 # LFSTUDIO_SANA_COMMIT overrides the commit (the patch also applies to sol-engine 670482d, checked 2026-10-09).
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
@@ -38,16 +39,21 @@ applied_copy() {
     echo "$dir/${1:-lf-studio}-applied.patch"
 }
 
-# keep_copy: remember the patch that is now applied, and the commit it is applied at (<copy>.base)
+# keep_copy: remember the patch that is now applied, and the commit it is applied at (<copy>.base). Until 0.6 the
+# DGX Spark's copy is also kept under its 0.4 name, so that 0.4's install/10-sana.sh, after a checkout of v0.4.x, finds
+# it and replaces this patch with its own (it calls it "an earlier version"); without it, 0.4 stops with "the patch does
+# not apply" and changes nothing.
 keep_copy() {
-    local copy
-    copy=$(applied_copy)
-    cmp -s "$PATCH" "$copy" 2>/dev/null || run cp "$PATCH" "$copy"
-    if [[ "$DRY_RUN" == 1 ]]; then
-        echo "+ git -C $LFSTUDIO_SANA rev-parse HEAD > $copy.base"
-    else
-        sana rev-parse HEAD > "$copy.base"
-    fi
+    local copy copies=("$(applied_copy)")
+    [[ "$LFSTUDIO_BACKEND" == spark ]] && copies+=("$(applied_copy sol-h3-studio)")
+    for copy in "${copies[@]}"; do
+        cmp -s "$PATCH" "$copy" 2>/dev/null || run cp "$PATCH" "$copy"
+        if [[ "$DRY_RUN" == 1 ]]; then
+            echo "+ git -C $LFSTUDIO_SANA rev-parse HEAD > $copy.base"
+        else
+            sana rev-parse HEAD > "$copy.base"
+        fi
+    done
 }
 
 # applied_base [PATCH]: the commit the earlier patch was applied at: the record next to the copy, else the base named

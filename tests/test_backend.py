@@ -718,6 +718,9 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn(f"the checkout carries an earlier version of the patch ({old}); replacing it", text)
         self.assertIn(f"+ git -C {sana} apply -R {old}\n+ git -C {sana} apply {REPO}/patches/lf-studio.patch", text)
         self.assertIn(f"+ cp {REPO}/patches/lf-studio.patch {sana}/.git/lf-studio-applied.patch", text)
+        # until 0.6 the copy is also kept under the 0.4 name, so 0.4's install/10-sana.sh can go back
+        self.assertIn(f"+ cp {REPO}/patches/lf-studio.patch {old}\n", text)
+        self.assertIn(f"+ git -C {sana} rev-parse HEAD > {old}.base", text)
         self.assertNotIn("warn", text.lower())
 
     def test_sana_patch_in_history(self):

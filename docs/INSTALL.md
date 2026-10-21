@@ -338,6 +338,11 @@ Leave `~/sol-h3` where it is: its venvs hold absolute paths. The repository is n
 GitHub forwards the old address, and `git remote set-url origin https://github.com/slogonomo/lf-studio` updates a
 checkout.
 
+Back to 0.4 (DGX Spark), with the studio stopped: `git checkout v0.4.0`, then `install/10-sana.sh`. Until 0.6, 0.5 keeps
+its copy of the patch also under 0.4's name (`sol-h3-studio-applied.patch`), so 0.4's script replaces the 0.5 patch with
+its own; it calls it "an earlier version". Then start the studio as before. Back to 0.5: `git checkout main`,
+`install/10-sana.sh`.
+
 ### Earlier versions
 
 From 0.3 to 0.4: the patch changed, so run `install/10-sana.sh` after the pull. Until then the studio refuses to start
