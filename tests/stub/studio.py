@@ -64,6 +64,7 @@ class StubStudio:
                         LFSTUDIO_MAX_QUEUED="100")      # some tests queue more clips at once than the default 20
         self.env.pop("LFSTUDIO_PUBLISH_DIR", None)
         self.env.pop("LFSTUDIO_ALLOWED_HOSTS", None)
+        self.env.pop("LFSTUDIO_API", None)
         self.env.update(env or {})
         self.proc = None
         self.stdin = None                    # the server's stdin: None for this process's

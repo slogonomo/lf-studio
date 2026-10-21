@@ -1249,6 +1249,21 @@ class LauncherSettingsCheck(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn(f"REFUSED - SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not {value!r}", out)
 
+    def test_api_setting(self):
+        """LFSTUDIO_API (#58): 1, 0, or unset or empty (on); any other value is refused with the server's words."""
+        for value in ("1", "0", ""):
+            self.assertEqual(self.check(LFSTUDIO_API=value)[0], 0, value)
+        for value in ("2", "on", "off", "true"):
+            code, out = self.check(LFSTUDIO_API=value)
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - LFSTUDIO_API={value}: must be 1 (on, the default) or 0 (off) (see "
+                          "bin/env.example)", out)
+        envfile = self.d / "env"                                     # from the settings file, as the others
+        envfile.write_text("LFSTUDIO_API=yes\n")
+        code, out = self.check(LFSTUDIO_ENV=str(envfile))
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - LFSTUDIO_API=yes: must be", out)
+
     def test_older_patch(self):
         """A checkout with an older patch (no settings checks, or one of them) passes only when every setting, set or
         the default, asks for what that patch does anyway."""

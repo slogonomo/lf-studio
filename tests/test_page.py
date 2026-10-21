@@ -403,21 +403,23 @@ UI_TEST = Path(__file__).resolve().parent / "ui_test.py"
 class UiTestScript(unittest.TestCase):
     """tests/ui_test.py, the general check of the page that AGENTS.md runs against any studio, passes against a stub
     studio with a t2va session loaded, with LFSTUDIO_RESHAPE=1 (the default since 0.4: another format or length keeps
-    the models, another mode reloads them) and with 0 (any change reloads). An fl2va clip before it makes fl2va a mode
-    'Load selected now' can warm up."""
+    the models, another mode reloads them) and with 0 (any change reloads), and with the API for programs off
+    (LFSTUDIO_API=0, #58), which the page does not use. An fl2va clip before it makes fl2va a mode 'Load selected now'
+    can warm up."""
 
-    def run_ui_test(self, reshape):
+    def run_ui_test(self, reshape, api="1"):
         root = Path(tempfile.mkdtemp(prefix="lf-studio-uitest-"))
         self.addCleanup(shutil.rmtree, root, True)
-        studio = StubStudio(root, load_s=1, clip_s=0.5, preload=False, env={"LFSTUDIO_RESHAPE": reshape})
+        studio = StubStudio(root, load_s=1, clip_s=0.5, preload=False,
+                            env={"LFSTUDIO_RESHAPE": reshape, "LFSTUDIO_API": api})
         studio.start()
         self.addCleanup(studio.stop)
         ids = [studio.generate(task="fl2va", files={"first_frame": [("first.png", png())]})[1]["id"],
                studio.generate()[1]["id"]]
         self.assertEqual([job["status"] for job in studio.wait(ids)], ["done", "done"])
         state = studio.state()
-        self.assertEqual((state["reshape"], state["session"]["key"], sorted(state["warmable"])),
-                         (reshape == "1", ["t2va", "landscape", 5], ["fl2va", "t2va"]))
+        self.assertEqual((state["reshape"], state["session"]["key"], sorted(state["warmable"]), state["api"]),
+                         (reshape == "1", ["t2va", "landscape", 5], ["fl2va", "t2va"], api == "1"))
         result = subprocess.run([sys.executable, str(UI_TEST), studio.url + "/", "--shots", str(root / "shots")],
                                 capture_output=True, text=True, timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-2000:])
@@ -433,6 +435,9 @@ class UiTestScript(unittest.TestCase):
 
     def test_reshape_off(self):
         self.assertIn("PASS Generate warns about a reload when the format differs", self.run_ui_test("0"))
+
+    def test_api_off(self):
+        self.assertIn("PASS Generate keeps the models when the format differs", self.run_ui_test("1", api="0"))
 
 
 class ReleaseReviewPage(PageTest):

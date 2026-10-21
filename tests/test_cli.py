@@ -147,15 +147,16 @@ def switchboard_error(code, message, retry=None):
 
 
 class CliTest(unittest.TestCase):
-    """One fresh stub studio per test, and a working directory for the client."""
+    """One fresh stub studio per test (with studio_env's settings), and a working directory for the client."""
     load_s, clip_s = 1, 0.5
+    studio_env = {}
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-cli-"))
         self.work = self.dir / "work"
         self.work.mkdir()
         self.studio = StubStudio(self.dir / "studio", port=free_port(), load_s=self.load_s, clip_s=self.clip_s,
-                                 preload=False).start()
+                                 preload=False, env=self.studio_env).start()
 
     def tearDown(self):
         self.studio.stop()
@@ -394,6 +395,39 @@ class Generate(CliTest):
         self.assertEqual(p.returncode, 2)
 
 
+class ApiOff(CliTest):
+    """A studio with LFSTUDIO_API=0 (#58): generate (refused before anything is queued: the form carries
+    X-LFStudio-Client), wait, status ID and fetch say so, naming the setting (exit 2); status reads the page's
+    /api/state and still works."""
+    studio_env = {"LFSTUDIO_API": "0"}
+
+    def test_refused_with_the_setting_named(self):
+        off = load_cli().API_OFF
+        self.assertIn("LFSTUDIO_API=0", off)
+        self.assertIn("LFSTUDIO_API=1", off)
+        self.frame()
+        for args in (["--prompt", "x"], ["--prompt", "x", "--wait"], ["--first-frame", "f.png", "--prompt", "x"]):
+            p = self.sol("generate", *args)
+            self.assertEqual((p.returncode, p.stdout), (2, ""), p.stderr)
+            self.assertTrue(p.stderr.endswith(f"\nlf-cli: {off}\n" if "f.png" in args else f"lf-cli: {off}\n"),
+                            p.stderr)
+        self.assertEqual(self.studio.state()["jobs"], [])                         # nothing was queued
+        p = self.sol("generate", "--prompt", "x", "--json")
+        self.assertEqual(json.loads(p.stdout), {"error": off, "http_status": 403, "id": None})
+        jid = self.studio.generate()[1]["id"]                                     # a clip made in the page
+        self.studio.wait([jid], timeout=30)
+        for args in (["wait", jid], ["wait", jid, "--timeout", 5], ["status", jid], ["fetch", jid],
+                     ["fetch", jid, "--out", "c.mp4"]):
+            p = self.sol(*args)
+            self.assertEqual((p.returncode, p.stdout), (2, ""), (args, p.stderr))
+            self.assertEqual(p.stderr, f"lf-cli: {off}\n", args)
+        self.assertEqual(list(self.work.iterdir()), [self.work / "f.png"])       # nothing saved
+        p = self.sol("--json", "status", jid)
+        self.assertEqual(json.loads(p.stdout), {"error": off, "http_status": 403, "id": jid})
+        p = self.ok("status")
+        self.assertTrue(p.stdout.startswith(f"{jid}  done"), p.stdout)
+
+
 class Waiting(CliTest):
     """Clips that take a while (the models load for 6 s)."""
     load_s, clip_s = 6, 0.5
@@ -491,6 +525,7 @@ class Switchboard(unittest.TestCase):
         self.assertEqual((method, path, headers["X-Switchboard-Wait"]), ("POST", "/api/generate", "900"))
         self.assertEqual(headers["Accept"], "application/json")
         self.assertTrue(headers["User-Agent"].startswith("lf-cli/0.5.0"))
+        self.assertEqual(headers["X-LFStudio-Client"], headers["User-Agent"])    # #58: a studio with the API off
         self.assertNotIn("Authorization", headers)                               # DECISIONS 2: no credentials
         p = self.sol(fake, "fetch", jid, "--wake")
         self.assertEqual(p.returncode, 0, p.stderr)
