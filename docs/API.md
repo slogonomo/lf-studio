@@ -17,10 +17,11 @@ with one RTX 5090 (`LFSTUDIO_BACKEND=rtx5090`, [RTX5090.md](RTX5090.md)) has the
 MCP-registration example was run against the stub studio (`tests/stub/studio.py`), which makes small test clips
 without a GPU.
 
-Contents: [Quick start](#quick-start) · [Access](#access) · [Through spark-switchboard](#through-spark-switchboard) ·
-[Making a clip](#making-a-clip-post-apigenerate) · [Waiting](#waiting-get-apijobsid) ·
-[Getting the clip](#getting-the-clip) · [Cancel](#cancel) · [Other endpoints](#other-endpoints) ·
-[Errors](#errors) · [CLI](#cli-binlf-cli) · [MCP server](#mcp-server-lf-cli-mcp) · [Prompt guide](#prompt-guide)
+Contents: [Quick start](#quick-start) · [Access](#access) · [Turning the API off](#turning-the-api-off) ·
+[Through spark-switchboard](#through-spark-switchboard) · [Making a clip](#making-a-clip-post-apigenerate) ·
+[Waiting](#waiting-get-apijobsid) · [Getting the clip](#getting-the-clip) · [Cancel](#cancel) ·
+[Other endpoints](#other-endpoints) · [Errors](#errors) · [CLI](#cli-binlf-cli) ·
+[MCP server](#mcp-server-lf-cli-mcp) · [Prompt guide](#prompt-guide)
 
 ## Quick start
 
@@ -132,7 +133,35 @@ claude mcp add --scope user --transport stdio lf-studio -e LFSTUDIO_URL=http://<
   your own, add that name to `LFSTUDIO_ALLOWED_HOSTS`.
 - **Plain HTTP:** requests and clips cross the network unencrypted unless the network encrypts them. Tailscale
   does, through WireGuard.
-- An access token for the API is possible future work; nothing sends or checks one today.
+- An access token for the API is possible future work; nothing sends or checks one today. `LFSTUDIO_API=0` turns
+  the API for programs off ([below](#turning-the-api-off)), but that is not access control either.
+
+## Turning the API off
+
+`LFSTUDIO_API=0` in the studio's settings file, and a restart, leave the studio to its page. `1`, the default, keeps
+the API on, as in 0.4. Any other value stops `bin/lf-studio` (also `--check`) and the server at start:
+`LFSTUDIO_API=<value>: must be 1 (on, the default) or 0 (off)`. With the API off, these answer 403 `{"error": "the
+API for programs is off on this studio (LFSTUDIO_API=0)"}`:
+
+- `POST /api/generate` with a JSON body, and with the page's form when the request has an `X-LFStudio-Client`
+  header (any value). `bin/lf-cli` sends its form with one (`X-LFStudio-Client: lf-cli/0.5.0`), so the studio
+  refuses its `generate` before anything is queued. The 403 comes after the checks of the body's length (411, 413)
+  and type (415), and before the queue's (429).
+- `GET` and `HEAD` of `/api/jobs/<id>` and `/api/jobs/<id>/video`, with or without `wait`, for any id.
+
+Everything the page uses works as before: its form submit (Remix too), `/api/state` (with `"api": false`),
+`/api/jobs?before=`, `/video/<id>`, `/poster/<id>`, `/still/<id>`, `/api/inputs/<id>`, `/input/...`, `/health` and
+the POSTs to cancel, delete, undelete, load and unload. The CLI's `generate`, `wait`, `status <id>` and `fetch`,
+and the MCP tools `generate`, `wait`, `status` with an id and `fetch`, fail with a message that names the setting
+(CLI exit 2; for MCP a tool error with the same text): `the studio's API for programs is off (LFSTUDIO_API=0 in the
+studio's settings): it takes no clips, waits, clip status reads or downloads from lf-cli and agents. ...`. `status`
+without an id, which reads `/api/state`, and `cancel` still work. A 0.4 copy of `bin/sol-h3` sends no
+`X-LFStudio-Client`: its `generate` still queues the clip, and only its wait gets the 403.
+
+**This is not access control.** The page's own form has taken scripted submits since the first release, and it
+still does: anyone who can reach the studio can queue clips with a multipart POST without that header, and read
+clips and prompts through the page's endpoints, with the API on or off. To keep others out, bind the studio to an
+address that only trusted machines reach ([Access](#access)). An access token is left to a later issue.
 
 ## Through spark-switchboard
 
@@ -256,9 +285,11 @@ JSON is stricter than the form. Each of these gets 400 before any file is decode
 
 ### Limits and checks
 
-Before the fields are read: 411, 400 (`bad Content-Length`) or 413 for the body's length, 415 for its type, and
-429 while `LFSTUDIO_MAX_QUEUED` clips (default 20) are waiting in the queue (the running clip does not count), with
-`Retry-After: 60`: `the queue is full (20 clips waiting); try again when one has finished`.
+Before the fields are read: 411, 400 (`bad Content-Length`) or 413 for the body's length, 415 for its type, 403 for
+JSON and for a form with `X-LFStudio-Client` on a studio with the API off ([Turning the API
+off](#turning-the-api-off)), and 429 while `LFSTUDIO_MAX_QUEUED` clips (default 20) are waiting in the queue (the
+running clip does not count), with `Retry-After: 60`: `the queue is full (20 clips waiting); try again when one has
+finished`.
 
 Then the form and JSON go through the same checks, with the same messages, and a refused request leaves nothing
 behind:
@@ -305,6 +336,8 @@ answer comes as soon as the clip has finished, or when `wait` runs out with the 
 (still 200). A finished clip answers at once.
 
 - 400 `wait must be a number of seconds, 0 or more`.
+- 403 `the API for programs is off on this studio (LFSTUDIO_API=0)` on a studio with the API off, for any id
+  ([Turning the API off](#turning-the-api-off)).
 - 404 `no such clip` for an unknown or deleted clip; `not found` for an id that is not 32 hex characters.
 - 503 `{"error": "the studio is shutting down; ask again once it is back", "job": <record>}` if the studio stops
   during the wait. After its restart, a clip that was queued or running reads `failed` with `server restarted`
@@ -385,7 +418,7 @@ clips).
   - 202 with the API record while the clip is still queued or running when `wait` runs out: ask again;
   - 409 `{"error": "the clip failed: <error>", "job": <record>}`, or `the clip was cancelled`;
   - 404 `no such clip`, or `{"error": "no such video", "job": <record>}` for a done clip whose MP4 is gone;
-  - 400 and 503 as for `/api/jobs/<id>`.
+  - 400, 403 and 503 as for `/api/jobs/<id>`.
 
   Behind switchboard this path never starts the studio, and it sends the MP4 the moment the clip is done.
 - **`GET /video/<id>`**: the MP4 (`video/mp4`) with `Content-Disposition: inline;
@@ -416,7 +449,7 @@ call) never cancels the clip.
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "session", "jobs", "done", "more", "deleted"}`. `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
+| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "session", "jobs", "done", "more", "deleted"}`. `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
 | `GET /api/jobs?before=<created>&limit=<n>` | Older clips, newest first: `{"jobs": [...], "more": true/false}`. `before` is a `created` time (default: now), `limit` 1-100 (default 24). Records as stored. |
 | `GET /api/inputs/<id>` | A clip's input files, for Remix: `{"task", "inputs": {"<zone>": [{"name", "index", "url"}]}, "missing": [...]}` |
 | `GET /input/<id>/<zone>/<index>` | One input file (reference videos as converted). 404 `no such input`. |
@@ -444,6 +477,7 @@ The studio answers errors as `{"error": "<text>"}` (some add `"job"`); spark-swi
 | 206 | studio | part of a file (`Range`) |
 | 400 | studio | a refused request: bad fields, files or JSON, a bad `wait`, a bad `Content-Length` |
 | 403 | studio | `cross-origin request refused`: a POST from a page of another site |
+| 403 | studio | `the API for programs is off on this studio (LFSTUDIO_API=0)`: a JSON submit, a form submit with `X-LFStudio-Client` (`bin/lf-cli`), or `/api/jobs/<id>[/video]` on a studio with the API off ([Turning the API off](#turning-the-api-off)) |
 | 404 | studio | no such clip, video, poster, input or path (`not found`); on `/__switchboard/status`: no switchboard |
 | 409 | studio | the clip failed or was cancelled (`/api/jobs/<id>/video`); Cancel of a finished clip; Delete of a running one |
 | 411 | studio | `Content-Length required (chunked uploads are not supported)` |
@@ -517,6 +551,9 @@ start a stopped studio. `fetch` then refuses (exit 3, "fetching would start it (
 memory). Add --wake."); `fetch --wake` starts it, holding up to 900 s. If switchboard stops the studio while `wait`
 or `generate --wait` waits, the clip most likely finished first; the CLI says so and how to get it (`lf-cli fetch
 <id> --wake`).
+
+**With the API off** on the studio (`LFSTUDIO_API=0`), `generate` (before anything is queued), `wait`, `status <id>`
+and `fetch` exit 2 with a message that names the setting ([Turning the API off](#turning-the-api-off)).
 
 **Output:** stdout carries the result only: the saved MP4's absolute path, the id (generate without waiting), or
 the status lines. Everything else goes to stderr; `--quiet` drops the progress lines. With `--json`, stdout is one

@@ -217,6 +217,11 @@ studio answers before it reads the body, so a client still sending may see a bro
 answer. With JSON, base64 makes files a third larger, so they can total about 150 MB. `bin/lf-cli` checks the size
 before it uploads.
 
+**403 `the API for programs is off on this studio (LFSTUDIO_API=0)`**, or `bin/lf-cli` saying so. The studio's
+settings turn the API off: JSON submits, submits from `bin/lf-cli` and `/api/jobs/<id>` are refused, and the page
+works as usual. Set `LFSTUDIO_API=1` (or remove the line) in the env file and restart the studio to turn it on
+([API.md](API.md#turning-the-api-off)).
+
 **421 `unknown host name <name>; add it to LFSTUDIO_ALLOWED_HOSTS`.** You reach the studio by a name it doesn't
 answer to by default, such as a domain of your own. Add the name to `LFSTUDIO_ALLOWED_HOSTS` in the env file and
 restart the studio ([API.md](API.md#access) says what the check is for).
