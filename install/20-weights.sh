@@ -23,8 +23,9 @@ step "download tool ($DL, huggingface-hub from requirements/download.txt)"
 if [[ ! -x "$DL/bin/python" ]]; then
     run "$HOST_PY" -m venv "$DL"
 fi
+pip_update "$DL"
 if [[ "$DRY_RUN" == 1 ]] || ! "$DL/bin/python" -c 'import huggingface_hub' 2>/dev/null; then
-    run "$DL/bin/pip" install -q -r "$PKG/requirements/download.txt"
+    run "$DL/bin/python" -m pip install -q -r "$PKG/requirements/download.txt" || die "huggingface-hub did not install into $DL"
 fi
 if [[ "$DRY_RUN" != 1 ]] && ! "$DL/bin/hf" auth whoami >/dev/null 2>&1; then
     die "not logged in to Hugging Face: run  $DL/bin/hf auth login  (or export HF_TOKEN), and accept https://huggingface.co/Lightricks/LTX-2.5"

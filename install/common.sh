@@ -83,11 +83,11 @@ fetch_checked() {
 
 # freeze_matches PYTHON REFERENCE: PYTHON's `pip freeze` is the reference freeze, comment lines left out (read-only,
 # so it also runs in a dry run). On the RTX 5090, 40 and 50 adopt a venv built by hand to the same recipe this way
-# instead of reinstalling into it; a venv that differs in any line is rebuilt as usual. The packages the Pillow step
-# changes (pillow_update below: Pillow, and Gradio and MoviePy in Stage 1) don't count, so a venv adopted before is
-# adopted again after it.
+# instead of reinstalling into it; a venv that differs in any line is rebuilt as usual. The packages the update steps
+# change (pip_update and pillow_update below: certifi, Pillow, and Gradio and MoviePy in Stage 1) don't count, also as
+# `name @ URL` lines (installed from a file), so a venv adopted before is adopted again after them.
 freeze_matches() {
-    local py=$1 ref=$2 skip='^(#|(pillow|gradio|gradio_client|moviepy)==)'
+    local py=$1 ref=$2 skip='^(#|(pillow|gradio|gradio_client|moviepy|certifi)(==| @ ))'
     [[ -x "$py" && -f "$ref" ]] || return 1
     diff -q <(grep -Eiv "$skip" "$ref") <("$py" -m pip freeze 2>/dev/null | grep -Eiv "$skip") >/dev/null
 }
@@ -122,6 +122,25 @@ pillow_update() {
         "$v/bin/python" -c 'import sys, PIL; sys.exit(int(PIL.__version__.split(".")[0]) < 13)' ||
             die "$v still has a Pillow older than 13"
     fi
+}
+
+# pip 26.2.2 and certifi from 2026.10.19 on: the CA bundle of earlier certifi releases, and the copy that pip up to
+# 26.2.1 vendors, still trust the emSign ECC Root CA - G3, which was withdrawn after its compromise (2026-10; uv:
+# GHSA-hq85-5cpj-mr62, 05-python.sh pins the fixed uv 0.13.4). A new venv starts with the pip ensurepip (python -m venv)
+# or uv seeds, which may be older.
+PIP_VERSION=26.2.2
+CERTIFI_MIN=2026.10.19
+
+# pip_update VENV: pip $PIP_VERSION, then certifi >= $CERTIFI_MIN, in VENV (nothing to do when it has them). Through the
+# venv's python (`-m pip`), never bin/pip: a venv copied elsewhere keeps bin/pip's shebang, which points at the
+# original. 40 and 50 run it on a new venv before anything else is installed, and again on every run (also
+# --pillow-only); 20 on its download venv.
+pip_update() {
+    local v=$1
+    step "pip $PIP_VERSION and certifi >= $CERTIFI_MIN in $v (the emSign ECC Root CA - G3 withdrawal, 2026-10)"
+    run "$v/bin/python" -m pip install --no-deps "pip==$PIP_VERSION" || die "pip $PIP_VERSION did not install into $v"
+    run "$v/bin/python" -m pip install --no-deps "certifi>=$CERTIFI_MIN" ||
+        die "certifi >= $CERTIFI_MIN did not install into $v"
 }
 
 # NVIDIA Sync logins can predate docker group membership; fall back to `sg docker`.

@@ -71,7 +71,8 @@ Log in to Hugging Face once, before step 00 (00 checks the login, 20 downloads w
 
 ```bash
 python3.12 -m venv ~/sol-h3/envs/download
-~/sol-h3/envs/download/bin/pip install huggingface-hub==1.29.0    # the version NVIDIA's requirements/download.txt pins
+~/sol-h3/envs/download/bin/python -m pip install pip==26.2.2 "certifi>=2026.10.19"    # as install/20-weights.sh does
+~/sol-h3/envs/download/bin/python -m pip install huggingface-hub==1.29.0    # the version NVIDIA's requirements/download.txt pins
 ~/sol-h3/envs/download/bin/hf auth login
 ```
 
@@ -179,7 +180,7 @@ here):
 | Step | On the RTX 5090 | Time / size measured |
 |---|---|---|
 | `install/00-check.sh` | Checks x86_64, the RTX 5090, driver 580 or newer, git, curl, tar, sha256sum, ffmpeg, gcc, disk, HF access. | - |
-| `install/05-python.sh` | uv 0.13.1 (the release binary, SHA-256 pinned) into `~/sol-h3/bin`, CPython 3.12.15 and 3.13.16 into `~/sol-h3/python`. | under 1 min, ~270 MB (~230 MB of it the Pythons) |
+| `install/05-python.sh` | uv 0.13.4 (the release binary, SHA-256 pinned) into `~/sol-h3/bin`, CPython 3.12.15 and 3.13.16 into `~/sol-h3/python`. | under 1 min, ~270 MB (~230 MB of it the Pythons) |
 | `install/10-sana.sh` | Sana at `patches/BASE_COMMIT_RTX5090` (`801f040`), `patches/lf-studio-rtx5090.patch`, its 201 CPU tests. | - |
 | `install/20-weights.sh` | The same weights and revisions as the Spark's, without the offline weights (the prompt cache comes from a Spark). | - (or a copy, below) |
 | `install/30-sources.sh` | The same pinned sources (FastVideo, flash-attention, ComfyUI v0.30.0, LTX-2, H3 upscaler). | ~1 min |
@@ -232,8 +233,9 @@ again (the old one is moved to `cache/` first) and rebuilds the extensions again
 **An install made by hand.** Steps 40 and 50 count as done when the venv has the marker `.lf-studio-done` (until 0.6
 also 0.4's `.sol-h3-studio-done`). A venv without it whose `pip freeze` matches
 `install/freeze/stage1-rtx5090-freeze.txt` or `stage2-rtx5090-freeze.txt` exactly (one built by hand to the same recipe)
-is adopted (the lines of Pillow, Gradio and MoviePy don't count): nothing is installed or rebuilt, apart from the
-Pillow step that every run of 40 and 50 ends with (see [From 0.4 to 0.5](#from-04-to-05)), and the marker is written
+is adopted (the lines of certifi, Pillow, Gradio and MoviePy don't count): nothing is installed or rebuilt, apart from
+the update steps that every run of 40 and 50 ends with (pip and certifi, then Pillow; see
+[From 0.4 to 0.5](#from-04-to-05)), and the marker is written
 once the step's import check passes. A venv that
 differs in any line is built as usual (pip installs into it again, and step 50 rebuilds ltx-kernels); if you know such a
 venv is right (for example one with an extra tool such as py-spy), mark it done yourself:
@@ -290,12 +292,20 @@ Run `install/10-sana.sh` after the pull: the patch is now `patches/lf-studio.pat
 on the RTX 5090), its changes marked "lf-studio". The script replaces the 0.4 patch in the checkout as for any update
 and keeps its copy as `lf-studio-applied.patch`.
 
+On the RTX 5090, run `install/05-python.sh` first: it replaces uv with 0.13.4, whose bundled roots no longer trust the
+emSign ECC Root CA - G3 ([GHSA-hq85-5cpj-mr62](https://github.com/advisories/GHSA-hq85-5cpj-mr62)), and keeps the
+Pythons.
+
 Then run `install/40-stage1.sh --pillow-only` and `install/50-stage2.sh --pillow-only`, and on a DGX Spark also
 `install/60-qwen-image.sh`, for Pillow 13.0.0 (#69). The image-decoder advisories of 2026-10-22 affect every earlier Pillow
 ([GHSA-v9pv-5gc8-w2m6](https://github.com/advisories/GHSA-v9pv-5gc8-w2m6), CVE-2026-96639, and others), and the runtime
 decodes the keyframes and reference images clients upload in the Stage 1 env and, on a DGX Spark, in the Qwen image.
 With `--pillow-only`, 40 and 50 change nothing else in the env that is there. Without it, an env that lacks the done
 marker (one built before the markers, or by hand) would be built into again.
+- 40 and 50 first bring pip to 26.2.2 and certifi to 2026.10.19 or newer: the CA bundle in earlier certifi releases,
+  and the copy pip up to 26.2.1 vendors, still trust the withdrawn emSign root (above). The venvs' pip downloads
+  through it, and huggingface-hub downloads with certifi's bundle. `install/20-weights.sh` does the
+  same in its download venv on its next run;
 - 40 uninstalls Gradio, gradio-client and MoviePy (they capped Pillow below 12, and nothing in the studio or the
   runtime imports them) and installs Pillow 13.0.0;
 - 50 installs Pillow 13.0.0;
