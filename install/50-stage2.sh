@@ -20,17 +20,35 @@
 # (FORCE=1 rebuilds into the same venv). On the RTX 5090 a venv without that marker whose pip freeze is
 # install/freeze/stage2-rtx5090-freeze.txt (one built by hand to the same recipe) is adopted: nothing is installed or
 # rebuilt, and the marker is written once the import check (which loads the compiled all2all_cpp) passes.
+# Every run but --torchaudio-fix-only also brings Pillow to 13.0.0 (pillow_update in common.sh, #69).
 # --torchaudio-fix-only: only relax the torchaudio check in an existing $ENVS/stage2 venv (for example one you
 # built yourself); installs nothing.
+# --pillow-only: only the Pillow step on the existing $ENVS/stage2 venv. A venv without the marker is built into again,
+# so this is how an existing install gets Pillow 13 (docs/INSTALL.md, "From 0.4 to 0.5").
 # Do not run 40 and 50 at the same time (two nvcc builds can exhaust unified memory).
 FIX_ONLY=0
+PILLOW_ONLY=0
 args=()
 for a in "$@"; do
-    if [[ "$a" == --torchaudio-fix-only ]]; then FIX_ONLY=1; else args+=("$a"); fi
+    case "$a" in
+        --torchaudio-fix-only) FIX_ONLY=1 ;;
+        --pillow-only) PILLOW_ONLY=1 ;;
+        *) args+=("$a") ;;
+    esac
 done
 set -- "${args[@]}"     # (source without arguments would pass the original ones on)
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 V="$ENVS/stage2"
+if [[ "$PILLOW_ONLY" == 1 ]]; then
+    [[ -x "$V/bin/python" || "$DRY_RUN" == 1 ]] || die "no venv at $V (--pillow-only needs an existing Stage2 venv)"
+    pillow_update "$V"
+    if [[ "$DRY_RUN" != 1 ]]; then
+        CUDA_VISIBLE_DEVICES='' "$V/bin/python" -B -c 'import PIL.Image, torchvision; print("Pillow", PIL.__version__, "torchvision", torchvision.__version__)' ||
+            die "the Stage2 env does not import Pillow and torchvision"
+    fi
+    say "done (--pillow-only)"
+    exit 0
+fi
 if [[ "$FIX_ONLY" != 1 ]]; then
     [[ -d "$SOURCES/LTX-2" || "$DRY_RUN" == 1 ]] || die "no $SOURCES/LTX-2; run 30-sources.sh first"
     need_host_py "sudo apt install python3.12-venv"
@@ -65,7 +83,7 @@ elif [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     run "${P[@]}" install -c "$C" --extra-index-url "$IDX132" \
         transformers==5.14.1 safetensors==0.8.0 accelerate==1.14.0 "nvidia-cutlass-dsl[cu13]==4.7.0" cuda-python==13.3.1 \
         huggingface-hub==1.27.0 av==18.0.0 imageio==2.37.4 imageio-ffmpeg==0.6.0 einops==0.8.2 \
-        numpy "scipy>=1.14" tokenizers tqdm pillow openimageio "cloudpickle>=3.1" typing_extensions \
+        numpy "scipy>=1.14" tokenizers tqdm "pillow==$PILLOW" openimageio "cloudpickle>=3.1" typing_extensions \
         "nvidia-cuda-nvcc==13.2.*" "nvidia-cuda-cccl==13.2.*" "nvidia-nvvm==13.2.*" "nvidia-cuda-crt==13.2.*" ninja
     run "${P[@]}" install --no-deps nvidia-cudnn-cu13==9.20.0.48
     run "${P[@]}" install --no-deps -e "$SOURCES/LTX-2/packages/ltx-core" -e "$SOURCES/LTX-2/packages/ltx-pipelines"
@@ -123,7 +141,7 @@ else
     run "$P" install -c "$C" --extra-index-url "$IDX132" \
         transformers==5.14.1 safetensors==0.8.0 accelerate==1.14.0 "nvidia-cutlass-dsl[cu13]==4.7.0" cuda-python==13.3.1 \
         huggingface-hub==1.27.0 av==18.0.0 imageio==2.37.4 imageio-ffmpeg==0.6.0 einops==0.8.2 \
-        numpy "scipy>=1.14" tokenizers tqdm pillow openimageio "cloudpickle>=3.1" typing_extensions \
+        numpy "scipy>=1.14" tokenizers tqdm "pillow==$PILLOW" openimageio "cloudpickle>=3.1" typing_extensions \
         "nvidia-cuda-nvcc==13.2.*" "nvidia-cuda-cccl==13.2.*" "nvidia-nvvm==13.2.*" "nvidia-cuda-crt==13.2.*" ninja
     run "$P" install --no-deps nvidia-cudnn-cu13==9.20.0.48
     # LTX source packages (the runtime also puts packages/*/src on sys.path)
@@ -182,6 +200,8 @@ print("torch", torch.__version__, "torchaudio", torchaudio.__version__)' ||
     say "done"
     exit 0
 fi
+
+pillow_update "$V"
 
 step "offline-context target $DEPS/offline-context (only for the prompt-cache builder)"
 if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then

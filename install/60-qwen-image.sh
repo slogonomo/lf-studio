@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # 60-qwen-image.sh: build the Docker image for the Qwen prompt encoder, in two steps:
 #   1. NVIDIA's Dockerfile.qwen (NGC PyTorch 25.11 + ComfyUI v0.30.0)        -> sol-h3-spark-qwen:base
-#   2. this repo's qwen-image/ layer (torchaudio stubs, see its Dockerfile)   -> $SOL_H3_SPARK_QWEN_IMAGE (sol-h3-spark-qwen)
+#   2. this repo's qwen-image/ layer (torchaudio stubs, Pillow 13.0.0; its Dockerfile) -> $SOL_H3_SPARK_QWEN_IMAGE
+#      (sol-h3-spark-qwen)
 # ~20 min measured (mostly the NGC base pull, no docker login needed), ~21 GB.
 # The image contains GPL-3.0 ComfyUI and NGC components: build it yourself, never redistribute it.
-# Idempotent: existing images are kept (FORCE=1 rebuilds).
+# Idempotent: existing images are kept (FORCE=1 rebuilds both). The layer carries a label with a hash of qwen-image/,
+# and is rebuilt (in seconds, on the base kept) when that changed, so running 60 again updates an image built before
+# 0.5 (Pillow 13.0.0, #69). The image it replaces stays in docker as an untagged image until pruned.
 # DGX Spark only: on the RTX 5090 (LFSTUDIO_BACKEND=rtx5090) the Qwen encoder runs natively in the Stage1 env.
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 if [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
@@ -27,17 +30,23 @@ else
     run_in "$PKG" docker build -f Dockerfile.qwen -t "$BASE_TAG" .
 fi
 
-step "torchaudio stub layer -> $SOL_H3_SPARK_QWEN_IMAGE"
-if have_image "$SOL_H3_SPARK_QWEN_IMAGE" && [[ "$FORCE" != 1 ]]; then
+LAYER=$(cd "$REPO/qwen-image" && sha256sum -- * | sha256sum | cut -c1-16)
+step "LF Studio layer (torchaudio stubs, Pillow 13.0.0) -> $SOL_H3_SPARK_QWEN_IMAGE"
+if have_image "$SOL_H3_SPARK_QWEN_IMAGE" && [[ "$FORCE" != 1 ]] &&
+        [[ "$(docker image inspect -f '{{index .Config.Labels "lf-studio.layer"}}' "$SOL_H3_SPARK_QWEN_IMAGE")" == "$LAYER" ]]; then
     say "already built"
 else
-    run docker build --build-arg "BASE=$BASE_TAG" -t "$SOL_H3_SPARK_QWEN_IMAGE" "$REPO/qwen-image"
+    have_image "$SOL_H3_SPARK_QWEN_IMAGE" && [[ "$FORCE" != 1 ]] && say "qwen-image/ changed since this image was built: rebuilding the layer"
+    run docker build --build-arg "BASE=$BASE_TAG" --label "lf-studio.layer=$LAYER" -t "$SOL_H3_SPARK_QWEN_IMAGE" \
+        "$REPO/qwen-image"
 fi
 
 step "import check (no GPU, no network)"
 if [[ "$DRY_RUN" != 1 ]]; then
     docker run --rm --network=none --pull=never --entrypoint /usr/bin/python3 "$SOL_H3_SPARK_QWEN_IMAGE" -c \
-        'import torchaudio, torchaudio.functional, torchaudio.transforms; print("torchaudio stub", torchaudio.__version__)' ||
-        die "the image does not import the torchaudio stub"
+        'import sys, PIL, torchaudio, torchaudio.functional, torchaudio.transforms
+print("torchaudio stub", torchaudio.__version__, "Pillow", PIL.__version__)
+sys.exit(int(PIL.__version__.split(".")[0]) < 13)' ||
+        die "the image does not import the torchaudio stub, or its Pillow is older than 13"
 fi
 say "done. Next: install/70-manifests.sh"

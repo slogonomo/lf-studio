@@ -83,11 +83,45 @@ fetch_checked() {
 
 # freeze_matches PYTHON REFERENCE: PYTHON's `pip freeze` is the reference freeze, comment lines left out (read-only,
 # so it also runs in a dry run). On the RTX 5090, 40 and 50 adopt a venv built by hand to the same recipe this way
-# instead of reinstalling into it; a venv that differs in any line is rebuilt as usual.
+# instead of reinstalling into it; a venv that differs in any line is rebuilt as usual. The packages the Pillow step
+# changes (pillow_update below: Pillow, and Gradio and MoviePy in Stage 1) don't count, so a venv adopted before is
+# adopted again after it.
 freeze_matches() {
-    local py=$1 ref=$2
+    local py=$1 ref=$2 skip='^(#|(pillow|gradio|gradio_client|moviepy)==)'
     [[ -x "$py" && -f "$ref" ]] || return 1
-    diff -q <(grep -v '^#' "$ref") <("$py" -m pip freeze 2>/dev/null) >/dev/null
+    diff -q <(grep -Eiv "$skip" "$ref") <("$py" -m pip freeze 2>/dev/null | grep -Eiv "$skip") >/dev/null
+}
+
+# Pillow from 13.0.0 on (#69): the image-decoder advisories of 2026-10-22 (GHSA-v9pv-5gc8-w2m6 = CVE-2026-96639 and
+# others) affect every earlier Pillow, and the runtime decodes the images clients upload (keyframes, references) in
+# Stage 1 and, on a DGX Spark, in the Qwen image (60-qwen-image.sh).
+PILLOW=13.0.0
+
+# pillow_update VENV [PACKAGE...]: uninstall the PACKAGEs VENV has (ones that cap Pillow below 13), then install
+# Pillow $PILLOW if VENV's is older than 13. 40 and 50 run it every time, so it also updates a venv built before.
+pillow_update() {
+    local v=$1 p have=()
+    shift
+    step "Pillow >= 13 in $v (the image-decoder advisories of 2026-10-22, #69)"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        if (( $# )); then run "$v/bin/python" -m pip uninstall -y "$@"; fi
+        run "$v/bin/python" -m pip install --only-binary pillow "pillow==$PILLOW"
+        return 0
+    fi
+    for p in "$@"; do
+        "$v/bin/python" -m pip show -q "$p" >/dev/null 2>&1 && have+=("$p")
+    done
+    if (( ${#have[@]} )); then
+        run "$v/bin/python" -m pip uninstall -y "${have[@]}" || die "could not uninstall ${have[*]} from $v"
+    fi
+    if "$v/bin/python" -c 'import sys, PIL; sys.exit(int(PIL.__version__.split(".")[0]) < 13)' 2>/dev/null; then
+        say "Pillow $("$v/bin/python" -c 'import PIL; print(PIL.__version__)') already"
+    else
+        run "$v/bin/python" -m pip install --only-binary pillow "pillow==$PILLOW" ||
+            die "Pillow $PILLOW did not install into $v"
+        "$v/bin/python" -c 'import sys, PIL; sys.exit(int(PIL.__version__.split(".")[0]) < 13)' ||
+            die "$v still has a Pillow older than 13"
+    fi
 }
 
 # NVIDIA Sync logins can predate docker group membership; fall back to `sg docker`.
