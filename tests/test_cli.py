@@ -266,7 +266,7 @@ class Generate(CliTest):
         for args, words in [
                 (["--first-frame", "a.gif"], "unsupported file type .gif"),
                 (["--first-frame", "missing.png"], "no such file: missing.png"),
-                (["--seconds", 9], "invalid choice: 9"),
+                (["--seconds", 9], re.compile(r"invalid choice: '?9'?")),     # Python 3.14 quotes the value
                 (["--task", "t2va", "--first-frame", "f.png"], "t2va takes no files"),
                 (["--first-frame", "f.png", "--ref", "f.png"], "can't go together"),
                 (["--task", "ref2va", "--first-frame", "f.png"], "--first-frame is used only by fl2va"),
@@ -274,7 +274,10 @@ class Generate(CliTest):
                 (["--task", "ref2va"], "ref2va needs at least one reference image or video")]:
             p = self.sol("generate", "--prompt", "x", *args)
             self.assertEqual(p.returncode, 2, (args, p.stderr))
-            self.assertIn(words, p.stderr)
+            if isinstance(words, re.Pattern):
+                self.assertRegex(p.stderr, words)
+            else:
+                self.assertIn(words, p.stderr)
         (self.work / "x.wav").write_bytes(WAV)
         p = self.sol("generate", "--prompt", "x", "--ref", "x.wav")
         self.assertEqual(p.returncode, 2)
