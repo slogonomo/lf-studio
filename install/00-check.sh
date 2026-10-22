@@ -155,7 +155,8 @@ if [[ "$DRY_RUN" == 1 ]]; then
     echo "+ curl -I <one small file of Lightricks/LTX-2.5 with your HF token>   (dry run: not run)"
 elif [[ -z "$token" ]]; then
     bad "no Hugging Face token. Log in with the download tool (the same venv 20-weights.sh uses$([[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && echo "; after install/05-python.sh")):
-          $HOST_PY -m venv $ENVS/download && $ENVS/download/bin/pip install huggingface-hub==1.29.0
+          $HOST_PY -m venv $ENVS/download && $ENVS/download/bin/python -m pip install pip==26.2.2 \"certifi>=2026.10.19\" &&
+          $ENVS/download/bin/python -m pip install huggingface-hub==1.29.0
           $ENVS/download/bin/hf auth login
         or export HF_TOKEN=<a read token> for this shell."
 elif command -v curl >/dev/null; then

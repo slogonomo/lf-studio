@@ -453,12 +453,12 @@ class InstallDryRun(unittest.TestCase):
         (self.d / "home").mkdir()
         (self.d / "tmp").mkdir()
 
-    def run_script(self, name, repo=REPO, **settings):
+    def run_script(self, name, *args, repo=REPO, **settings):
         env = clean_env(HOME=str(self.d / "home"), TMPDIR=str(self.d / "tmp"), LFSTUDIO_ENV=str(self.d / "no-env-file"),
                         LFSTUDIO_HOME=str(self.d / "home" / "sol-h3"),
                         PATH=f"{self.fake}{os.pathsep}{os.environ['PATH']}")
         env.update(settings)
-        run = subprocess.run(["bash", str(Path(repo) / "install" / name), "--dry-run"], env=env, capture_output=True,
+        run = subprocess.run(["bash", str(Path(repo) / "install" / name), "--dry-run", *args], env=env, capture_output=True,
                              text=True, timeout=120)
         return run.returncode, run.stdout + run.stderr
 
@@ -485,6 +485,23 @@ class InstallDryRun(unittest.TestCase):
             self.assertNotIn("pip uninstall", text)
         self.assertNotIn("gradio==", text)
         self.assertNotIn("moviepy>=", text)
+
+    def assert_pip_update(self, text, venv, build=False):
+        """pip 26.2.2 and certifi >= 2026.10.19 through the venv's python (never bin/pip: a copied venv's bin/pip
+        installs into the original), before Pillow; on a new venv also before anything else is installed."""
+        py = f"{self.d}/home/sol-h3/envs/{venv}/bin/python"
+        pip, certifi = (f"+ {py} -m pip install --no-deps pip==26.2.2",
+                        f"+ {py} -m pip install --no-deps certifi\\>=2026.10.19")
+        self.assertIn(pip, text)
+        self.assertIn(certifi, text)
+        self.assertLess(text.index(pip), text.index(certifi))
+        if "Pillow >= 13 in" in text:
+            self.assertLess(text.rindex(certifi), text.index("Pillow >= 13 in"))
+        if build:
+            installs = [i for i, line in enumerate(text.splitlines()) if " -m pip install" in line]
+            self.assertIn(pip, text.splitlines()[installs[0]])
+        self.assertNotIn("bin/pip ", text)
+        self.assertNotIn("pip==25.2", text)
 
     def test_scripts(self):
         self.assertEqual(INSTALL, ["00-check.sh", "05-python.sh", "10-sana.sh", "20-weights.sh", "30-sources.sh",
@@ -514,12 +531,15 @@ class InstallDryRun(unittest.TestCase):
             self.assertIn("fastvideo-kernel", text)
             self.assertNotIn("comfy-kitchen", text)
             self.assert_pillow_13(text, "stage1", "gradio gradio-client moviepy")
+            self.assert_pip_update(text, "stage1", build=True)
         else:
             self.assertIn("CUDA 13 toolkit not found at /usr/local/cuda", text)
         self.assertIn('TORCH_CUDA_ARCH_LIST=12.0\\;12.1', out["50-stage2.sh"][1])
         self.assertIn("offline-context", out["50-stage2.sh"][1])
         self.assertNotIn("micromamba", out["50-stage2.sh"][1])
         self.assert_pillow_13(out["50-stage2.sh"][1], "stage2")
+        self.assert_pip_update(out["50-stage2.sh"][1], "stage2", build=True)
+        self.assert_pip_update(out["20-weights.sh"][1], "download", build=True)
         self.assertIn("docker build -f Dockerfile.qwen", out["60-qwen-image.sh"][1])
         self.assertRegex(out["60-qwen-image.sh"][1], r"docker build --build-arg BASE=sol-h3-spark-qwen:base "
                                                      r"--label lf-studio\.layer=[0-9a-f]{16} -t sol-h3-spark-qwen ")
@@ -546,7 +566,8 @@ class InstallDryRun(unittest.TestCase):
         py312 = str(self.d / "home/sol-h3/python/cpython-3.12.15-linux-x86_64-gnu/bin/python3.12")
         py313 = str(self.d / "home/sol-h3/python/cpython-3.13.16-linux-x86_64-gnu/bin/python3.13")
         text = out["05-python.sh"][1]
-        self.assertIn("releases/download/0.13.1/uv-x86_64-unknown-linux-gnu.tar.gz", text)
+        self.assertIn("releases/download/0.13.4/uv-x86_64-unknown-linux-gnu.tar.gz", text)
+        self.assertIn("2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f", text)
         self.assertIn("check the SHA-256", text)
         self.assertIn("python install --no-bin 3.12.15 3.13.16", text)
         text = out["10-sana.sh"][1]
@@ -556,6 +577,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn(f"{py312} -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-RTX5090 &&", out["20-weights.sh"][1])
         self.assertNotIn("--include-offline", out["20-weights.sh"][1])
+        self.assert_pip_update(out["20-weights.sh"][1], "download", build=True)
         self.assertIn(f"{py312} prepare.py --fetch-sources", out["30-sources.sh"][1])
         text = out["40-stage1.sh"][1]
         self.assertIn(f"venv --seed --python {py312}", text)
@@ -565,6 +587,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("stage1_dependencies", text)
         self.assertNotIn("fastvideo-kernel", text.replace("no fastvideo-kernel", ""))
         self.assert_pillow_13(text, "stage1", "gradio gradio-client moviepy")
+        self.assert_pip_update(text, "stage1", build=True)
         text = out["50-stage2.sh"][1]
         self.assertIn(f"venv --seed --python {py313}", text)
         self.assertIn("TORCH_CUDA_ARCH_LIST=12.0 ", text)
@@ -574,6 +597,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("CFLAGS=-w", text)
         self.assertIn("not needed on the RTX 5090", text)
         self.assert_pillow_13(text, "stage2")
+        self.assert_pip_update(text, "stage2", build=True)
         self.assertEqual(out["60-qwen-image.sh"][0], 0)
         self.assertNotIn("docker build", out["60-qwen-image.sh"][1])
         text = out["70-manifests.sh"][1]
@@ -671,12 +695,13 @@ class InstallDryRun(unittest.TestCase):
             self.assertEqual(code, 0, text)
             self.assertIn(f"has no marker but matches install/freeze/{stage}-rtx5090-freeze.txt: adopted", text)
             self.assertIn(f"+ touch {done}", text)
-            self.assertNotIn("pip install -U pip", text)
+            self.assertNotIn("install -U setuptools wheel", text)
+            self.assert_pip_update(text, stage)                                 # adopted: the update steps still run
             self.assertNotIn("ltx-kernels-build", text)
             self.assertNotIn("micromamba", text)
             code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090", FORCE="1")         # FORCE=1 rebuilds
             self.assertNotIn("adopted", text)
-            self.assertIn("pip install -U pip", text)
+            self.assertIn("install -U setuptools wheel", text)
             # after the Pillow step (#69) the venv is still adopted: Pillow, Gradio and MoviePy don't count
             stepped = "".join(line + "\n" for line in freeze.splitlines()
                               if not re.match(r"(?i)(gradio|gradio_client|moviepy)==", line))
@@ -684,12 +709,44 @@ class InstallDryRun(unittest.TestCase):
             (self.d / f"home/sol-h3/envs/{stage}/bin/freeze.txt").write_text(stepped)
             code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090")
             self.assertIn(f"has no marker but matches install/freeze/{stage}-rtx5090-freeze.txt: adopted", text)
+            # and after pip_update, also when certifi or Pillow came from a file (`name @ URL` in pip freeze)
+            for certifi in ("certifi==2026.10.19", "certifi @ file:///tmp/certifi-2026.10.19-py3-none-any.whl"):
+                updated = re.sub(r"(?im)^certifi==.*$", certifi, stepped)
+                updated = re.sub(r"(?im)^pillow==.*$", "pillow @ file:///tmp/pillow-13.0.0.whl", updated)
+                (self.d / f"home/sol-h3/envs/{stage}/bin/freeze.txt").write_text(updated)
+                code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090")
+                self.assertIn(f"has no marker but matches install/freeze/{stage}-rtx5090-freeze.txt: adopted", text)
             (self.d / f"home/sol-h3/envs/{stage}/bin/freeze.txt").write_text(freeze + "extra==1.0\n")
             code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090")
             self.assertEqual(code, 0, text)
             self.assertNotIn("adopted", text)
-            self.assertIn("pip install -U pip", text)
+            self.assertIn("install -U setuptools wheel", text)
             self.assertIn(f"+ touch {done}", text)
+
+    def test_marked_venv_gets_the_update_steps(self):
+        """A venv with the done marker (also 0.4's) gets pip, certifi and Pillow, and is not built into."""
+        for stage, script in (("stage1", "40-stage1.sh"), ("stage2", "50-stage2.sh")):
+            self.fake_venv(stage, "")
+            for marker in (".lf-studio-done", ".sol-h3-studio-done"):
+                with self.subTest(stage=stage, marker=marker):
+                    done = self.d / f"home/sol-h3/envs/{stage}/{marker}"
+                    done.touch()
+                    code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090")
+                    self.assertEqual(code, 0, text)
+                    self.assertIn(f"{stage.capitalize()} env already built", text)
+                    self.assert_pip_update(text, stage)
+                    for build in ("venv --seed", "install -U setuptools wheel", "torch==", "ltx-kernels-build"):
+                        self.assertNotIn(build, text)
+                    done.unlink()
+
+    def test_torchaudio_fix_only_installs_nothing(self):
+        self.fake_venv("stage2", "")
+        for backend in ("spark", "rtx5090"):
+            with self.subTest(backend=backend):
+                code, text = self.run_script("50-stage2.sh", "--torchaudio-fix-only", LFSTUDIO_BACKEND=backend)
+                self.assertEqual(code, 0, text)
+                self.assertIn("--torchaudio-fix-only: leaving the rest", text)
+                self.assertNotIn(" -m pip ", text)
 
     def test_prompt_cache_backup_dated(self):
         """FORCE=1 on the RTX 5090 keeps the old cache under a dated name (it cannot be rebuilt there)."""
@@ -858,6 +915,7 @@ case "$*" in
     "-m pip show -q "*) grep -qx "$5" "$d/installed.txt" ;;
     "-m pip uninstall -y "*) shift 4; for p in "$@"; do grep -vx "$p" "$d/installed.txt" > "$d/x"; mv "$d/x" "$d/installed.txt"; done ;;
     "-m pip install --only-binary pillow pillow==13.0.0") [[ -f "$d/install-fails" ]] && exit 1; echo 13.0.0 > "$d/pillow.txt" ;;
+    "-m pip install --no-deps pip==26.2.2"|"-m pip install --no-deps certifi>=2026.10.19") [[ ! -f "$d/pip-fails" ]] ;;
     *"-c "*print*) cat "$d/pillow.txt" ;;
     *"-c "*) v=$(cat "$d/pillow.txt"); (( ${v%%.*} >= 13 )) ;;
     *) exit 3 ;;
@@ -955,11 +1013,27 @@ class PillowUpdate(unittest.TestCase):
             self.assertIn(">>> done (--pillow-only)", out)
             calls = [c for c in (venv / "bin/calls.log").read_text().splitlines()
                      if c.startswith("-m pip") and not c.startswith("-m pip show")]
-            self.assertEqual(calls, ([f"-m pip uninstall -y {removed}"] if removed else [])
+            self.assertEqual(calls, ["-m pip install --no-deps pip==26.2.2", "-m pip install --no-deps certifi>=2026.10.19"]
+                             + ([f"-m pip uninstall -y {removed}"] if removed else [])
                              + ["-m pip install --only-binary pillow pillow==13.0.0"], out)
             self.assertEqual((venv / "bin/pillow.txt").read_text(), "13.0.0\n")
             self.assertFalse((venv / ".lf-studio-done").exists())
             self.assertNotIn("+ touch", out)
+
+    def test_failed_pip_update_stops(self):
+        """--pillow-only stops at a failed pip or certifi install, before Pillow."""
+        venv = self.d / "home/sol-h3/envs/stage2"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin/python").write_text(FAKE_VENV_PYTHON)
+        (venv / "bin/python").chmod(0o755)
+        (venv / "bin/pillow.txt").write_text("12.3.0\n")
+        (venv / "bin/installed.txt").write_text("")
+        (venv / "bin/pip-fails").write_text("")
+        run = subprocess.run(["bash", str(REPO / "install/50-stage2.sh"), "--pillow-only"], env=self.env,
+                             capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("ERROR: pip 26.2.2 did not install into", run.stderr)
+        self.assertNotIn("pillow==13.0.0", (venv / "bin/calls.log").read_text())
 
     def test_pillow_only_needs_a_venv(self):
         for script, stage in (("40-stage1.sh", "Stage1"), ("50-stage2.sh", "Stage2")):
