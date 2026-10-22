@@ -677,6 +677,13 @@ class InstallDryRun(unittest.TestCase):
             code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090", FORCE="1")         # FORCE=1 rebuilds
             self.assertNotIn("adopted", text)
             self.assertIn("pip install -U pip", text)
+            # after the Pillow step (#69) the venv is still adopted: Pillow, Gradio and MoviePy don't count
+            stepped = "".join(line + "\n" for line in freeze.splitlines()
+                              if not re.match(r"(?i)(gradio|gradio_client|moviepy)==", line))
+            stepped = re.sub(r"(?im)^pillow==.*$", "pillow==13.0.0", stepped)
+            (self.d / f"home/sol-h3/envs/{stage}/bin/freeze.txt").write_text(stepped)
+            code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090")
+            self.assertIn(f"has no marker but matches install/freeze/{stage}-rtx5090-freeze.txt: adopted", text)
             (self.d / f"home/sol-h3/envs/{stage}/bin/freeze.txt").write_text(freeze + "extra==1.0\n")
             code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090")
             self.assertEqual(code, 0, text)
@@ -851,8 +858,8 @@ case "$*" in
     "-m pip show -q "*) grep -qx "$5" "$d/installed.txt" ;;
     "-m pip uninstall -y "*) shift 4; for p in "$@"; do grep -vx "$p" "$d/installed.txt" > "$d/x"; mv "$d/x" "$d/installed.txt"; done ;;
     "-m pip install --only-binary pillow pillow==13.0.0") [[ -f "$d/install-fails" ]] && exit 1; echo 13.0.0 > "$d/pillow.txt" ;;
-    -c*print*) cat "$d/pillow.txt" ;;
-    -c*) v=$(cat "$d/pillow.txt"); (( ${v%%.*} >= 13 )) ;;
+    *"-c "*print*) cat "$d/pillow.txt" ;;
+    *"-c "*) v=$(cat "$d/pillow.txt"); (( ${v%%.*} >= 13 )) ;;
     *) exit 3 ;;
 esac
 """
@@ -925,6 +932,41 @@ class PillowUpdate(unittest.TestCase):
         code, out, calls = self.update("12.0.0", [])
         self.assertNotEqual(code, 0)
         self.assertIn("ERROR: Pillow 13.0.0 did not install into", out)
+
+    def test_pillow_only_never_builds(self):
+        """--pillow-only runs only the Pillow step on the venv that is there, also one without the done marker (one
+        built before the markers would otherwise be built into again: pip, the install lists, the kernels)."""
+        for stage, script, removed in (("stage1", "40-stage1.sh", "gradio gradio-client"), ("stage2", "50-stage2.sh", "")):
+            venv = self.d / "home/sol-h3/envs" / stage
+            (venv / "bin").mkdir(parents=True)
+            (venv / "bin/python").write_text(FAKE_VENV_PYTHON)
+            (venv / "bin/python").chmod(0o755)
+            (venv / "bin/pillow.txt").write_text("11.3.0\n")
+            (venv / "bin/installed.txt").write_text("gradio\ngradio-client\nnumpy\n")
+            run = subprocess.run(["bash", str(REPO / "install" / script), "--pillow-only", "--dry-run"], env=self.env,
+                                 capture_output=True, text=True, timeout=60)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn(f"+ {venv}/bin/python -m pip install --only-binary pillow pillow==13.0.0", run.stdout)
+            self.assertNotIn("install -U pip", run.stdout)
+            run = subprocess.run(["bash", str(REPO / "install" / script), "--pillow-only"], env=self.env,
+                                 capture_output=True, text=True, timeout=60)
+            out = run.stdout + run.stderr
+            self.assertEqual(run.returncode, 0, out)
+            self.assertIn(">>> done (--pillow-only)", out)
+            calls = [c for c in (venv / "bin/calls.log").read_text().splitlines()
+                     if c.startswith("-m pip") and not c.startswith("-m pip show")]
+            self.assertEqual(calls, ([f"-m pip uninstall -y {removed}"] if removed else [])
+                             + ["-m pip install --only-binary pillow pillow==13.0.0"], out)
+            self.assertEqual((venv / "bin/pillow.txt").read_text(), "13.0.0\n")
+            self.assertFalse((venv / ".lf-studio-done").exists())
+            self.assertNotIn("+ touch", out)
+
+    def test_pillow_only_needs_a_venv(self):
+        for script, stage in (("40-stage1.sh", "Stage1"), ("50-stage2.sh", "Stage2")):
+            run = subprocess.run(["bash", str(REPO / "install" / script), "--pillow-only"], env=self.env,
+                                 capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn(f"(--pillow-only needs an existing {stage} venv)", run.stderr)
 
     def test_qwen_layer_rebuilt_when_changed(self):
         (self.fake / "docker").write_text(FAKE_DOCKER)

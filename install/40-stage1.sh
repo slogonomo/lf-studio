@@ -18,9 +18,29 @@
 # (FORCE=1 rebuilds into the same venv). On the RTX 5090 a venv without that marker whose pip freeze is
 # install/freeze/stage1-rtx5090-freeze.txt (one built by hand to the same recipe) is adopted: nothing is installed, and
 # the marker is written once the import check passes. Every run (built, adopted or skipped) then removes Gradio and
-# MoviePy and brings Pillow to 13.0.0 (pillow_update in common.sh), so running 40 again updates a venv built before 0.5.
+# MoviePy and brings Pillow to 13.0.0 (pillow_update in common.sh, #69).
+# A venv without the marker (one built before the markers, or by hand) is built into again, so to update an existing
+# install use --pillow-only: only the Pillow step on the existing $ENVS/stage1 venv, nothing else (docs/INSTALL.md,
+# "From 0.4 to 0.5").
 # Do not run 40 and 50 at the same time: two nvcc builds at once can exhaust unified memory.
+PILLOW_ONLY=0
+args=()
+for a in "$@"; do
+    if [[ "$a" == --pillow-only ]]; then PILLOW_ONLY=1; else args+=("$a"); fi
+done
+set -- "${args[@]}"     # (source without arguments would pass the original ones on)
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
+if [[ "$PILLOW_ONLY" == 1 ]]; then
+    V="$ENVS/stage1"
+    [[ -x "$V/bin/python" || "$DRY_RUN" == 1 ]] || die "no venv at $V (--pillow-only needs an existing Stage1 venv)"
+    pillow_update "$V" gradio gradio-client moviepy
+    if [[ "$DRY_RUN" != 1 ]]; then
+        CUDA_VISIBLE_DEVICES='' "$V/bin/python" -B -c 'import PIL.Image, torchvision; print("Pillow", PIL.__version__, "torchvision", torchvision.__version__)' ||
+            die "the Stage1 env does not import Pillow and torchvision"
+    fi
+    say "done (--pillow-only)"
+    exit 0
+fi
 [[ -d "$SOURCES/FastVideo" || "$DRY_RUN" == 1 ]] || die "no $SOURCES/FastVideo; run 30-sources.sh first"
 need_host_py "sudo apt install python3.12-venv"
 if [[ "$LFSTUDIO_BACKEND" == spark ]]; then
@@ -69,7 +89,7 @@ elif [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
     # 5) the cuDNN runtime used with the BSA path (overrides torch's pin); 6) FastVideo from the pinned source
     run "${P[@]}" install --no-deps nvidia-cudnn-cu13==9.20.0.48
     run "${P[@]}" install --no-deps -e "$SOURCES/FastVideo"
-    run "${P[@]}" check || true
+    run "${P[@]}" check || true     # expected: fastvideo-kernel, flashinfer-python, gradio and moviepy missing
     if [[ "$DRY_RUN" != 1 ]]; then "${P[@]}" freeze > "$LOGS/stage1-freeze.txt"; fi
     run touch "$DONE"
 else

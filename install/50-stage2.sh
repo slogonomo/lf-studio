@@ -20,19 +20,35 @@
 # (FORCE=1 rebuilds into the same venv). On the RTX 5090 a venv without that marker whose pip freeze is
 # install/freeze/stage2-rtx5090-freeze.txt (one built by hand to the same recipe) is adopted: nothing is installed or
 # rebuilt, and the marker is written once the import check (which loads the compiled all2all_cpp) passes.
-# Every run but --torchaudio-fix-only also brings Pillow to 13.0.0 (pillow_update in common.sh, #69), so running 50
-# again updates a venv built before 0.5.
+# Every run but --torchaudio-fix-only also brings Pillow to 13.0.0 (pillow_update in common.sh, #69).
 # --torchaudio-fix-only: only relax the torchaudio check in an existing $ENVS/stage2 venv (for example one you
 # built yourself); installs nothing.
+# --pillow-only: only the Pillow step on the existing $ENVS/stage2 venv. A venv without the marker is built into again,
+# so this is how an existing install gets Pillow 13 (docs/INSTALL.md, "From 0.4 to 0.5").
 # Do not run 40 and 50 at the same time (two nvcc builds can exhaust unified memory).
 FIX_ONLY=0
+PILLOW_ONLY=0
 args=()
 for a in "$@"; do
-    if [[ "$a" == --torchaudio-fix-only ]]; then FIX_ONLY=1; else args+=("$a"); fi
+    case "$a" in
+        --torchaudio-fix-only) FIX_ONLY=1 ;;
+        --pillow-only) PILLOW_ONLY=1 ;;
+        *) args+=("$a") ;;
+    esac
 done
 set -- "${args[@]}"     # (source without arguments would pass the original ones on)
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 V="$ENVS/stage2"
+if [[ "$PILLOW_ONLY" == 1 ]]; then
+    [[ -x "$V/bin/python" || "$DRY_RUN" == 1 ]] || die "no venv at $V (--pillow-only needs an existing Stage2 venv)"
+    pillow_update "$V"
+    if [[ "$DRY_RUN" != 1 ]]; then
+        CUDA_VISIBLE_DEVICES='' "$V/bin/python" -B -c 'import PIL.Image, torchvision; print("Pillow", PIL.__version__, "torchvision", torchvision.__version__)' ||
+            die "the Stage2 env does not import Pillow and torchvision"
+    fi
+    say "done (--pillow-only)"
+    exit 0
+fi
 if [[ "$FIX_ONLY" != 1 ]]; then
     [[ -d "$SOURCES/LTX-2" || "$DRY_RUN" == 1 ]] || die "no $SOURCES/LTX-2; run 30-sources.sh first"
     need_host_py "sudo apt install python3.12-venv"

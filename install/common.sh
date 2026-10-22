@@ -83,11 +83,13 @@ fetch_checked() {
 
 # freeze_matches PYTHON REFERENCE: PYTHON's `pip freeze` is the reference freeze, comment lines left out (read-only,
 # so it also runs in a dry run). On the RTX 5090, 40 and 50 adopt a venv built by hand to the same recipe this way
-# instead of reinstalling into it; a venv that differs in any line is rebuilt as usual.
+# instead of reinstalling into it; a venv that differs in any line is rebuilt as usual. The packages the Pillow step
+# changes (pillow_update below: Pillow, and Gradio and MoviePy in Stage 1) don't count, so a venv adopted before is
+# adopted again after it.
 freeze_matches() {
-    local py=$1 ref=$2
+    local py=$1 ref=$2 skip='^(#|(pillow|gradio|gradio_client|moviepy)==)'
     [[ -x "$py" && -f "$ref" ]] || return 1
-    diff -q <(grep -v '^#' "$ref") <("$py" -m pip freeze 2>/dev/null) >/dev/null
+    diff -q <(grep -Eiv "$skip" "$ref") <("$py" -m pip freeze 2>/dev/null | grep -Eiv "$skip") >/dev/null
 }
 
 # Pillow from 13.0.0 on (#69): the image-decoder advisories of 2026-10-22 (GHSA-v9pv-5gc8-w2m6 = CVE-2026-96639 and
