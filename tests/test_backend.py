@@ -472,6 +472,20 @@ class InstallDryRun(unittest.TestCase):
         return self.all_scripts(FAKE_ARCH="x86_64", FAKE_GPU="NVIDIA GeForce RTX 5090", LFSTUDIO_BACKEND="rtx5090",
                                 **settings)
 
+    def assert_pillow_13(self, text, stage, removed=""):
+        """#69: Pillow 13.0.0 in the venv's own install list and by pillow_update, which also removes the packages
+        that cap it below 13 (Stage 1: Gradio and MoviePy, no longer installed)."""
+        py = f"{self.d}/home/sol-h3/envs/{stage}/bin/python"
+        self.assertIn('pillow==13.0.0', text.split("Pillow >= 13 in")[0])          # the build's list
+        self.assertIn(f"Pillow >= 13 in {self.d}/home/sol-h3/envs/{stage} (", text)
+        self.assertIn(f"+ {py} -m pip install --only-binary pillow pillow==13.0.0", text)
+        if removed:
+            self.assertIn(f"+ {py} -m pip uninstall -y {removed}", text)
+        else:
+            self.assertNotIn("pip uninstall", text)
+        self.assertNotIn("gradio==", text)
+        self.assertNotIn("moviepy>=", text)
+
     def test_scripts(self):
         self.assertEqual(INSTALL, ["00-check.sh", "05-python.sh", "10-sana.sh", "20-weights.sh", "30-sources.sh",
                                    "40-stage1.sh", "50-stage2.sh", "60-qwen-image.sh", "70-manifests.sh",
@@ -499,12 +513,16 @@ class InstallDryRun(unittest.TestCase):
         if code == 0:                                       # needs /usr/local/cuda, as before
             self.assertIn("fastvideo-kernel", text)
             self.assertNotIn("comfy-kitchen", text)
+            self.assert_pillow_13(text, "stage1", "gradio gradio-client moviepy")
         else:
             self.assertIn("CUDA 13 toolkit not found at /usr/local/cuda", text)
         self.assertIn('TORCH_CUDA_ARCH_LIST=12.0\\;12.1', out["50-stage2.sh"][1])
         self.assertIn("offline-context", out["50-stage2.sh"][1])
         self.assertNotIn("micromamba", out["50-stage2.sh"][1])
+        self.assert_pillow_13(out["50-stage2.sh"][1], "stage2")
         self.assertIn("docker build -f Dockerfile.qwen", out["60-qwen-image.sh"][1])
+        self.assertRegex(out["60-qwen-image.sh"][1], r"docker build --build-arg BASE=sol-h3-spark-qwen:base "
+                                                     r"--label lf-studio\.layer=[0-9a-f]{16} -t sol-h3-spark-qwen ")
         self.assertIn("--python-qwen", out["70-manifests.sh"][1])
         self.assertIn("Sol-H3-Spark/qwen_python.sh", out["70-manifests.sh"][1])
         self.assertIn("--cache-pending", out["70-manifests.sh"][1])
@@ -546,6 +564,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("stage1-rtx5090-constraints.txt", text)
         self.assertIn("stage1_dependencies", text)
         self.assertNotIn("fastvideo-kernel", text.replace("no fastvideo-kernel", ""))
+        self.assert_pillow_13(text, "stage1", "gradio gradio-client moviepy")
         text = out["50-stage2.sh"][1]
         self.assertIn(f"venv --seed --python {py313}", text)
         self.assertIn("TORCH_CUDA_ARCH_LIST=12.0 ", text)
@@ -554,6 +573,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("NVCC_CCBIN=", text)
         self.assertIn("CFLAGS=-w", text)
         self.assertIn("not needed on the RTX 5090", text)
+        self.assert_pillow_13(text, "stage2")
         self.assertEqual(out["60-qwen-image.sh"][0], 0)
         self.assertNotIn("docker build", out["60-qwen-image.sh"][1])
         text = out["70-manifests.sh"][1]
@@ -819,6 +839,121 @@ class InstallDryRun(unittest.TestCase):
             code, text = self.run_script(name, LFSTUDIO_BACKEND="gb10")
             self.assertEqual(code, 2, f"{name}: {text}")
             self.assertIn("LFSTUDIO_BACKEND=gb10: must be spark or rtx5090", text)
+
+
+
+# A venv's python for pillow_update: `pip show -q`, `pip uninstall -y` and `pip install` act on the package names in
+# installed.txt and the Pillow version in pillow.txt, next to it; every call is logged in calls.log.
+FAKE_VENV_PYTHON = r"""#!/bin/bash
+d=$(dirname "$0")
+echo "$*" >> "$d/calls.log"
+case "$*" in
+    "-m pip show -q "*) grep -qx "$5" "$d/installed.txt" ;;
+    "-m pip uninstall -y "*) shift 4; for p in "$@"; do grep -vx "$p" "$d/installed.txt" > "$d/x"; mv "$d/x" "$d/installed.txt"; done ;;
+    "-m pip install --only-binary pillow pillow==13.0.0") [[ -f "$d/install-fails" ]] && exit 1; echo 13.0.0 > "$d/pillow.txt" ;;
+    -c*print*) cat "$d/pillow.txt" ;;
+    -c*) v=$(cat "$d/pillow.txt"); (( ${v%%.*} >= 13 )) ;;
+    *) exit 3 ;;
+esac
+"""
+
+# docker for 60-qwen-image.sh: the images named in images.txt exist, and the layer image's label is label.txt.
+FAKE_DOCKER = r"""#!/bin/bash
+d=$(dirname "$0")
+echo "$*" >> "$d/docker.log"
+case "$1 $2" in
+    "info "*|"build "*|"run "*) exit 0 ;;
+    "image inspect") if [[ "$3" == -f ]]; then cat "$d/label.txt"; else grep -qx "$3" "$d/images.txt"; fi ;;
+    *) exit 3 ;;
+esac
+"""
+
+
+class PillowUpdate(unittest.TestCase):
+    """#69, for real (not --dry-run) against fakes: pillow_update removes the packages that cap Pillow and installs
+    Pillow 13.0.0 only when needed, and 60-qwen-image.sh rebuilds the LF Studio layer when qwen-image/ changed."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="lf-studio-pillow-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.fake = fake_bin(self.d / "fake")
+        (self.d / "home").mkdir()
+        self.env = clean_env(HOME=str(self.d / "home"), LFSTUDIO_ENV=str(self.d / "no-env-file"),
+                             LFSTUDIO_HOME=str(self.d / "home" / "sol-h3"), FAKE_ARCH="aarch64", FAKE_GPU="NVIDIA GB10",
+                             PATH=f"{self.fake}{os.pathsep}{os.environ['PATH']}")
+        self.bin = self.d / "venv" / "bin"
+        self.bin.mkdir(parents=True)
+        (self.bin / "python").write_text(FAKE_VENV_PYTHON)
+        (self.bin / "python").chmod(0o755)
+
+    def update(self, pillow, installed, *remove):
+        (self.bin / "pillow.txt").write_text(pillow + "\n")
+        (self.bin / "installed.txt").write_text("".join(p + "\n" for p in installed))
+        return self.pillow_update(*remove)
+
+    def pillow_update(self, *remove):
+        (self.bin / "calls.log").write_text("")
+        run = subprocess.run(["bash", "-c", 'r=$1 v=$2; shift 2; set -- "$@"; args=("$@"); set --; '
+                              'source "$r/install/common.sh"; pillow_update "$v" "${args[@]}"',
+                              "_", str(REPO), str(self.d / "venv"), *remove],
+                             env=self.env, capture_output=True, text=True, timeout=60)
+        calls = [c for c in (self.bin / "calls.log").read_text().splitlines()            # what changes the venv
+                 if c.startswith("-m pip") and not c.startswith("-m pip show")]
+        return run.returncode, run.stdout + run.stderr, calls
+
+    def test_old_venv_is_updated(self):
+        code, out, calls = self.update("11.3.0", ["gradio", "gradio-client", "numpy"], "gradio", "gradio-client", "moviepy")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(calls[:2], ["-m pip uninstall -y gradio gradio-client",
+                                     "-m pip install --only-binary pillow pillow==13.0.0"], out)
+        self.assertEqual((self.bin / "installed.txt").read_text(), "numpy\n")
+        self.assertEqual((self.bin / "pillow.txt").read_text(), "13.0.0\n")
+        code, out, calls = self.pillow_update("gradio", "gradio-client", "moviepy")       # a second run: nothing to do
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("-m pip uninstall", " ".join(calls))
+        self.assertNotIn("-m pip install", " ".join(calls))
+        self.assertIn(">>> Pillow 13.0.0 already", out)
+
+    def test_newer_pillow_is_kept(self):
+        code, out, calls = self.update("13.1.0", [])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("-m pip install", " ".join(calls))
+        self.assertIn(">>> Pillow 13.1.0 already", out)
+
+    def test_failed_install_stops(self):
+        (self.bin / "install-fails").write_text("")
+        code, out, calls = self.update("12.0.0", [])
+        self.assertNotEqual(code, 0)
+        self.assertIn("ERROR: Pillow 13.0.0 did not install into", out)
+
+    def test_qwen_layer_rebuilt_when_changed(self):
+        (self.fake / "docker").write_text(FAKE_DOCKER)
+        (self.fake / "sg").write_text('#!/bin/bash\nexec bash -c "$3"\n')          # sg docker -c CMD
+        pkg = self.d / "home/sol-h3/Sana/models/minimax_h3/Sol-H3-Spark"
+        pkg.mkdir(parents=True)
+        (pkg / "Dockerfile.qwen").write_text("FROM scratch\n")
+        (self.fake / "images.txt").write_text("sol-h3-spark-qwen:base\nsol-h3-spark-qwen\n")
+
+        def run60(label):
+            (self.fake / "label.txt").write_text(label + "\n")
+            (self.fake / "docker.log").write_text("")
+            run = subprocess.run(["bash", str(REPO / "install/60-qwen-image.sh")], env=self.env, capture_output=True,
+                                 text=True, timeout=60)
+            builds = [c for c in (self.fake / "docker.log").read_text().splitlines() if c.startswith("build ")]
+            return run.returncode, run.stdout + run.stderr, builds
+
+        code, out, builds = run60("")                        # an image from before 0.5: no label
+        self.assertEqual(code, 0, out)
+        self.assertIn("qwen-image/ changed since this image was built: rebuilding the layer", out)
+        self.assertEqual(len(builds), 1, builds)               # the layer only; the base is kept
+        layer = re.search(r"--label lf-studio\.layer=([0-9a-f]{16}) -t sol-h3-spark-qwen ", builds[0])
+        self.assertTrue(layer, builds)
+        code, out, builds = run60(layer.group(1))             # built with this qwen-image/: kept
+        self.assertEqual(code, 0, out)
+        self.assertEqual(builds, [])
+        self.assertIn("already built", out)
+        code, out, builds = run60("0123456789abcdef")         # built with another qwen-image/: rebuilt
+        self.assertEqual(len(builds), 1, out)
 
 
 if __name__ == "__main__":

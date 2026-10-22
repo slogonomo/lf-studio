@@ -7,6 +7,8 @@
 #   - flashinfer-python is not installed: its release needs cudnn-frontend >= 1.29; the H3 path does not use it.
 #   - FA4 target: apache-tvm-ffi 0.1.13 instead of 0.1.13rc1 (not on PyPI). PyPI marks 0.1.13 as yanked; pip prints
 #     a warning and installs it anyway because the pin is exact.
+#   - no Gradio or MoviePy (#69): FastVideo declares them, but only its Gradio demos import them, and both cap Pillow
+#     below 12. Pillow is 13.0.0 (common.sh), on both backends, and `pip check` lists the two as missing.
 # RTX 5090 (LFSTUDIO_BACKEND=rtx5090): the venv comes from uv (Python 3.12.15, 05-python.sh) and also runs the Qwen
 # prompt encoder natively (no Docker), so it gets ComfyUI's requirements, comfy-kitchen and comfy-aimdo too. No
 # fastvideo-kernel (Sol-H3-RTX5090 does not use it; its PyPI wheel bundles its own libcuda) and no CUDA toolkit.
@@ -15,7 +17,8 @@
 # Idempotent: skipped when $ENVS/stage1/.lf-studio-done (until 0.6 also .sol-h3-studio-done, its name up to 0.4) exists
 # (FORCE=1 rebuilds into the same venv). On the RTX 5090 a venv without that marker whose pip freeze is
 # install/freeze/stage1-rtx5090-freeze.txt (one built by hand to the same recipe) is adopted: nothing is installed, and
-# the marker is written once the import check passes.
+# the marker is written once the import check passes. Every run (built, adopted or skipped) then removes Gradio and
+# MoviePy and brings Pillow to 13.0.0 (pillow_update in common.sh), so running 40 again updates a venv built before 0.5.
 # Do not run 40 and 50 at the same time: two nvcc builds at once can exhaust unified memory.
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 [[ -d "$SOURCES/FastVideo" || "$DRY_RUN" == 1 ]] || die "no $SOURCES/FastVideo; run 30-sources.sh first"
@@ -51,8 +54,8 @@ elif [[ "$LFSTUDIO_BACKEND" == rtx5090 ]]; then
         apache-tvm-ffi cuda-python huggingface-hub av imageio imageio-ffmpeg einops comfy-kitchen comfy-aimdo remote-pdb \
         ftfy omegaconf \
         "scipy>=1.14.1" "six>=1.16.0" "h5py>=3.12.1" "requests>=2.32.2" "tokenizers>=0.20.1,<0.23" "sentencepiece>=0.2.0" \
-        "timm>=1.0.11" "peft>=0.15.0" "opencv-python>=4.10.0.84" "pillow>=10.3.0" "wandb>=0.21.0" loguru "test-tube>=0.7.5" \
-        tqdm pytest "PyYAML>=6.0.1" "protobuf>=5.28.3" "gradio==5.32.0" "moviepy>=2.0.0" flask flask_restful aiohttp aiofiles \
+        "timm>=1.0.11" "peft>=0.15.0" "opencv-python>=4.10.0.84" "pillow==$PILLOW" "wandb>=0.21.0" loguru "test-tube>=0.7.5" \
+        tqdm pytest "PyYAML>=6.0.1" "protobuf>=5.28.3" flask flask_restful aiohttp aiofiles \
         cloudpickle gpustat watch wheel torchdata pyarrow "datasets>=4.0.0" torchcodec "ray>=2.49.1" \
         "fastapi>=0.129.0" "uvicorn>=0.41.0"
     # 4) ComfyUI's requirements (the Qwen encoder runs ComfyUI's code), without its torch lines
@@ -86,8 +89,8 @@ else
         apache-tvm-ffi==0.1.13.post3 huggingface-hub==1.29.0 av==18.1.0 imageio==2.37.4 imageio-ffmpeg==0.6.0 \
         einops==0.9.0.dev0 \
         "scipy>=1.14.1" "six>=1.16.0" "h5py>=3.12.1" "requests>=2.32.2" "tokenizers>=0.20.1,<0.23" "sentencepiece>=0.2.0" \
-        "timm>=1.0.11" "peft>=0.15.0" "opencv-python>=4.10.0.84" "pillow>=10.3.0" "wandb>=0.21.0" loguru "test-tube>=0.7.5" \
-        tqdm pytest "PyYAML>=6.0.1" "protobuf>=5.28.3" "gradio==5.32.0" "moviepy>=2.0.0" flask flask_restful aiohttp aiofiles \
+        "timm>=1.0.11" "peft>=0.15.0" "opencv-python>=4.10.0.84" "pillow==$PILLOW" "wandb>=0.21.0" loguru "test-tube>=0.7.5" \
+        tqdm pytest "PyYAML>=6.0.1" "protobuf>=5.28.3" flask flask_restful aiohttp aiofiles \
         cloudpickle omegaconf gpustat watch remote-pdb wheel torchdata pyarrow "datasets>=4.0.0" torchcodec "ray>=2.49.1" \
         "ftfy>=6.3.1" "fastapi>=0.129.0" "uvicorn>=0.41.0" scikit-build-core cmake ninja
     # 4) the cuDNN runtime used with the BSA path (overrides torch's pin)
@@ -100,11 +103,13 @@ else
         TORCH_CUDA_ARCH_LIST=12.1 CMAKE_BUILD_PARALLEL_LEVEL=6 MAX_JOBS=6 \
         CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=121 -DFASTVIDEO_KERNEL_BUILD_TK=OFF -DGPU_BACKEND=CUDA" \
         "$P" install --no-deps --no-build-isolation -v "$SOURCES/FastVideo/fastvideo-kernel"
-    run "$P" check || true          # expected: flashinfer-python missing, nvidia-cusparselt-cu13 "not supported"
+    run "$P" check || true          # expected: flashinfer-python, gradio and moviepy missing; nvidia-cusparselt-cu13 "not supported"
     run mkdir -p "$LOGS"
     if [[ "$DRY_RUN" != 1 ]]; then "$P" freeze > "$LOGS/stage1-freeze.txt"; fi
     run touch "$DONE"
 fi
+
+pillow_update "$V" gradio gradio-client moviepy
 
 step "FA4 dependency target $DEPS/fa4 (kept apart from Stage1: FA4 and BSA use different CuTe versions)"
 if [[ -d "$DEPS/fa4/quack" && "$FORCE" != 1 ]]; then

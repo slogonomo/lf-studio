@@ -1,5 +1,6 @@
 # stage1-freeze.txt: pip freeze of the stage1 env that produced the numbers in docs/PERFORMANCE.md (DGX Spark, 2026-09).
 # Reference only: install/40-stage1.sh installs from install/constraints/ and writes a fresh freeze to $LFSTUDIO_HOME/logs/.
+# Since 0.5 (#69) 40-stage1.sh installs no gradio, gradio_client or moviepy and installs pillow 13.0.0 (both listed below).
 absl-py==2.5.0
 accelerate==1.0.1
 aiofiles==24.1.0

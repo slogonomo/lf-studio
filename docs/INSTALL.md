@@ -232,7 +232,8 @@ again (the old one is moved to `cache/` first) and rebuilds the extensions again
 **An install made by hand.** Steps 40 and 50 count as done when the venv has the marker `.lf-studio-done` (until 0.6
 also 0.4's `.sol-h3-studio-done`). A venv without it whose `pip freeze` matches
 `install/freeze/stage1-rtx5090-freeze.txt` or `stage2-rtx5090-freeze.txt` exactly (one built by hand to the same recipe)
-is adopted: nothing is installed or rebuilt, and the marker is written once the step's import check passes. A venv that
+is adopted: nothing is installed or rebuilt, apart from the Pillow step that every run of 40 and 50 ends with (see
+[From 0.4 to 0.5](#from-04-to-05)), and the marker is written once the step's import check passes. A venv that
 differs in any line is built as usual (pip installs into it again, and step 50 rebuilds ltx-kernels); if you know such a
 venv is right (for example one with an extra tool such as py-spy), mark it done yourself:
 `touch ~/sol-h3/envs/stage1/.lf-studio-done`.
@@ -287,6 +288,19 @@ its containers.
 Run `install/10-sana.sh` after the pull: the patch is now `patches/lf-studio.patch` (`patches/lf-studio-rtx5090.patch`
 on the RTX 5090), its changes marked "lf-studio". The script replaces the 0.4 patch in the checkout as for any update
 and keeps its copy as `lf-studio-applied.patch`.
+
+Then run `install/40-stage1.sh` and `install/50-stage2.sh`, and on a DGX Spark also `install/60-qwen-image.sh`, for
+Pillow 13.0.0 (#69). The image-decoder advisories of 2026-10-22 affect every earlier Pillow
+([GHSA-v9pv-5gc8-w2m6](https://github.com/advisories/GHSA-v9pv-5gc8-w2m6), CVE-2026-96639, and others), and the runtime
+decodes the keyframes and reference images clients upload in the Stage 1 env and, on a DGX Spark, in the Qwen image.
+On envs that are already built, each script now ends with a Pillow step and leaves the rest as it is:
+- 40 uninstalls Gradio, gradio-client and MoviePy (they capped Pillow below 12, and nothing in the studio or the
+  runtime imports them) and installs Pillow 13.0.0;
+- 50 installs Pillow 13.0.0;
+- 60 rebuilds the studio's layer of the Qwen image on the base it keeps.
+
+Together they take a few minutes. Afterwards `pip check` in the Stage 1 env lists FastVideo's Gradio and MoviePy as
+missing, which is expected. A new install gets Pillow 13.0.0 and no Gradio or MoviePy from the start.
 
 New and optional: `LFSTUDIO_API`, on (`1`) by default as in 0.4; `0` turns the API for programs off and leaves the
 studio to its page ([API.md](API.md#turning-the-api-off)).
