@@ -3,26 +3,26 @@
 # Warm-clip bench for one clip length: one infer.py session (upstream flow: a warm-up pass, then every JSONL row
 # as a formal request), under the memory guard. Prints each request's end-to-end time, stage times and the
 # ffprobe'd output. Defaults: landscape, bench/prompts/bench.jsonl, t2va.
-# Needs the whole box: stop the studio and other GPU apps first. Settings: the same env file as bin/sol-h3-studio.
-# Output: $SOL_H3_SPARK_RUNTIME_ROOT/outputs/bench/dur-*, logs in ${SOLH3_BENCH_LOGS:-$SOLH3_HOME/logs/bench}.
+# Needs the whole box: stop the studio and other GPU apps first. Settings: the same env file as bin/lf-studio.
+# Output: $SOL_H3_SPARK_RUNTIME_ROOT/outputs/bench/dur-*, logs in ${LFSTUDIO_BENCH_LOGS:-$LFSTUDIO_HOME/logs/bench}.
 set -uo pipefail
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../install/env.sh
 source "$HERE/../install/env.sh"
 [[ $# -ge 1 && "$1" != -* ]] || { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 S=$1; O=${2:-landscape}; J=${3:-$HERE/prompts/bench.jsonl}; T=${4:-t2va}
-LOGDIR=${SOLH3_BENCH_LOGS:-$SOLH3_HOME/logs/bench}
+LOGDIR=${LFSTUDIO_BENCH_LOGS:-$LFSTUDIO_HOME/logs/bench}
 MANIFEST=$(manifest_for "$T")
 [[ -f "$MANIFEST" ]] || { echo "no manifest $MANIFEST (install/70-manifests.sh)" >&2; exit 1; }
 [[ -f "$J" ]] || { echo "no prompts file $J" >&2; exit 1; }
 J=$(realpath "$J")
-need=${SOLH3_MIN_FREE_GIB:-110}; have=$(mem_avail_gib)
+need=${LFSTUDIO_MIN_FREE_GIB:-110}; have=$(mem_avail_gib)
 (( need == 0 || have >= need )) || { echo "only ${have} GiB MemAvailable, need ${need}: stop other apps first" >&2; exit 1; }
 mkdir -p "$LOGDIR" "$SOL_H3_SPARK_RUNTIME_ROOT/outputs/bench"
 OUT="$SOL_H3_SPARK_RUNTIME_ROOT/outputs/bench/dur-$T-${S}s-$O-$(date +%Y%m%d-%H%M%S)"
 LOG="$LOGDIR/dur-$T-${S}s-$O.log"
 t0=$(date +%s)
-(cd "$PKG" && "$HERE/memguard-run.sh" "$LOG" -- "$SOLH3_PYTHON" infer.py \
+(cd "$PKG" && "$HERE/memguard-run.sh" "$LOG" -- "$LFSTUDIO_PYTHON" infer.py \
     --paths "$MANIFEST" --task "$T" --orientation "$O" --seconds "$S" --prompts "$J" --output-dir "$OUT")
 rc=$?
 python3 - "$OUT" "$S" "$(( $(date +%s) - t0 ))" "$rc" <<'PY'

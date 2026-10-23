@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Browser test of the Sol-H3 Studio page (Playwright; WebKit by default, close to Safari).
+"""Browser test of the LF Studio page (Playwright; WebKit by default, close to Safari).
 
 usage: ui_test.py [URL] [--browser webkit|chromium] [--shots DIR] [--job]
 
@@ -27,7 +27,7 @@ ARGS = sys.argv[1:]
 URL = next((a for a in ARGS if a.startswith("http")), "http://127.0.0.1:8190/")
 RUN_JOB = "--job" in ARGS
 BROWSER = ARGS[ARGS.index("--browser") + 1] if "--browser" in ARGS else "webkit"
-SHOTS = Path(ARGS[ARGS.index("--shots") + 1]) if "--shots" in ARGS else Path(tempfile.mkdtemp(prefix="sol-h3-ui-"))
+SHOTS = Path(ARGS[ARGS.index("--shots") + 1]) if "--shots" in ARGS else Path(tempfile.mkdtemp(prefix="lf-studio-ui-"))
 SHOTS.mkdir(parents=True, exist_ok=True)
 FIX = Path(tempfile.mkdtemp(prefix="fixtures-", dir=SHOTS))   # removed at exit
 atexit.register(shutil.rmtree, FIX, True)
@@ -100,7 +100,7 @@ with sync_playwright() as p:
     pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto(URL)
     pg.wait_for_timeout(2500)
-    check(pg.title() == "Sol-H3 Studio", f"page title ({pg.title()!r})")
+    check(pg.title() == "LF Studio", f"page title ({pg.title()!r})")
     loaded = pg.text_content("#loaded")
     print("loaded shows:", loaded)
     check("·" in loaded or "not loaded" in loaded, "loaded mode/format/length is shown")
@@ -120,7 +120,7 @@ with sync_playwright() as p:
         check(vis == {"#fl": t == "fl2va", "#ref": t == "ref2va"}, f"only the {t} inputs are shown {vis}")
     check(pg.input_value("#prompt") == "my own prompt", "prompt untouched by mode changes")
     key = pg.evaluate("state.session.key")
-    reshape = pg.evaluate("!!state.reshape")    # SOLH3_RESHAPE=1 (default since 0.4): same mode, no reload
+    reshape = pg.evaluate("!!state.reshape")    # LFSTUDIO_RESHAPE=1 (default since 0.4): same mode, no reload
     print("session key:", key, "| reshape:", reshape)
     if key:
         pick(pg, "task", key[0]); pick(pg, "orientation", key[1]); pick(pg, "seconds", str(key[2] or 5))

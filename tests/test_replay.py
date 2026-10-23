@@ -1,7 +1,7 @@
 """bench/replay (the Stage-2 replay bench) on the CPU: draft store, arms, plan and --dry, the GPU run object with
 stand-ins, the report and the SyncNet table. No torch, no GPU, no model weights.
 
-The package's geometry comes from patches/sol-h3-studio.patch itself (runtime/geometry.py is a new file there), so
+The package's geometry comes from patches/lf-studio.patch itself (runtime/geometry.py is a new file there), so
 the plan's shapes are the patch's. python3 -m unittest tests.test_replay -v   (needs ffmpeg)
 """
 import csv
@@ -37,8 +37,8 @@ RECIPE = {"stage1": {"width": 672, "height": 384, "frames": 124},
 
 
 def patch_new_file(rel):
-    """The content of a file that patches/sol-h3-studio.patch adds."""
-    text = (REPO / "patches" / "sol-h3-studio.patch").read_text()
+    """The content of a file that patches/lf-studio.patch adds."""
+    text = (REPO / "patches" / "lf-studio.patch").read_text()
     for section in re.split(r"(?m)^(?=diff --git )", text):
         if section.startswith(f"diff --git a/{rel} b/{rel}\n") and "\nnew file mode" in section:
             body = section.split("\n+++ ", 1)[1].split("\n", 1)[1]
@@ -292,8 +292,17 @@ class PlanTests(Fixture):
     def test_package_info_without_git(self):
         info = plan.package_info(self.pkg, self.sana, REPO)
         self.assertIsNone(info["patch_sha256"])
-        self.assertEqual(info["repo_patch_sha256"], media.sha256(REPO / "patches" / "sol-h3-studio.patch"))
+        self.assertEqual(info["repo_patch_sha256"], media.sha256(REPO / "patches" / "lf-studio.patch"))
         self.assertEqual(info["stage2_code_files"], 1)
+
+    def test_package_info_reads_the_old_applied_copy(self):
+        """Until 0.6: a checkout last patched by 0.4 keeps its copy as sol-h3-studio-applied.patch."""
+        subprocess.run(["git", "init", "-q", str(self.sana)], check=True)
+        old, new = self.sana / ".git/sol-h3-studio-applied.patch", self.sana / ".git/lf-studio-applied.patch"
+        old.write_text("the 0.4 copy\n")
+        self.assertEqual(plan.package_info(self.pkg, self.sana, REPO)["patch_sha256"], media.sha256(old))
+        new.write_text("the 0.5 copy\n")
+        self.assertEqual(plan.package_info(self.pkg, self.sana, REPO)["patch_sha256"], media.sha256(new))
 
 
 class ScriptTests(Fixture):
@@ -301,10 +310,10 @@ class ScriptTests(Fixture):
 
     def script(self, *args, extra=None):
         env_file = self.tmp / "env"
-        env_file.write_text(f'SOLH3_HOME="{self.tmp}"\nSOLH3_SANA="{self.sana}"\nSOLH3_PATHS="{self.paths_template}"\n'
-                            f'SOL_H3_SPARK_RUNTIME_ROOT="{self.rt}"\n')
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOLH3_", "SOL_H3_"))}
-        env.update(SOLH3_ENV=str(env_file), **(extra or {}))
+        env_file.write_text(f'LFSTUDIO_HOME="{self.tmp}"\nLFSTUDIO_SANA="{self.sana}"\n'
+                            f'LFSTUDIO_PATHS="{self.paths_template}"\nSOL_H3_SPARK_RUNTIME_ROOT="{self.rt}"\n')
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_", "SOL_H3_"))}
+        env.update(LFSTUDIO_ENV=str(env_file), **(extra or {}))
         return subprocess.run(["bash", str(REPO / "bench" / "replay.sh"), *args], capture_output=True, text=True,
                               env=env, timeout=120)
 
@@ -315,7 +324,7 @@ class ScriptTests(Fixture):
         self.assertIn("added d5: t2va landscape 5 s", r.stdout)
         self.assertIn("d5:", self.script("list").stdout)
         self.assertIn("canvas480_steps2", self.script("arms").stdout)
-        r = self.script("run", "--dry", "--arms", "baseline:2,preview:1,canvas384:1", extra={"SOLH3_MIN_FREE_GIB": "100000"})
+        r = self.script("run", "--dry", "--arms", "baseline:2,preview:1,canvas384:1", extra={"LFSTUDIO_MIN_FREE_GIB": "100000"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("process 1/2 [1-landscape-5s-1344x768]", r.stdout)
         self.assertIn("refiner (1,128,16,24,42), 16128 video tokens", r.stdout)
@@ -328,7 +337,7 @@ class ScriptTests(Fixture):
 
     def test_run_checks_free_memory_first(self):
         make_case(self.rt, self.geometry, "web_1")
-        r = self.script("run", extra={"SOLH3_MIN_FREE_GIB": "100000"})
+        r = self.script("run", extra={"LFSTUDIO_MIN_FREE_GIB": "100000"})
         self.assertEqual(r.returncode, 1)
         self.assertIn("MemAvailable, need 100000", r.stderr)
         self.assertEqual([p.name for p in (self.rt / "outputs" / "bench").iterdir()], ["replay-drafts"])
@@ -350,7 +359,7 @@ class ScriptTests(Fixture):
         studio_case = make_case(self.rt, self.geometry, "web_1")
         self.assertEqual(self.script("add", "d5", str(studio_case)).returncode, 0)
         r = self.script("run", "--arms", "baseline:1,canvas384:1", "--label", "e2e",
-                        extra={"SOLH3_MIN_FREE_GIB": "0", "SOL_H3_COMPILE_CACHE": str(cache),
+                        extra={"LFSTUDIO_MIN_FREE_GIB": "0", "SOL_H3_COMPILE_CACHE": str(cache),
                                "CUDA_VISIBLE_DEVICES": "", "SOL_H3_SECONDS": "10"})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         run = next((self.rt / "outputs" / "bench").glob("replay-*-e2e"))
@@ -391,8 +400,8 @@ class ScriptTests(Fixture):
         self.assertEqual(self.script("add", "d5", str(make_case(self.rt, self.geometry, "web_1"))).returncode, 0)
         mark = self.tmp / "gpu.pid"
         env_file = self.tmp / "env"
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOLH3_", "SOL_H3_"))}
-        env.update(SOLH3_ENV=str(env_file), SOLH3_MIN_FREE_GIB="0", SOL_H3_COMPILE_CACHE=str(cache),
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_", "SOL_H3_"))}
+        env.update(LFSTUDIO_ENV=str(env_file), LFSTUDIO_MIN_FREE_GIB="0", SOL_H3_COMPILE_CACHE=str(cache),
                    CUDA_VISIBLE_DEVICES="", REPLAY_TEST_MARK=str(mark))
         p = subprocess.Popen(["bash", str(REPO / "bench" / "replay.sh"), "run", "--label", "hup"], env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -619,7 +628,7 @@ class GpuRunTests(Fixture):
             return env
         saved = dict(os.environ)
         try:
-            os.environ.update(SOLH3_PKG="/pkg", HF_TOKEN="secret")
+            os.environ.update(LFSTUDIO_PKG="/pkg", HF_TOKEN="secret")
             env = cli.group_env("/cache")
         finally:
             os.environ.clear()
@@ -803,8 +812,8 @@ class QualityRobustnessTests(Fixture):
         listing.write_text(f"{first}\n{second}\n")
         empty_env = self.tmp / "empty-env"
         empty_env.write_text("")
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOLH3_", "SOL_H3_"))}
-        env.update(SOLH3_ENV=str(empty_env), SOL_H3_SPARK_RUNTIME_ROOT=str(self.rt))
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_", "SOL_H3_"))}
+        env.update(LFSTUDIO_ENV=str(empty_env), SOL_H3_SPARK_RUNTIME_ROOT=str(self.rt))
         loop = (f'while read -r d; do echo "start $d"; bash {REPO / "bench" / "replay.sh"} quality "$d" '
                 f'--syncnet "{sys.executable} {scorer}" > /dev/null 2>&1; echo "end $d $?"; done < {listing}')
         r = subprocess.run(["bash", "-c", loop], capture_output=True, text=True, env=env, timeout=300)

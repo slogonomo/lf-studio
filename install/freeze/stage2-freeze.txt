@@ -1,5 +1,6 @@
 # stage2-freeze.txt: pip freeze of the stage2 env that produced the numbers in docs/PERFORMANCE.md (DGX Spark, 2026-09).
-# Reference only: install/50-stage2.sh installs from install/constraints/ and writes a fresh freeze to $SOLH3_HOME/logs/.
+# Reference only: install/50-stage2.sh installs from install/constraints/ and writes a fresh freeze to $LFSTUDIO_HOME/logs/.
+# Since 0.5 (#69) 50-stage2.sh installs pillow 13.0.0 (12.3.0 below).
 accelerate==1.14.0
 annotated-doc==0.0.5
 anyio==4.15.1

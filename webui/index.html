@@ -1,7 +1,8 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Sol-H3 Studio</title>
+<meta name="lf-studio-backend" content="spark">
+<title>LF Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23d98a3a'/%3E%3Ccircle cx='12' cy='12' r='4.5' fill='%23fff'/%3E%3C/svg%3E">
 <style>
 :root{
@@ -218,7 +219,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 <header class="top">
   <div class="brand">
     <div class="logo" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg></div>
-    <div><h1>Sol-H3 <span>Studio</span></h1><p>MiniMax H3 draft → LTX-2.5 refine · <span id="res">1344×768</span> video with sound, on one DGX Spark</p></div>
+    <div><h1>LF <span>Studio</span></h1><p>MiniMax H3 draft → LTX-2.5 refine · <span id="res">1344×768</span> video with sound, on <span id="machine">one DGX Spark</span></p></div>
   </div>
   <div class="status" id="status" data-s="idle" role="status" aria-live="polite">
     <span class="dot"></span><span><span class="k">Models</span> <span id="loaded">…</span></span><span id="loadtimer"></span>
@@ -303,7 +304,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
   <div id="reloadnote" hidden><span id="reloadtext"></span> <button type="button" class="linkbtn" id="loadnow" hidden title="Start loading these settings now, while you finish the prompt">Load selected now</button></div>
   <div id="err" role="alert"></div>
   <p class="foot"><span id="loadrule">If the mode matches what's loaded, the clip starts right away: another format or length keeps the models loaded, and its first clip takes a little longer. Another mode reloads the models first.</span>
-  Times shown are <b>measured on a DGX Spark</b> with nothing else running.</p>
+  <span id="timesnote">Times shown are <b>measured on a DGX Spark</b> with nothing else running.</span></p>
 </form>
 
 <section class="panel gallery" aria-label="Clips">
@@ -334,16 +335,31 @@ const HINT={t2va:"H3 base format",fl2va:"start with the alignment line",ref2va:"
 const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","non_diegetic_music: N/A"],
   fl2va:["alignment line","integrated_multimodal_description:","overall_soundscape:"],
   ref2va:["subject_definitions:","summary: [reference generation]","retention_analysis:","detailed_description: [Shot 1]","overall_soundscape:","non_diegetic_music: N/A"]};
-// seconds per clip once the models are loaded, measured on a DGX Spark (t2va 16:9); clips over 10 s also reload the
-// prompt encoder each time
-const ETA={3:40,4:45,5:60,6:70,7:80,8:90,10:125,12:150,15:195};
+// The machine (LFSTUDIO_BACKEND; the server names it in the lf-studio-backend meta tag and in /api/state
+// "backend"): its name in the header, the note on times, and the seconds per clip once the models are loaded (t2va
+// 16:9). The DGX Spark's are measured (clips over 10 s also reload the prompt encoder each time). The RTX 5090's are
+// measured at 3, 5, 10 and 15 s, the other lengths interpolated (docs/RTX5090.md). JSON between the markers:
+// tests/test_backend.py reads it.
+const MACHINES=/*machines*/{
+"spark":{"name":"one DGX Spark","times":["Times shown are ","measured on a DGX Spark"," with nothing else running."],
+  "eta":{"3":40,"4":45,"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
+"rtx5090":{"name":"one RTX 5090","times":["Times shown are ","measured on an RTX 5090"," (64 GB RAM, desktop running; text clips)."],
+  "eta":{"3":28,"4":28,"5":28,"6":32,"7":36,"8":40,"10":47,"12":55,"15":66}}
+}/*machines*/;
+let ETA=MACHINES.spark.eta,machine='spark';
+function applyMachine(b){const m=MACHINES[b];if(!m||b===machine)return;machine=b;ETA=m.eta;
+  setText($('machine'),m.name);const n=$('timesnote');
+  setText(n.firstChild,m.times[0]);setText(n.querySelector('b'),m.times[1]);setText(n.lastChild,m.times[2]);}
+applyMachine((document.querySelector('meta[name="lf-studio-backend"]')||{}).content||'spark');
 const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
 // durations: whole seconds first (none, negative or not a number: 0), then minutes and seconds, so 119.6 s reads
 // 2:00 and never 1:60 (#26); fmtS rounds ("45 s", "2:05 min"), clock counts up like a stopwatch (floors)
 const whole=(s,f)=>Number.isFinite(s=f(+s))?Math.max(0,s):0, mmss=n=>`${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;
 const fmtS=s=>{s=whole(s,Math.round);return s<90?`${s} s`:`${mmss(s)} min`;};
 const clock=s=>mmss(whole(s,Math.floor));
-const store={get(k,d){try{const v=localStorage.getItem('solh3.'+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem('solh3.'+k,v)}catch(e){}}};
+// until 0.6: settings this browser kept under solh3.* (up to 0.4) are copied once to lfstudio.*, where those are missing
+try{for(const k of Object.keys(localStorage))if(k.startsWith('solh3.')&&localStorage.getItem('lfstudio.'+k.slice(6))===null)localStorage.setItem('lfstudio.'+k.slice(6),localStorage.getItem(k));}catch(e){}
+const store={get(k,d){try{const v=localStorage.getItem('lfstudio.'+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem('lfstudio.'+k,v)}catch(e){}}};
 const val=n=>{const el=form.querySelector(`input[name="${n}"]:checked`);return el?el.value:''};
 const setRadio=(n,v)=>{const el=form.querySelector(`input[name="${n}"][value="${v}"]`);if(el)el.checked=true;return !!el;};
 const prompt=$('prompt'),seed=$('seed'),autoroll=$('autoroll');
@@ -432,7 +448,7 @@ function effectiveKey(){const q=state.jobs.filter(j=>active(j)&&!j.cancel_reques
 function updateGo(){const k=effectiveKey(),want=[val('task'),val('orientation'),+val('seconds')],go=$('go');
   const same=!!k&&k[0]===want[0]&&k[1]===want[1]&&(k[2]||5)===want[2],eta=ETA[want[2]]||60;
   // #45: the same mode with another format or length keeps the models loaded (the server changes the session's
-  // shape), unless the server reloads for any change (SOLH3_RESHAPE=0)
+  // shape), unless the server reloads for any change (LFSTUDIO_RESHAPE=0)
   const keep=!same&&!!k&&k[0]===want[0]&&!!state.reshape;
   go.classList.toggle('reload',!same&&!keep);
   const warm=(same||keep)&&state.session.preloading&&!state.jobs.some(active);
@@ -643,7 +659,7 @@ function update(d,j,queue,s,t){
   if(j.status==='done'&&!media.dataset.done){media.dataset.done='1';            // the <video> is created exactly once
     media.textContent='';const v=document.createElement('video');v.controls=true;v.preload='none';v.playsInline=true;
     v.poster='/poster/'+j.id;v.src='/video/'+j.id;media.append(v);
-    const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.download=`sol-h3_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;a.textContent='Download';
+    const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.download=`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;a.textContent='Download';
     d.querySelector('.dl').replaceWith(a);}
   else if(!media.dataset.done){const ph=media.querySelector('.ph2'),big=ph.querySelector('.big'),small=ph.querySelector('.small'),bar=ph.querySelector('.bar');
     if(j.status==='failed'){setText(big,'Failed');setText(small,'details below');bar.hidden=true;}
@@ -709,6 +725,6 @@ $('more').onclick=loadMore;
 if('IntersectionObserver' in window)new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))loadMore();},{rootMargin:'600px'}).observe($('more'));
 async function poll(){const seq=++pollSeq;
   try{const r=await fetch('/api/state',{cache:'no-store'}),x=await r.json();if(seq<state.seq)return;   // an older answer
-    state=x;state.seq=seq;if(state.now)skew=state.now-Date.now()/1000;render();}catch(e){}}
+    state=x;state.seq=seq;if(state.now)skew=state.now-Date.now()/1000;applyMachine(state.backend||'spark');render();}catch(e){}}
 poll();setInterval(poll,2000);setInterval(render,1000);
 </script>

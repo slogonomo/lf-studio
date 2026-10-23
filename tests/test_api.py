@@ -6,6 +6,7 @@ python3 -m unittest tests.test_api -v      (or with the rest: python3 -m unittes
 import base64
 import concurrent.futures
 import json
+import re
 import shutil
 import signal
 import socket
@@ -29,7 +30,7 @@ WAV = b"RIFF0000WAVEfmt "          # the stub never reads audio files
 
 def video(seconds=3, sound=True):
     """A small test video, with a sound track or without (reference videos must be at least 2 s)."""
-    d = Path(tempfile.mkdtemp(prefix="sol-h3-api-"))
+    d = Path(tempfile.mkdtemp(prefix="lf-studio-api-"))
     audio = ["-f", "lavfi", "-i", f"sine=duration={seconds}", "-shortest"] if sound else ["-an"]
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
                     f"testsrc2=s=320x180:r=24:d={seconds}", *audio, "-pix_fmt", "yuv420p", str(d / "v.mp4")],
@@ -125,7 +126,7 @@ class JobRecord(ApiTest):
         self.studio.wait([jid], timeout=30)
         code, headers, _ = self.studio.get(f"/video/{jid}", {"Range": "bytes=0-9"})
         self.assertEqual((code, headers["Content-Disposition"]),
-                         (206, f'inline; filename="sol-h3_t2va_5s_seed1_{jid[:6]}.mp4"'))
+                         (206, f'inline; filename="lf-studio_t2va_5s_seed1_{jid[:6]}.mp4"'))
 
 
 class Wait(ApiTest):
@@ -268,7 +269,7 @@ class VideoWait(ApiTest):
         self.assertLess(time.time() - t0, 0.5)
         code, headers, data = self.studio.request("GET", f"/api/jobs/{jid}/video?wait=30", timeout=40)
         self.assertEqual((code, headers["Content-Type"]), (200, "video/mp4"))
-        self.assertEqual(headers["Content-Disposition"], f'inline; filename="sol-h3_t2va_5s_seed5_{jid[:6]}.mp4"')
+        self.assertEqual(headers["Content-Disposition"], f'inline; filename="lf-studio_t2va_5s_seed5_{jid[:6]}.mp4"')
         self.assertEqual(data, self.studio.get(f"/video/{jid}")[2])
         code, headers, data = self.studio.request("GET", f"/api/jobs/{jid}/video", headers={"Range": "bytes=0-99"})
         self.assertEqual((code, len(data), headers["Content-Range"].split("/")[0]), (206, 100, "bytes 0-99"))
@@ -342,7 +343,7 @@ class JsonGenerate(ApiTest):
                 ({"task": "ref2va", "first_frame": f, "ref_images": [f]}, "first_frame is used only by fl2va"),
                 ({"first_frame": f, "ref_videos": [f]}, "first_frame and ref_videos can't go together"),
                 ({"task": "fl2va", "first_frame": "https://example.com/f.png"}, "first_frame: the studio does not "
-                 "fetch URLs; send the file as base64, or use bin/sol-h3, which downloads URLs itself"),
+                 "fetch URLs; send the file as base64, or use bin/lf-cli, which downloads URLs itself"),
                 ({"ref_images": [f, {"url": "http://example.com/r.png"}]}, "ref_images[1]: the studio does not fetch"),
                 ({"keep": ["first_frame:0"]}, "keep needs remix_from")):
             code, answer = self.submit(dict(body, prompt="x"))
@@ -511,11 +512,11 @@ class Limits(ApiTest):
 
 
 class QueueCap(ApiTest):
-    """SOLH3_MAX_QUEUED: a submit while that many clips wait gets 429, the page's form included."""
+    """LFSTUDIO_MAX_QUEUED: a submit while that many clips wait gets 429, the page's form included."""
     load_s, clip_s = 6, 1
 
     def seed(self):
-        self.studio.env["SOLH3_MAX_QUEUED"] = "2"
+        self.studio.env["LFSTUDIO_MAX_QUEUED"] = "2"
 
     def test_full_queue(self):
         a = self.generate()
@@ -539,7 +540,7 @@ class QueueCapDefault(ApiTest):
     load_s, clip_s = 10, 1
 
     def seed(self):
-        self.studio.env.pop("SOLH3_MAX_QUEUED")       # the stub's own 100: some older tests queue more than 20
+        self.studio.env.pop("LFSTUDIO_MAX_QUEUED")       # the stub's own 100: some older tests queue more than 20
 
     def test_twenty_wait(self):
         a = self.generate()
@@ -550,16 +551,119 @@ class QueueCapDefault(ApiTest):
                          (429, {"error": "the queue is full (20 clips waiting); try again when one has finished"}))
 
 
+API_OFF = {"error": "the API for programs is off on this studio (LFSTUDIO_API=0)"}
+PAGE = Path(__file__).resolve().parents[1] / "webui" / "index.html"
+
+
+class ApiOn(ApiTest):
+    """LFSTUDIO_API unset: the API for programs is on, as in 0.4 (#58), also for a submit marked as a program's."""
+
+    def test_on_by_default(self):
+        self.assertIs(self.studio.state()["api"], True)
+        jid = self.submit_ok({"prompt": "x", "seconds": 3})
+        code, _, answer = self.studio.request("POST", "/api/generate", json.dumps({"prompt": "y"}).encode(),
+                                              {"Content-Type": "application/json", "X-LFStudio-Client": "lf-cli/0.5.0"})
+        self.assertEqual(code, 200, answer)
+        self.assertEqual(self.get_job(jid)[0], 200)
+        self.studio.wait([jid, json.loads(answer)["id"]], timeout=30)
+
+
+class ApiOff(ApiTest):
+    """LFSTUDIO_API=0 (#58): JSON submits, submits marked by a program (X-LFStudio-Client, as bin/lf-cli sends) and
+    GET/HEAD /api/jobs/<id>[/video] answer 403 with a message naming the setting; everything the page uses works."""
+
+    def seed(self):
+        self.studio.env["LFSTUDIO_API"] = "0"
+
+    def assert_off(self, method, path, body=None, headers=None):
+        code, h, data = self.studio.request(method, path, body, headers)
+        self.assertEqual((code, h["Content-Type"]), (403, "application/json"), path)
+        self.assertEqual(json.loads(data) if method != "HEAD" else data, API_OFF if method != "HEAD" else b"", path)
+
+    def test_refused(self):
+        self.assertIs(self.studio.state()["api"], False)
+        self.assertIn("the API for programs is off (LFSTUDIO_API=0)", self.studio.log.read_text())
+        self.assert_off("POST", "/api/generate", json.dumps({"prompt": "x"}).encode(),
+                        {"Content-Type": "application/json"})
+        self.assert_off("POST", "/api/generate", json.dumps({"prompt": "x", "first_frame": {
+            "name": "f.png", "data": b64(png())}}).encode(), {"Content-Type": "application/json; charset=utf-8"})
+        b = "apioffboundary"
+        form = (f'--{b}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nx\r\n--{b}--\r\n').encode()
+        self.assert_off("POST", "/api/generate", form, {"Content-Type": f"multipart/form-data; boundary={b}",
+                                                        "X-LFStudio-Client": "lf-cli/0.5.0"})
+        self.assertEqual(self.studio.state()["jobs"], [])                     # nothing queued, no files kept
+        self.assertEqual(self.inputs(), [])
+        jid = self.generate()                                                 # the page's form
+        self.studio.wait([jid], timeout=30)
+        for path in (f"/api/jobs/{jid}", f"/api/jobs/{jid}?wait=5", f"/api/jobs/{jid}/video",
+                     f"/api/jobs/{jid}/video?wait=5", f"/api/jobs/{'f' * 32}", f"/api/jobs/{'f' * 32}/video?wait=1"):
+            for method in ("GET", "HEAD"):
+                self.assert_off(method, path)
+        self.assertEqual(self.get_job("abc"), (404, {"error": "not found"}))  # not an id: not the API's path
+
+    def test_the_page_works(self):
+        """Every endpoint the page calls (webui/index.html), none of them /api/jobs/<id>."""
+        page = PAGE.read_text()
+        self.assertNotIn("/api/jobs/", page)
+        self.assertEqual(sorted(set(re.findall(r"/api/[a-z]+", page))),
+                         ["/api/cancel", "/api/delete", "/api/generate", "/api/inputs", "/api/jobs", "/api/load",
+                          "/api/state", "/api/undelete", "/api/unload"])
+        for path in ("/", "/index.html", "/health"):
+            self.assertEqual(self.studio.get(path)[0], 200, path)
+        a = self.generate(task="fl2va", files={"first_frame": [("f.png", png())]})
+        code, answer = self.studio.post("/api/generate", {"prompt": "remix", "task": "fl2va", "remix_from": a,
+                                                          "keep": "first_frame:0"})      # Remix: the form as well
+        self.assertEqual(code, 200, answer)
+        b = answer["id"]
+        self.studio.wait([a, b], timeout=30)
+        st = self.studio.state()
+        self.assertEqual({j["id"] for j in st["jobs"]}, {a, b})
+        older = json.loads(self.studio.get(f"/api/jobs?before={st['jobs'][0]['created']}&limit=24")[2])
+        self.assertEqual([j["id"] for j in older["jobs"]], [a])
+        for path in (f"/video/{a}", f"/poster/{a}", f"/still/{a}", f"/input/{a}/first_frame/0"):
+            self.assertEqual(self.studio.get(path)[0], 200, path)
+        inputs = json.loads(self.studio.get(f"/api/inputs/{a}")[2])
+        self.assertEqual(inputs["inputs"]["first_frame"][0]["url"], f"/input/{a}/first_frame/0")
+        self.assertEqual(self.studio.post("/api/load", json_body={"task": "fl2va", "orientation": "landscape",
+                                                                  "seconds": 5})[0], 200)
+        self.assertEqual(self.studio.post("/api/unload")[0], 200)
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": b}), (200, {"ok": True}))
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": b})[0], 200)
+        c = self.generate(seed=3)
+        self.assertEqual(self.studio.post("/api/cancel", json_body={"id": c})[0], 200)
+        self.assertEqual(self.studio.wait([c], timeout=30)[0]["status"], "cancelled")
+
+
+class BadApiSetting(unittest.TestCase):
+    def test_refused_at_start(self):
+        from studio import StubStudio
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        try:
+            for value in ("2", "on", "true", "off", " 1"):
+                studio = StubStudio(d, env={"LFSTUDIO_API": value})
+                with self.assertRaises(RuntimeError) as e:
+                    studio.start(timeout=10)
+                self.assertIn(f"LFSTUDIO_API={value}: must be 1 (on, the default) or 0 (off) (see bin/env.example)",
+                              str(e.exception))
+            studio = StubStudio(d, env={"LFSTUDIO_API": ""}).start()          # empty: the default
+            try:
+                self.assertIs(studio.state()["api"], True)
+            finally:
+                studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class BadMaxQueued(unittest.TestCase):
     def test_refused_at_start(self):
         from studio import StubStudio
-        d = Path(tempfile.mkdtemp(prefix="sol-h3-test-"))
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
         try:
             for value in ("0", "x", "-3", "2.5"):
-                studio = StubStudio(d, env={"SOLH3_MAX_QUEUED": value})
+                studio = StubStudio(d, env={"LFSTUDIO_MAX_QUEUED": value})
                 with self.assertRaises(RuntimeError) as e:
                     studio.start(timeout=10)
-                self.assertIn("SOLH3_MAX_QUEUED must be a whole number, 1 or more", str(e.exception))
+                self.assertIn("LFSTUDIO_MAX_QUEUED must be a whole number, 1 or more", str(e.exception))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

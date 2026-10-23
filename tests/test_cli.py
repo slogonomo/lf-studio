@@ -1,4 +1,4 @@
-"""bin/sol-h3, the client for scripts (#29), run as a subprocess against the stub studio (tests/stub) and against small
+"""bin/lf-cli, the client for scripts (#29), run as a subprocess against the stub studio (tests/stub) and against small
 fake servers that answer as spark-switchboard or a studio shutting down would. No models, no GPU.
 
 python3 -m unittest tests.test_cli -v      (or with the rest: python3 -m unittest discover -s tests)
@@ -29,7 +29,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-BIN = REPO / "bin" / "sol-h3"
+BIN = REPO / "bin" / "lf-cli"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "stub"))
 from studio import StubStudio  # noqa: E402
@@ -58,12 +58,12 @@ def free_port(taken=()):
 
 
 def load_cli():
-    """bin/sol-h3 as a module (it has no .py name), without writing bytecode next to it."""
+    """bin/lf-cli as a module (it has no .py name), without writing bytecode next to it."""
     before = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
     try:
-        loader = importlib.machinery.SourceFileLoader("sol_h3", str(BIN))
-        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("sol_h3", loader))
+        loader = importlib.machinery.SourceFileLoader("lf_cli", str(BIN))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader("lf_cli", loader))
         loader.exec_module(module)
         return module
     finally:
@@ -71,11 +71,11 @@ def load_cli():
 
 
 def client_env(url=None, **extra):
-    """This process's environment without SOLH3_* settings, plus the given ones."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("SOLH3_")}
+    """This process's environment without LFSTUDIO_* settings (or their old names), plus the given ones."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_"))}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if url:
-        env["SOLH3_URL"] = url
+        env["LFSTUDIO_URL"] = url
     env.update(extra)
     return env
 
@@ -143,19 +143,20 @@ def switchboard_error(code, message, retry=None):
     """spark-switchboard's 503 for a request it can't pass on (adapters/base.py)."""
     headers = dict(JSON, **({"Retry-After": str(retry)} if retry else {}))
     return 503, headers, {"error": {"type": "service_unavailable", "code": code, "message": message},
-                          "switchboard": {"service": "sol-h3-studio", "state": "stopped", "retry_after_s": retry}}
+                          "switchboard": {"service": "lf-studio", "state": "stopped", "retry_after_s": retry}}
 
 
 class CliTest(unittest.TestCase):
-    """One fresh stub studio per test, and a working directory for the client."""
+    """One fresh stub studio per test (with studio_env's settings), and a working directory for the client."""
     load_s, clip_s = 1, 0.5
+    studio_env = {}
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="sol-h3-cli-"))
+        self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-cli-"))
         self.work = self.dir / "work"
         self.work.mkdir()
         self.studio = StubStudio(self.dir / "studio", port=free_port(), load_s=self.load_s, clip_s=self.clip_s,
-                                 preload=False).start()
+                                 preload=False, env=self.studio_env).start()
 
     def tearDown(self):
         self.studio.stop()
@@ -164,7 +165,7 @@ class CliTest(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def sol(self, *args, url=None, env=None, stdin=None, timeout=120, cwd=None):
-        """Run bin/sol-h3 with these arguments in self.work (or cwd): the CompletedProcess (text)."""
+        """Run bin/lf-cli with these arguments in self.work (or cwd): the CompletedProcess (text)."""
         return subprocess.run([sys.executable, str(BIN), *map(str, args)], input=stdin, capture_output=True, text=True,
                               timeout=timeout, cwd=cwd or self.work,
                               env=client_env(url or self.studio.url, **(env or {})))
@@ -209,7 +210,7 @@ class Generate(CliTest):
         jid = p.stdout.strip()
         self.assertRegex(jid, r"^[0-9a-f]{32}$")
         p = self.ok("wait", jid, "--out", "clips/", "--poster")
-        out = self.work / "clips" / f"sol-h3_t2va_5s_seed7_{jid[:6]}.mp4"
+        out = self.work / "clips" / f"lf-studio_t2va_5s_seed7_{jid[:6]}.mp4"
         self.assertEqual(p.stdout.strip(), str(out))
         self.assertTrue(out.is_file())
         self.assertEqual(out.with_suffix(".jpg").read_bytes()[:2], b"\xff\xd8")
@@ -236,7 +237,7 @@ class Generate(CliTest):
         self.studio.wait([jid], timeout=30)
         p = self.sol("fetch", jid, "--out", "ro/c.mp4")                       # fetch doesn't check first
         self.assertEqual(p.returncode, 2, p.stderr)
-        self.assertIn(f"The clip is done on the studio: save it with sol-h3 fetch {jid} --out <a directory you can "
+        self.assertIn(f"The clip is done on the studio: save it with lf-cli fetch {jid} --out <a directory you can "
                       "write to>", p.stderr)
 
     def test_explicit_out_is_replaced(self):
@@ -265,7 +266,7 @@ class Generate(CliTest):
         for args, words in [
                 (["--first-frame", "a.gif"], "unsupported file type .gif"),
                 (["--first-frame", "missing.png"], "no such file: missing.png"),
-                (["--seconds", 9], "invalid choice: 9"),
+                (["--seconds", 9], re.compile(r"invalid choice: '?9'?")),     # Python 3.14 quotes the value
                 (["--task", "t2va", "--first-frame", "f.png"], "t2va takes no files"),
                 (["--first-frame", "f.png", "--ref", "f.png"], "can't go together"),
                 (["--task", "ref2va", "--first-frame", "f.png"], "--first-frame is used only by fl2va"),
@@ -273,7 +274,10 @@ class Generate(CliTest):
                 (["--task", "ref2va"], "ref2va needs at least one reference image or video")]:
             p = self.sol("generate", "--prompt", "x", *args)
             self.assertEqual(p.returncode, 2, (args, p.stderr))
-            self.assertIn(words, p.stderr)
+            if isinstance(words, re.Pattern):
+                self.assertRegex(p.stderr, words)
+            else:
+                self.assertIn(words, p.stderr)
         (self.work / "x.wav").write_bytes(WAV)
         p = self.sol("generate", "--prompt", "x", "--ref", "x.wav")
         self.assertEqual(p.returncode, 2)
@@ -364,22 +368,23 @@ class Generate(CliTest):
         self.assertEqual(len(self.studio.state()["jobs"]), 2)
 
     def test_studio_address(self):
-        """9.2 #8: SOLH3_HOST=0.0.0.0 and SOLH3_PORT find a local studio; SOLH3_URL beats them; --url beats both,
-        before or after the command."""
+        """9.2 #8: LFSTUDIO_HOST=0.0.0.0 and LFSTUDIO_PORT find a local studio; LFSTUDIO_URL beats them; --url beats
+        both, before or after the command."""
         dead = f"http://127.0.0.1:{free_port({self.studio.port})}"
         port = str(self.studio.port)
         env = {k: v for k, v in client_env().items()}
-        for extra, args in [({"SOLH3_HOST": "0.0.0.0", "SOLH3_PORT": port}, ["status"]),
-                            ({"SOLH3_HOST": "", "SOLH3_PORT": port}, ["status"]),
-                            ({"SOLH3_URL": self.studio.url, "SOLH3_HOST": "127.0.0.1", "SOLH3_PORT": "1"}, ["status"]),
-                            ({"SOLH3_URL": dead}, ["--url", self.studio.url, "status"]),
-                            ({"SOLH3_URL": dead}, ["status", "--url", self.studio.url + "/"])]:
+        for extra, args in [({"LFSTUDIO_HOST": "0.0.0.0", "LFSTUDIO_PORT": port}, ["status"]),
+                            ({"LFSTUDIO_HOST": "", "LFSTUDIO_PORT": port}, ["status"]),
+                            ({"LFSTUDIO_URL": self.studio.url, "LFSTUDIO_HOST": "127.0.0.1", "LFSTUDIO_PORT": "1"},
+                             ["status"]),
+                            ({"LFSTUDIO_URL": dead}, ["--url", self.studio.url, "status"]),
+                            ({"LFSTUDIO_URL": dead}, ["status", "--url", self.studio.url + "/"])]:
             p = subprocess.run([sys.executable, str(BIN), *args], capture_output=True, text=True, timeout=30,
                                env=dict(env, **extra))
             self.assertEqual(p.returncode, 0, (extra, args, p.stderr))
             self.assertEqual(p.stdout, "no clips yet\n")
         p = subprocess.run([sys.executable, str(BIN), "status"], capture_output=True, text=True, timeout=30,
-                           env=dict(env, SOLH3_URL=dead))
+                           env=dict(env, LFSTUDIO_URL=dead))
         self.assertEqual(p.returncode, 3)
 
     def test_unreachable(self):
@@ -391,6 +396,39 @@ class Generate(CliTest):
             self.assertIn(f"can't reach the studio at {dead} (connection refused)", p.stderr)
         p = self.sol("status", url="ftp://somewhere")
         self.assertEqual(p.returncode, 2)
+
+
+class ApiOff(CliTest):
+    """A studio with LFSTUDIO_API=0 (#58): generate (refused before anything is queued: the form carries
+    X-LFStudio-Client), wait, status ID and fetch say so, naming the setting (exit 2); status reads the page's
+    /api/state and still works."""
+    studio_env = {"LFSTUDIO_API": "0"}
+
+    def test_refused_with_the_setting_named(self):
+        off = load_cli().API_OFF
+        self.assertIn("LFSTUDIO_API=0", off)
+        self.assertIn("LFSTUDIO_API=1", off)
+        self.frame()
+        for args in (["--prompt", "x"], ["--prompt", "x", "--wait"], ["--first-frame", "f.png", "--prompt", "x"]):
+            p = self.sol("generate", *args)
+            self.assertEqual((p.returncode, p.stdout), (2, ""), p.stderr)
+            self.assertTrue(p.stderr.endswith(f"\nlf-cli: {off}\n" if "f.png" in args else f"lf-cli: {off}\n"),
+                            p.stderr)
+        self.assertEqual(self.studio.state()["jobs"], [])                         # nothing was queued
+        p = self.sol("generate", "--prompt", "x", "--json")
+        self.assertEqual(json.loads(p.stdout), {"error": off, "http_status": 403, "id": None})
+        jid = self.studio.generate()[1]["id"]                                     # a clip made in the page
+        self.studio.wait([jid], timeout=30)
+        for args in (["wait", jid], ["wait", jid, "--timeout", 5], ["status", jid], ["fetch", jid],
+                     ["fetch", jid, "--out", "c.mp4"]):
+            p = self.sol(*args)
+            self.assertEqual((p.returncode, p.stdout), (2, ""), (args, p.stderr))
+            self.assertEqual(p.stderr, f"lf-cli: {off}\n", args)
+        self.assertEqual(list(self.work.iterdir()), [self.work / "f.png"])       # nothing saved
+        p = self.sol("--json", "status", jid)
+        self.assertEqual(json.loads(p.stdout), {"error": off, "http_status": 403, "id": jid})
+        p = self.ok("status")
+        self.assertTrue(p.stdout.startswith(f"{jid}  done"), p.stdout)
 
 
 class Waiting(CliTest):
@@ -405,7 +443,7 @@ class Waiting(CliTest):
         self.assertLess(time.time() - t, 5)
         jid = p.stdout.strip()
         self.assertRegex(jid, r"^[0-9a-f]{32}$")
-        self.assertIn(f"Keep waiting with: sol-h3 wait {jid}", p.stderr)
+        self.assertIn(f"Keep waiting with: lf-cli wait {jid}", p.stderr)
         p = self.ok("cancel", jid)
         self.assertEqual(p.stdout, f"cancelling {jid}: it stops once the pipeline has closed (about 40 s)\n")
         p = self.sol("wait", jid)
@@ -434,7 +472,7 @@ class Waiting(CliTest):
         out, err = proc.communicate(timeout=10)
         self.assertEqual(proc.returncode, 130, err)
         jid = self.studio.state()["jobs"][0]["id"]
-        self.assertIn(f"Get it later with: sol-h3 wait {jid}", err)
+        self.assertIn(f"Get it later with: lf-cli wait {jid}", err)
         self.assertEqual(self.studio.wait([jid], timeout=30)[0]["status"], "done")
         self.assertEqual(list(self.work.iterdir()), [])
 
@@ -443,7 +481,7 @@ class Switchboard(unittest.TestCase):
     """9.2 #9 and DECISIONS 13, against fake servers that answer as spark-switchboard does."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="sol-h3-cli-"))
+        self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-cli-"))
         self.addCleanup(shutil.rmtree, self.dir, True)
 
     def fake(self, answer):
@@ -462,33 +500,35 @@ class Switchboard(unittest.TestCase):
 
         def answer(method, path, headers, body):
             if path == "/__switchboard/status":
-                return 200, JSON, {"state": "stopped", "paused": None, "message": "Sol-H3 Studio is not running"}
+                return 200, JSON, {"state": "stopped", "paused": None, "message": "LF Studio is not running"}
             if path.startswith("/video/"):
                 return 200, {"Content-Type": "video/mp4", "Content-Disposition": 'inline; filename="woken.mp4"'}, \
                     b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 100
             if path == "/api/jobs/" + jid:
                 return 200, JSON, {"id": jid, "state": "done", "task": "t2va", "seconds": 5, "seed": 1}
             if path == "/api/generate":
-                return switchboard_error("waiting", "Sol-H3 Studio will start once memory is free: TensorFold is "
+                return switchboard_error("waiting", "LF Studio will start once memory is free: TensorFold is "
                                                     "busy", retry=120)
-            return switchboard_error("stopped", "Sol-H3 Studio is not running")
+            return switchboard_error("stopped", "LF Studio is not running")
         fake = self.fake(answer)
         for args, words in [(["status"], "the studio is stopped"), (["status", jid], "the studio is stopped"),
-                            (["wait", jid], f"Get it with: sol-h3 fetch {jid} --wake"),
+                            (["wait", jid], f"Get it with: lf-cli fetch {jid} --wake"),
                             (["cancel", jid], "no clip is queued or running there"),
-                            (["fetch", jid], "fetching would start it (it needs about 110 GiB). Add --wake.")]:
+                            (["fetch", jid],
+                             "fetching would start it (it needs most of the machine's memory). Add --wake.")]:
             p = self.sol(fake, *args)
             self.assertEqual(p.returncode, 3, (args, p.stderr))
             self.assertIn(words, p.stderr)
         self.assertEqual(set(fake.paths()), {"/__switchboard/status"})            # nothing else was asked for
         p = self.sol(fake, "generate", "--prompt", "x")
         self.assertEqual(p.returncode, 3)
-        self.assertIn("Sol-H3 Studio will start once memory is free: TensorFold is busy The clip was NOT submitted; "
+        self.assertIn("LF Studio will start once memory is free: TensorFold is busy The clip was NOT submitted; "
                       "try again in about 120 s.", p.stderr)
         method, path, headers, body = fake.requests[-1]
         self.assertEqual((method, path, headers["X-Switchboard-Wait"]), ("POST", "/api/generate", "900"))
         self.assertEqual(headers["Accept"], "application/json")
-        self.assertTrue(headers["User-Agent"].startswith("sol-h3/"))
+        self.assertTrue(headers["User-Agent"].startswith("lf-cli/0.5.0"))
+        self.assertEqual(headers["X-LFStudio-Client"], headers["User-Agent"])    # #58: a studio with the API off
         self.assertNotIn("Authorization", headers)                               # DECISIONS 2: no credentials
         p = self.sol(fake, "fetch", jid, "--wake")
         self.assertEqual(p.returncode, 0, p.stderr)
@@ -509,10 +549,10 @@ class Switchboard(unittest.TestCase):
             polls.append(path)
             if len(polls) == 1:
                 return 202, JSON, running
-            return switchboard_error("stopped", "Sol-H3 Studio is not running")
+            return switchboard_error("stopped", "LF Studio is not running")
         p = self.sol(self.fake(answer), "wait", jid)
         self.assertEqual(p.returncode, 3)
-        self.assertIn(f"the clip most likely finished first. Get it with: sol-h3 fetch {jid} --wake", p.stderr)
+        self.assertIn(f"the clip most likely finished first. Get it with: lf-cli fetch {jid} --wake", p.stderr)
         self.assertTrue(all(p.startswith(f"/api/jobs/{jid}/video?wait=") for p in polls))
 
         def shutdown(method, path, headers, body):
@@ -536,7 +576,7 @@ class Switchboard(unittest.TestCase):
             if path.startswith(f"/api/jobs/{jid}/video"):
                 polls.append(time.time())
                 if len(polls) == 1:
-                    return switchboard_error("loading", "Sol-H3 Studio is starting", retry=10)
+                    return switchboard_error("loading", "LF Studio is starting", retry=10)
                 return 200, {"Content-Type": "video/mp4"}, b"\x00\x00\x00\x18ftypmp42"
             return 200, JSON, {"id": jid, "state": "done", "task": "t2va", "seconds": 5, "seed": 1, "wall_s": 61}
         p = self.sol(self.fake(answer), "wait", jid, "--out", "x.mp4")
@@ -577,7 +617,7 @@ class SwitchboardIntegration(unittest.TestCase):
         """The integration file's passive_paths (switchboard matches them with fnmatch on the path): the reads the
         client polls never start a stopped studio (DECISIONS 10), downloads and POSTs still do."""
         import fnmatch
-        text = (REPO / "integrations" / "spark-switchboard" / "sol-h3-studio.toml").read_text()
+        text = (REPO / "integrations" / "spark-switchboard" / "lf-studio.toml").read_text()
         m = re.search(r"^passive_paths = (\[.*\])", text, re.M)
         self.assertIsNotNone(m)
         patterns = json.loads(m.group(1))
@@ -592,17 +632,17 @@ class SwitchboardIntegration(unittest.TestCase):
 
 class PassThrough(CliTest):
     def test_launcher_runs_the_client(self):
-        """9.2 #11: bin/sol-h3-studio status|guide|... runs bin/sol-h3 with the env file's settings."""
+        """9.2 #11: bin/lf-studio status|guide|... runs bin/lf-cli with the env file's settings."""
         jid = self.studio.generate()[1]["id"]
         self.studio.wait([jid])
         envfile = self.dir / "env"
-        envfile.write_text(f"SOLH3_HOST=0.0.0.0\nSOLH3_PORT={self.studio.port}\n")
-        p = subprocess.run(["bash", str(REPO / "bin" / "sol-h3-studio"), "status", jid], capture_output=True,
-                           text=True, timeout=30, cwd=self.work, env=client_env(SOLH3_ENV=str(envfile)))
+        envfile.write_text(f"LFSTUDIO_HOST=0.0.0.0\nLFSTUDIO_PORT={self.studio.port}\n")
+        p = subprocess.run(["bash", str(REPO / "bin" / "lf-studio"), "status", jid], capture_output=True,
+                           text=True, timeout=30, cwd=self.work, env=client_env(LFSTUDIO_ENV=str(envfile)))
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertTrue(p.stdout.startswith(f"{jid}  done"), p.stdout)
-        p = subprocess.run(["bash", str(REPO / "bin" / "sol-h3-studio"), "nonsense"], capture_output=True, text=True,
-                           timeout=30, env=client_env(SOLH3_ENV=str(envfile)))
+        p = subprocess.run(["bash", str(REPO / "bin" / "lf-studio"), "nonsense"], capture_output=True, text=True,
+                           timeout=30, env=client_env(LFSTUDIO_ENV=str(envfile)))
         self.assertEqual(p.returncode, 2)
 
 
@@ -749,7 +789,7 @@ class ImageSize(unittest.TestCase):
         self.assertEqual(size(webp(6, flag=False)), (1344, 768))
 
     def test_files_from_ffmpeg(self):
-        d = Path(tempfile.mkdtemp(prefix="sol-h3-img-"))
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-img-"))
         self.addCleanup(shutil.rmtree, d, True)
         for name, extra in (("a.png", []), ("a.jpg", []), ("a.webp", []), ("b.webp", ["-lossless", "1"])):
             p = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=40x24",
@@ -760,7 +800,7 @@ class ImageSize(unittest.TestCase):
 
 
 class Source(unittest.TestCase):
-    """9.2 #12: bin/sol-h3 runs on Python 3.9 with the standard library alone, as a lone copied file."""
+    """9.2 #12: bin/lf-cli runs on Python 3.9 with the standard library alone, as a lone copied file."""
 
     def test_python39_and_stdlib_only(self):
         source = BIN.read_text()
@@ -806,13 +846,13 @@ class Source(unittest.TestCase):
                 quotes.append(tok.string[-1])
 
     def test_runs_as_a_lone_copy(self):
-        d = Path(tempfile.mkdtemp(prefix="sol-h3-copy-"))
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-copy-"))
         self.addCleanup(shutil.rmtree, d, True)
-        shutil.copy(BIN, d / "sol-h3")
-        p = subprocess.run([sys.executable, "-I", str(d / "sol-h3"), "--version"], capture_output=True, text=True,
+        shutil.copy(BIN, d / "lf-cli")
+        p = subprocess.run([sys.executable, "-I", str(d / "lf-cli"), "--version"], capture_output=True, text=True,
                            cwd=d, timeout=30, env=client_env())
-        self.assertEqual((p.returncode, p.stdout.strip()), (0, "sol-h3 0.4.0"))
-        self.assertEqual(sorted(x.name for x in d.iterdir()), ["sol-h3"])
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, "lf-cli 0.5.0"))
+        self.assertEqual(sorted(x.name for x in d.iterdir()), ["lf-cli"])
 
 
 if __name__ == "__main__":

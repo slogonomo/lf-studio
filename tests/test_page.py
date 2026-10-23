@@ -40,7 +40,7 @@ class PageTest(unittest.TestCase):
         cls.pw.stop()
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="sol-h3-page-"))
+        self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-page-"))
         self.studio = StubStudio(self.dir, load_s=self.load_s, clip_s=self.clip_s, preload=self.preload)
         self.seed()
         self.studio.start()
@@ -69,11 +69,11 @@ class PageTest(unittest.TestCase):
 
 class WarmUpLabel(PageTest):
     """#4: during a warm-up for the selected settings the button says when the clip would be ready. With
-    SOLH3_RESHAPE=0, so that another format counts as other settings (ReshapeLabel: the default)."""
+    LFSTUDIO_RESHAPE=0, so that another format counts as other settings (ReshapeLabel: the default)."""
     load_s, preload = 20, True
 
     def seed(self):
-        self.studio.env["SOLH3_RESHAPE"] = "0"
+        self.studio.env["LFSTUDIO_RESHAPE"] = "0"
         (self.studio.state_dir / "jobs.json").write_text(json.dumps([finished_job()]))
         (self.studio.state_dir / "load-times.json").write_text(
             '{"t2va/landscape/5": 20, "warm/t2va/landscape/5": 12}')        # takeover window 12 - 5 = 7 s
@@ -318,12 +318,12 @@ class DeleteUndo(PageTest):
 
 
 class LoadSelectedNow(PageTest):
-    """#3: the link under Generate loads the selected settings on request. With SOLH3_RESHAPE=0: by default another
+    """#3: the link under Generate loads the selected settings on request. With LFSTUDIO_RESHAPE=0: by default another
     format or length of the loaded mode keeps the models, and the page offers no link for it (ReshapeLabel)."""
     load_s, preload = 6, True
 
     def seed(self):
-        self.studio.env.update(STUB_CLOSE_S="2", SOLH3_RESHAPE="0")
+        self.studio.env.update(STUB_CLOSE_S="2", LFSTUDIO_RESHAPE="0")
         (self.studio.state_dir / "jobs.json").write_text(json.dumps([finished_job()]))
 
     def test_link_switches_the_warm_up(self):
@@ -361,11 +361,11 @@ class LoadSelectedNow(PageTest):
 
 class ReshapeLabel(PageTest):
     """#45: another format or length of the loaded mode keeps the models: the button says so, without a reload note
-    or a "Load selected now" link; another mode still reloads. SOLH3_RESHAPE=0 (ReshapeLabelOff) reloads for both."""
+    or a "Load selected now" link; another mode still reloads. LFSTUDIO_RESHAPE=0 (ReshapeLabelOff) reloads for both."""
     reshape = True
 
     def seed(self):
-        self.studio.env.update(SOLH3_RESHAPE="1" if self.reshape else "0", STUB_RESHAPE_S="3")
+        self.studio.env.update(LFSTUDIO_RESHAPE="1" if self.reshape else "0", STUB_RESHAPE_S="3")
 
     def test_labels(self):
         jid = self.studio.generate()[1]["id"]
@@ -402,22 +402,24 @@ UI_TEST = Path(__file__).resolve().parent / "ui_test.py"
 @unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")
 class UiTestScript(unittest.TestCase):
     """tests/ui_test.py, the general check of the page that AGENTS.md runs against any studio, passes against a stub
-    studio with a t2va session loaded, with SOLH3_RESHAPE=1 (the default since 0.4: another format or length keeps the
-    models, another mode reloads them) and with 0 (any change reloads). An fl2va clip before it makes fl2va a mode
-    'Load selected now' can warm up."""
+    studio with a t2va session loaded, with LFSTUDIO_RESHAPE=1 (the default since 0.4: another format or length keeps
+    the models, another mode reloads them) and with 0 (any change reloads), and with the API for programs off
+    (LFSTUDIO_API=0, #58), which the page does not use. An fl2va clip before it makes fl2va a mode 'Load selected now'
+    can warm up."""
 
-    def run_ui_test(self, reshape):
-        root = Path(tempfile.mkdtemp(prefix="sol-h3-uitest-"))
+    def run_ui_test(self, reshape, api="1"):
+        root = Path(tempfile.mkdtemp(prefix="lf-studio-uitest-"))
         self.addCleanup(shutil.rmtree, root, True)
-        studio = StubStudio(root, load_s=1, clip_s=0.5, preload=False, env={"SOLH3_RESHAPE": reshape})
+        studio = StubStudio(root, load_s=1, clip_s=0.5, preload=False,
+                            env={"LFSTUDIO_RESHAPE": reshape, "LFSTUDIO_API": api})
         studio.start()
         self.addCleanup(studio.stop)
         ids = [studio.generate(task="fl2va", files={"first_frame": [("first.png", png())]})[1]["id"],
                studio.generate()[1]["id"]]
         self.assertEqual([job["status"] for job in studio.wait(ids)], ["done", "done"])
         state = studio.state()
-        self.assertEqual((state["reshape"], state["session"]["key"], sorted(state["warmable"])),
-                         (reshape == "1", ["t2va", "landscape", 5], ["fl2va", "t2va"]))
+        self.assertEqual((state["reshape"], state["session"]["key"], sorted(state["warmable"]), state["api"]),
+                         (reshape == "1", ["t2va", "landscape", 5], ["fl2va", "t2va"], api == "1"))
         result = subprocess.run([sys.executable, str(UI_TEST), studio.url + "/", "--shots", str(root / "shots")],
                                 capture_output=True, text=True, timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-2000:])
@@ -433,6 +435,9 @@ class UiTestScript(unittest.TestCase):
 
     def test_reshape_off(self):
         self.assertIn("PASS Generate warns about a reload when the format differs", self.run_ui_test("0"))
+
+    def test_api_off(self):
+        self.assertIn("PASS Generate keeps the models when the format differs", self.run_ui_test("1", api="0"))
 
 
 class ReleaseReviewPage(PageTest):
@@ -1331,6 +1336,29 @@ class QueuePicture(PageTest):
                 for part, least in ((".big", 4.5), (".small", 4.5)):
                     ratio = self.contrast(jid, part)
                     self.assertGreaterEqual(ratio, least, f"{part} on the {scheme} {jid == a and 'running' or 'queued'} card")
+
+
+class MachineTexts(PageTest):
+    """LFSTUDIO_BACKEND (docs/RTX5090.md): the header and the note on times name the machine, and the clip-time
+    estimates follow its table. Unset = the DGX Spark, as before. tests/test_backend.py checks the table and the
+    page's applyMachine without a browser."""
+    backend = None
+
+    def seed(self):
+        self.studio.env.pop("LFSTUDIO_BACKEND", None)
+        if self.backend:
+            self.studio.env["LFSTUDIO_BACKEND"] = self.backend
+
+    def test_texts(self):
+        m = self.page.evaluate("MACHINES")[self.backend or "spark"]
+        self.assertEqual(self.page.inner_text("#machine"), m["name"])
+        self.assertEqual(self.page.inner_text("#timesnote"), "".join(m["times"]))
+        self.pick("seconds", "5")
+        self.assertIn(f"~{m['eta']['5']} s per clip", self.page.inner_text("#lenout"))
+
+
+class MachineTextsRtx5090(MachineTexts):
+    backend = "rtx5090"
 
 
 if __name__ == "__main__":
