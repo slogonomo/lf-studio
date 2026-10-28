@@ -227,6 +227,15 @@ with sync_playwright() as p:
     check(all(dl and not cancel for s, cancel, dl in cards if s in finished)
           and not any(dl for s, cancel, dl in cards if s not in finished),
           f"Cancel only on queued or running cards, Delete only on finished ones ({len(cards)} cards)")
+    # the experimental Upscale (LFSTUDIO_UPSCALE=1): its button only on finished clips, and never on an upscale's own
+    # card, which has no Remix either; none at all with it off
+    on = pg.evaluate("!!state.upscale")
+    ups = pg.evaluate("[...document.querySelectorAll('.job')].map(c => [c.dataset.status, c.dataset.kind || '', "
+                      "!!c.querySelector('.act.up:not([hidden])'), !!c.querySelector('.reuse-all')])")
+    check(all(not up or (on and s == "done" and not kind) for s, kind, up, remix in ups)
+          and all(not remix for s, kind, up, remix in ups if kind == "upscale"),
+          f"Upscale only on finished clips with it on ({'on' if on else 'off'}), no Remix or Upscale on an upscale "
+          f"({sum(kind == 'upscale' for _, kind, _, _ in ups)} upscales)")
     # durations are rounded to whole seconds before they are split (#26): "2:00 min", never "1:60 min"
     times = pg.evaluate("[...document.querySelectorAll('#go, #lenout, #loadtimer, .job .when, .job .ph2')]"
                         ".map(e => e.textContent)")
