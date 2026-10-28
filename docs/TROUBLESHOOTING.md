@@ -277,9 +277,9 @@ memory and lowest MemAvailable per phase). A failed upscale's card shows the job
 `LFSTUDIO_BACKEND=rtx5090`, where it does not run. Set `LFSTUDIO_UPSCALE=1` and restart.
 
 **The Upscale button is greyed out.** It says why when you point at it, or click or tap it: for now it takes finished
-5 s 16:9 text clips only (`Upscale needs a 5 s 16:9 clip ...`, `Upscale takes text-to-video (t2va) clips only, for
-now`), and it reads the clip's working files, which clips made before per-clip folders, or whose session folder was
-removed, no longer have (`the clip's working files (its session directory) are gone`).
+5 s text clips only, 16:9 or 9:16 (`Upscale takes 5 s clips only, for now ...`, `Upscale takes text-to-video (t2va)
+clips only, for now`), and it reads the clip's working files, which clips made before per-clip folders, or whose
+session folder was removed, no longer have (`the clip's working files (its session directory) are gone`).
 
 **`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
 `missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's
@@ -313,6 +313,14 @@ own job on the GPU, so its `worker.log` is worth a report. `LFSTUDIO_UPSCALE_PRE
 fast load (`only with LFSTUDIO_UPSCALE_LOAD=standard`): it fills the page cache, which the fast load reads past.
 An upscale waits while any clip is queued, also one queued after it, since it closes the studio's models; the next
 clip loads them again, and with `LFSTUDIO_PRELOAD=1` the studio warms them up again once the upscale is done.
+
+**An upscale of a 9:16 clip fails at once with `NVIDIA's package is not the one this wrapper was written for
+(6e4a440): {'open_h3/pipeline.py': ...}`.** The job takes a 9:16 clip through NVIDIA's code with the shapes turned,
+and does so only with the NVIDIA files it was written against (`open_h3/pipeline.py` and `open_h3/upscaler.py`, by
+SHA-256; also the 16:9 sizes in them, and no 9:16 entry of NVIDIA's own). `LFSTUDIO_UPSCALE_PKG` names another
+version of NVIDIA's package, or its files were changed: point it at the extract of the pinned commit that
+`install/65-regen2k.sh` makes (`$LFSTUDIO_HOME/sources/sana-6e4a440/models/Open-H3-Regenerate-2K`, its default link).
+16:9 clips don't read these files.
 
 **Cancel of an upscale shows "Cancelling" for up to ~20 s.** The job stops once the GPU call under way returns; if
 that takes longer than 20 s, the studio kills it. Either way the next job starts only after it is gone.

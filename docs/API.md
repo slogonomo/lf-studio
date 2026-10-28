@@ -450,9 +450,12 @@ call) never cancels the clip.
 
 Only on a DGX Spark studio with `LFSTUDIO_UPSCALE=1` (off by default; `bin/env.example`). It upscales a finished
 clip, from its MP4, to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regenerate-2K, run as a job of its own
-(`upscale/regen2k_job.py`, in an environment of its own). For now it takes **5 s 16:9 text clips (t2va)** only:
-NVIDIA's pipeline is fixed at 1344×768 and 121 frames, and fl2va and ref2va clips need a text-only encode of their
-prompt first. Portrait, 10 and 15 s, fl2va and ref2va are follow-ups.
+(`upscale/regen2k_job.py`, in an environment of its own). For now it takes **5 s text clips (t2va), 16:9 or 9:16**
+only: NVIDIA's pipeline is fixed at 121 frames, and fl2va and ref2va clips need a text-only encode of their prompt
+first. NVIDIA's code is written for 16:9 (1344×768): the job takes a 9:16 clip (768×1344) through it with the shapes
+turned, without changing NVIDIA's files, and the result is upright (1080×1920, 1440×2560 or 2160×3840). 9:16 has not
+run on the GPU yet, and NVIDIA trained its refiner on 16:9 video. The other lengths (3 to 15 s), fl2va and ref2va
+are follow-ups.
 
 ```bash
 curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: application/json' \
@@ -462,7 +465,7 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 | Key | Value |
 |---|---|
 | `id` | the finished clip (required) |
-| `resolution` | `1080p`, `2k` (default) or `4k` (untested: the studio's 4K path has not been run end to end yet) |
+| `resolution` | `1080p`, `2k` (default) or `4k` (untested: the studio's 4K path has not been run end to end yet): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's) |
 | `strength` | how much it may redraw: `faithful` (start noise 0.5, 2 steps), `balanced` (0.7, 2 steps) or `full` (NVIDIA's release setting, 3 steps from 0.909: sharpest, but it redraws faces). Default `LFSTUDIO_UPSCALE_STRENGTH` (`balanced`). Provisional, until measured |
 | `audio` | what the picture is refined against: `clip` (the clip's own Stage-1 audio) or `silence` (NVIDIA's). Default `LFSTUDIO_UPSCALE_AUDIO` (`clip`). The result gets the clip's sound either way, copied |
 | `seed` | the refine's seed; default (or `null`) the clip's |
@@ -476,8 +479,8 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   `LFSTUDIO_PRELOAD=1` (the default) the studio warms up the last clip's settings again as soon as the upscale is
   done and nothing is queued.
 - 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `unknown key "steps" (...)`, ...), `an upscale can't
-  be upscaled again`, `Upscale takes text-to-video (t2va) clips only, for now` or `Upscale needs a 5 s 16:9 clip
-  (...)`. Any key not in the table is unknown, `source` too: test builds of the Upscale took `"source": "draft"` (the
+  be upscaled again`, `Upscale takes text-to-video (t2va) clips only, for now` or `Upscale takes 5 s clips only, for
+  now (NVIDIA's pipeline is fixed at 121 frames)`. Any key not in the table is unknown, `source` too: test builds of the Upscale took `"source": "draft"` (the
   clip's Stage-1 latent), which redrew the video too much and is gone, so a request with `source` (even `"final"` or
   `null`) gets 400 `unknown key "source" (known: id, resolution, strength, audio, seed)` and nothing is queued.
 - 404 `no such clip`; with the Upscale off, `the experimental Upscale is off on this studio (LFSTUDIO_UPSCALE=1 turns
@@ -604,8 +607,8 @@ for example with `--prompt` (`--prompt-file -` also keeps CRLF, on Linux).
 page) without waiting; a clip still running is exit 4. **`status`** prints one line per clip: the queued and
 running ones, oldest first, then the newest 5 finished ones; `status ID` one clip. **`cancel ID`** cancels it.
 
-**`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s 16:9 t2va
-clip ([Upscale](#upscale-experimental-post-apiupscale)) and works as `generate` from there: without `--wait`, `--out`
+**`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s t2va clip,
+16:9 or 9:16 ([Upscale](#upscale-experimental-post-apiupscale)), and works as `generate` from there: without `--wait`, `--out`
 or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
 `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the
 studio's defaults hold for the rest (2K, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the
@@ -613,7 +616,7 @@ clip's seed), and holds at switchboard as `generate` does (`--hold`). An upscale
 is untested), with a ~25 s load expected (21 s in the bench, not yet measured in the studio's job; ~7 min more on a
 studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback), so `--timeout` and a later `wait` are the usual way.
 `status` shows it as `2k upscale of <clip id8>, balanced, ...`, `cancel` stops it within about 20 s, and the studio's
-refusals (`Upscale needs a 5 s 16:9 clip ...`, the Upscale off) are exit 2.
+refusals (`Upscale takes 5 s clips only, for now ...`, the Upscale off) are exit 2.
 
 **Waiting** is a loop of `GET /api/jobs/<id>/video?wait=15`, so the MP4 comes on the connection that saw the clip
 finish. It shows one progress line per change on stderr (`queued 5cfd57b0 (fl2va, landscape, 5 s, seed 1234),
@@ -689,7 +692,7 @@ host registered with `sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; 
 | `status` | `id` | one clip's record; without an id, the clips this session submitted, then the queue and the newest clips. Never waits, downloads or starts a stopped studio. |
 | `cancel` | `id` (required) | cancels a queued or running clip |
 | `fetch` | `id` (required), `out`, `poster`, `wake` (default false) | saves a finished clip (also one made in the page); refuses on a studio switchboard has stopped unless `wake` is true |
-| `upscale` | `id` (required), `resolution`, `strength`, `audio`, `seed`, `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished 5 s 16:9 t2va clip ([Upscale](#upscale-experimental-post-apiupscale)), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. Each call queues another upscale |
+| `upscale` | `id` (required), `resolution`, `strength`, `audio`, `seed`, `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished 5 s t2va clip, 16:9 or 9:16 ([Upscale](#upscale-experimental-post-apiupscale)), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. Each call queues another upscale |
 | `prompt_guide` | none | the [prompt guide](#prompt-guide) |
 
 **Results.** A done clip gives a text block (`Clip <id> is done: saved <absolute path> (3.2 MB, 5 s fl2va

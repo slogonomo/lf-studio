@@ -306,6 +306,11 @@ load. The run above started from the Stage-1 latent, so the two encodes did not 
   same, 42-44 GiB, either way). About 67 min after the load, 75 min in all. Its attention at 302,534 rows gave the right
   result on GB10 (checked against fp32). **The studio's own 4K path has not been run end to end yet**, so the page, the
   CLI and the MCP tool call 4K untested.
+- 9:16 (a 768×1344 clip to 1080×1920, 1440×2560 or 2160×3840): **not measured yet**. Its latent grids are the 16:9
+  ones turned, so the refine has the same number of tokens at each resolution (133,200 video rows at 2K, for
+  example), the decode the same number of 256 px tiles and the upscaler the same scale factors; the page and the
+  client show the 16:9 times for it, and the same memory is expected (an estimate from those counts, not a
+  measurement). The upscaler goes through the 2K grid (turned) at 4K only, as for 16:9.
 - The studio needs ~110 GiB free to start an upscale (`LFSTUDIO_UPSCALE_MIN_FREE_GIB`, 117.7 GiB were free on the idle
   box), and kills it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`).
 - Quality, so far: at NVIDIA's settings (start noise 0.909, 3 steps: `full`) the result is much sharper but has a

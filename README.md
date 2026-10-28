@@ -103,13 +103,15 @@ page in a browser; see [AGENTS.md](AGENTS.md).
 Off by default, DGX Spark only. With `LFSTUDIO_UPSCALE=1` and the optional install step `install/65-regen2k.sh`, a
 finished clip's card gets an **Upscale** button. NVIDIA's
 [Open-H3-Regenerate-2K](https://github.com/NVlabs/Sana/tree/sol-engine/models/Open-H3-Regenerate-2K) re-renders the
-clip with MiniMax-H3 at 1080p, 2K (2560×1440) or 4K, and the result comes as a card of its own, with the clip's own
-sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and the MCP tool `upscale`
-([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
+clip with MiniMax-H3 at 1080p, 2K (2560×1440, or 1440×2560 for a 9:16 clip) or 4K, and the result comes as a card of
+its own, with the clip's own sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and the MCP
+tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
 
-- **Only 5 s 16:9 text clips (t2va) for now.** NVIDIA's pipeline is fixed at 1344×768 and 121 frames, and Keyframes
-  and Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with
-  the reason.
+- **Only 5 s text clips (t2va) for now, 16:9 or 9:16.** NVIDIA's pipeline is fixed at 121 frames, and Keyframes and
+  Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with the
+  reason. NVIDIA's code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA
+  file changed). It has as many tokens as 16:9, so the same times are expected. **9:16 has not run on the GPU yet**,
+  and NVIDIA trained its refiner on 16:9 video.
 - **It is slow.** On one DGX Spark a 2-step upscale takes about 11 min at 1080p and 20 min at 2K
   (27 min with 3 steps): ~3 min reading the clip, the refine (2.4 min per step at 1080p, 6.3 min at 2K: there most of
   the time), the decode (2-3 min) and the load. The models load in ~25 s with LF Studio's O_DIRECT loader
@@ -126,8 +128,8 @@ sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and
   clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
   defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
 
-Not yet: Keyframes and Reference clips, portrait, 10 and 15 s, a faster load (the studio's O_DIRECT loader), and
-NVIDIA's faster Sol-Attn forward. Setup: [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
+Not yet: Keyframes and Reference clips, lengths other than 5 s, and NVIDIA's faster Sol-Attn forward. Setup:
+[docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
 
 ## Deviations from NVIDIA's validated recipe
