@@ -14,7 +14,7 @@ One file, standard library only, Python 3.9 or later: copy it to any machine tha
   lf-cli upscale ID [--resolution 1080p|2k|4k] [--source final|draft] [--strength faithful|balanced|full]
          [--audio clip|silence] [--seed N] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
                                 experimental: a finished 5 s 16:9 text clip to 1080p, 2K or 4K (untested), on a
-                                studio with LFSTUDIO_UPSCALE=1 (about 8 min to 1.6 h in all, with a ~25 s load
+                                studio with LFSTUDIO_UPSCALE=1 (about 11 min to 1.6 h in all, with a ~25 s load
                                 expected: 21 s in the bench, not yet measured in the studio's job; ~7 min more
                                 with LFSTUDIO_UPSCALE_LOAD=standard)
   lf-cli guide                  the prompt guide for H3
@@ -297,7 +297,7 @@ INSTRUCTIONS = (
     "when the clip is done, saves the MP4 here and returns its absolute path, its studio URL and a poster frame. "
     "If it answers that the clip is still running, call wait with the id. Cancelling a tool call does not cancel the "
     "clip; use cancel for that. A studio with the experimental Upscale on also takes upscale: a finished 5 s 16:9 "
-    "text clip to 1080p, 2K or 4K, which takes about 8 min to 1.6 h or more.")
+    "text clip to 1080p, 2K or 4K, which takes about 11 min to 1.6 h or more.")
 
 
 # ---- small things ------------------------------------------------------------------------------------------------

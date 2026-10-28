@@ -1430,22 +1430,24 @@ class UpscalePage(UpscaleCards, PageTest):
         self.assertTrue(self.page.is_hidden("#uppop"))
         # the popover: the server's defaults, the expected times, one line on the models; Escape closes it
         self.open_popover(ok)
-        self.assertEqual([self.checked(n) for n in ("up_res", "up_strength", "up_source")], ["2k", "balanced", "final"])
+        self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "balanced"])
+        self.assertIsNone(self.page.query_selector('#uppop input[name="up_source"]'))      # one source: the clip's MP4
         text = self.page.inner_text("#uppop")
         for words in ("1080p\n~11 min", "2K\n~20 min", "4K\n~1.1 h · untested", "in all, with a ~25 s load",
                       "Faithful", "Start noise 0.5, 2 steps", "Balanced", "Full re-generate", "redraws faces",
-                      "From the final clip", "From the draft", "Unloads the models while it runs"):
+                      "Unloads the models while it runs"):
             self.assertIn(words, text)
-        # the progress bar's expected seconds (docs/PERFORMANCE.md): the fast load, ~3 min less from the draft, ~7 min
-        # more with the standard load (the record's "load")
-        self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, source: 'final', load: 'fast'},
-            {resolution: '2k', steps: 3, source: 'final'}, {resolution: '1080p', steps: 2, source: 'draft'},
-            {resolution: '2k', steps: 2, source: 'final', load: 'standard'},
-            {resolution: '4k', steps: 2, source: 'final'}].map(upEta)"""), [1230, 1610, 488, 1660, 4085])
-        # its times are upEta's for 2 steps from the final clip with the studio's load (/api/state upscale_load), and
-        # follow it each time it opens (one evaluate: no poll in between)
+        self.assertNotIn("draft", text)
+        # the progress bar's expected seconds (docs/PERFORMANCE.md): the fast load, ~7 min more with the standard load
+        # (the record's "load"); a record of an older studio's upscale from the draft counts as any other
+        self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, load: 'fast'},
+            {resolution: '2k', steps: 3}, {resolution: '1080p', steps: 2},
+            {resolution: '2k', steps: 2, load: 'standard'}, {resolution: '4k', steps: 2},
+            {resolution: '1080p', steps: 2, source: 'draft'}].map(upEta)"""), [1230, 1610, 673, 1660, 4085, 673])
+        # its times are upEta's for 2 steps with the studio's load (/api/state upscale_load), and follow it each time
+        # it opens (one evaluate: no poll in between)
         self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
-            upEta({resolution: r, steps: 2, source: 'final', load})))"""), [673, 1103, 1230, 1660, 4085, 4515])
+            upEta({resolution: r, steps: 2, load})))"""), [673, 1103, 1230, 1660, 4085, 4515])
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
         times = self.page.evaluate("""id => {
@@ -1476,13 +1478,14 @@ class UpscalePage(UpscaleCards, PageTest):
         self.open_popover(ok)
         self.page.click('#uppop label[for="up-1080p"]')
         self.page.click('#uppop input[name="up_strength"][value="faithful"]')
-        self.page.click("#upgo")
+        with self.page.expect_request("**/api/upscale") as request:
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data), {"id": ok, "resolution": "1080p", "strength": "faithful"})
         self.page.wait_for_function("document.getElementById('toast').textContent.startsWith('1080p upscale queued')")
         self.assertTrue(self.page.is_hidden("#uppop"))
         job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
-        self.assertEqual({k: job[k] for k in ("parent", "resolution", "strength", "source", "audio")},
-                         {"parent": ok, "resolution": "1080p", "strength": "faithful", "source": "final",
-                          "audio": "clip"})
+        self.assertEqual({k: job[k] for k in ("parent", "resolution", "strength", "audio")},
+                         {"parent": ok, "resolution": "1080p", "strength": "faithful", "audio": "clip"})
         uid, card = job["id"], self.card(job["id"])
         self.assertEqual(self.page.get_attribute("#jobs .job", "data-id"), uid)          # the newest: at the top
         self.assertEqual(self.page.get_attribute(card, "data-kind"), "upscale")
@@ -1502,16 +1505,13 @@ class UpscalePage(UpscaleCards, PageTest):
         self.page.wait_for_selector(card, state="detached")
         self.page.wait_for_function("document.querySelector('#undo span').textContent === 'Upscale deleted'")
 
-    def test_without_the_clips_stage1_files_and_a_refusal(self):
-        """No Stage-1 latent: no source choice; no Stage-1 audio: the request asks for silence. A refusal shows in the
-        popover, which stays open."""
+    def test_without_the_clips_stage1_audio_and_a_refusal(self):
+        """No Stage-1 audio: the request asks for silence. A refusal shows in the popover, which stays open."""
         ok = self.done_clip(prompt="files gone", seed=51)
         case = Path(self.studio.job(ok)["output"]).parents[1]
-        (case / "stage1" / "h3_normalized_native.pt").unlink()
         (case / "stage1" / "stage1_direct_tensors.pt").unlink()
         self.page.wait_for_timeout(2200)                                     # a poll with the new upscalable
         self.open_popover(ok)
-        self.assertTrue(self.page.is_hidden("#upsrc"))
         self.page.route("**/api/upscale", lambda route: route.fulfill(
             status=409, content_type="application/json", body=json.dumps({"error": "the clip is busy, try later"})))
         self.page.click("#upgo")
@@ -1522,7 +1522,7 @@ class UpscalePage(UpscaleCards, PageTest):
         self.page.click("#upgo")
         self.page.wait_for_selector("#uppop", state="hidden")
         job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
-        self.assertEqual((job["source"], job["audio"]), ("final", "silence"))
+        self.assertEqual(job["audio"], "silence")
         self.studio.wait([job["id"]], timeout=30)
 
 
@@ -1565,7 +1565,7 @@ class UpscaleDefaults(UpscaleCards, PageTest):
     def test_the_servers_strength_and_load(self):
         ok = self.done_clip(prompt="defaults")
         self.open_popover(ok)
-        self.assertEqual([self.checked(n) for n in ("up_res", "up_strength", "up_source")], ["2k", "full", "final"])
+        self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "full"])
         text = self.page.inner_text("#uppop")
         for words in ("1080p\n~18 min", "2K\n~28 min", "4K\n~1.3 h · untested", "in all, with a ~7.5 min load"):
             self.assertIn(words, text)

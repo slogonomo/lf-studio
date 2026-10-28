@@ -110,7 +110,7 @@ sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and
 - **Only 5 s 16:9 text clips (t2va) for now.** NVIDIA's pipeline is fixed at 1344×768 and 121 frames, and Keyframes
   and Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with
   the reason.
-- **It is slow.** On one DGX Spark a 2-step upscale from the final clip takes about 11 min at 1080p and 20 min at 2K
+- **It is slow.** On one DGX Spark a 2-step upscale takes about 11 min at 1080p and 20 min at 2K
   (27 min with 3 steps): ~3 min reading the clip, the refine (2.4 min per step at 1080p, 6.3 min at 2K: there most of
   the time), the decode (2-3 min) and the load. The models load in ~25 s with LF Studio's O_DIRECT loader
   (`LFSTUDIO_UPSCALE_LOAD=fast`, the default; 21 s measured in the bench, not yet in the studio's own job), or in
@@ -121,12 +121,10 @@ sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and
   upscale is done.
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
-  much sharper picture but redraws faces into a different-looking person, even when it starts from the final clip.
+  much sharper picture but redraws faces into a different-looking person.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the
   clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
   defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
-- **From the final clip or the draft.** By default it upscales the finished MP4; "From the draft" starts from the
-  clip's Stage-1 latent instead.
 
 Not yet: Keyframes and Reference clips, portrait, 10 and 15 s, a faster load (the studio's O_DIRECT loader), and
 NVIDIA's faster Sol-Attn forward. Setup: [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:

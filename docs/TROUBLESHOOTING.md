@@ -279,8 +279,7 @@ memory and lowest MemAvailable per phase). A failed upscale's card shows the job
 **The Upscale button is greyed out.** It says why when you point at it, or click or tap it: for now it takes finished
 5 s 16:9 text clips only (`Upscale needs a 5 s 16:9 clip ...`, `Upscale takes text-to-video (t2va) clips only, for
 now`), and it reads the clip's working files, which clips made before per-clip folders, or whose session folder was
-removed, no longer have (`the clip's working files (its session directory) are gone`). "From the draft" is missing
-from the popover when the clip has no Stage-1 latent.
+removed, no longer have (`the clip's working files (its session directory) are gone`).
 
 **`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
 `missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's

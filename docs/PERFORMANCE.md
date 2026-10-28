@@ -289,8 +289,8 @@ load. The run above started from the draft, so the two encodes did not run under
 
 - What the page shows: its progress bar expects the job's stages above with the load at ~25 s, plus ~40 s for closing
   the studio's models: 470 s plus 380 s per refine step at 2K; 385 s plus 144 s per step at 1080p (the bench's decode
-  and MP4 in place of 2K's); 685 s plus 1700 s per step at 4K (the bench's 4K decode and MP4). From the draft ~3 min
-  less (no encode), with the standard load ~7 min more. The encode stays at the job's own 185 s: with the fast load it
+  and MP4 in place of 2K's); 685 s plus 1700 s per step at 4K (the bench's 4K decode and MP4). With the standard load
+  ~7 min more. The encode stays at the job's own 185 s: with the fast load it
   may well take ~50 s less, as in the bench's runs above, but the job has not run it yet. In all, with 2 steps
   (`faithful`, `balanced`) about 11 min at 1080p, 20 min at 2K and 1.1 h at 4K; with 3 (`full`) about 14 min, 27 min and
   1.6 h. The popover shows the 2-step times with the studio's load (`/api/state` `upscale_load`; with the standard load
@@ -308,7 +308,7 @@ load. The run above started from the draft, so the two encodes did not run under
 - The studio needs ~110 GiB free to start an upscale (`LFSTUDIO_UPSCALE_MIN_FREE_GIB`, 117.7 GiB were free on the idle
   box), and kills it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`).
 - Quality, so far: at NVIDIA's settings (start noise 0.909, 3 steps: `full`) the result is much sharper but has a
-  different-looking face, also from the final clip. Lower start noise (0.7 and 0.5 with 2 steps) and refining
+  different-looking face. Lower start noise (0.7 and 0.5 with 2 steps) and refining
   against the clip's own audio instead of NVIDIA's silence are being measured; the defaults (`balanced`, `clip`)
   are provisional until then.
 - Not tried: NVIDIA's `sol_engine` forward (Sol-Attn sparse attention, MXFP8; NVIDIA lists ~150 GB for it) and its
