@@ -53,7 +53,8 @@ job.json: {"version": 1, "case": DIR, "source": "final"|"draft", "resolution": "
 "vae_batch": INT (26), "paths": {"package": DIR, "weights": DIR, "base_model": DIR, "output": DIR (optional)},
 "meta": {...} (optional, copied into the receipt)}. Paths are absolute.
 
-Everything outside run() and the torch helpers is standard library only, so the server and tests/test_upscale.py
+Everything outside run() and the torch helpers is standard library only, so the server (its settings, the command
+line, the progress lines, the mux), bin/lf-studio --check (studio_settings, check_weights) and tests/test_upscale.py
 import this file without torch.
 """
 import argparse
@@ -91,6 +92,11 @@ VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior 
 STRENGTHS = {"faithful": (0.5, 2), "balanced": (0.7, 2), "full": (None, 3)}
 DEFAULT_STRENGTH = "balanced"
 DEFAULT_AUDIO = "clip"
+# The studio's memory floor before a job starts, and its guard while one runs (GiB of MemAvailable). Measured at 2K:
+# MemAvailable 117.7 GiB on the idle box, lowest 15 GiB during the job, so the job takes ~103 GiB; 110 (the launcher's
+# own floor for the studio) keeps the guard's 5 GiB clear. 4K is not measured yet.
+MIN_FREE_GIB = 110
+GUARD_GIB = 5
 
 # what this wrapper was written against (checked against the package's own names at run time)
 NVIDIA_COMMIT = "6e4a44002149418a547434b91d7280a8bbdcace3"
@@ -218,6 +224,44 @@ def load_job(path):
 def job_record(job):
     """The job as JSON for the receipt."""
     return {key: (str(value) if isinstance(value, Path) else value) for key, value in job.items()}
+
+
+# ---------------------------------------------------------------- the studio's settings (standard library only)
+
+def studio_settings(environ):
+    """The studio's LFSTUDIO_UPSCALE_* settings (bin/env.example) from an environment, with their defaults:
+    (settings, problems). webui/server.py stops with the problems and bin/lf-studio --check refuses with them, so
+    both say the same. LFSTUDIO_UPSCALE itself (0 or 1) is checked by each of them."""
+    home = Path(environ.get("LFSTUDIO_HOME") or Path.home() / "sol-h3").expanduser()
+    checkpoints = Path(environ.get("LFSTUDIO_CHECKPOINTS") or home / "checkpoints").expanduser()
+    settings, problems = {}, []
+    for key, name, default in (("python", "LFSTUDIO_UPSCALE_PYTHON", home / "envs" / "regen2k" / "bin" / "python"),
+                               ("package", "LFSTUDIO_UPSCALE_PKG", home / "Open-H3-Regenerate-2K"),
+                               ("weights", "LFSTUDIO_UPSCALE_WEIGHTS", checkpoints / "Open-H3-Regenerate-2K"),
+                               ("base_model", "LFSTUDIO_UPSCALE_BASE", checkpoints / "MiniMax-H3")):
+        settings[key] = Path(environ.get(name) or default).expanduser()
+        if not settings[key].is_absolute():
+            problems.append(f"{name}={settings[key]}: must be an absolute path")
+    for key, name, default, choices in (("strength", "LFSTUDIO_UPSCALE_STRENGTH", DEFAULT_STRENGTH, tuple(STRENGTHS)),
+                                        ("audio", "LFSTUDIO_UPSCALE_AUDIO", DEFAULT_AUDIO, AUDIO),
+                                        ("preread", "LFSTUDIO_UPSCALE_PREREAD", "1", ("0", "1"))):
+        settings[key] = environ.get(name) or default
+        if settings[key] not in choices:
+            problems.append(f"{name}={settings[key]}: must be {', '.join(choices[:-1])} or {choices[-1]}")
+    settings["preread"] = settings["preread"] == "1"
+    for key, name, default in (("min_free_gib", "LFSTUDIO_UPSCALE_MIN_FREE_GIB", MIN_FREE_GIB),
+                               ("guard_gib", "LFSTUDIO_UPSCALE_GUARD_GIB", GUARD_GIB)):
+        raw = environ.get(name) or str(default)
+        try:
+            settings[key] = float(raw)
+            if not math.isfinite(settings[key]) or settings[key] < 0:
+                raise ValueError
+        except ValueError:
+            problems.append(f"{name}={raw}: must be a number of GiB, 0 or more")
+            settings[key] = float(default)
+    if problems:
+        problems[-1] += " (see bin/env.example)"
+    return settings, problems
 
 
 # ---------------------------------------------------------------- inputs (standard library only)

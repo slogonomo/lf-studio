@@ -233,6 +233,44 @@ class JobTests(Fixture):
             job_module.load_job(self.out / "missing.json")
 
 
+class StudioSettingsTests(unittest.TestCase):
+    """studio_settings: the LFSTUDIO_UPSCALE_* settings as the server and bin/lf-studio --check read them."""
+
+    def test_defaults(self):
+        settings, problems = job_module.studio_settings({"LFSTUDIO_HOME": "/srv/lf"})
+        self.assertEqual(problems, [])
+        self.assertEqual(settings, {"python": Path("/srv/lf/envs/regen2k/bin/python"),
+                                    "package": Path("/srv/lf/Open-H3-Regenerate-2K"),
+                                    "weights": Path("/srv/lf/checkpoints/Open-H3-Regenerate-2K"),
+                                    "base_model": Path("/srv/lf/checkpoints/MiniMax-H3"), "strength": "balanced",
+                                    "audio": "clip", "preread": True, "min_free_gib": 110.0, "guard_gib": 5.0})
+        settings, _ = job_module.studio_settings({"LFSTUDIO_HOME": "/srv/lf", "LFSTUDIO_CHECKPOINTS": "/data/ckpt",
+                                                  "LFSTUDIO_UPSCALE_STRENGTH": ""})      # empty: the default
+        self.assertEqual((settings["weights"], settings["base_model"], settings["strength"]),
+                         (Path("/data/ckpt/Open-H3-Regenerate-2K"), Path("/data/ckpt/MiniMax-H3"), "balanced"))
+        with mock.patch.dict(os.environ, {"HOME": "/srv/someone"}):
+            self.assertEqual(job_module.studio_settings({"LFSTUDIO_UPSCALE_PKG": "~/regen"})[0]["package"],
+                             Path("/srv/someone/regen"))
+
+    def test_values(self):
+        settings, problems = job_module.studio_settings({
+            "LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence", "LFSTUDIO_UPSCALE_PREREAD": "0",
+            "LFSTUDIO_UPSCALE_MIN_FREE_GIB": "0", "LFSTUDIO_UPSCALE_GUARD_GIB": "2.5"})
+        self.assertEqual(problems, [])
+        self.assertEqual([settings[k] for k in ("strength", "audio", "preread", "min_free_gib", "guard_gib")],
+                         ["full", "silence", False, 0.0, 2.5])
+        _, problems = job_module.studio_settings({
+            "LFSTUDIO_UPSCALE_PYTHON": "python3", "LFSTUDIO_UPSCALE_STRENGTH": "light",
+            "LFSTUDIO_UPSCALE_AUDIO": "Clip", "LFSTUDIO_UPSCALE_PREREAD": "yes", "LFSTUDIO_UPSCALE_MIN_FREE_GIB": "-1",
+            "LFSTUDIO_UPSCALE_GUARD_GIB": "inf"})
+        self.assertEqual(problems, [
+            "LFSTUDIO_UPSCALE_PYTHON=python3: must be an absolute path",
+            "LFSTUDIO_UPSCALE_STRENGTH=light: must be faithful, balanced or full",
+            "LFSTUDIO_UPSCALE_AUDIO=Clip: must be clip or silence", "LFSTUDIO_UPSCALE_PREREAD=yes: must be 0 or 1",
+            "LFSTUDIO_UPSCALE_MIN_FREE_GIB=-1: must be a number of GiB, 0 or more",
+            "LFSTUDIO_UPSCALE_GUARD_GIB=inf: must be a number of GiB, 0 or more (see bin/env.example)"])
+
+
 class TextTests(unittest.TestCase):
     def test_t2va_conditioning(self):
         self.assertEqual(job_module.check_text(conditioning(41)), 41)
