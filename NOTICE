@@ -16,6 +16,9 @@ This repository contains:
   docs/PATCH.md describes every change.
 - Among the modified files, runtime/qwen_ops/media.py contains code derived from FastVideo
   (https://github.com/hao-ai-lab/FastVideo, by Hao AI Lab), licensed under the Apache License, Version 2.0.
+- upscale/regen2k_job.py runs NVIDIA's Open-H3-Regenerate-2K (https://github.com/NVlabs/Sana, branch sol-engine,
+  models/Open-H3-Regenerate-2K; not included) and contains code adapted from it: the LoRA merge arithmetic of
+  adapters.StageMerger and the audio encode of pipeline.encode_silence. Apache License, Version 2.0.
 - webui/index.html and bench/prompts/bench.jsonl contain example prompts taken or adapted from NVIDIA's
   Sol-H3-Spark (README.md and examples/prompts.jsonl), Apache License, Version 2.0. The prompt formats and section
   names in webui/index.html follow MiniMax's H3 prompt-writing guides

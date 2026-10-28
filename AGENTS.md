@@ -11,6 +11,9 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
 - `bin/lf-cli`: the client for agents and scripts, a CLI and an MCP server (`lf-cli mcp`) in one file. People copy
   it to other machines, so it stays standard-library only, Python 3.9 syntax, and reads no other file of this repo.
   `docs/API.md` documents it and the HTTP API.
+- `upscale/regen2k_job.py`: the experimental Upscale's GPU job, one upscale per process, run in its own env with
+  NVIDIA's Open-H3-Regenerate-2K (its docstring says what is NVIDIA's and what it changes). Standard library outside
+  its torch functions, so the server and the tests import it without torch.
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
