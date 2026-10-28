@@ -702,6 +702,55 @@ class UpscaleOff(CliTest):
                                    "it on)\n")
 
 
+class UpscaleTimes(unittest.TestCase):
+    """The upscale times in lf-cli (its usage, the MCP instructions and the upscale tool) and docs/API.md agree with
+    the page's estimates (webui/index.html: UPSCALE and upEta, from docs/PERFORMANCE.md), and the popover's labels
+    with upEta for 2 steps from the final clip, with either load."""
+
+    def page_model(self):
+        page = (REPO / "webui" / "index.html").read_text()
+        table = {res: (int(base), int(step)) for res, base, step in
+                 re.findall(r'"(\w+)":\{name:\'[^\']*\',base:(\d+),step:(\d+)\}', page)}
+        draft = int(re.search(r"j\.source==='draft'\?(\d+):0", page).group(1))
+        standard = int(re.search(r"j\.load==='standard'\?(\d+):0", page).group(1))
+        self.assertEqual(set(table), {"1080p", "2k", "4k"})
+
+        def eta(res, steps, source="final", load="fast"):
+            base, step = table[res]
+            return base + steps * step - (draft if source == "draft" else 0) + (standard if load == "standard" else 0)
+        return page, eta, standard
+
+    def test_the_range_and_the_standard_load(self):
+        _, eta, standard = self.page_model()
+        shortest = min(eta(res, 2, "draft") for res in ("1080p", "2k", "4k"))           # faithful or balanced
+        longest = max(eta(res, 3) for res in ("1080p", "2k", "4k"))                     # full
+        self.assertEqual((round(shortest / 60), round(longest / 3600, 1), round(standard / 60)), (8, 1.6, 7))
+        cli = load_cli()
+        api = " ".join((REPO / "docs" / "API.md").read_text().split())
+        usage = " ".join(cli.__doc__.split())
+        self.assertIn("about 8 min to 1.6 h in all, with a ~25 s load expected", usage)
+        self.assertIn("~7 min more with LFSTUDIO_UPSCALE_LOAD=standard", usage)
+        self.assertIn("which takes about 8 min to 1.6 h or more", cli.INSTRUCTIONS)
+        self.assertIn("An upscale takes about 8 min to 1.6 h in all", api)
+        self.assertIn("~7 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`", api)
+        self.assertIn("An upscale takes about 8 min to 1.6 h, far longer than any `wait_s`", api)
+        tool = next(t for t in cli.TOOLS if t["name"] == "upscale")["description"]
+        self.assertIn("about 11 min at 1080p, 20 min at 2K and over 1 h at 4K", tool)
+        self.assertEqual([round(eta(res, 2) / 60) for res in ("1080p", "2k")], [11, 20])         # 673 s, 1230 s
+        self.assertGreater(eta("4k", 2), 3600)
+
+    def test_the_popover_labels(self):
+        page, eta, _ = self.page_model()
+        for res in ("1080p", "2k", "4k"):
+            label = re.search(rf'<label for="up-{res}"[^>]*>[^<]*<small data-standard="([^"]*)">([^<]*)</small>', page)
+            for load, text in (("fast", label.group(2)), ("standard", label.group(1))):
+                with self.subTest(res=res, load=load):
+                    seconds, m = eta(res, 2, load=load), re.match(r"~(\d+(?:\.\d)?) (min|h)", text)
+                    shown = float(m.group(1)) * (60 if m.group(2) == "min" else 3600)
+                    self.assertLessEqual(abs(shown - seconds), 45 if m.group(2) == "min" else 180, (text, seconds))
+                    self.assertEqual(text.endswith("· untested"), res == "4k")
+
+
 class Guide(unittest.TestCase):
     def test_guide(self):
         """9.2 #10: guide prints the prompt guide; docs/API.md carries the same text between its markers."""

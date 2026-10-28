@@ -111,13 +111,14 @@ sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and
   and Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with
   the reason.
 - **It is slow.** On one DGX Spark a 2-step upscale from the final clip takes about 11 min at 1080p and 20 min at 2K
-  (27 min with 3 steps), most of it the refine (2.4 min per step at 1080p, 6.3 min at 2K) and ~3 min reading the clip.
-  The models load in ~25 s with LF Studio's O_DIRECT loader (`LFSTUDIO_UPSCALE_LOAD=fast`, the default; 21 s
-  measured in the bench, not yet in the studio's own job), or in ~7.5 min with NVIDIA's own loading
-  (`LFSTUDIO_UPSCALE_LOAD=standard`, the fallback; 455 s in the job's 2K run). **4K is untested in the studio:** one
-  bench run with the same 4K forward took about 67 min after its load (2 steps of 28 min), and the studio's job has not
-  run it end to end yet. While it runs the studio's models are closed; the next clip loads them
-  again, and with `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
+  (27 min with 3 steps): ~3 min reading the clip, the refine (2.4 min per step at 1080p, 6.3 min at 2K: there most of
+  the time), the decode (2-3 min) and the load. The models load in ~25 s with LF Studio's O_DIRECT loader
+  (`LFSTUDIO_UPSCALE_LOAD=fast`, the default; 21 s measured in the bench, not yet in the studio's own job), or in
+  ~7.5 min with NVIDIA's own loading (`LFSTUDIO_UPSCALE_LOAD=standard`, the fallback; 455 s in the job's 2K run).
+  **4K is untested in the studio:** one bench run with the same 4K forward took about 67 min after its load (2 steps of
+  28 min), and the studio's job has not run it end to end yet. While it runs the studio's models are closed; the next
+  clip loads them again, and with `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the
+  upscale is done.
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person, even when it starts from the final clip.

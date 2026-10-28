@@ -112,10 +112,10 @@ Environment:
                              Stage-1 audio; the default, an experiment) or silence (NVIDIA's). The clip's sound is
                              added to the result either way.
   LFSTUDIO_UPSCALE_LOAD      how the job loads its weights: fast (the default: upscale/fastload.py, O_DIRECT reads
-                             straight to the GPU; ~20-30 s in the bench) or standard (NVIDIA's own loading through
-                             mmap, ~7.5 min; the fallback). The job inherits the patch's SPARK_FAST_SAFETENSORS and
-                             SPARK_DIRECT_IO: either one off and the fast load reads every file through mmap (the start
-                             log warns).
+                             straight to the GPU; 21 s in the bench, not yet measured in the job) or standard
+                             (NVIDIA's own loading through mmap, ~7.5 min; the fallback). The job inherits the patch's
+                             SPARK_FAST_SAFETENSORS and SPARK_DIRECT_IO: either one off and the fast load reads every
+                             file through mmap (the start log warns).
   LFSTUDIO_UPSCALE_PREREAD   0 (default): off. 1: the job reads its weights into the page cache in parallel before
                              it loads them (not shown to shorten the load yet). Needs LFSTUDIO_UPSCALE_LOAD=standard.
   LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 0 = no check)

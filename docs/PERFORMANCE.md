@@ -274,26 +274,29 @@ Peak GPU memory allocated 91.08 GiB (in the refine), 4.91 GiB before the decode 
 | Peak GPU memory allocated | 75 GiB | 81 GiB | 91 GiB | 94.5 GiB |
 | Lowest MemAvailable during the job | 38 GiB | 28 GiB | 15 GiB | 13.8 GiB |
 
-**The bench wrapper, fast load** (`LFSTUDIO_UPSCALE_LOAD=fast`; one run from a 768p draft, 3 steps). NVIDIA's loaders
-fault the weight files in through mmap at about 0.2 GB/s on GB10, and what they read stays in the page cache, the same
-memory as the GPU's. The fast load replaces, before anything loads, `safetensors.torch.load_file` and NVIDIA's
-`adapters.load_file` with LF Studio's O_DIRECT loader (`upscale/fastload.py`, a copy of the patch's
-`runtime/fastload.py`), which copies every tensor from its read window straight to the GPU, and has diffusers build
-the DiT and the VAEs on the GPU (`device_map`). Measured: the models loaded in 21 s, the 312 LoRA weights merged in
-2.8 s, the native and refined latents bit-identical to a run with the standard load, ~1.9 GB of anonymous memory in
-the process and 40.0 GiB MemAvailable right after the load. Earlier variants that made host copies of the shards
-loaded in 23-108 s but kept 10-17 GiB resident (26-32 GiB MemAvailable after the load, against ~42 with the standard
-load) and once tripped the memory guard; earlier 2K runs from the final clip with `device_map` and such a fast load
-ran without trouble. The run above started from the draft, so the two encodes did not run under the fast load.
+**The bench wrapper, fast load** (the setup that `LFSTUDIO_UPSCALE_LOAD=fast` copies into the job; one run from a 768p
+draft, 3 steps). NVIDIA's loaders fault the weight files in through mmap at about 0.2 GB/s on GB10, and what they read
+stays in the page cache, the same memory as the GPU's. The fast load replaces, before anything loads,
+`safetensors.torch.load_file` and NVIDIA's `adapters.load_file` with LF Studio's O_DIRECT loader (`upscale/fastload.py`,
+a copy of the patch's `runtime/fastload.py`), which copies every tensor from its read window straight to the GPU, and
+has diffusers build the DiT and the VAEs on the GPU (`device_map`). Measured: the models loaded in 21 s, the 312 LoRA
+weights merged in 2.8 s, the native and refined latents bit-identical to a run with the standard load, ~1.9 GB of
+anonymous memory in the process and 40.0 GiB MemAvailable right after the load. Earlier variants that made host copies
+of the shards loaded in 23-108 s but kept 10-17 GiB resident (26-32 GiB MemAvailable after the load, against ~42 with
+the standard load) and once tripped the memory guard; earlier 2K runs from the final clip with `device_map` and such a
+fast load ran without trouble, and encoded the final clip in 135-139 s (three runs), against 183-191 s with the standard
+load. The run above started from the draft, so the two encodes did not run under the fast load.
 
 - What the page shows: its progress bar expects the job's stages above with the load at ~25 s, plus ~40 s for closing
   the studio's models: 470 s plus 380 s per refine step at 2K; 385 s plus 144 s per step at 1080p (the bench's decode
   and MP4 in place of 2K's); 685 s plus 1700 s per step at 4K (the bench's 4K decode and MP4). From the draft ~3 min
-  less (no encode), with the standard load ~7 min more. In all, with 2 steps (`faithful`, `balanced`) about 11 min at
-  1080p, 20 min at 2K and 1.1 h at 4K; with 3 (`full`) about 14 min, 27 min and 1.6 h. The popover shows the 2-step
-  times with the studio's load (`/api/state` `upscale_load`; with the standard load ~18 min, ~28 min and ~1.3 h). A run with the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
-  page cache first) loaded in 539 s, against 445 s without; the files were cached already, so this says little about
-  a cold start.
+  less (no encode), with the standard load ~7 min more. The encode stays at the job's own 185 s: with the fast load it
+  may well take ~50 s less, as in the bench's runs above, but the job has not run it yet. In all, with 2 steps
+  (`faithful`, `balanced`) about 11 min at 1080p, 20 min at 2K and 1.1 h at 4K; with 3 (`full`) about 14 min, 27 min and
+  1.6 h. The popover shows the 2-step times with the studio's load (`/api/state` `upscale_load`; with the standard load
+  ~18 min, ~28 min and ~1.3 h). A run with the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel
+  readers fill the page cache first) loaded in 539 s, against 445 s without; the files were cached already, so this says
+  little about a cold start.
 - 4K: the stock block forward with only its FFN in 8 sequence chunks ran out of memory in the first step (the bench's
   guard stopped it at 3 GiB of MemAvailable). The 4K run in the bench's table had every block run a memory-lean forward
   (everything but the attention over the sequence in 16 chunks, q/k/v straight into SDPA's layout; bit-identical to the

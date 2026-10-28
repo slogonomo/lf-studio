@@ -300,7 +300,7 @@ the job itself (the studio's 4K path has not run end to end yet; [PERFORMANCE.md
 
 **It sits at "Upscaling · loading its models" for minutes.** With the fast load (`LFSTUDIO_UPSCALE_LOAD=fast`, the
 default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (21 s in the bench); "reading the clip"
-before it takes ~3 min from the final clip, and the refine and decode after it 10-25 min at 1080p and 2K
+before it takes ~3 min from the final clip, and the refine and decode after it ~7-22 min at 1080p and 2K
 ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). Minutes at loading mean the standard
 load (`LFSTUDIO_UPSCALE_LOAD=standard`, NVIDIA's loaders through mmap: ~7.5 min, 455 s measured), or files the fast
 load could not read with O_DIRECT and read through mmap instead: `worker.log` in the upscale's `regen/` folder says

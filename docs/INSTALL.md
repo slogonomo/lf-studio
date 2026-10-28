@@ -197,7 +197,7 @@ Every step stops the script when it fails, and a run again goes on where it stop
 the old one is moved aside as `envs/regen2k.<date>` (delete it once the new one works). A venv at that place that
 the script did not make is never touched; it stops instead. `LFSTUDIO_UPSCALE_PYTHON` must stay unset (or name that
 venv's Python): the step builds its own environment only. The sizes above are estimated; the step has not been run end
-to end on a fresh box yet. The Upscale's settings (strength, audio, memory floor and guard) are in
+to end on a fresh box yet. The Upscale's settings (strength, audio, load, preread, memory floor and guard) are in
 [bin/env.example](../bin/env.example).
 
 To remove it: set `LFSTUDIO_UPSCALE=0` (or delete the line), then remove `envs/regen2k`, `sources/sana-6e4a440`, the
