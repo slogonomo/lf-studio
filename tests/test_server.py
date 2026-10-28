@@ -1220,7 +1220,8 @@ class LauncherSettingsCheck(unittest.TestCase):
         for task in ("t2va", "fl2va", "ref2va"):
             (self.d / f"paths-{task}.json").write_text("{}")
 
-    def check(self, **settings):
+    def check(self, launcher=None, **settings):
+        """bin/lf-studio --check (or `launcher`, a copy elsewhere) with `settings`: (exit status, its output)."""
         env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "LFSTUDIO_", "SOLH3_"))}
         env.update(LFSTUDIO_ENV=str(self.d / "no-env-file"), LFSTUDIO_SANA=str(self.d / "sana"),
                    LFSTUDIO_PYTHON=sys.executable, LFSTUDIO_PATHS=str(self.d / "paths-{task}.json"),
@@ -1228,8 +1229,8 @@ class LauncherSettingsCheck(unittest.TestCase):
                    LFSTUDIO_HOST="127.0.0.1", LFSTUDIO_PORT=str(free_port()),
                    LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0", PYTHONDONTWRITEBYTECODE="1")
         env.update(settings)
-        run = subprocess.run(["bash", str(Path(__file__).resolve().parents[1] / "bin/lf-studio"), "--check"],
-                             env=env, capture_output=True, text=True, timeout=120)
+        launcher = launcher or Path(__file__).resolve().parents[1] / "bin/lf-studio"
+        run = subprocess.run(["bash", str(launcher), "--check"], env=env, capture_output=True, text=True, timeout=120)
         return run.returncode, run.stdout + run.stderr
 
     def test_settings(self):
@@ -2883,6 +2884,20 @@ class LauncherUpscale(LauncherSettingsCheck):
         (self.d / "regen2k" / "package" / "open_h3" / "pipeline.py").unlink()
         self.refused(f"{upscale}LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in {self.d / 'regen2k' / 'package'}",
                      **settings)
+
+    def test_the_fast_load_needs_its_loader(self):
+        """A checkout without upscale/fastload.py (here a copy of the launcher, the server and the job) is refused with
+        the fast load, the default, and passes with the standard load, which does without it."""
+        repo = self.d / "repo"
+        for rel in ("bin/lf-studio", "webui/server.py", "upscale/regen2k_job.py"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(__file__).resolve().parents[1] / rel, repo / rel)
+        settings = self.regen2k()
+        self.refused(f"the experimental Upscale (LFSTUDIO_UPSCALE=1): no {repo / 'upscale' / 'fastload.py'}, the fast "
+                     "load's loader (part of LF Studio; the standard load, LFSTUDIO_UPSCALE_LOAD=standard, does "
+                     "without it)", launcher=repo / "bin/lf-studio", **settings)
+        code, out = self.check(repo / "bin/lf-studio", **settings, LFSTUDIO_UPSCALE_LOAD="standard")
+        self.assertEqual(code, 0, out)
 
     def test_defaults(self):
         """The defaults under LFSTUDIO_HOME and LFSTUDIO_CHECKPOINTS, as in bin/env.example."""

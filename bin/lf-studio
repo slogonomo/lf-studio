@@ -374,7 +374,8 @@ if problems:
         refuse "LFSTUDIO_API=$LFSTUDIO_API: must be 1 (on, the default) or 0 (off) (see bin/env.example)"
     # the experimental Upscale's settings and files, checked by its job's own code (standard library only, so the
     # studio's Python runs it): the settings as the server reads them (studio_settings; exit 3), its Python, and
-    # NVIDIA's package and the weights where they say (check_weights; exit 4). The job runs nothing else here.
+    # NVIDIA's package and the weights where they say, and the fast load's upscale/fastload.py (check_weights; exit 4).
+    # The job runs nothing else here.
     if [[ "${LFSTUDIO_UPSCALE:-0}" == 1 ]]; then
         f=$("$LFSTUDIO_PYTHON" -I -B -c 'import importlib.util, os, sys
 from pathlib import Path
@@ -389,7 +390,7 @@ if not os.access(settings["python"], os.X_OK):
     print("no Python at LFSTUDIO_UPSCALE_PYTHON=%s (the Open-H3-Regenerate-2K environment)" % settings["python"])
     sys.exit(4)
 try:
-    job.check_weights({k: settings[k] for k in ("package", "weights", "base_model")} | {"output": Path("/")})
+    job.check_weights({k: settings[k] for k in ("package", "weights", "base_model", "load")} | {"output": Path("/")})
 except job.JobError as error:
     print(str(error).replace("paths.package", "LFSTUDIO_UPSCALE_PKG"))
     sys.exit(4)' "$REPO/upscale/regen2k_job.py" 2>&1)

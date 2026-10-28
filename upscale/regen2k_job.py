@@ -368,11 +368,16 @@ def weight_paths(job, upscaler_file=UPSCALER_FILE):
     return files
 
 
-def check_weights(job, upscaler_file=UPSCALER_FILE):
-    """NVIDIA's package and the weights are where job.json says. The upscaler must be a .safetensors file: NVIDIA's
-    node loads anything else with torch.load(weights_only=False), which runs code from the file."""
+def check_weights(job, upscaler_file=UPSCALER_FILE, fastload=FASTLOAD):
+    """NVIDIA's package and the weights are where job.json says, and with the fast load (the default when `job` has
+    no "load", as bin/lf-studio's check passes it) its loader, upscale/fastload.py, next to this file. The upscaler
+    must be a .safetensors file: NVIDIA's node loads anything else with torch.load(weights_only=False), which runs
+    code from the file."""
     if not upscaler_file.endswith(".safetensors"):
         raise JobError(f"refusing the latent upscaler {upscaler_file}: only .safetensors files are loaded")
+    if job.get("load", DEFAULT_LOAD) == "fast" and not Path(fastload).is_file():
+        raise JobError(f"no {fastload}, the fast load's loader (part of LF Studio; the standard load, "
+                       "LFSTUDIO_UPSCALE_LOAD=standard, does without it)")
     if not (job["package"] / "open_h3" / "pipeline.py").is_file():
         raise JobError(f"paths.package: no open_h3/pipeline.py in {job['package']}")
     for path in weight_paths(job, upscaler_file).values():

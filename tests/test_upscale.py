@@ -428,6 +428,19 @@ class InputTests(Fixture):
             job_module.check_weights(job_module.parse_job(self.job(paths={**self.job()["paths"],
                                                                           "output": str(self.tmp / "no")}), "/"))
 
+    def test_the_fast_load_needs_its_loader(self):
+        """upscale/fastload.py next to the job, with the fast load (also when the job has no "load", as bin/lf-studio
+        once passed it); the standard load does without it."""
+        missing = self.tmp / "upscale" / "fastload.py"
+        for job in (job_module.parse_job(self.job(), "/"), {k: v for k, v in job_module.parse_job(self.job(), "/")
+                                                             .items() if k != "load"}):
+            job_module.check_weights(job)                               # the real one, next to the job
+            with self.assertRaisesRegex(JobError, rf"^no {re.escape(str(missing))}, the fast load's loader \(part of "
+                                        r"LF Studio; the standard load, LFSTUDIO_UPSCALE_LOAD=standard, does without "
+                                        r"it\)$"):
+                job_module.check_weights(job, fastload=missing)
+        job_module.check_weights(job_module.parse_job(self.job(load="standard"), "/"), fastload=missing)
+
     def test_weight_lists_and_the_page_cache(self):
         job = job_module.parse_job(self.job(), "/")
         names = [p.relative_to(self.tmp).parts[:2] for p in job_module.preread_files(job)]
