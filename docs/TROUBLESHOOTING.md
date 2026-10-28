@@ -232,6 +232,10 @@ restart the studio ([API.md](API.md#access) says what the check is for).
 **400 `the studio does not fetch URLs`.** A JSON submit named a file by its URL. Send the file itself as base64, or
 use `bin/lf-cli` (CLI or MCP), which downloads URLs on its own machine and uploads the files.
 
+**400 `duration must be 5, 6, 7, 8, 10, 12 or 15 seconds (3 and 4 s are no longer offered)`**, or `lf-cli` refusing
+`--seconds 3` (`invalid choice`). The studio offered 3 and 4 s up to 0.5.0. Ask for 5 s or more; clips made at 3 or 4 s
+stay in the history, and their Remix on the page loads 5 s.
+
 **503 from spark-switchboard** (`{"error": {"code": ...}, "switchboard": ...}`; ask with `Accept:
 application/json` to get JSON). A POST that got it was not passed on, so no clip was made, and sending it again is
 safe:

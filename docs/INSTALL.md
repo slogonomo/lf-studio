@@ -281,6 +281,15 @@ On the RTX 5090 the same: `install/10-sana.sh` (with `LFSTUDIO_BACKEND=rtx5090` 
 version of `patches/lf-studio-rtx5090.patch`, reverses it, moves to a new `patches/BASE_COMMIT_RTX5090` if that
 changed, and applies the new one. A new patch file is all an update of the 5090 patch needs.
 
+### After 0.5.0
+
+Clip lengths are 5, 6, 7, 8, 10, 12 and 15 s, on both backends: 3 and 4 s are gone (3 s clips never came out right).
+Nothing needs to change for a working install. Clips you made at 3 or 4 s stay in the history: they play and download
+as before, and Remix loads them at 5 s. A script or agent that asks for 3 or 4 s gets 400 `duration must be 5, 6, 7,
+8, 10, 12 or 15 seconds (3 and 4 s are no longer offered)`, and `lf-cli --seconds 3` stops with a usage error
+(exit 2). A copy of an earlier `bin/lf-cli`, or of 0.4's `bin/sol-h3`, on another machine still offers 3 and 4 s;
+the studio refuses them with that message (exit 2).
+
 ### From 0.4 to 0.5
 
 0.5 renames the project to LF Studio: the launcher is `bin/lf-studio`, the client and MCP server `bin/lf-cli` (`lf-cli

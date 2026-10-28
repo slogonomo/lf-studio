@@ -36,9 +36,9 @@ The 99 s is the `infer.py --deliver-first` bench (the script `bench/first-clip.s
 own first clip after a start measured 104-113 s for the same setting (t2va 16:9 5 s, 2026-10-10; an earlier
 load-time record had ~121 s). The difference to the bench was not broken down.
 
-Warm clips (models loaded): 3 s 36 s · 5 s 54-66 s · 10 s 123 s · 15 s 191 s. NVIDIA lists 56 s for a warm
+Warm clips (models loaded): 5 s 54-66 s · 10 s 123 s · 15 s 191 s. NVIDIA lists 56 s for a warm
 5 s 16:9 t2va clip; on this box the warm t2va mean was 65.9 s for 16:9 and 56.6 s for 9:16. 5 s 16:9 is NVIDIA's
-route; 9:16 and 3-15 s are this repo's extensions ([PATCH.md](PATCH.md)).
+route; 9:16 and the other lengths (the studio offers 5-15 s) are this repo's extensions ([PATCH.md](PATCH.md)).
 
 ## How it was measured
 

@@ -234,7 +234,7 @@ still sending may see the connection close instead). Base64 adds a third, so JSO
 | `prompt` | the prompt, at most 32,768 characters | required |
 | `task` | `t2va` (text only), `fl2va` (first and/or last frame), `ref2va` (references) | from the files: frames → fl2va, references → ref2va, none → t2va |
 | `orientation` | `landscape` (1344x768) or `portrait` (768x1344) | `landscape` |
-| `seconds` | 5, 6, 7, 8, 10, 12 or 15 (3 and 4 s went in 0.5: 400; clips made at those lengths stay in the history as they are) | 5 |
+| `seconds` | 5, 6, 7, 8, 10, 12 or 15 (3 and 4 s, offered up to 0.5.0, get 400; clips made at those lengths stay in the history as they are) | 5 |
 | `seed` | an integer, 0 to 2^63 - 1 | empty: a random one |
 | `first_frame`, `last_frame` | one image file each (fl2va) | |
 | `ref_images`, `ref_videos`, `ref_audio` | files, repeated, in order (ref2va) | |
