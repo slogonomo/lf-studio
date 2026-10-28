@@ -533,9 +533,10 @@ class MemTrace(threading.Thread):
         self.halt = threading.Event()
 
     def sample(self):
+        label = self.label                 # once, before the read: a value read before mark() stays under its label
         available = meminfo(self.path).get("MemAvailable")
         if available is not None:
-            self.low[self.label] = round(min(self.low.get(self.label, available), available), 2)
+            self.low[label] = round(min(self.low.get(label, available), available), 2)
         return available
 
     def mark(self, label):
