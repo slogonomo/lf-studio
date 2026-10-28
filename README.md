@@ -104,14 +104,13 @@ page in a browser; see [AGENTS.md](AGENTS.md).
 NVIDIA validated the 5 s, 16:9 route. Portrait output is not quality-validated (the LoRAs, upscaler and adapter
 were trained on landscape). Lengths other than 5 s are not validated by NVIDIA. The studio offers 5-15 s, inside the
 4-15 s that MiniMax lists for H3; 3 and 4 s, offered up to 0.5.0, are gone (3 s clips never came out right), and the
-patch still takes them, for `infer.py` and the bench. The first-request attention self-check covers 8 calls instead
-of 200. Portrait and length
-are derived after the frozen-recipe hash check. Stage 2 refines the video against the H3 audio held fixed instead of
-a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync. Since 0.4 the prompt
-encoder reads the dialogue tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does and H3 was trained
-with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). Also since 0.4, Stage 1 and Stage 2 compile with
-static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), Stage 1's body blocks compile once per session
-for any prompt length (`SOL_H3_DYNAMIC_TEXT_LENGTH=0` compiles them per length, as upstream does), and a session
+patch still takes them, for `infer.py` and the bench. The first-request attention self-check covers 8 calls instead of
+200. Portrait and length are derived after the frozen-recipe hash check. Stage 2 refines the video against the H3 audio
+held fixed instead of a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync.
+Since 0.4 the prompt encoder reads the dialogue tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does and
+H3 was trained with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). Also since 0.4, Stage 1 and Stage 2
+compile with static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), Stage 1's body blocks compile once per
+session for any prompt length (`SOL_H3_DYNAMIC_TEXT_LENGTH=0` compiles them per length, as upstream does), and a session
 changes its length and orientation in place, one worker rendering several shapes (`LFSTUDIO_RESHAPE=0` loads the models
 again). All of it can be switched back; see [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 
