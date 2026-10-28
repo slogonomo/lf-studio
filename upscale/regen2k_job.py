@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Experimental Upscale: one finished LF Studio clip to 1080p, 2K (2560x1440) or 4K with NVIDIA's
-Open-H3-Regenerate-2K. One upscale per process, run by the studio's server in the Regen-2K environment:
+"""Experimental Upscale: one finished LF Studio clip to 1080p, 2K (2560x1440, or 1440x2560 for a 9:16 clip) or 4K with
+NVIDIA's Open-H3-Regenerate-2K. One upscale per process, run by the studio's server in the Regen-2K environment:
 
     $LFSTUDIO_UPSCALE_PYTHON -I -B upscale/regen2k_job.py --job <dir>/job.json [--check]
 
@@ -48,11 +48,23 @@ What this wrapper changes, and why:
   load only, off unless asked for), 8 threads read the weight files into the page cache before the load; it did not
   shorten the one load measured with it. job.json refuses it with the fast load, which reads past the page cache.
 - The output has no audio (video_noaudio.mp4, NVIDIA's encode_mp4, CRF 10): the server muxes the clip's audio in.
+- Portrait (9:16), which NVIDIA's code is not written for (its sizes are 16:9). A 16:9 clip runs NVIDIA's calls as
+  before. For a 9:16 clip, run() adds portrait entries to NVIDIA's module dicts (PORTRAIT_ENTRIES: INPUT_SIZES and
+  NATIVE_SHAPES "768p-portrait", RESOLUTIONS "<resolution>-portrait", its landscape entries with width and height
+  swapped; NVIDIA reads them at call time, no file is edited), so encode_video takes the clip at 768x1344 (with
+  "768p" it would cover-crop it to 1344x768) and Pipeline targets the portrait grid. NVIDIA's Pipeline.upscale is not
+  used for it: its test for the step through the 2K grid (pipeline.py:226, the target's latent rows above the
+  landscape 2K grid's 90) holds for every portrait target, which it would stretch through the landscape grid and back
+  with no error. upscale_route runs NVIDIA's upscaler as Pipeline.upscale does, with that 2K grid turned to portrait
+  (160x90 latents): at 4K only. NVIDIA's decode keeps every row of a portrait output; the job keeps the centre
+  columns (keep_columns: 1088 -> 1080 at 1080p, 2176 -> 2160 at 4K), as that decode keeps the centre rows of a
+  landscape one. check_package pins NVIDIA's pipeline.py and upscaler.py (sha256) for this, and refuses a portrait
+  key NVIDIA has itself.
 
-The input: the clip's MP4 (stage2/refined_*.mp4), through NVIDIA's encode_video at 768p.
-Scope: t2va clips, 16:9, 5 s (1344x768, 121 frames), the shapes NVIDIA's pipeline is fixed at. fl2va and ref2va need
-a text-only encode of the prompt (their conditioning interleaves the pictures), portrait and 10/15 s need changes
-to NVIDIA's fixed shapes: follow-ups.
+The input: the clip's MP4 (stage2/refined_*.mp4), through NVIDIA's encode_video at 768p (1344x768, or 768x1344 for
+9:16). Scope: t2va clips, 5 s (121 frames at 24 fps, the length NVIDIA's pipeline is fixed at), 16:9 or 9:16. fl2va
+and ref2va need a text-only encode of the prompt (their conditioning interleaves the pictures), the other lengths
+(3 to 15 s) changes to NVIDIA's fixed length: follow-ups.
 
 Measured on a DGX Spark (GB10), one 5 s clip, standard forward and VAE, cuDNN attention. This job, run by a staging
 studio (2K, balanced: 2 steps from 0.7, the clip's audio, the standard load): encode_video 185 s, load
@@ -62,12 +74,13 @@ wrapper it is derived from, standard load: load 445-539 s; per refine step 144 s
 104 / 180 s; MP4 8 / 16 s; peak allocated 81 / 91 GiB; lowest MemAvailable 28 / 15 GiB. 4K, with the lean blocks
 (and a load through device_map): steps of 1687 and 1701 s, decode 399 s, peak allocated 94.5 GiB, lowest
 MemAvailable 13.8 GiB. The bench with the fast load: above (768p). Not run on the GPU yet: this job with the fast
-load (its default), and its 4K path.
+load (its default), its 4K path and 9:16 clips (the same number of tokens as 16:9 at each resolution).
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
-cancelled; times per stage, steps, sigmas, peak GPU memory, lowest MemAvailable, the inputs' sha256, versions, the load:
-its mode, and for fast the files and how many fell back to mmap). Progress on stdout: "[lf-studio] phase <name>" for
-encoding, loading, refine k/n, decoding and saving, in that order, and "[lf-studio] error <text>" last on failure.
+cancelled; the clip's orientation (from its MP4), times per stage, the latent grids the upscaler ran to, steps, sigmas,
+peak GPU memory, lowest MemAvailable, the inputs' sha256, versions, the load: its mode, and for fast the files and how
+many fell back to mmap). Progress on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n, decoding
+and saving, in that order, and "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loaded), 143 stopped by SIGTERM.
 --check validates job.json and the inputs, prints the plan and exits (0 or 2) without torch and without writing.
 --parent PID (the server passes its own): the job is killed when that process ends (PR_SET_PDEATHSIG), so it never
@@ -78,7 +91,8 @@ job.json: {"version": 1, "case": DIR, "resolution": "1080p"|"2k"|"4k", "steps": 
 "preread": BOOL (false; true only with load "standard"), "vae_batch": INT (26), "paths": {"package": DIR,
 "weights": DIR, "base_model": DIR, "output": DIR (optional)}, "meta": {...} (optional, copied into the receipt)}.
 Paths are absolute. Any other field is refused, "source" too: the job has no draft source any more (the clip's
-Stage-1 latent, which redrew the video too much), it always reads the clip's MP4.
+Stage-1 latent, which redrew the video too much), it always reads the clip's MP4. The orientation is not a field
+either: the clip's MP4 has it (16:9 or 9:16), and the output is that way round (2k: 2560x1440 or 1440x2560).
 
 Everything outside run() and the torch helpers is standard library only, so the server (its settings, the command
 line, the progress lines, the mux), bin/lf-studio --check (studio_settings, check_weights) and tests/test_upscale.py
@@ -104,9 +118,32 @@ from pathlib import Path
 TAG = "[lf-studio]"
 JOB_VERSION = 1
 AUDIO = ("clip", "silence")
-# output sizes (width, height); NVIDIA's pipeline.RESOLUTIONS computes 1080p and 4K at whole latent rows and keeps
-# the centre rows. Its 768p (no upscale) is not offered.
-SIZES = {"1080p": (1920, 1080), "2k": (2560, 1440), "4k": (3840, 2160)}
+# The clips this job takes, per orientation (the clip's MP4 decides): the MP4's size (width, height), the size name
+# NVIDIA's encode_video gets, the normalized latent it gives (24, T, H/16, W/16), the key of NVIDIA's
+# pipeline.RESOLUTIONS per resolution, and the output (width, height). NVIDIA's RESOLUTIONS computes 1080p and 4K at
+# whole latent patches (1088 / 2176) and keeps the centre rows (landscape) or, here, columns (portrait). Its 768p (no
+# upscale) is not offered. Portrait: NVIDIA's landscape shapes turned, with the entries PORTRAIT_ENTRIES adds.
+SHAPES = {
+    "landscape": {"input": (1344, 768), "size": "768p", "native": (24, 37, 48, 84),
+                  "resolutions": {"1080p": "1080p", "2k": "2k", "4k": "4k"},
+                  "sizes": {"1080p": (1920, 1080), "2k": (2560, 1440), "4k": (3840, 2160)}},
+    "portrait": {"input": (768, 1344), "size": "768p-portrait", "native": (24, 37, 84, 48),
+                 "resolutions": {"1080p": "1080p-portrait", "2k": "2k-portrait", "4k": "4k-portrait"},
+                 "sizes": {"1080p": (1080, 1920), "2k": (1440, 2560), "4k": (2160, 3840)}}}
+SIZES = SHAPES["landscape"]["sizes"]         # the resolutions (job.json, the studio's choices), 16:9
+# NVIDIA's pipeline module dicts: its own landscape entries this wrapper was written against (check_package), and
+# the portrait ones run() adds for a 9:16 clip, the same with width and height swapped. RESOLUTIONS is (computed
+# height, width, kept rows): a portrait output keeps every row, and keep_columns keeps the centre columns.
+NVIDIA_ENTRIES = {"INPUT_SIZES": {"768p": (1344, 768)}, "NATIVE_SHAPES": {"768p": (24, 37, 48, 84)},
+                  "RESOLUTIONS": {"1080p": (1088, 1920, 1080), "2k": (1440, 2560, 1440), "4k": (2176, 3840, 2160)}}
+PORTRAIT_ENTRIES = {"INPUT_SIZES": {"768p-portrait": (768, 1344)}, "NATIVE_SHAPES": {"768p-portrait": (24, 37, 84, 48)},
+                    "RESOLUTIONS": {"1080p-portrait": (1920, 1088, 1920), "2k-portrait": (2560, 1440, 2560),
+                                    "4k-portrait": (3840, 2176, 3840)}}
+UPSCALED_SHAPE = (24, 37, 90, 160)           # NVIDIA's pipeline.UPSCALED_SHAPE: the 2K grid 4K is upscaled through
+# NVIDIA's files the portrait route builds on (it adds to pipeline.py's dicts, stands in for its Pipeline.upscale and
+# crops after its decode, and calls upscaler.upscale): their sha256 at NVIDIA_COMMIT, checked for a 9:16 clip
+NVIDIA_FILES = {"open_h3/pipeline.py": "361729e81b9d15c8af4b1336e4bcbc36a4f20ddfe0e911e65e1d5c434a0f04ab",
+                "open_h3/upscaler.py": "e54959b609c5732711fd8e87b5e6cbe4e80977379d988df175afa1c7745f4521"}
 NVIDIA_STEPS = (2, 3)            # steps with a schedule of their own (sigmas.SCHEDULES); others need start_sigma
 MAX_STEPS = 4
 # sequence chunks of lean_forward, which every transformer block runs at these sizes (the stock forward elsewhere).
@@ -145,10 +182,10 @@ CURVE_FILE = "lora/sharp_curve_branches.safetensors"
 CURVE_TABLE = "lora/adaln_t_table.bin"
 UPSCALER_FILE = "latent_upsampler/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors"
 BASE_PARTS = ("transformer", "vae", "audio_vae")
-NATIVE_SHAPE = (24, 37, 48, 84)                  # 1344x768, 121 frames, normalized H3 latent
+NATIVE_SHAPE = SHAPES["landscape"]["native"]     # 1344x768, 121 frames, normalized H3 latent (pipeline.NATIVE_SHAPE)
 AUDIO_SAMPLES = round(124 / 24 * 32000)          # encode_silence's length: 124 frames at 32 kHz
 TEXT_WIDTH = 5120
-FINAL = {"width": 1344, "height": 768, "frames": 121, "fps": "24/1"}
+FINAL = {"frames": 121, "fps": "24/1"}           # the clip's MP4 and the output: 5 s at 24 fps
 
 OUTPUT_VIDEO = "video_noaudio.mp4"
 RECEIPT = "receipt.json"
@@ -339,7 +376,8 @@ def probe_command(mp4, ffprobe="ffprobe"):
 
 
 def check_final(mp4, ffprobe=None):
-    """The clip's MP4 must be 1344x768, 121 frames at 24 fps: a 5 s 16:9 clip, the shape NVIDIA's pipeline takes."""
+    """The clip's MP4 must be a 5 s clip, 121 frames at 24 fps (the length NVIDIA's pipeline is fixed at), 16:9
+    (1344x768) or 9:16 (768x1344). Returns its orientation, "landscape" or "portrait"."""
     ffprobe = ffprobe or shutil.which("ffprobe")
     if not ffprobe:
         raise JobError("ffprobe is not installed")
@@ -354,9 +392,16 @@ def check_final(mp4, ffprobe=None):
     if len(video) != 1:
         raise JobError(f"{Path(mp4).name} has {len(video)} video streams, not one")
     found = tuple(video[0].get(key) for key in ("width", "height", "nb_frames", "r_frame_rate"))
-    if found != (FINAL["width"], FINAL["height"], str(FINAL["frames"]), FINAL["fps"]):
+    orientation = next((name for name, shape in SHAPES.items() if shape["input"] == found[:2]), None)
+    if orientation is None or found[2:] != (str(FINAL["frames"]), FINAL["fps"]):
         raise JobError(f"{Path(mp4).name} is {found[0]}x{found[1]}, {found[2]} frames at {found[3]} fps: not a 5 s "
-                       "16:9 clip (1344x768, 121 frames at 24 fps)")
+                       "16:9 or 9:16 clip (1344x768 or 768x1344, 121 frames at 24 fps)")
+    return orientation
+
+
+def output_size(orientation, resolution):
+    """The output's (width, height) for a clip of that orientation at that resolution."""
+    return SHAPES[orientation]["sizes"][resolution]
 
 
 def weight_paths(job, upscaler_file=UPSCALER_FILE):
@@ -426,15 +471,38 @@ def sha256(path):
 
 
 def plan(job, schedules, shifted_grid):
-    """What the job will do, with NVIDIA's sigma functions (open_h3.sigmas, standard library only)."""
+    """What the job will do, with NVIDIA's sigma functions (open_h3.sigmas, standard library only). `job` has the
+    clip's orientation (prepare)."""
     if job["start_sigma"] is None:
         if job["steps"] not in schedules:
             raise JobError(f"NVIDIA's package has no {job['steps']}-step schedule")
         sigmas = list(schedules[job["steps"]])
     else:
         sigmas = list(shifted_grid(job["start_sigma"], job["steps"]))
-    return {"size": list(SIZES[job["resolution"]]), "frames": FINAL["frames"], "steps": len(sigmas) - 1,
-            "sigmas": sigmas, "lean_chunks": LEAN_CHUNKS.get(job["resolution"])}
+    return {"orientation": job["orientation"], "size": list(output_size(job["orientation"], job["resolution"])),
+            "frames": FINAL["frames"], "steps": len(sigmas) - 1, "sigmas": sigmas,
+            "lean_chunks": LEAN_CHUNKS.get(job["resolution"])}
+
+
+def upscale_route(native, target, upscaled=UPSCALED_SHAPE):
+    """The latent grids NVIDIA's Pipeline.upscale (pipeline.py:220-228) runs the upscaler to, from a native latent of
+    shape `native` to `target` ((24, T, H, W) each; `upscaled`: NVIDIA's UPSCALED_SHAPE, the landscape 2K grid), with
+    that 2K grid turned to the clip's orientation. Standard library only. NVIDIA's code goes through the 2K grid first
+    when the target has more latent rows than it (target[2] > 90): for 16:9 that is 4K only, and this gives the same
+    route. A 9:16 target has more rows than the landscape 2K grid at every resolution (120, 160, 240), so NVIDIA's
+    code would stretch it through that grid and back; here its short side, the columns, is compared with the
+    portrait 2K grid's (90): 4K only again, through (160, 90). [] when native is the target already."""
+    native, target, upscaled = tuple(native), tuple(target), tuple(upscaled)
+    if (native[2] > native[3]) != (target[2] > target[3]):
+        raise ValueError(f"the latent {native} and the target {target} differ in orientation")
+    if native == target:
+        return []
+    if target[2] > target[3]:                                       # portrait: the 2K grid turned, columns compared
+        grid = upscaled[:2] + (upscaled[3], upscaled[2])
+        through = target[3] > grid[3]
+    else:                                                           # landscape: NVIDIA's own test
+        grid, through = upscaled, target[2] > upscaled[2]
+    return ([grid] if through else []) + [target]
 
 
 # ---------------------------------------------------------------- weights in the page cache (standard library only)
@@ -751,17 +819,54 @@ def encode_audio(base_model, pcm, torch):
     return audio
 
 
-def check_package(adapters, pipeline, resolution):
-    """NVIDIA's package is the one this wrapper was written against: its file names and shapes."""
+def check_package(adapters, pipeline, resolution, orientation="landscape"):
+    """NVIDIA's package is the one this wrapper was written against: its file names and shapes. For a 9:16 clip also
+    the files the portrait route builds on (NVIDIA_FILES, by sha256), the landscape entries its portrait ones are
+    made from, and no portrait key of NVIDIA's own in the dicts it adds to."""
     found = {"LORA_FILE": adapters.LORA_FILE, "CURVE_FILE": adapters.CURVE_FILE, "CURVE_TABLE": adapters.CURVE_TABLE,
              "UPSCALER_FILE": pipeline.UPSCALER_FILE, "NATIVE_SHAPE": tuple(pipeline.NATIVE_SHAPE)}
     wanted = {"LORA_FILE": LORA_FILE, "CURVE_FILE": CURVE_FILE, "CURVE_TABLE": CURVE_TABLE,
               "UPSCALER_FILE": UPSCALER_FILE, "NATIVE_SHAPE": NATIVE_SHAPE}
     height, width, keep = pipeline.RESOLUTIONS[resolution]
     found["size"], wanted["size"] = (width, keep), SIZES[resolution]
+    if orientation == "portrait":
+        root = Path(pipeline.__file__).resolve().parent.parent
+        for rel, digest in NVIDIA_FILES.items():
+            found[rel], wanted[rel] = sha256(root / rel), digest
+        found["UPSCALED_SHAPE"], wanted["UPSCALED_SHAPE"] = tuple(pipeline.UPSCALED_SHAPE), UPSCALED_SHAPE
+        for name, entries in NVIDIA_ENTRIES.items():
+            table = getattr(pipeline, name)
+            found[name] = {key: tuple(table[key]) if key in table else None for key in entries}
+            found[name].update({key: tuple(table[key]) for key in PORTRAIT_ENTRIES[name] if key in table})
+            wanted[name] = entries
     differ = {k: found[k] for k in wanted if found[k] != wanted[k]}
     if differ or not hasattr(adapters, "StageMerger"):
         raise JobError(f"NVIDIA's package is not the one this wrapper was written for ({NVIDIA_COMMIT[:7]}): {differ}")
+
+
+def add_portrait_entries(pipeline):
+    """PORTRAIT_ENTRIES into NVIDIA's module dicts (INPUT_SIZES, NATIVE_SHAPES, RESOLUTIONS), which its encode_video
+    and Pipeline read at call time. check_package has made sure that the keys are not NVIDIA's own."""
+    for name, entries in PORTRAIT_ENTRIES.items():
+        getattr(pipeline, name).update(entries)
+
+
+def keep_columns(frames, width):
+    """The centre `width` columns of decoded (frames, rows, columns, 3) frames, as a view: NVIDIA's decode keeps the
+    centre rows of a landscape output computed at whole latent patches (pipeline.py:265-266); a portrait output is
+    computed 1088 / 2176 columns wide at 1080p and 4K."""
+    left = (frames.shape[2] - width) // 2
+    return frames.narrow(2, left, width)
+
+
+def run_route(upscaler, node, native, route, device):
+    """NVIDIA's upscaler (open_h3.upscaler.upscale) to each grid of `route` in turn (upscale_route), as its
+    Pipeline.upscale calls it."""
+    if not route:
+        return native.float().to(device)
+    for grid in route:
+        native = upscaler.upscale(node, native, grid)
+    return native.to(device)
 
 
 def versions(torch):
@@ -829,11 +934,17 @@ def install_fast_load(adapters, fastload, safetensors_torch, diffusers):
 
 
 def run(job, files, receipt, trace):
-    """The upscale on the GPU. Fills the receipt as it goes."""
+    """The upscale on the GPU. Fills the receipt as it goes. A 16:9 clip runs NVIDIA's calls; a 9:16 one adds its
+    portrait entries to NVIDIA's dicts, and runs upscale_route and keep_columns (the docstring)."""
     import torch
     sys.path.insert(0, str(job["package"]))           # -I drops PYTHONPATH and the script dir: name it explicitly
     from open_h3 import adapters, pipeline
-    check_package(adapters, pipeline, job["resolution"])
+    shape = SHAPES[job["orientation"]]
+    portrait = job["orientation"] == "portrait"
+    check_package(adapters, pipeline, job["resolution"], job["orientation"])
+    if portrait:
+        from open_h3 import upscaler
+        add_portrait_entries(pipeline)
     receipt["versions"] = versions(torch)
     torch.cuda.set_device(0)
     times, peaks = receipt["times_s"], receipt["peak_gib"]
@@ -879,7 +990,7 @@ def run(job, files, receipt, trace):
 
     # the final MP4 and the clip's audio through the VAEs, loaded, used and freed before the DiT
     phase("encoding")
-    native = timed("encode_video", lambda: pipeline.encode_video(base, files["final"], "768p", seed=VAE_SEED))
+    native = timed("encode_video", lambda: pipeline.encode_video(base, files["final"], shape["size"], seed=VAE_SEED))
     if pcm is not None:
         clip_audio = timed("encode_audio", lambda: encode_audio(base, pcm, torch))
     gc.collect()
@@ -896,7 +1007,7 @@ def run(job, files, receipt, trace):
     adapters.StageMerger = OneShotMerger
     pipe = timed("load", lambda: pipeline.Pipeline(
         weights, base, fwd="standard", steps=job["steps"], start_sigma=job["start_sigma"],
-        resolution=job["resolution"], vae="standard", vae_batch=job["vae_batch"]))
+        resolution=shape["resolutions"][job["resolution"]], vae="standard", vae_batch=job["vae_batch"]))
     pipe.node.load_model("upscaler", pipe.device, "bf16")    # the node reads its checkpoint on first use: now
     drop_from_page_cache(loaded_files(job))
     # what the load left in the allocator's cache, the fast load's fp32 LoRA (~11.6 GiB, on the GPU from the start)
@@ -914,9 +1025,14 @@ def run(job, files, receipt, trace):
             raise RuntimeError(f"the clip's audio latent is {tuple(clip_audio.shape)}, NVIDIA's silence "
                                f"{tuple(pipe.audio.shape)}")
         pipe.audio = clip_audio.to(pipe.device)
-    if tuple(native.shape) != NATIVE_SHAPE:
-        raise RuntimeError(f"the 768p latent is {tuple(native.shape)}, not {NATIVE_SHAPE}")
-    low = timed("upscale", lambda: pipe.upscale(native.to(pipe.device)))
+    if tuple(native.shape) != shape["native"]:
+        raise RuntimeError(f"the 768p latent is {tuple(native.shape)}, not {shape['native']}")
+    route = upscale_route(native.shape, pipe.target_shape, pipeline.UPSCALED_SHAPE)
+    receipt["upscale_route"] = [list(grid[2:]) for grid in route]      # NVIDIA's own for 16:9 (the same grids)
+    if portrait:
+        low = timed("upscale", lambda: run_route(upscaler, pipe.node, native.to(pipe.device), route, pipe.device))
+    else:
+        low = timed("upscale", lambda: pipe.upscale(native.to(pipe.device)))
     timed("merge_refine", lambda: pipe.set_stage("refine"))  # the merge is done; this turns the Sharp curves on
     receipt["sigmas"] = [float(s) for s in pipe.sigmas]
     receipt["steps"] = steps = len(pipe.sigmas) - 1
@@ -947,6 +1063,12 @@ def run(job, files, receipt, trace):
     torch.cuda.empty_cache()
     receipt["allocated_before_decode_gib"] = round(torch.cuda.memory_allocated() / 2 ** 30, 2)
     frames = timed("vae_decode", lambda: pipe.decode(refined))
+    width, height = shape["sizes"][job["resolution"]]
+    if portrait:
+        frames = keep_columns(frames, width)
+    if tuple(frames.shape) != (FINAL["frames"], height, width, 3):
+        raise RuntimeError(f"the decoded video is {tuple(frames.shape)}, not {FINAL['frames']} frames of "
+                           f"{width}x{height}")
     pipe.vae = None
     del refined
     gc.collect()
@@ -963,11 +1085,12 @@ def run(job, files, receipt, trace):
 # ---------------------------------------------------------------- main
 
 def prepare(job_path, receipt):
-    """job.json and the inputs, checked without torch -> (job, files). Fills the receipt's job as soon as it parses."""
+    """job.json and the inputs, checked without torch -> (job, files), job["orientation"] from the clip's MP4. Fills
+    the receipt's job as soon as it parses."""
     job = load_job(job_path)
     receipt["job"] = job_record(job)
     files = case_inputs(job)
-    check_final(files["final"])
+    job["orientation"] = receipt["orientation"] = check_final(files["final"])     # from the MP4 (not in job.json)
     check_weights(job)
     return job, files
 

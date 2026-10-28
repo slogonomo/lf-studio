@@ -1,13 +1,17 @@
 """upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json, the clip's and the weights'
-files, the text check on a stand-in, the command lines and the environment, the progress lines, the memory trace,
-the script's --check and its refusals, main's receipt when the GPU part finishes, fails or gets SIGTERM (a stand-in
-run()), and run() itself with a stand-in torch and a stand-in of NVIDIA's open_h3 that records its calls, with both
-loads (fast and standard; stand-ins for safetensors, diffusers and upscale/fastload.py record every load). No GPU, no
-weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters and pipeline), the
-weights are small files. upscale/fastload.py is checked against the patch's runtime/fastload.py.
+files (5 s MP4s made by ffmpeg, 16:9 and 9:16, and the lengths and sizes it refuses), the shape table, the portrait
+entries for NVIDIA's dicts, the upscale route and the column crop, check_package, the text check on a stand-in, the
+command lines and the environment, the progress lines, the memory trace, the script's --check and its refusals,
+main's receipt when the GPU part finishes, fails or gets SIGTERM (a stand-in run()), and run() itself with a stand-in
+torch and a stand-in of NVIDIA's open_h3 that records its calls: for 16:9 the same calls as before the job took 9:16
+clips, for 9:16 the portrait route, with both loads (fast and standard; stand-ins for safetensors, diffusers and
+upscale/fastload.py record every load). No GPU, no weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for
+run() adapters, pipeline and upscaler), the weights are small files. upscale/fastload.py is checked against the
+patch's runtime/fastload.py. With NVIDIA's real package where LFSTUDIO_UPSCALE_PKG (or its default) names it, its
+pinned files and its entries are checked too (read, not imported); skipped without it.
 
-The parts that need torch (the merger, the lean block forward, the tensor checks) run on the CPU when torch is
-importable and are skipped otherwise. python3 -m unittest tests.test_upscale -v   (needs ffmpeg)
+The parts that need torch (the merger, the lean block forward, the tensor checks, the column crop) run on the CPU when
+torch is importable and are skipped otherwise. python3 -m unittest tests.test_upscale -v   (needs ffmpeg)
 """
 import contextlib
 import hashlib
@@ -101,6 +105,7 @@ class Fixture(unittest.TestCase):
     def setUpClass(cls):
         cls.media = Path(tempfile.mkdtemp(prefix="upscale-media-"))
         cls.final = make_mp4(cls.media / "final.mp4")
+        cls.portrait = make_mp4(cls.media / "portrait.mp4", width=768, height=1344)
 
     @classmethod
     def tearDownClass(cls):
@@ -387,6 +392,204 @@ class TextTests(unittest.TestCase):
                 job_module.check_pcm_shape(shape)
 
 
+def nvidia_route(native, target, upscaled=(24, 37, 90, 160)):
+    """NVIDIA's Pipeline.upscale (pipeline.py:223-228) as the grids it runs the upscaler to: through UPSCALED_SHAPE
+    first when the target has more latent rows."""
+    if tuple(native) == tuple(target):
+        return []
+    return ([tuple(upscaled)] if target[2] > upscaled[2] else []) + [tuple(target)]
+
+
+def nvidia_package():
+    """NVIDIA's real package where the studio's settings find it (LFSTUDIO_UPSCALE_PKG, else its default), or None."""
+    package = job_module.studio_settings(os.environ)[0]["package"]
+    return package if (package / "open_h3" / "pipeline.py").is_file() else None
+
+
+LANDSCAPE_TARGETS = {"1080p": (24, 37, 68, 120), "2k": (24, 37, 90, 160), "4k": (24, 37, 136, 240)}
+PORTRAIT_TARGETS = {"1080p": (24, 37, 120, 68), "2k": (24, 37, 160, 90), "4k": (24, 37, 240, 136)}
+
+
+class ShapeTests(unittest.TestCase):
+    """The shape table, the portrait entries for NVIDIA's dicts, the upscale route and the column crop, without
+    torch."""
+
+    def test_the_table(self):
+        land, port = job_module.SHAPES["landscape"], job_module.SHAPES["portrait"]
+        self.assertEqual(set(job_module.SHAPES), {"landscape", "portrait"})
+        self.assertEqual(job_module.SIZES, land["sizes"])
+        self.assertEqual(job_module.NATIVE_SHAPE, land["native"])
+        for shape in (land, port):
+            width, height = shape["input"]
+            self.assertEqual(shape["native"], (24, 37, height // 16, width // 16))     # NVIDIA's NATIVE_SHAPES
+            self.assertEqual(set(shape["sizes"]), {"1080p", "2k", "4k"})
+            self.assertEqual(set(shape["resolutions"]), set(shape["sizes"]))
+        self.assertEqual((land["input"], port["input"]), ((1344, 768), (768, 1344)))
+        self.assertEqual({r: size[::-1] for r, size in land["sizes"].items()}, port["sizes"])
+        self.assertEqual((land["size"], land["resolutions"]), ("768p", {r: r for r in job_module.SIZES}))
+        self.assertEqual(port["sizes"], {"1080p": (1080, 1920), "2k": (1440, 2560), "4k": (2160, 3840)})
+        self.assertEqual(job_module.output_size("portrait", "2k"), (1440, 2560))
+        self.assertEqual(job_module.output_size("landscape", "4k"), (3840, 2160))
+
+    def test_the_portrait_entries_are_nvidias_turned(self):
+        """INPUT_SIZES and NATIVE_SHAPES for encode_video, RESOLUTIONS for Pipeline: NVIDIA's landscape entries with
+        width and height swapped, every row kept; after the column crop each gives the table's size."""
+        land, port = job_module.SHAPES["landscape"], job_module.SHAPES["portrait"]
+        nvidia, entries = job_module.NVIDIA_ENTRIES, job_module.PORTRAIT_ENTRIES
+        self.assertEqual(set(entries), {"INPUT_SIZES", "NATIVE_SHAPES", "RESOLUTIONS"})
+        self.assertEqual((nvidia["INPUT_SIZES"], nvidia["NATIVE_SHAPES"]),
+                         ({"768p": land["input"]}, {"768p": land["native"]}))
+        self.assertEqual((entries["INPUT_SIZES"], entries["NATIVE_SHAPES"]),
+                         ({port["size"]: port["input"]}, {port["size"]: port["native"]}))
+        self.assertEqual(set(entries["RESOLUTIONS"]), set(port["resolutions"].values()))
+        for resolution, (width, height) in land["sizes"].items():
+            computed, nvidia_width, keep = nvidia["RESOLUTIONS"][resolution]
+            self.assertEqual((nvidia_width, keep, computed % 16), (width, height, 0))
+            rows, columns, kept = entries["RESOLUTIONS"][port["resolutions"][resolution]]
+            self.assertEqual((rows, columns, kept), (width, computed, width))
+            self.assertEqual((24, 37, rows // 16, columns // 16), PORTRAIT_TARGETS[resolution])  # Pipeline's target
+            self.assertEqual(port["sizes"][resolution], (min(columns, height), kept))     # after keep_columns
+
+    def test_the_upscale_route(self):
+        route = job_module.upscale_route
+        land, port = job_module.NATIVE_SHAPE, job_module.SHAPES["portrait"]["native"]
+        for resolution, target in LANDSCAPE_TARGETS.items():                    # 16:9: NVIDIA's own route
+            self.assertEqual(route(land, target), nvidia_route(land, target), resolution)
+        self.assertEqual(route(land, LANDSCAPE_TARGETS["4k"]), [(24, 37, 90, 160), (24, 37, 136, 240)])
+        # 9:16: one pass to 1080p and 2K, through the 2K grid turned (160x90 latents) to 4K
+        self.assertEqual(route(port, PORTRAIT_TARGETS["1080p"]), [(24, 37, 120, 68)])
+        self.assertEqual(route(port, PORTRAIT_TARGETS["2k"]), [(24, 37, 160, 90)])
+        self.assertEqual(route(port, PORTRAIT_TARGETS["4k"]), [(24, 37, 160, 90), (24, 37, 240, 136)])
+        # NVIDIA's own test (pipeline.py:226) would send each of them through the landscape 2K grid and back
+        for target in PORTRAIT_TARGETS.values():
+            self.assertEqual(nvidia_route(port, target)[0], (24, 37, 90, 160))
+        # no grid of a route has the other orientation
+        for native, targets in ((land, LANDSCAPE_TARGETS), (port, PORTRAIT_TARGETS)):
+            for target in targets.values():
+                for grid in route(native, target):
+                    self.assertEqual(grid[2] > grid[3], native[2] > native[3], (native, target, grid))
+        self.assertEqual((route(land, land), route(port, port)), ([], []))
+        for native, target in ((land, PORTRAIT_TARGETS["2k"]), (port, LANDSCAPE_TARGETS["1080p"])):
+            with self.assertRaisesRegex(ValueError, "differ in orientation"):
+                route(native, target)
+
+    def test_the_column_crop(self):
+        """The centre columns, as NVIDIA's decode keeps the centre rows ((rows - kept) // 2 on each side)."""
+        for computed, width, left in ((1088, 1080, 4), (1440, 1440, 0), (2176, 2160, 8)):
+            NARROWED.clear()
+            frames = job_module.keep_columns(StandInTensor(121, 1920, computed, 3), width)
+            self.assertEqual(frames.shape, (121, 1920, width, 3))
+            self.assertEqual(NARROWED, [((121, 1920, computed, 3), 2, left, width)])
+
+
+class PackageTests(unittest.TestCase):
+    """check_package on stand-ins of NVIDIA's modules: the names and shapes for every clip, and for a 9:16 clip the
+    pinned files, the entries its portrait ones are made from and no portrait key of NVIDIA's own."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="upscale-package-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / "open_h3").mkdir()
+        pins = {}
+        for rel in job_module.NVIDIA_FILES:
+            (self.tmp / rel).write_text(f"# {rel}\n")
+            pins[rel] = hashlib.sha256((self.tmp / rel).read_bytes()).hexdigest()
+        patcher = mock.patch.dict(job_module.NVIDIA_FILES, pins)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.adapters = types.SimpleNamespace(LORA_FILE=job_module.LORA_FILE, CURVE_FILE=job_module.CURVE_FILE,
+                                              CURVE_TABLE=job_module.CURVE_TABLE, StageMerger=object)
+        self.pipeline = types.SimpleNamespace(
+            __file__=str(self.tmp / "open_h3" / "pipeline.py"), UPSCALER_FILE=job_module.UPSCALER_FILE,
+            NATIVE_SHAPE=(24, 37, 48, 84), UPSCALED_SHAPE=(24, 37, 90, 160),
+            INPUT_SIZES={"768p": (1344, 768), "576p": (1024, 576)},
+            NATIVE_SHAPES={"768p": (24, 37, 48, 84), "576p": (24, 37, 36, 64)},
+            RESOLUTIONS={"768p": (768, 1344, 768), "1080p": (1088, 1920, 1080), "2k": (1440, 2560, 1440),
+                         "4k": (2176, 3840, 2160)})
+
+    def refused(self, resolution="2k", orientation="portrait"):
+        with self.assertRaisesRegex(JobError, "not the one this wrapper was written for") as caught:
+            job_module.check_package(self.adapters, self.pipeline, resolution, orientation)
+        return str(caught.exception)
+
+    def test_both_orientations(self):
+        for resolution in job_module.SIZES:
+            for orientation in job_module.SHAPES:
+                job_module.check_package(self.adapters, self.pipeline, resolution, orientation)
+        self.adapters.LORA_FILE += ".v2"
+        for orientation in job_module.SHAPES:
+            self.assertIn("LORA_FILE", self.refused(orientation=orientation))
+
+    def test_landscape_does_not_read_the_pinned_files(self):
+        (self.tmp / "open_h3" / "pipeline.py").write_text("# another version\n")
+        self.pipeline.UPSCALED_SHAPE = (24, 37, 80, 160)
+        self.pipeline.RESOLUTIONS["2k-portrait"] = (1, 2, 3)
+        job_module.check_package(self.adapters, self.pipeline, "2k")
+        job_module.check_package(self.adapters, self.pipeline, "1080p", "landscape")
+
+    def test_portrait_refusals(self):
+        (self.tmp / "open_h3" / "upscaler.py").write_text("# another version\n")
+        self.assertIn("open_h3/upscaler.py", self.refused())
+        (self.tmp / "open_h3" / "upscaler.py").write_text("# open_h3/upscaler.py\n")
+        job_module.check_package(self.adapters, self.pipeline, "2k", "portrait")
+        for name, change in (("UPSCALED_SHAPE", lambda p: setattr(p, "UPSCALED_SHAPE", (24, 37, 96, 160))),
+                             ("RESOLUTIONS", lambda p: p.RESOLUTIONS.update({"1080p": (1080, 1920, 1080)})),
+                             ("RESOLUTIONS", lambda p: p.RESOLUTIONS.update({"4k-portrait": (3840, 2176, 3840)})),
+                             ("INPUT_SIZES", lambda p: p.INPUT_SIZES.pop("768p")),
+                             ("NATIVE_SHAPES", lambda p: p.NATIVE_SHAPES.update({"768p-portrait": (24, 37, 84, 48)}))):
+            with self.subTest(name=name):
+                saved = {k: getattr(self.pipeline, k) for k in ("UPSCALED_SHAPE", "INPUT_SIZES", "NATIVE_SHAPES",
+                                                                 "RESOLUTIONS")}
+                for key in ("INPUT_SIZES", "NATIVE_SHAPES", "RESOLUTIONS"):
+                    setattr(self.pipeline, key, dict(saved[key]))
+                change(self.pipeline)
+                self.assertIn(name, self.refused())             # NVIDIA's own portrait key too: not overwritten
+                for key, value in saved.items():
+                    setattr(self.pipeline, key, value)
+
+    def test_add_portrait_entries(self):
+        job_module.add_portrait_entries(self.pipeline)
+        self.assertEqual(self.pipeline.INPUT_SIZES, {"768p": (1344, 768), "576p": (1024, 576),
+                                                     "768p-portrait": (768, 1344)})
+        self.assertEqual(self.pipeline.NATIVE_SHAPES["768p-portrait"], (24, 37, 84, 48))
+        self.assertEqual(self.pipeline.RESOLUTIONS["2k"], (1440, 2560, 1440))
+        self.assertEqual({k: v for k, v in self.pipeline.RESOLUTIONS.items() if k.endswith("-portrait")},
+                         job_module.PORTRAIT_ENTRIES["RESOLUTIONS"])
+
+
+class NvidiaPackageTests(unittest.TestCase):
+    """Against NVIDIA's real package where the studio's settings find it (LFSTUDIO_UPSCALE_PKG; skipped without it):
+    the pinned files and the entries the job was written against, read from its pipeline.py without importing it."""
+
+    def setUp(self):
+        self.package = nvidia_package()
+        if self.package is None:
+            self.skipTest("NVIDIA's Open-H3-Regenerate-2K is not installed (LFSTUDIO_UPSCALE_PKG)")
+
+    def test_the_pinned_files(self):
+        for rel, digest in job_module.NVIDIA_FILES.items():
+            self.assertEqual(job_module.sha256(self.package / rel), digest, rel)
+
+    def test_the_entries_and_the_route(self):
+        import ast
+        source = (self.package / "open_h3" / "pipeline.py").read_text()
+        found = {node.targets[0].id: ast.literal_eval(node.value) for node in ast.parse(source).body
+                 if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                 and node.targets[0].id in ("NATIVE_SHAPE", "INPUT_SIZES", "UPSCALED_SHAPE", "RESOLUTIONS")}
+        self.assertEqual((found["NATIVE_SHAPE"], found["UPSCALED_SHAPE"]),
+                         (job_module.NATIVE_SHAPE, job_module.UPSCALED_SHAPE))
+        for name, table in (("INPUT_SIZES", found["INPUT_SIZES"]), ("RESOLUTIONS", found["RESOLUTIONS"])):
+            for key, value in job_module.NVIDIA_ENTRIES[name].items():
+                self.assertEqual(table[key], value, (name, key))
+            self.assertFalse(set(table) & set(job_module.PORTRAIT_ENTRIES[name]), name)
+        self.assertIn("NATIVE_SHAPES = {name: (24, 37, h // 16, w // 16) for name, (w, h) in INPUT_SIZES.items()}",
+                      source)
+        # the route upscale_route mirrors (and the test it turns for 9:16)
+        self.assertIn("        if target[2] > UPSCALED_SHAPE[2]:\n            native = upscaler.upscale(self.node, "
+                      "native, UPSCALED_SHAPE)\n        return upscaler.upscale(self.node, native, target)"
+                      ".to(self.device)\n", source)
+
+
 class InputTests(Fixture):
     def test_the_files_each_job_reads(self):
         files = job_module.case_inputs(job_module.parse_job(self.job(audio="silence"), "/"))
@@ -413,13 +616,22 @@ class InputTests(Fixture):
         with self.assertRaisesRegex(JobError, "no clip directory"):
             job_module.case_inputs(job_module.parse_job(self.job(case=str(self.tmp / "nope")), "/"))
 
-    def test_only_a_5s_16x9_clip_passes(self):
-        job_module.check_final(self.case / "stage2" / "refined_1344x768_121f.mp4")
-        for name, kwargs, message in (("portrait.mp4", {"width": 768, "height": 1344}, "768x1344"),
-                                      ("ten.mp4", {"frames": 241}, "241 frames"),
-                                      ("fps.mp4", {"fps": 25}, "25/1")):
-            with self.subTest(name=name), self.assertRaisesRegex(JobError, message + ".*not a 5 s 16:9 clip"):
-                job_module.check_final(make_mp4(self.tmp / name, **kwargs))
+    def test_5s_clips_of_either_orientation_pass(self):
+        """1344x768 (16:9) and 768x1344 (9:16), 121 frames at 24 fps; check_final says which. Any other size, length
+        or rate is refused with what it is."""
+        self.assertEqual(job_module.check_final(self.case / "stage2" / "refined_1344x768_121f.mp4"), "landscape")
+        self.assertEqual(job_module.check_final(self.portrait), "portrait")
+        for name, kwargs, message in (("ten.mp4", {"frames": 241}, "1344x768, 241 frames"),
+                                      ("ten9x16.mp4", {"frames": 241, "width": 768, "height": 1344},
+                                       "768x1344, 241 frames"),
+                                      ("three.mp4", {"frames": 73, "width": 768, "height": 1344}, "73 frames"),
+                                      ("fps.mp4", {"fps": 25}, "25/1"),
+                                      ("576p.mp4", {"width": 1024, "height": 576}, "1024x576"),
+                                      ("1080p9x16.mp4", {"width": 1080, "height": 1920}, "1080x1920")):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    JobError, message + r".*: not a 5 s 16:9 or 9:16 clip \(1344x768 or 768x1344, 121 frames at 24 "
+                                        r"fps\)$"):
+                job_module.check_final(make_mp4(self.tmp / name, audio=False, **kwargs))
         (self.tmp / "text.mp4").write_text("not a video")
         with self.assertRaisesRegex(JobError, "ffprobe cannot read"):
             job_module.check_final(self.tmp / "text.mp4")
@@ -476,16 +688,24 @@ class InputTests(Fixture):
         namespace = {}
         exec(STAND_IN_SIGMAS, namespace)
         schedules, grid = namespace["SCHEDULES"], namespace["shifted_grid"]
-        job = job_module.parse_job(self.job(steps=3, start_sigma=None), "/")
+        job = dict(job_module.parse_job(self.job(steps=3, start_sigma=None), "/"), orientation="landscape")
         self.assertEqual(job_module.plan(job, schedules, grid),
-                         {"size": [2560, 1440], "frames": 121, "steps": 3, "sigmas": [0.9, 0.8, 0.6, 0.0],
-                          "lean_chunks": None})
-        job = job_module.parse_job(self.job(resolution="4k", steps=2, start_sigma=0.5), "/")
+                         {"orientation": "landscape", "size": [2560, 1440], "frames": 121, "steps": 3,
+                          "sigmas": [0.9, 0.8, 0.6, 0.0], "lean_chunks": None})
+        job = dict(job_module.parse_job(self.job(resolution="4k", steps=2, start_sigma=0.5), "/"),
+                   orientation="landscape")
         planned = job_module.plan(job, schedules, grid)
         self.assertEqual((planned["sigmas"], planned["size"], planned["lean_chunks"]),
                          ([0.5, 0.25, 0.0], [3840, 2160], 16))
+        for resolution, size, lean in (("1080p", [1080, 1920], None), ("2k", [1440, 2560], None),
+                                       ("4k", [2160, 3840], 16)):         # 9:16: the same tokens, the same forward
+            job = dict(job_module.parse_job(self.job(resolution=resolution), "/"), orientation="portrait")
+            planned = job_module.plan(job, schedules, grid)
+            self.assertEqual((planned["orientation"], planned["size"], planned["lean_chunks"]),
+                             ("portrait", size, lean))
         with self.assertRaisesRegex(JobError, "no 3-step schedule"):
-            job_module.plan(job_module.parse_job(self.job(steps=3, start_sigma=None), "/"), {2: [0.7, 0.4, 0]}, grid)
+            job_module.plan(dict(job_module.parse_job(self.job(steps=3, start_sigma=None), "/"),
+                                 orientation="landscape"), {2: [0.7, 0.4, 0]}, grid)
 
 
 class LineAndCommandTests(unittest.TestCase):
@@ -614,17 +834,27 @@ class ScriptTests(Fixture):
                          ([0.9, 0.8, 0.6, 0.0], [3840, 2160], 16))
         self.assertEqual(set(planned["inputs"]), {"conditioning", "final"})
 
+    def test_check_of_a_9x16_clip(self):
+        (self.case / "stage2" / "refined_1344x768_121f.mp4").unlink()
+        shutil.copy(self.portrait, self.case / "stage2" / "refined_768x1344_121f.mp4")
+        planned = json.loads(self.script("--job", str(self.write_job()), "--check", check=True).stdout)
+        self.assertEqual((planned["orientation"], planned["job"]["orientation"], planned["size"], planned["frames"]),
+                         ("portrait", "portrait", [1440, 2560], 121))
+        planned = json.loads(self.script("--job", str(self.write_job(resolution="1080p")), "--check",
+                                          check=True).stdout)
+        self.assertEqual(planned["size"], [1080, 1920])
+
     def test_check_refuses(self):
-        make_mp4(self.case / "stage2" / "refined_768x1344_121f.mp4", width=768, height=1344)
+        make_mp4(self.case / "stage2" / "refined_768x1344_241f.mp4", width=768, height=1344, frames=241)
         (self.case / "stage2" / "refined_1344x768_121f.mp4").unlink()
         result = self.script("--job", str(self.write_job()), "--check")
         self.assertEqual(result.returncode, 2)
-        self.assertRegex(result.stdout.splitlines()[-1], r"^\[lf-studio\] error refined_768x1344_121f\.mp4 is "
-                                                         r"768x1344, 121 frames .* not a 5 s 16:9 clip")
+        self.assertRegex(result.stdout.splitlines()[-1], r"^\[lf-studio\] error refined_768x1344_241f\.mp4 is "
+                                                         r"768x1344, 241 frames .* not a 5 s 16:9 or 9:16 clip")
         self.assertFalse((self.out / "receipt.json").exists())
         (self.package / "open_h3" / "sigmas.py").unlink()
         make_mp4(self.case / "stage2" / "refined_1344x768_121f.mp4")
-        (self.case / "stage2" / "refined_768x1344_121f.mp4").unlink()
+        (self.case / "stage2" / "refined_768x1344_241f.mp4").unlink()
         result = self.script("--job", str(self.write_job()), "--check")
         self.assertEqual(result.returncode, 2)
         self.assertIn("cannot import open_h3.sigmas", result.stdout)
@@ -770,6 +1000,9 @@ class ParentTests(Fixture):
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])        # nothing written
 
 
+NARROWED = []                           # each StandInTensor.narrow: (shape, dim, start, length)
+
+
 class StandInTensor:
     """Just enough of a tensor for run(): a shape, values for flatten().tolist(), and a tag that follows copies."""
 
@@ -783,6 +1016,11 @@ class StandInTensor:
     def __getitem__(self, index):
         assert index == 0
         return self._copy(self.shape[1:])
+
+    def narrow(self, dim, start, length):
+        assert 0 <= start and start + length <= self.shape[dim]
+        NARROWED.append((self.shape, dim, start, length))
+        return self._copy(self.shape[:dim] + (length,) + self.shape[dim + 1:])
 
     def to(self, *args, **kwargs):
         device = next((a for a in args if a in ("cuda", "cpu")), None)
@@ -912,10 +1150,13 @@ from pathlib import Path
 
 import torch
 
-from . import adapters
+from . import adapters, upscaler
 from .sigmas import SCHEDULES, shifted_grid
 
 NATIVE_SHAPE = (24, 37, 48, 84)
+INPUT_SIZES = {{"768p": (1344, 768), "576p": (1024, 576)}}
+NATIVE_SHAPES = {{name: (24, 37, h // 16, w // 16) for name, (w, h) in INPUT_SIZES.items()}}
+UPSCALED_SHAPE = (24, 37, 90, 160)
 RESOLUTIONS = {{"768p": (768, 1344, 768), "1080p": (1088, 1920, 1080), "2k": (1440, 2560, 1440),
                "4k": (2176, 3840, 2160)}}
 UPSCALER_FILE = {job_module.UPSCALER_FILE!r}
@@ -924,10 +1165,11 @@ CALLS = []
 
 def encode_video(base_model, path, size="768p", seed=42):
     from diffusers import AutoencoderKLMiniMaxH3
+    width, height = INPUT_SIZES[size]                 # as NVIDIA's: the size by its name, looked up at call time
     AutoencoderKLMiniMaxH3.from_pretrained(base_model, subfolder="vae", torch_dtype=torch.float32,
                                            local_files_only=True).cuda().eval()
     CALLS.append(("encode_video", Path(path).name, size, seed))
-    return torch.Tensor(*NATIVE_SHAPE, tag="final")
+    return torch.Tensor(*NATIVE_SHAPES[size], tag="final")
 
 
 def encode_mp4(frames, path, fps=24, crf=10):
@@ -976,7 +1218,12 @@ class Pipeline:
 
     def upscale(self, native):
         CALLS.append(("upscale", native.shape, native.tag))
-        return torch.Tensor(*self.target_shape)
+        target = self.target_shape                    # NVIDIA's Pipeline.upscale from here on (pipeline.py:223-228)
+        if tuple(native.shape) == target:
+            return native.float().to(self.device)
+        if target[2] > UPSCALED_SHAPE[2]:
+            native = upscaler.upscale(self.node, native, UPSCALED_SHAPE)
+        return upscaler.upscale(self.node, native, target).to(self.device)
 
     def refine(self, low, text, seed):
         CALLS.append(("refine", low.shape, text["prompt_embeds"].shape, seed, self.audio.tag, self.curve.strength))
@@ -985,8 +1232,18 @@ class Pipeline:
         return torch.Tensor(*low.shape)
 
     def decode(self, latents):
+        """NVIDIA's: computed at the target grid, the centre keep_rows rows kept."""
         CALLS.append(("decode", self.model is None, self.vae is not None, dict(self.node.MODEL_CACHE)))
         return torch.Tensor(121, self.keep_rows, self.target_shape[3] * 16, 3)
+'''
+# NVIDIA's open_h3.upscaler: the latent upscaler to a target grid (the node is NVIDIA's too), into pipeline.CALLS
+STAND_IN_UPSCALER = '''import torch
+
+
+def upscale(node, native, target_shape):
+    from .pipeline import CALLS
+    CALLS.append(("upscaler.upscale", tuple(native.shape), tuple(target_shape)))
+    return torch.Tensor(*native.shape[:2], *target_shape[2:])
 '''
 
 
@@ -995,7 +1252,8 @@ class RunTests(Fixture):
 
     def setUp(self):
         super().setUp()
-        for name, text in (("adapters", STAND_IN_ADAPTERS), ("pipeline", STAND_IN_PIPELINE)):
+        for name, text in (("adapters", STAND_IN_ADAPTERS), ("pipeline", STAND_IN_PIPELINE),
+                           ("upscaler", STAND_IN_UPSCALER)):
             (self.package / "open_h3" / f"{name}.py").write_text(text)
         self.loaded = {
             "conditioning.pt": {"prompt_embeds": StandInTensor(1, 41, 5120), "task": "t2va", "prompt": "a test",
@@ -1011,6 +1269,7 @@ class RunTests(Fixture):
         clip_audio = StandInTensor(2, 32, 207, tag="clip")
         self.loads = []
         self.modules = stand_in_loaders(self.loads)
+        NARROWED.clear()
 
         def encode_audio(base, pcm, torch):            # the audio VAE as the job's encode_audio loads it
             self.modules["diffusers"].AutoencoderKLMiniMaxH3Audio.from_pretrained(
@@ -1025,6 +1284,9 @@ class RunTests(Fixture):
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
             status = job_module.main(["--job", str(self.write_job(**changes))])
             calls = list(sys.modules["open_h3.pipeline"].CALLS) if "open_h3.pipeline" in sys.modules else []
+            pipeline = sys.modules.get("open_h3.pipeline")       # NVIDIA's module dicts as the run left them
+            self.dicts = {name: dict(getattr(pipeline, name)) for name in ("INPUT_SIZES", "NATIVE_SHAPES",
+                                                                           "RESOLUTIONS")} if pipeline else None
         phases = [p[1] for p in map(job_module.parse_line, stdout.getvalue().splitlines()) if p and p[0] == "phase"]
         self.lean, self.stdout, self.emptied = lean, stdout.getvalue(), fake.emptied
         return status, json.loads((self.out / "receipt.json").read_text()), calls, phases, encode_audio
@@ -1072,20 +1334,22 @@ class RunTests(Fixture):
         # the upscale: right after the upscaler's load_model
         self.assertIn([c[0] for c in calls].index("load_model") + 1, self.emptied)
         self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
-        self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage",
-                                                 "refine", "on_step", "on_step", "decode", "encode_mp4"])
+        self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale",
+                                                 "upscaler.upscale", "set_stage", "refine", "on_step", "on_step",
+                                                 "decode", "encode_mp4"])
         self.assertEqual(calls[0], ("encode_video", "refined_1344x768_121f.mp4", "768p", 42))
         self.assertEqual(calls[1][1], {"fwd": "standard", "hyperflow": None, "vae_batch": 26, "steps": 2,
                                        "start_sigma": 0.7, "resolution": "2k", "vae": "standard"})
         self.assertEqual(calls[3], ("upscale", (24, 37, 48, 84), "final"))
-        self.assertEqual(calls[5], ("refine", (24, 37, 90, 160), (41, 5120), 1234, "clip", 1.0))
-        self.assertEqual(calls[8], ("decode", True, True, {}))      # the DiT and the upscaler freed, the VAE kept
-        self.assertEqual(calls[9], ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (121, 1440, 2560, 3)))
+        self.assertEqual(calls[6], ("refine", (24, 37, 90, 160), (41, 5120), 1234, "clip", 1.0))
+        self.assertEqual(calls[9], ("decode", True, True, {}))      # the DiT and the upscaler freed, the VAE kept
+        self.assertEqual(calls[10], ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (121, 1440, 2560, 3)))
         self.assertEqual(encode_audio.call_args.args[0], self.base)
         self.assertEqual(encode_audio.call_args.args[1].shape, (2, 161333))
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json", "receipt.json", "video_noaudio.mp4"])
         self.assertEqual(receipt["output"], {"file": "video_noaudio.mp4", "size": [2560, 1440], "frames": 121,
                                              "bytes": 3})
+        self.assertEqual((receipt["orientation"], receipt["upscale_route"]), ("landscape", [[90, 160]]))
         self.assertEqual((receipt["sigmas"], receipt["steps"], len(receipt["steps_s"])), ([0.7, 0.35, 0.0], 2, 2))
         self.assertEqual(set(receipt["times_s"]), {"encode_video", "encode_audio", "load", "upscale", "merge_refine",
                                                    "refine", "vae_decode", "mp4"})
@@ -1098,6 +1362,127 @@ class RunTests(Fixture):
         self.assertEqual(receipt["allocated_before_decode_gib"], 5.0)
         self.assertIn("refine 2/2", receipt["lowest_mem_available_gib"])
 
+    def test_landscape_makes_the_calls_it_made_before_portrait(self):
+        """A 16:9 clip's run makes the same calls into NVIDIA's code, in the same order with the same arguments, as
+        the job did before it took portrait clips (recorded with the job of commit 2e0dadf against these stand-ins):
+        encode_video at "768p", Pipeline at the resolution's own key, NVIDIA's own Pipeline.upscale (the upscaler
+        once below 4K, through the landscape 2K grid at 4K), the refine, NVIDIA's decode with its row crop and
+        encode_mp4. It loads the same files, adds nothing to NVIDIA's module dicts and crops nothing itself."""
+        nvidia_dicts = {"INPUT_SIZES": {"768p": (1344, 768), "576p": (1024, 576)},
+                        "NATIVE_SHAPES": {"768p": (24, 37, 48, 84), "576p": (24, 37, 36, 64)},
+                        "RESOLUTIONS": {"768p": (768, 1344, 768), "1080p": (1088, 1920, 1080),
+                                        "2k": (1440, 2560, 1440), "4k": (2176, 3840, 2160)}}
+        pipeline = {"fwd": "standard", "hyperflow": None, "vae_batch": 26, "steps": 2, "start_sigma": 0.7,
+                    "vae": "standard"}
+        before = {
+            "1080p": [("encode_video", "refined_1344x768_121f.mp4", "768p", 42),
+                      ("Pipeline", dict(pipeline, resolution="1080p")),
+                      ("load_model", "upscaler", "bf16"),
+                      ("upscale", (24, 37, 48, 84), "final"),
+                      ("upscaler.upscale", (24, 37, 48, 84), (24, 37, 68, 120)),
+                      ("set_stage", "refine"),
+                      ("refine", (24, 37, 68, 120), (41, 5120), 1234, "clip", 1.0),
+                      ("on_step", "refine", 0), ("on_step", "refine", 1),
+                      ("decode", True, True, {}),
+                      ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (121, 1080, 1920, 3))],
+            "2k": [("encode_video", "refined_1344x768_121f.mp4", "768p", 42),
+                   ("Pipeline", dict(pipeline, resolution="2k")),
+                   ("load_model", "upscaler", "bf16"),
+                   ("upscale", (24, 37, 48, 84), "final"),
+                   ("upscaler.upscale", (24, 37, 48, 84), (24, 37, 90, 160)),
+                   ("set_stage", "refine"),
+                   ("refine", (24, 37, 90, 160), (41, 5120), 1234, "clip", 1.0),
+                   ("on_step", "refine", 0), ("on_step", "refine", 1),
+                   ("decode", True, True, {}),
+                   ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (121, 1440, 2560, 3))],
+            "4k": [("encode_video", "refined_1344x768_121f.mp4", "768p", 42),
+                   ("Pipeline", dict(pipeline, resolution="4k")),
+                   ("load_model", "upscaler", "bf16"),
+                   ("upscale", (24, 37, 48, 84), "final"),
+                   ("upscaler.upscale", (24, 37, 48, 84), (24, 37, 90, 160)),
+                   ("upscaler.upscale", (24, 37, 90, 160), (24, 37, 136, 240)),
+                   ("set_stage", "refine"),
+                   ("refine", (24, 37, 136, 240), (41, 5120), 1234, "silence", 1.0),
+                   ("on_step", "refine", 0), ("on_step", "refine", 1),
+                   ("decode", True, True, {}),
+                   ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (121, 2160, 3840, 3))]}
+        for resolution, changes in (("1080p", {}), ("2k", {}), ("4k", {"audio": "silence", "load": "standard"})):
+            with self.subTest(resolution=resolution):
+                status, receipt, calls, _, _ = self.run_job(resolution=resolution, **changes)
+                self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                 receipt.get("error"))
+                self.assertEqual(calls, before[resolution])
+                self.assertEqual(self.loads, self.expected_loads(fast=not changes, audio=not changes))
+                self.assertEqual(self.dicts, nvidia_dicts)
+                self.assertEqual(NARROWED, [])
+                self.assertEqual(receipt["lean_chunks"], 16 if resolution == "4k" else None)
+
+    def portrait_clip(self, pin=True):
+        """The clip a 9:16 one; with `pin`, NVIDIA_FILES pinned to the stand-in package's files."""
+        (self.case / "stage2" / "refined_1344x768_121f.mp4").unlink()
+        shutil.copy(self.portrait, self.case / "stage2" / "refined_768x1344_121f.mp4")
+        if pin:
+            pins = {rel: hashlib.sha256((self.package / rel).read_bytes()).hexdigest()
+                    for rel in job_module.NVIDIA_FILES}
+            patcher = mock.patch.dict(job_module.NVIDIA_FILES, pins)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_portrait(self):
+        """A 9:16 clip: NVIDIA's encode_video at 768x1344 and its Pipeline at the portrait grid (through the entries
+        the job adds to its dicts), NVIDIA's upscaler to that grid (through the 2K grid turned, 160x90 latents, at
+        4K only), never NVIDIA's Pipeline.upscale (which would go through the landscape 2K grid), NVIDIA's decode
+        with every row kept, then the centre columns kept by the job."""
+        self.portrait_clip()
+        pipeline = {"fwd": "standard", "hyperflow": None, "vae_batch": 26, "steps": 2, "start_sigma": 0.7,
+                    "vae": "standard"}
+        nvidia_dicts = {"INPUT_SIZES": {"768p": (1344, 768), "576p": (1024, 576), "768p-portrait": (768, 1344)},
+                        "NATIVE_SHAPES": {"768p": (24, 37, 48, 84), "576p": (24, 37, 36, 64),
+                                          "768p-portrait": (24, 37, 84, 48)},
+                        "RESOLUTIONS": {"768p": (768, 1344, 768), "1080p": (1088, 1920, 1080),
+                                        "2k": (1440, 2560, 1440), "4k": (2176, 3840, 2160),
+                                        "1080p-portrait": (1920, 1088, 1920), "2k-portrait": (2560, 1440, 2560),
+                                        "4k-portrait": (3840, 2176, 3840)}}
+        cases = {"1080p": ([(24, 37, 120, 68)], (121, 1920, 1088, 3), 4, (1080, 1920), None),
+                 "2k": ([(24, 37, 160, 90)], (121, 2560, 1440, 3), 0, (1440, 2560), None),
+                 "4k": ([(24, 37, 160, 90), (24, 37, 240, 136)], (121, 3840, 2176, 3), 8, (2160, 3840), 16)}
+        for resolution, (grids, decoded, left, (width, height), lean) in cases.items():
+            with self.subTest(resolution=resolution):
+                status, receipt, calls, phases, encode_audio = self.run_job(resolution=resolution)
+                self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                 receipt.get("error"))
+                natives = [(24, 37, 84, 48)] + grids[:-1]
+                self.assertEqual(calls, [
+                    ("encode_video", "refined_768x1344_121f.mp4", "768p-portrait", 42),
+                    ("Pipeline", dict(pipeline, resolution=f"{resolution}-portrait")),
+                    ("load_model", "upscaler", "bf16")] +
+                    [("upscaler.upscale", native, grid) for native, grid in zip(natives, grids)] + [
+                    ("set_stage", "refine"),
+                    ("refine", grids[-1], (41, 5120), 1234, "clip", 1.0),
+                    ("on_step", "refine", 0), ("on_step", "refine", 1),
+                    ("decode", True, True, {}),
+                    ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (121, height, width, 3))])
+                self.assertEqual(NARROWED, [(decoded, 2, left, width)])
+                self.assertEqual(self.dicts, nvidia_dicts)
+                self.assertEqual(self.loads, self.expected_loads(fast=True))
+                self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
+                self.assertEqual((receipt["orientation"], receipt["upscale_route"], receipt["lean_chunks"]),
+                                 ("portrait", [list(grid[2:]) for grid in grids], lean))
+                self.assertEqual(receipt["output"], {"file": "video_noaudio.mp4", "size": [width, height],
+                                                     "frames": 121, "bytes": 3})
+                self.assertEqual(encode_audio.call_args.args[1].shape, (2, 161333))    # the clip's audio, as 16:9
+
+    def test_portrait_needs_the_pinned_nvidia_files(self):
+        """A 9:16 clip with NVIDIA's package not at the pinned files (here the stand-ins) is refused before anything
+        loads; a 16:9 clip does not read them."""
+        self.portrait_clip(pin=False)
+        status, receipt, calls, phases, _ = self.run_job()
+        self.assertEqual((status, receipt["state"], receipt["orientation"]), (2, "failed", "portrait"))
+        self.assertRegex(receipt["error"], r"^NVIDIA's package is not the one this wrapper was written for "
+                                           r"\(6e4a440\): \{'open_h3/pipeline\.py': '[0-9a-f]{64}', "
+                                           r"'open_h3/upscaler\.py': '[0-9a-f]{64}'\}$")
+        self.assertEqual((calls, phases, self.loads), ([], [], []))
+
     def test_the_standard_load_leaves_nvidia_loaders_alone(self):
         status, receipt, calls, phases, _ = self.run_job(load="standard")
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
@@ -1107,8 +1492,9 @@ class RunTests(Fixture):
         self.assertNotIn("preread", receipt)
         self.assertNotIn("fast load", self.stdout)
         self.assertIn([c[0] for c in calls].index("load_model") + 1, self.emptied)
-        self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage",
-                                                 "refine", "on_step", "on_step", "decode", "encode_mp4"])
+        self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale",
+                                                 "upscaler.upscale", "set_stage", "refine", "on_step", "on_step",
+                                                 "decode", "encode_mp4"])
         self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
 
     def test_a_file_without_o_direct_loads_through_the_stock_loader_to_the_gpu(self):
@@ -1133,9 +1519,10 @@ class RunTests(Fixture):
         self.assertIn("preread", receipt["times_s"])
         self.assertEqual(phases, ["encoding", "loading", "refine 1/3", "refine 2/3", "refine 3/3", "decoding",
                                   "saving"])
-        self.assertEqual([c[0] for c in calls][:5], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage"])
+        self.assertEqual([c[0] for c in calls][:7], ["encode_video", "Pipeline", "load_model", "upscale",
+                                                     "upscaler.upscale", "upscaler.upscale", "set_stage"])
         self.assertEqual(calls[3], ("upscale", (24, 37, 48, 84), "final"))
-        self.assertEqual(calls[5][4], "silence")
+        self.assertEqual(calls[7][4], "silence")
         encode_audio.assert_not_called()
         self.assertEqual(set(receipt["times_s"]), {"encode_video", "preread", "load", "upscale", "merge_refine",
                                                    "refine", "vae_decode", "mp4"})
@@ -1374,6 +1761,18 @@ class TorchTests(unittest.TestCase):
         self.assertEqual(tuple(pcm.shape), (2, 161333))
         with self.assertRaisesRegex(JobError, "no audio"):
             job_module.pcm_input({"latent": torch.zeros(1)}, torch)
+
+    def test_the_column_crop_is_nvidias_row_crop_turned(self):
+        """keep_columns on decoded frames is NVIDIA's decode crop (pipeline.py:265-266) of the frames turned, and
+        the bytes encode_mp4 writes (.cpu().numpy().tobytes()) are those of a plain copy."""
+        frames = torch.randint(0, 256, (3, 24, 17, 3), dtype=torch.uint8)       # 17 columns, the centre 15 kept
+        kept = job_module.keep_columns(frames, 15)
+        turned = frames.transpose(1, 2)
+        top = (turned.shape[1] - 15) // 2
+        self.assertTrue(torch.equal(kept.transpose(1, 2), turned[:, top:top + 15]))
+        self.assertTrue(torch.equal(kept, frames[:, :, 1:16]))
+        if importlib.util.find_spec("numpy"):                      # as encode_mp4 hands them to ffmpeg
+            self.assertEqual(kept.cpu().numpy().tobytes(), frames[:, :, 1:16].contiguous().numpy().tobytes())
 
 
 if __name__ == "__main__":
