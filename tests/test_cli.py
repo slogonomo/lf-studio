@@ -614,11 +614,13 @@ class Upscale(CliTest):
         return jid
 
     def test_wait_and_save(self):
-        """--wait --out <dir>/ saves it under the studio's name for it: the clip's, with the resolution after it."""
+        """--wait --out <dir>/ saves it under the studio's name for it: the clip's, with the resolution and the
+        upscale's own id after it."""
         jid = self.clip(seed=7)
         p = self.ok("upscale", jid, "--resolution", "1080p", "--strength", "faithful", "--source", "draft",
                     "--audio", "silence", "--seed", 99, "--out", "up/", "--poster")
-        out = self.work / "up" / f"lf-studio_t2va_5s_seed7_{jid[:6]}_1080p.mp4"
+        up = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        out = self.work / "up" / f"lf-studio_t2va_5s_seed7_{jid[:6]}_1080p_{up['id'][:6]}.mp4"
         self.assertEqual(p.stdout, f"{out}\n")
         self.assertEqual(out.read_bytes()[4:8], b"ftyp")
         self.assertEqual(out.with_suffix(".jpg").read_bytes()[:2], b"\xff\xd8")
@@ -634,7 +636,8 @@ class Upscale(CliTest):
         self.assertEqual((rec["kind"], rec["parent"], rec["state"], rec["resolution"], rec["strength"], rec["audio"]),
                          ("upscale", jid, "queued", "2k", "balanced", "clip"))
         p = self.ok("wait", rec["id"], "--json")
-        self.assertEqual(Path(json.loads(p.stdout)["path"]).name, f"lf-studio_t2va_5s_seed7_{jid[:6]}_2k.mp4")
+        self.assertEqual(Path(json.loads(p.stdout)["path"]).name,
+                         f"lf-studio_t2va_5s_seed7_{jid[:6]}_2k_{rec['id'][:6]}.mp4")
         lines = self.ok("status").stdout.splitlines()
         self.assertTrue(lines[0].startswith(f"{rec['id']}  done       2k upscale of {jid[:8]}, balanced"), lines)
 

@@ -370,10 +370,10 @@ def labels_text(rec):
 
 def clip_name(rec):
     """The name the studio downloads a clip as (when its answer has none); an upscale's is its clip's (the parent's id)
-    with the resolution after it."""
+    with the resolution and its own id after it."""
     if is_upscale(rec):
         return (f"lf-studio_{rec.get('task')}_{rec.get('seconds')}s_seed{rec.get('seed')}_"
-                f"{str(rec.get('parent'))[:6]}_{rec.get('resolution')}.mp4")
+                f"{str(rec.get('parent'))[:6]}_{rec.get('resolution')}_{rec.get('id', '')[:6]}.mp4")
     return f"lf-studio_{rec.get('task')}_{rec.get('seconds')}s_seed{rec.get('seed')}_{rec.get('id', '')[:6]}.mp4"
 
 

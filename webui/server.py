@@ -991,10 +991,11 @@ def clip_file(job):
 
 def clip_name(job):
     """The file name a clip downloads as (/video/<id>): what it is, and its id's start. An upscale's is its clip's
-    (the parent's id) with the resolution after it: ..._<id6>_2k.mp4."""
+    (the parent's id) with the resolution and its own id's start after it: ..._<clip id6>_2k_<upscale id6>.mp4, so
+    two upscales of a clip at one resolution (another strength, seed or source) don't share a name."""
     if is_upscale(job):
         return (f"lf-studio_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['parent'][:6]}_"
-                f"{job['resolution']}.mp4")
+                f"{job['resolution']}_{job['id'][:6]}.mp4")
     return f"lf-studio_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['id'][:6]}.mp4"
 
 

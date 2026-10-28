@@ -2185,7 +2185,7 @@ class Upscale(UpscaleTest):
         self.assertNotIn("upscale_phase", job)
         code, headers, _ = self.studio.get(f"/video/{uid}", {"Range": "bytes=0-9"})
         self.assertEqual((code, headers["Content-Disposition"]),
-                         (206, f'inline; filename="lf-studio_t2va_5s_seed1_{parent["id"][:6]}_2k.mp4"'))
+                         (206, f'inline; filename="lf-studio_t2va_5s_seed1_{parent["id"][:6]}_2k_{uid[:6]}.mp4"'))
         self.assertEqual(self.studio.get(f"/poster/{uid}")[1]["Content-Type"], "image/jpeg")
         for path in (f"/still/{uid}", f"/input/{uid}/first_frame/0"):            # an upscale has no inputs
             with self.assertRaises(urllib.error.HTTPError) as e:

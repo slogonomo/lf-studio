@@ -486,8 +486,8 @@ From a program: `lf-cli upscale` ([CLI](#cli-binlf-cli)) or the MCP tool `upscal
 spark-switchboard the POST starts a stopped studio, as a submit does; send `X-Switchboard-Wait` with it.
 
 Cancel, Delete, Undo, `/api/jobs/<id>[?wait=]`, `/video/<id>` and `/poster/<id>` work on an upscale as on a clip.
-It downloads as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>.mp4`, and its `LFSTUDIO_PUBLISH_DIR` copy
-is named as the clip's with `_<resolution>` after it. Its files are in a directory of their own, so Delete moves
+It downloads as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`, and its
+`LFSTUDIO_PUBLISH_DIR` copy is named as the clip's with `_<resolution>` after it (`-2`, ... for a second one). Its files are in a directory of their own, so Delete moves
 only them; a clip can't be deleted while an upscale of it is queued or running (409). It fails, without a retry,
 below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` of free memory once the models are closed (default 110), or when the memory
 guard stops it (`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s); `error` says why (the job's own error line when it
@@ -601,7 +601,7 @@ running ones, oldest first, then the newest 5 finished ones; `status ID` one cli
 **`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s 16:9
 t2va clip ([Upscale](#upscale-experimental-post-apiupscale)) and works as `generate` from there: without `--wait`,
 `--out` or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
-`lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>.mp4`. It sends only the choices given, so the studio's
+`lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the studio's
 defaults hold for the rest (2K, the final clip, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the clip's
 seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes 10 min to 2 h, so `--timeout` and a
 later `wait` are the usual way. `status` shows it as `2k upscale of <clip id8>, balanced, ...`, `cancel` stops it
@@ -646,7 +646,7 @@ lf-cli status "$id"
 lf-cli wait "$id" --out clip.mp4 --poster --timeout 600
 lf-cli --json fetch "$id" --out clips/
 up=$(lf-cli upscale "$id" --resolution 2k --strength faithful)                # experimental: queue an upscale
-lf-cli wait "$up" --out clips/                                                 # ~25 min later: ..._2k.mp4
+lf-cli wait "$up" --out clips/                                                 # ~25 min later: ..._2k_<id6>.mp4
 ```
 
 ## MCP server: `lf-cli mcp`

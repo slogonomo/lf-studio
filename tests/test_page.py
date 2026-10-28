@@ -1456,7 +1456,7 @@ class UpscalePage(UpscaleCards, PageTest):
         self.page.wait_for_selector(f"{card} video", timeout=30000)
         self.assertEqual(self.visible(uid), ["Download", "Delete"])
         self.assertEqual(self.page.get_attribute(f"{card} a.act", "download"),
-                         f"lf-studio_t2va_5s_seed31_{ok[:6]}_1080p.mp4")
+                         f"lf-studio_t2va_5s_seed31_{ok[:6]}_1080p_{uid[:6]}.mp4")
         self.assertEqual(self.page.inner_text(f"{card} .st"), "Done")
         self.assertIn("Move this upscale to the trash", self.page.get_attribute(f"{card} .del", "title"))
 

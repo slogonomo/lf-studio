@@ -582,7 +582,7 @@ class UpscaleRecord(ApiTest):
         code, headers, data = self.studio.request("GET", f"/api/jobs/{uid}/video?wait=5")
         self.assertEqual((code, headers["Content-Type"], data[4:8]), (200, "video/mp4", b"ftyp"))
         self.assertEqual(headers["Content-Disposition"],
-                         f'inline; filename="lf-studio_t2va_5s_seed1_{jid[:6]}_1080p.mp4"')
+                         f'inline; filename="lf-studio_t2va_5s_seed1_{jid[:6]}_1080p_{uid[:6]}.mp4"')
 
     def test_clips_run_first(self):
         """ahead counts the jobs that run before: every clip queued runs before an upscale, even one queued later."""

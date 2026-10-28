@@ -503,7 +503,7 @@ class Upscale(McpTest):
         uid, path = rec["id"], Path(rec["path"])
         self.assertEqual((rec["kind"], rec["parent"], rec["state"], rec["resolution"], rec["strength"]),
                          ("upscale", jid, "done", "4k", "full"))
-        self.assertEqual(path, self.work / "lf-clips" / f"lf-studio_t2va_5s_seed9_{jid[:6]}_4k.mp4")
+        self.assertEqual(path, self.work / "lf-clips" / f"lf-studio_t2va_5s_seed9_{jid[:6]}_4k_{uid[:6]}.mp4")
         self.assertTrue(path.is_file())
         self.assertTrue(text(r).startswith(f"Queued upscale {uid} of clip {jid} (4k, full, from the final). Upscale "
                                            f"{uid} is done: saved {path} ("), text(r))
@@ -516,7 +516,8 @@ class Upscale(McpTest):
         self.assertIn(f'Upscale {rec["id"]} is queued, next in line. Call wait with id "{rec["id"]}"', text(r))
         r = m.call("wait", {"id": rec["id"], "wait_s": 30, "poster": False})
         self.assertFalse(r["isError"], text(r))
-        self.assertEqual(Path(r["structuredContent"]["path"]).name, f"lf-studio_t2va_5s_seed9_{jid[:6]}_2k.mp4")
+        self.assertEqual(Path(r["structuredContent"]["path"]).name,
+                         f"lf-studio_t2va_5s_seed9_{jid[:6]}_2k_{rec['id'][:6]}.mp4")
 
     def test_errors(self):
         ten = self.clip(seconds=10)

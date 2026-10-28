@@ -741,7 +741,7 @@ function update(d,j,queue,s,t){
     media.textContent='';const v=document.createElement('video');v.controls=true;v.preload='none';v.playsInline=true;
     v.poster='/poster/'+j.id;v.src='/video/'+j.id;media.append(v);
     const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.textContent='Download';
-    a.download=isUp(j)?`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}_${String(j.parent).slice(0,6)}_${j.resolution}.mp4`:`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;
+    a.download=isUp(j)?`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}_${String(j.parent).slice(0,6)}_${j.resolution}_${String(j.id).slice(0,6)}.mp4`:`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;
     d.querySelector('.dl').replaceWith(a);}
   else if(!media.dataset.done){const ph=media.querySelector('.ph2'),big=ph.querySelector('.big'),small=ph.querySelector('.small'),bar=ph.querySelector('.bar');
     if(j.status==='failed'){setText(big,'Failed');setText(small,'details below');bar.hidden=true;}
