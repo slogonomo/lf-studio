@@ -28,6 +28,7 @@ except ImportError:
 @unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")
 class PageTest(unittest.TestCase):
     load_s, clip_s, preload = 2, 1, False
+    upscale = True                     # the stub studio has the experimental Upscale on (OneRowUpscaleOff: off)
 
     @classmethod
     def setUpClass(cls):
@@ -753,7 +754,8 @@ class SeedText(PageTest):
         for width in (1280, 390, 320):        # 320: the narrowest phone card (266 px, #19)
             self.page.set_viewport_size({"width": width, "height": 900})
             self.page.wait_for_timeout(300)
-            for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", "Upscale", "Delete"]),
+            up = ["Upscale"] if self.upscale else []
+            for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", *up, "Delete"]),
                                        (bad, "2147483646", ["Remix", "Delete"])):
                 card = f'article[data-id="{jid}"]'
                 self.assertTrue(self.page.inner_text(f"{card} .when"))
@@ -912,7 +914,8 @@ class PhoneWidth(PageTest):
                 return [document.documentElement.scrollWidth, cw, wide]; }""")
             self.assertLessEqual(scroll, client, f"sideways scroll at {width} px: {wide}")
             self.assertEqual(wide, [], f"wider than the screen at {width} px")
-            for jid, buttons in ((ok, ["Remix", "Download", "Upscale", "Delete"]), (bad, ["Remix", "Delete"])):
+            up = ["Upscale"] if self.upscale else []
+            for jid, buttons in ((ok, ["Remix", "Download", *up, "Delete"]), (bad, ["Remix", "Delete"])):
                 row = self.page.eval_on_selector_all(
                     f'article[data-id="{jid}"] .acts > *', "els => els.filter(e => e.offsetWidth).map(e => "
                                                            "[e.textContent.trim(), Math.round(e.getBoundingClientRect().top), "
@@ -923,7 +926,9 @@ class PhoneWidth(PageTest):
                 for name, _, shown, label in row:
                     if name in ("Upscale", "Delete"):        # the name as text, or as aria-label beside an icon
                         self.assertEqual((shown, label), ("" if tight else name, name), width)
-                if width <= 340 or width == 600:             # no room for the names on a small phone; room at 600
+                if not self.upscale:                         # without Upscale the names fit even at 300 px
+                    self.assertFalse(tight, width)
+                elif width <= 340 or width == 600:           # no room for the names on a small phone; room at 600
                     self.assertEqual(tight, width <= 340, width)
 
     def test_a_long_file_name_in_an_error_wraps(self):
@@ -940,6 +945,18 @@ class PhoneWidth(PageTest):
                                                                                           e.clientWidth])""")
         for el, scroll, client in widths:
             self.assertLessEqual(scroll, client, f"#{el} scrolls sideways: {widths}")
+
+
+class OneRowUpscaleOff(PageTest):
+    """The one row of card buttons with the experimental Upscale off, as every studio runs by default: Remix,
+    Download and Delete, with their names, at every width (#15, #19)."""
+    upscale = False
+
+    def seed(self):
+        self.studio.env["LFSTUDIO_UPSCALE"] = "0"
+
+    test_seed_in_the_info_line_and_one_row_of_buttons = SeedText.test_seed_in_the_info_line_and_one_row_of_buttons
+    test_no_sideways_scroll_and_one_row_of_buttons = PhoneWidth.test_no_sideways_scroll_and_one_row_of_buttons
 
 
 class CancelCards(PageTest):
