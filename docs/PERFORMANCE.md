@@ -202,8 +202,8 @@ wait for it. A change of mode still reloads.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPARK_FAST_SAFETENSORS` | 1 | 0 = upstream safetensors loading |
-| `SPARK_DIRECT_IO` / `SPARK_DIRECT_AHEAD` | 1 / 1 | O_DIRECT reads / read-ahead of the next window |
+| `SPARK_FAST_SAFETENSORS` | 1 | 0 = upstream safetensors loading (also in the experimental Upscale's fast load) |
+| `SPARK_DIRECT_IO` / `SPARK_DIRECT_AHEAD` | 1 / 1 | O_DIRECT reads / read-ahead of the next window (also in the Upscale's fast load) |
 | `SOL_H3_BSA_CHECK_CALLS` | 8 | 200 = upstream's full attention self-check |
 | `SOL_H3_COMPILE_CACHE` | `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` | `session` = upstream per-session cache |
 | `SPARK_AUTOTUNE_CACHE_FIX` | 1 | 0 = upstream Inductor behaviour |

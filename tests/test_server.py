@@ -2262,7 +2262,7 @@ class UpscaleSettings(UpscaleTest):
     env = {"LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence",
            "LFSTUDIO_UPSCALE_LOAD": "standard", "LFSTUDIO_UPSCALE_PREREAD": "1",
            "LFSTUDIO_UPSCALE_PKG": "/opt/regen2k/package", "LFSTUDIO_UPSCALE_WEIGHTS": "/opt/regen2k/weights",
-           "LFSTUDIO_UPSCALE_BASE": "/opt/minimax-h3"}
+           "LFSTUDIO_UPSCALE_BASE": "/opt/minimax-h3", "SPARK_DIRECT_IO": "0"}       # no O_DIRECT: standard anyway
 
     def test_defaults(self):
         parent = self.clip()
@@ -2278,6 +2278,20 @@ class UpscaleSettings(UpscaleTest):
                           "/opt/minimax-h3"))
         self.assertEqual(job["load"], "standard")
         self.assertIn("default strength full, audio silence; standard load", self.studio.log.read_text())
+        self.assertNotIn("O_DIRECT", self.studio.log.read_text())
+
+
+class UpscaleWithoutODirect(UpscaleTest):
+    """SPARK_FAST_SAFETENSORS=0 or SPARK_DIRECT_IO=0 (the patch's switches) also reach the Upscale's job: with the fast
+    load the start log says that it reads every file through mmap then."""
+    env = {"SPARK_FAST_SAFETENSORS": "0"}
+
+    def test_the_start_log_says_so(self):
+        log = self.studio.log.read_text()
+        self.assertIn("audio clip; fast load\n", log)
+        self.assertIn("WARNING: SPARK_FAST_SAFETENSORS or SPARK_DIRECT_IO is not 1 (the patch's switches), and the "
+                      "Upscale's job inherits them: its fast load reads no weight file with O_DIRECT, all of them "
+                      "through mmap, which takes minutes", log)
 
 
 class UpscaleRefusals(UpscaleTest):

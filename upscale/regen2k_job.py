@@ -120,6 +120,9 @@ VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior 
 LOADS = ("fast", "standard")
 DEFAULT_LOAD = "fast"
 FASTLOAD = Path(__file__).resolve().parent / "fastload.py"
+# the patch's switches for its loader (bin/env.example), which the job inherits from the studio: either one off and
+# fastload reads nothing with O_DIRECT, every file goes through mmap (fastload reads them at import, so)
+FASTLOAD_SWITCHES = ("SPARK_FAST_SAFETENSORS", "SPARK_DIRECT_IO")
 DIRECT_LOAD = ("MiniMaxH3Transformer3DModel", "AutoencoderKLMiniMaxH3", "AutoencoderKLMiniMaxH3Audio")   # diffusers'
 # Provisional, until the quality measurements settle them: strength name -> (start_sigma, steps); None = NVIDIA's
 # schedule for the steps. "full" is NVIDIA's release setting (3 steps from 0.909375: SCHEDULES[3], not
@@ -273,7 +276,8 @@ def job_record(job):
 def studio_settings(environ):
     """The studio's LFSTUDIO_UPSCALE_* settings (bin/env.example) from an environment, with their defaults:
     (settings, problems). webui/server.py stops with the problems and bin/lf-studio --check refuses with them, so
-    both say the same. LFSTUDIO_UPSCALE itself (0 or 1) is checked by each of them."""
+    both say the same. LFSTUDIO_UPSCALE itself (0 or 1) is checked by each of them. "o_direct" is whether the fast
+    load's reads can use O_DIRECT: the patch's FASTLOAD_SWITCHES, which the job inherits, are not 0."""
     home = Path(environ.get("LFSTUDIO_HOME") or Path.home() / "sol-h3").expanduser()
     checkpoints = Path(environ.get("LFSTUDIO_CHECKPOINTS") or home / "checkpoints").expanduser()
     settings, problems = {}, []
@@ -292,6 +296,7 @@ def studio_settings(environ):
         if settings[key] not in choices:
             problems.append(f"{name}={settings[key]}: must be {', '.join(choices[:-1])} or {choices[-1]}")
     settings["preread"] = settings["preread"] == "1"
+    settings["o_direct"] = all(environ.get(name, "1") == "1" for name in FASTLOAD_SWITCHES)    # as fastload reads them
     if settings["preread"] and settings["load"] == "fast":         # parse_job's refusal, said at start
         problems.append("LFSTUDIO_UPSCALE_PREREAD=1: only with LFSTUDIO_UPSCALE_LOAD=standard (the fast load reads "
                         "the weight files past the page cache)")

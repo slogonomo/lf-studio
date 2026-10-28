@@ -304,7 +304,9 @@ before it takes ~3 min from the final clip, and the refine and decode after it 1
 ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). Minutes at loading mean the standard
 load (`LFSTUDIO_UPSCALE_LOAD=standard`, NVIDIA's loaders through mmap: ~7.5 min, 455 s measured), or files the fast
 load could not read with O_DIRECT and read through mmap instead: `worker.log` in the upscale's `regen/` folder says
-`fast load: N files, M of them through mmap`, and its `receipt.json` has the same as `"load"`.
+`fast load: N files, M of them through mmap`, and its `receipt.json` has the same as `"load"`. All of them through mmap,
+and `O_DIRECT off` in `worker.log`, mean `SPARK_FAST_SAFETENSORS=0` or `SPARK_DIRECT_IO=0` in the studio's settings:
+the job inherits the patch's switches (the studio's start log warns about it).
 
 **An upscale fails while it loads its models.** With the fast load, the default, try `LFSTUDIO_UPSCALE_LOAD=standard`
 (NVIDIA's own loading, ~7.5 min) and restart the studio; the fast load has run in the bench but not yet in the studio's

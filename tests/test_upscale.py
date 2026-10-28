@@ -284,8 +284,8 @@ class StudioSettingsTests(unittest.TestCase):
                                     "package": Path("/srv/lf/Open-H3-Regenerate-2K"),
                                     "weights": Path("/srv/lf/checkpoints/Open-H3-Regenerate-2K"),
                                     "base_model": Path("/srv/lf/checkpoints/MiniMax-H3"), "strength": "balanced",
-                                    "audio": "clip", "load": "fast", "preread": False, "min_free_gib": 110.0,
-                                    "guard_gib": 5.0})
+                                    "audio": "clip", "load": "fast", "preread": False, "o_direct": True,
+                                    "min_free_gib": 110.0, "guard_gib": 5.0})
         settings, _ = job_module.studio_settings({"LFSTUDIO_HOME": "/srv/lf", "LFSTUDIO_CHECKPOINTS": "/data/ckpt",
                                                   "LFSTUDIO_UPSCALE_STRENGTH": ""})      # empty: the default
         self.assertEqual((settings["weights"], settings["base_model"], settings["strength"]),
@@ -316,6 +316,22 @@ class StudioSettingsTests(unittest.TestCase):
             "LFSTUDIO_UPSCALE_LOAD=quick: must be fast or standard", "LFSTUDIO_UPSCALE_PREREAD=yes: must be 0 or 1",
             "LFSTUDIO_UPSCALE_MIN_FREE_GIB=-1: must be a number of GiB, 0 or more",
             "LFSTUDIO_UPSCALE_GUARD_GIB=inf: must be a number of GiB, 0 or more (see bin/env.example)"])
+
+    def test_the_patch_switches_for_o_direct(self):
+        """SPARK_FAST_SAFETENSORS and SPARK_DIRECT_IO, which the job inherits: anything but 1 turns fastload's O_DIRECT
+        reads off, as fastload itself reads them (the server warns at start); not a problem, any load."""
+        self.assertEqual(job_module.FASTLOAD_SWITCHES, ("SPARK_FAST_SAFETENSORS", "SPARK_DIRECT_IO"))
+        for env, on in (({"SPARK_FAST_SAFETENSORS": "1", "SPARK_DIRECT_IO": "1"}, True),
+                        ({"SPARK_FAST_SAFETENSORS": "0"}, False), ({"SPARK_DIRECT_IO": "0"}, False),
+                        ({"SPARK_DIRECT_IO": ""}, False), ({"SPARK_DIRECT_AHEAD": "0"}, True)):
+            for load in ("fast", "standard"):
+                settings, problems = job_module.studio_settings({**env, "LFSTUDIO_UPSCALE_LOAD": load})
+                self.assertEqual((settings["o_direct"], problems), (on, []), (env, load))
+            with mock.patch.dict(os.environ, env):                      # what the job's fastload makes of them
+                for name in job_module.FASTLOAD_SWITCHES:               # unset in `env`: the default, 1
+                    os.environ[name] = env.get(name, "1")
+                fastload = job_module.load_fastload()
+                self.assertEqual(fastload.ENABLED and fastload.DIRECT, on, env)
 
     def test_preread_needs_the_standard_load(self):
         """parse_job refuses preread with the fast load; the settings say so at start, for the default load too."""

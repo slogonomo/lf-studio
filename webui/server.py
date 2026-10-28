@@ -112,7 +112,9 @@ Environment:
                              added to the result either way.
   LFSTUDIO_UPSCALE_LOAD      how the job loads its weights: fast (the default: upscale/fastload.py, O_DIRECT reads
                              straight to the GPU; ~20-30 s in the bench) or standard (NVIDIA's own loading through
-                             mmap, ~7.5 min; the fallback).
+                             mmap, ~7.5 min; the fallback). The job inherits the patch's SPARK_FAST_SAFETENSORS and
+                             SPARK_DIRECT_IO: either one off and the fast load reads every file through mmap (the start
+                             log warns).
   LFSTUDIO_UPSCALE_PREREAD   0 (default): off. 1: the job reads its weights into the page cache in parallel before
                              it loads them (not shown to shorten the load yet). Needs LFSTUDIO_UPSCALE_LOAD=standard.
   LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 0 = no check)
@@ -2672,6 +2674,10 @@ def main():
     if UPSCALE:
         log(f"the experimental Upscale is on (LFSTUDIO_UPSCALE=1): {UPSCALE_SCRIPT} with {UPSCALE_CONF['python']}; "
             f"default strength {UPSCALE_CONF['strength']}, audio {UPSCALE_CONF['audio']}; {UPSCALE_CONF['load']} load")
+        if UPSCALE_CONF["load"] == "fast" and not UPSCALE_CONF["o_direct"]:
+            log(f"WARNING: {' or '.join(regen.FASTLOAD_SWITCHES)} is not 1 (the patch's switches), and the Upscale's "
+                "job inherits them: its fast load reads no weight file with O_DIRECT, all of them through mmap, which "
+                "takes minutes")
     if UPSCALE and MEMINFO != "/proc/meminfo":
         log(f"WARNING: LFSTUDIO_TEST_MEMINFO={MEMINFO}, a test hook: the Upscale's memory floor and guard read "
             "MemAvailable from that file, not from this machine; unset it outside the tests")
