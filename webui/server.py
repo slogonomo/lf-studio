@@ -16,6 +16,24 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
 - GET /still/<id>: the picture a queued or running clip's card shows behind its timer: a keyframe, a reference image,
   or the first frame of a reference video, as a JPEG at most 640 px wide (made on the first request, kept with the
   clip's input files; an image ffmpeg can't read goes out as it is). 404 for t2va.
+- Experimental, with LFSTUDIO_UPSCALE=1: POST /api/upscale {"id", "resolution", "source", "strength", "audio", "seed"}
+  upscales a finished 5 s 16:9 t2va clip ("id") to 1080p, 2k (2560x1440, the default) or 4k with NVIDIA's
+  Open-H3-Regenerate-2K (upscale/regen2k_job.py, run in its own environment). source: final (the clip's MP4, the
+  default) or draft (its Stage-1 latent). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS;
+  default LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
+  LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). The upscale is a job of its own (kind "upscale",
+  parent = the clip; task, format, length, prompt and seed copied from it) in the same queue, where it waits while any
+  clip is queued. It frees the memory first (status "freeing memory": the session is closed), refuses to start below
+  LFSTUDIO_UPSCALE_MIN_FREE_GIB of MemAvailable, then runs the job in a process group of its own (status
+  "upscaling", "upscale_phase" from the job's "[lf-studio] phase" lines), so Cancel stops it; it stops the job when
+  MemAvailable stays below LFSTUDIO_UPSCALE_GUARD_GIB for 3 s. The clip's sound is copied in (ffmpeg, no re-encode).
+  Its files go into a session directory of their own, <session>-upscale-<resolution>/<case_id>/regen/, so Delete and
+  Undo move only them; a clip can't be deleted while an upscale of it is queued or running. No retry after a failure.
+  Answers: 200 {"id", "job"}, 400 for a bad field or a clip of another kind or shape, 404 for an unknown clip (and for
+  everything with the Upscale off), 409 for a clip that is not done, being moved, or without the files needed (its
+  session directory; for source draft its Stage-1 latent, for audio clip its Stage-1 audio), 429 when the queue is
+  full. /api/state has "upscale" (on or off); with it on, every finished job in /api/state, /api/jobs and the API
+  record has "upscalable": {"ok": true, "draft": bool, "clip_audio": bool} or {"ok": false, "why": "..."}.
 
 For agents and scripts (#29; docs/API.md):
 - POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
@@ -30,7 +48,8 @@ For agents and scripts (#29; docs/API.md):
 - GET /api/jobs/<id>/video[?wait=S]: the same wait, then the MP4 as /video/<id> sends it; 202 with the record if the
   clip is still queued or running when S has passed, 409 with it for a failed or cancelled clip.
 - /video/<id> downloads as lf-studio_<task>_<seconds>s_seed<seed>_<id6>.mp4.
-- The small JSON POSTs (/api/cancel, /api/delete, /api/undelete, /api/load, /api/unload) answer 413 above 64 KiB.
+- The small JSON POSTs (/api/cancel, /api/delete, /api/undelete, /api/load, /api/unload, /api/upscale) answer 413
+  above 64 KiB.
 - LFSTUDIO_API=0 turns this API off (#58): a JSON submit, a submit with an X-LFStudio-Client header (bin/lf-cli sends
   its form with one) and GET or HEAD /api/jobs/<id>[/video] answer 403 (API_OFF). The page uses none of them: its form
   submit, /api/state ("api": false), /api/jobs?before=, the files and the small POSTs work as before. Not access
@@ -69,9 +88,32 @@ Environment:
   LFSTUDIO_API               1 (default, as in 0.4): the API for programs above is on. 0: off, the page only (403 for
                              what it does not use). Any other value stops the server.
   LFSTUDIO_LAUNCHER_PID      set by bin/lf-studio: the server stops (closing its pipeline) when that process dies.
+  LFSTUDIO_UPSCALE           0 (default): off. 1: the experimental Upscale above, on the DGX Spark only. Any other
+                             value, or 1 with LFSTUDIO_BACKEND=rtx5090, stops the server; so does a bad value of the
+                             settings below while it is on (upscale/regen2k_job.py studio_settings, which
+                             bin/lf-studio --check uses too).
+  LFSTUDIO_UPSCALE_PYTHON    the Python of the Open-H3-Regenerate-2K environment (default
+                             $LFSTUDIO_HOME/envs/regen2k/bin/python)
+  LFSTUDIO_UPSCALE_PKG       NVIDIA's package, models/Open-H3-Regenerate-2K of NVlabs/Sana (default
+                             $LFSTUDIO_HOME/Open-H3-Regenerate-2K)
+  LFSTUDIO_UPSCALE_WEIGHTS   its weights (default $LFSTUDIO_CHECKPOINTS/Open-H3-Regenerate-2K; LFSTUDIO_CHECKPOINTS
+                             defaults to $LFSTUDIO_HOME/checkpoints)
+  LFSTUDIO_UPSCALE_BASE      the MiniMax-H3 base model (default $LFSTUDIO_CHECKPOINTS/MiniMax-H3)
+  LFSTUDIO_UPSCALE_STRENGTH  how much an upscale may redraw, when the request does not say: faithful (start noise
+                             0.5, 2 steps), balanced (0.7, 2 steps; the default) or full (NVIDIA's 3 steps from 0.909,
+                             which redraws faces). Provisional, until measured.
+  LFSTUDIO_UPSCALE_AUDIO     what the picture is refined against, when the request does not say: clip (the clip's own
+                             Stage-1 audio; the default, an experiment) or silence (NVIDIA's). The clip's sound is
+                             added to the result either way.
+  LFSTUDIO_UPSCALE_PREREAD   1 (default): the job reads its weights into the page cache in parallel first. 0: off.
+  LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 0 = no check)
+  LFSTUDIO_UPSCALE_GUARD_GIB stop an upscale when MemAvailable stays below this for 3 s (default 5; 0 = no guard)
+  Test hooks: LFSTUDIO_UPSCALE_SCRIPT (the job script, default upscale/regen2k_job.py) and LFSTUDIO_TEST_MEMINFO (a
+  file read for MemAvailable instead of /proc/meminfo).
 Until 0.6 these settings may also have their names up to 0.4 (SOLH3_HOST for LFSTUDIO_HOST, and so on; not
-LFSTUDIO_LAUNCHER_PID): an old name counts where the new one is not set, with one warning. The default state
-directory is ~/.local/state/sol-h3-studio while that has jobs.db and ~/.local/state/lf-studio does not.
+LFSTUDIO_LAUNCHER_PID or the LFSTUDIO_UPSCALE ones, which are new): an old name counts where the new one is not set,
+with one warning. The default state directory is ~/.local/state/sol-h3-studio while that has jobs.db and
+~/.local/state/lf-studio does not.
 
 SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0) and
 SOL_H3_DYNAMIC_TEXT_LENGTH (1 or 0; 1, the default since 0.4, compiles Stage 1's body blocks once per session for any
@@ -89,6 +131,7 @@ import contextlib
 import email.parser
 import email.policy
 import errno
+import importlib.util
 import ipaddress
 import json
 import math
@@ -259,6 +302,30 @@ if API_SETTING not in ("0", "1"):
 API = API_SETTING == "1"
 API_OFF = {"error": "the API for programs is off on this studio (LFSTUDIO_API=0)"}
 API_CLIENT = "X-LFStudio-Client"    # a program's form submit (bin/lf-cli): refused with the API off, as JSON is
+# the experimental Upscale (the docstring): off unless LFSTUDIO_UPSCALE=1. bin/lf-studio checks the same, in the same
+# words; the other LFSTUDIO_UPSCALE_* settings are read and checked by upscale/regen2k_job.py's studio_settings.
+UPSCALE_SETTING = os.environ.get("LFSTUDIO_UPSCALE") or "0"
+if UPSCALE_SETTING not in ("0", "1"):
+    fail(f"LFSTUDIO_UPSCALE={UPSCALE_SETTING}: must be 0 (off, the default) or 1 (on) (see bin/env.example)")
+UPSCALE = UPSCALE_SETTING == "1"
+UPSCALE_JOB = Path(__file__).resolve().parents[1] / "upscale" / "regen2k_job.py"
+regen = None                     # upscale/regen2k_job.py (standard library only), with the Upscale on
+UPSCALE_CONF = {}                # its studio_settings: python, package, weights, base_model, strength, audio, ...
+UPSCALE_SCRIPT = Path(os.environ.get("LFSTUDIO_UPSCALE_SCRIPT") or UPSCALE_JOB).expanduser()     # test hook
+MEMINFO = os.environ.get("LFSTUDIO_TEST_MEMINFO") or "/proc/meminfo"                             # test hook
+if UPSCALE:
+    if BACKEND != "spark":
+        fail(f"LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only, not with "
+             f"LFSTUDIO_BACKEND={BACKEND} (Open-H3-Regenerate-2K needs ~100 GiB of GPU memory)")
+    try:
+        spec = importlib.util.spec_from_file_location("lf_studio_regen2k_job", UPSCALE_JOB)
+        regen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(regen)
+    except (OSError, ImportError, SyntaxError) as error:
+        fail(f"LFSTUDIO_UPSCALE=1: cannot read {UPSCALE_JOB} ({error})")
+    UPSCALE_CONF, problems = regen.studio_settings(os.environ)
+    if problems:
+        fail("; ".join(problems))
 for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -270,7 +337,8 @@ jobs = []                        # every job, oldest first (also in jobs.db)
 PAGE = 24                        # clips per gallery page (/api/state carries the newest page, /api/jobs older ones)
 FINISHED = ("done", "failed", "cancelled")       # a job's final statuses; any other is queued or running
 session = {"pipeline": None, "key": None, "state": "idle", "since": time.time()}
-work = {"job": None}             # the job whose pipeline call (start or generate) is running (pipeline_call)
+work = {"job": None,             # the job whose pipeline call (start or generate) is running (pipeline_call)
+        "process": None}         # a running upscale's job process (upscale_process), stopped at shutdown
 # Notified after every saved change of a job (save_job) and at shutdown: GET /api/jobs/<id>?wait= waits on it. Not
 # `lock`, which the worker does not hold while it changes a job. `waiting` (guarded by it): the requests waiting.
 changed = threading.Condition()
@@ -362,10 +430,16 @@ def same_models(a, b):
     return a is not None and b is not None and (tuple(a) == tuple(b) or RESHAPE and a[0] == b[0])
 
 
+def is_upscale(job):
+    """Whether a job is an upscale of a clip (POST /api/upscale), not a clip of its own."""
+    return job.get("kind") == "upscale"
+
+
 def warm_up_wanted():
-    """A queued job waits for the warm-up's models, so the warm-up is kept for it. Call it holding `lock`."""
-    return any(j["status"] == "queued" and same_models(session.get("loading_key"),
-                                                       (j["task"], j["orientation"], j.get("seconds", 5)))
+    """A queued clip waits for the warm-up's models, so the warm-up is kept for it (an upscale closes them anyway).
+    Call it holding `lock`."""
+    return any(j["status"] == "queued" and not is_upscale(j)
+               and same_models(session.get("loading_key"), (j["task"], j["orientation"], j.get("seconds", 5)))
                for j in jobs)
 
 
@@ -689,7 +763,12 @@ def remember_load(key, seconds, warm=False):
 def session_root(key, kind=""):
     """A new session directory: start time and settings, -2, -3, ... after it when another session started in the
     same second (a clip cancelled right away, then the next one; the pipeline refuses an existing directory)."""
-    base = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}{key[0]}-{key[1]}-{key[2]}s"
+    return new_session_dir(f"{kind}{key[0]}-{key[1]}-{key[2]}s")
+
+
+def new_session_dir(name):
+    """SESSIONS/<start time>-<name>, with -2, -3, ... after it when that is taken (not created)."""
+    base = f"{time.strftime('%Y%m%d-%H%M%S')}-{name}"
     root, n = SESSIONS / base, 2
     while root.exists():
         root, n = SESSIONS / f"{base}-{n}", n + 1
@@ -862,16 +941,30 @@ def run_job(job):
     make_poster(src)
     job.update(output=str(src), e2e_s=round(row["e2e_s"], 1), stage1_s=round(row.get("stage1_s", 0), 1),
                stage2_s=round(row.get("stage2_s", 0), 1))
-    if PUBLISH:
-        dst = PUBLISH / (f"{time.strftime('%Y%m%d-%H%M%S')}_{job['task']}_{job['orientation']}_"
-                         f"{job.get('seconds', 5)}s_seed{job['seed']}_{job['id'][:6]}.mp4")
-        try:
-            shutil.copy2(src, dst)
-            if src.with_suffix(".jpg").is_file():
-                shutil.copy2(src.with_suffix(".jpg"), dst.with_suffix(".jpg"))
-            job["published"] = str(dst)
-        except OSError as error:
-            log("could not copy the clip to LFSTUDIO_PUBLISH_DIR:", error)
+    publish(job, src, publish_stem(job))
+
+
+def publish_stem(job):
+    """The name of a clip's LFSTUDIO_PUBLISH_DIR copy, without .mp4: now, its settings, its seed and its id's start."""
+    return (f"{time.strftime('%Y%m%d-%H%M%S')}_{job['task']}_{job['orientation']}_{job.get('seconds', 5)}s_"
+            f"seed{job['seed']}_{job['id'][:6]}")
+
+
+def publish(job, src, stem):
+    """With LFSTUDIO_PUBLISH_DIR: copy a finished job's MP4 and poster there as <stem>.mp4 (<stem>-2.mp4, ... when
+    that is taken: a second upscale of a clip) and record it in job["published"]. Best effort."""
+    if not PUBLISH:
+        return
+    try:                                   # (a share can fail any call, the look for a free name too)
+        dst, n = PUBLISH / f"{stem}.mp4", 2
+        while dst.exists():
+            dst, n = PUBLISH / f"{stem}-{n}.mp4", n + 1
+        shutil.copy2(src, dst)
+        if src.with_suffix(".jpg").is_file():
+            shutil.copy2(src.with_suffix(".jpg"), dst.with_suffix(".jpg"))
+        job["published"] = str(dst)
+    except OSError as error:
+        log("could not copy the clip to LFSTUDIO_PUBLISH_DIR:", error)
 
 
 def make_poster(mp4):
@@ -894,7 +987,11 @@ def clip_file(job):
 
 
 def clip_name(job):
-    """The file name a clip downloads as (/video/<id>): what it is, and its id's start."""
+    """The file name a clip downloads as (/video/<id>): what it is, and its id's start. An upscale's is its clip's
+    (the parent's id) with the resolution after it: ..._<id6>_2k.mp4."""
+    if is_upscale(job):
+        return (f"lf-studio_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['parent'][:6]}_"
+                f"{job['resolution']}.mp4")
     return f"lf-studio_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['id'][:6]}.mp4"
 
 
@@ -904,20 +1001,27 @@ def settled(job):
 
 
 PHASES = {"starting": "starting", "loading models + generating": "loading", "generating": "generating",
-          "retrying after a worker error": "retrying"}
+          "retrying after a worker error": "retrying", "freeing memory": "unloading", "upscaling": "upscaling"}
+
+
+def runs_before(a, b):
+    """Whether queued job `a` runs before queued job `b`: clips in order, then upscales in order (next_job)."""
+    return (is_upscale(a), a["created"]) < (is_upscale(b), b["created"])
 
 
 def api_record(job):
     """A job as the API shows it (#29): the stored record plus
       state      queued, running, done, failed or cancelled: stable codes for programs (status is for people);
       phase      running only (else None): cancelling, saving, starting, loading (the models, with its clip),
-                 generating, retrying (after a worker error) or running;
-      ahead      queued only: the clips queued before it;
+                 generating, retrying (after a worker error), unloading (an upscale freeing the memory), upscaling
+                 (its job runs; upscale_phase says where) or running;
+      ahead      queued only: the jobs that run before it (every clip queued runs before an upscale);
       elapsed_s  running only: seconds since it started;
-      urls       done, with its MP4 still there: {"video", "poster"}, paths relative to the studio's address."""
+      urls       done, with its MP4 still there: {"video", "poster"}, paths relative to the studio's address;
+      upscalable done, with the Upscale on: as in /api/state."""
     with lock:
         rec = dict(job)
-        ahead = sum(j["status"] == "queued" and j["created"] < job["created"] for j in jobs)
+        ahead = sum(j["status"] == "queued" and j is not job and runs_before(j, job) for j in jobs)
     status = rec["status"]
     rec["state"] = status if settled(rec) else "queued" if status == "queued" else "running"
     rec["phase"] = None
@@ -930,6 +1034,7 @@ def api_record(job):
             rec["elapsed_s"] = round(time.time() - rec["started"], 1)
     elif rec["state"] == "done" and clip_file(rec):
         rec["urls"] = {"video": f"/video/{rec['id']}", "poster": f"/poster/{rec['id']}"}
+    with_upscalable([rec])
     return rec
 
 
@@ -954,8 +1059,10 @@ def warmup_case(job):
 
 
 def preload_candidate():
-    """The last finished clip's settings and warm-up case, or None (see warmup_case)."""
-    last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")), None)
+    """The last finished clip's settings and warm-up case, or None (see warmup_case). Upscales don't count: they
+    load none of the studio's models."""
+    last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")
+                 and not is_upscale(j)), None)
     case = warmup_case(last) if last else None
     return ((last["task"], last["orientation"], last.get("seconds", 5)), case) if case else None
 
@@ -989,7 +1096,7 @@ def mode_warmup_case(task):
     """A warm-up case for a mode ("Load selected now"): the newest of its last few finished clips whose inputs still
     exist; for t2va without one, a built-in prompt. fl2va and ref2va need real inputs, so without such a clip: None."""
     recent = [j for j in reversed(jobs) if j.get("task") == task and j.get("status") == "done"
-              and not j.get("deleted") and not j.get("moving")]
+              and not j.get("deleted") and not j.get("moving") and not is_upscale(j)]
     for j in recent[:5]:
         case = warmup_case(j)
         if case:
@@ -1098,6 +1205,378 @@ def stop_job(job):
         time.sleep(0.2)
 
 
+# ------------------------------------------------------------------------------------------ the experimental Upscale
+UPSCALE_REQUEST = ("id", "resolution", "source", "strength", "audio", "seed")    # POST /api/upscale's keys
+UPSCALE_FREE_WAIT_S = 5          # how long the memory floor waits for a closed session's memory to come back
+UPSCALE_SHAPE = "Upscale needs a 5 s 16:9 clip (NVIDIA's upscaler takes 1344x768, 121 frames)"
+
+
+class UpscaleFailed(RuntimeError):
+    """An upscale could not start, or its job failed: the message says why (the job's own error line, when it has
+    one)."""
+
+
+def mem_available_gib():
+    """MemAvailable in GiB (read from LFSTUDIO_TEST_MEMINFO in the tests), or None when it can't be read."""
+    try:
+        return regen.meminfo(MEMINFO).get("MemAvailable")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def upscale_files(job):
+    """A finished clip's files an upscale reads, from its record: {"case", "final", "conditioning", "draft", "pcm"}
+    (the last three may be missing), or None when its own directory or its MP4 is gone (a clip from before per-clip
+    directories, or one whose session directory was pruned)."""
+    if not job.get("output"):
+        return None
+    final = Path(job["output"])
+    case = final.parent.parent                         # <session>/<case_id>/stage2/<clip>.mp4
+    if case.name != job.get("case_id") or not in_sessions(case) or not final.is_file():
+        return None
+    return {"case": case, "final": final, "conditioning": case / "qwen" / "conditioning.pt",
+            "draft": case / "stage1" / "h3_normalized_native.pt", "pcm": case / "stage1" / "stage1_direct_tensors.pt"}
+
+
+def upscalable(job):
+    """Whether a job can be upscaled now: (200, {"draft", "clip_audio"}, whether its Stage-1 latent and Stage-1 audio
+    are there for source draft and audio clip) or (the HTTP status, why not). v1 takes finished 5 s 16:9 t2va clips:
+    NVIDIA's pipeline is fixed at 1344x768 and 121 frames, and fl2va and ref2va clips need a text-only encode of
+    their prompt first (follow-ups). Looks at the clip's files: call it without `lock`, with a copy of the job."""
+    if is_upscale(job):
+        return 400, "an upscale can't be upscaled again"
+    if job.get("task") != "t2va":
+        return 400, "Upscale takes text-to-video (t2va) clips only, for now"
+    if job.get("orientation") != "landscape" or job.get("seconds", 5) != 5:
+        return 400, UPSCALE_SHAPE
+    if job.get("status") != "done":
+        return 409, {"queued": "the clip is still queued", "failed": "the clip failed",
+                     "cancelled": "the clip was cancelled"}.get(job.get("status"), "the clip is still being made")
+    if job.get("moving"):
+        return 409, "the clip is being moved; try again in a moment"
+    files = upscale_files(job)
+    if files is None or not files["conditioning"].is_file():
+        return 409, "the clip's working files (its session directory) are gone, so it can't be upscaled"
+    return 200, {"draft": files["draft"].is_file(), "clip_audio": files["pcm"].is_file()}
+
+
+def with_upscalable(records):
+    """With the Upscale on, give each finished job among `records` (copies) "upscalable": {"ok": true, "draft",
+    "clip_audio"} or {"ok": false, "why"} (/api/state, /api/jobs, api_record). Call it without `lock`."""
+    for rec in records if UPSCALE else ():
+        if rec.get("status") == "done":
+            code, info = upscalable(rec)
+            rec["upscalable"] = dict(ok=True, **info) if code == 200 else {"ok": False, "why": info}
+    return records
+
+
+def upscale_request(raw):
+    """POST /api/upscale's JSON body -> (id, resolution, source, strength, audio, seed or None). null is the same as
+    leaving a key out. Raises ValueError with what the client is told."""
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        raise ValueError('expected JSON {"id": ..., "resolution": ..., "source": ..., "strength": ..., "audio": ..., '
+                         '"seed": ...}')
+    for key in body:
+        if key not in UPSCALE_REQUEST:
+            raise ValueError(f'unknown key "{key}" (known: {", ".join(UPSCALE_REQUEST)})')
+    body = {k: v for k, v in body.items() if v is not None}
+    if not isinstance(body.get("id"), str) or not body["id"]:
+        raise ValueError("id must be the id of a finished clip")
+    picked = []
+    for key, choices, default in (("resolution", tuple(regen.SIZES), "2k"), ("source", regen.SOURCES, "final"),
+                                  ("strength", tuple(regen.STRENGTHS), UPSCALE_CONF["strength"]),
+                                  ("audio", regen.AUDIO, UPSCALE_CONF["audio"])):
+        value = body.get(key, default)
+        if not isinstance(value, str) or value not in choices:
+            raise ValueError(f"{key} must be one of {', '.join(choices)}")
+        picked.append(value)
+    seed = body.get("seed")
+    if seed is not None and (type(seed) is not int or not 0 <= seed < 2**63):
+        raise ValueError("seed must be a nonnegative 63-bit integer, or null for the clip's")
+    return (body["id"], *picked, seed)
+
+
+def submit_upscale(raw):
+    """POST /api/upscale (the docstring): check the request and the clip, then queue the upscale as a job of its own.
+    Returns the reply."""
+    if not UPSCALE:
+        return 404, {"error": "the experimental Upscale is off on this studio (LFSTUDIO_UPSCALE=1 turns it on)"}
+    try:
+        jid, resolution, source, strength, audio, seed = upscale_request(raw)
+    except ValueError as error:
+        return 400, {"error": str(error)}
+    with lock:
+        parent = find_job(jid)
+        parent = dict(parent) if parent else None
+    if parent is None:
+        return 404, {"error": "no such clip"}
+    code, info = upscalable(parent)
+    if code != 200:
+        return code, {"error": info}
+    if source == "draft" and not info["draft"]:
+        return 409, {"error": "the clip has no Stage-1 latent (stage1/h3_normalized_native.pt), so it can be "
+                              "upscaled from its final MP4 only (source final)"}
+    if audio == "clip" and not info["clip_audio"]:
+        return 409, {"error": "the clip has no Stage-1 audio (stage1/stage1_direct_tensors.pt); ask for audio "
+                              "silence"}
+    sigma, steps = regen.STRENGTHS[strength]
+    uid = uuid.uuid4().hex
+    job = {"id": uid, "kind": "upscale", "parent": jid, "case_id": f"up_{time.strftime('%H%M%S')}_{uid[:6]}",
+           "task": parent["task"], "orientation": parent["orientation"], "seconds": parent.get("seconds", 5),
+           "prompt": parent["prompt"], "seed": parent["seed"], "resolution": resolution, "source": source,
+           "strength": strength, "steps": steps, "start_sigma": sigma, "audio": audio,
+           "refine_seed": parent["seed"] if seed is None else seed, "status": "queued", "created": time.time()}
+    with lock:
+        full = queue_full()
+        now = find_job(jid)
+        gone = now is None or now.get("moving")       # deleted, or a Delete or Undo began meanwhile
+        if not (full or gone):
+            job["created"] = max(time.time(), jobs[-1]["created"] + 0.001 if jobs else 0)
+            jobs.append(job)
+            preload["pending"] = None              # a requested warm-up that hasn't started: the upscale closes the
+            session["switching_to"] = None         # models anyway
+            waited_for = warm_up_wanted()          # a clip queued for the warm-up's models runs first: keep it
+    if full:
+        return full
+    if gone:
+        return 409, {"error": "the clip is being deleted or moved; try again in a moment"}
+    save_job(job)
+    if session.get("preloading") and not waited_for:
+        abort_preload("an upscale arrived, which needs the memory")
+    log("queued upscale", job["case_id"], "of", parent["case_id"],
+        f"({resolution}, {source}, {strength}, audio {audio}, seed {job['refine_seed']})")
+    wake.set()
+    return 200, {"id": uid, "job": api_record(job)}
+
+
+def enough_memory(floor):
+    """MemAvailable (GiB) as soon as it reaches `floor`, else the most seen within UPSCALE_FREE_WAIT_S (a closed
+    session's memory comes back as its workers end); None when it can't be read. No wait for a floor of 0."""
+    best, deadline = None, time.time() + UPSCALE_FREE_WAIT_S
+    while floor > 0:
+        available = mem_available_gib()
+        if available is not None:
+            best = max(best or 0.0, available)
+        if best is not None and best >= floor or time.time() >= deadline or stopping.is_set():
+            break
+        time.sleep(0.5)
+    return best
+
+
+def run_upscale(job):
+    """An upscale (the docstring): free the memory and check it, write job.json into a session directory of its own,
+    run the job there (upscale_process, under pipeline_call so that Cancel stops it), then the poster, the record and
+    the publish copy. Raises when it fails or is cancelled; no retry."""
+    if job.get("cancel_requested"):
+        raise Cancelled("cancelled before it started")
+    job["status"] = "freeing memory"
+    job["phase_since"] = time.time()
+    abort_preload("an upscale needs the memory")
+    close_session("an upscale needs the memory")
+    if job.get("cancel_requested"):        # cancelled while the models were closed: nothing of its own ran
+        raise Cancelled("cancelled before it started")
+    with lock:
+        parent = find_job(job["parent"])
+        parent = dict(parent) if parent else None
+    if parent is None:
+        raise UpscaleFailed("the clip to upscale is gone")
+    code, info = upscalable(parent)
+    if code != 200:
+        raise UpscaleFailed(f"the clip can't be upscaled now: {info}")
+    if job["source"] == "draft" and not info["draft"] or job["audio"] == "clip" and not info["clip_audio"]:
+        raise UpscaleFailed("the clip's Stage-1 files are gone")
+    files = upscale_files(parent)
+    floor = UPSCALE_CONF["min_free_gib"]
+    available = enough_memory(floor)
+    if available is None and floor > 0:
+        log(f"upscale: cannot read MemAvailable from {MEMINFO}; starting without the memory check")
+    if available is not None and available < floor:
+        raise UpscaleFailed(f"not enough free memory for an upscale: {available:.1f} GiB available with the models "
+                            f"closed, {floor:g} GiB needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB); close other apps")
+    case = new_session_dir(f"upscale-{job['resolution']}") / job["case_id"]
+    out = case / "regen"
+    with lock:
+        if stopping.is_set():
+            raise UpscaleFailed("the studio is shutting down")
+    out.mkdir(parents=True)
+    job.setdefault("case_dirs", []).append(str(case))      # for Delete, even if it fails
+    job_path = out / "job.json"
+    data = {"version": regen.JOB_VERSION, "case": str(files["case"]), "source": job["source"],
+            "resolution": job["resolution"], "steps": job["steps"], "start_sigma": job["start_sigma"],
+            "seed": job["refine_seed"], "audio": job["audio"], "preread": UPSCALE_CONF["preread"],
+            "paths": {"package": str(UPSCALE_CONF["package"]), "weights": str(UPSCALE_CONF["weights"]),
+                      "base_model": str(UPSCALE_CONF["base_model"]), "output": str(out)},
+            "meta": {"studio_job": job["id"], "parent": job["parent"], "strength": job["strength"]}}
+    regen.parse_job(data, out)             # the job's own check of job.json: a JobError (ValueError) is a bug here
+    regen.write_json(job_path, data)
+    job.update(status="upscaling", phase_since=time.time(), upscale_phase="starting")
+    t0 = time.time()
+    final = pipeline_call(job, lambda: upscale_process(job, out, job_path, files["final"]), "upscale failed")
+    make_poster(final)
+    job.pop("upscale_phase", None)
+    job.update(output=str(final), e2e_s=round(time.time() - t0, 1))
+    try:
+        receipt = json.loads((out / regen.RECEIPT).read_text())
+        job.update(phases_s=receipt.get("times_s"), peak_gib=receipt.get("peak_allocated_gib"),
+                   low_mem_gib=(receipt.get("lowest_mem_available_gib") or {}).get("all"))
+    except (OSError, ValueError, AttributeError) as error:
+        log("no readable receipt from the upscale:", error)
+    stem = Path(parent["published"]).stem if parent.get("published") else publish_stem(parent)
+    publish(job, final, f"{stem}_{job['resolution']}")      # next to the clip's own copy
+
+
+def upscale_process(job, out, job_path, parent_mp4):
+    """The upscale's job (LFSTUDIO_UPSCALE_SCRIPT: upscale/regen2k_job.py) with the Regen-2K Python, in a process
+    group of its own (stop_job's SIGTERM reaches it as it reaches the pipeline's workers), its output in worker.log.
+    A thread follows that log for the job's progress (upscale_tail), another stops the job when memory runs out
+    (upscale_guard). Then the clip's sound goes in, copied. Returns the MP4; raises with the job's own error line."""
+    log_path = out / "worker.log"
+    with open(log_path, "ab") as log_file:
+        try:
+            proc = subprocess.Popen(regen.worker_command(UPSCALE_CONF["python"], UPSCALE_SCRIPT, job_path), cwd=out,
+                                    env=regen.worker_environment(os.environ), stdin=subprocess.DEVNULL,
+                                    stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as error:
+            raise UpscaleFailed(f"cannot start the upscale job with LFSTUDIO_UPSCALE_PYTHON={UPSCALE_CONF['python']} "
+                                f"({error.strerror or error})") from None
+    with lock:
+        work["process"] = proc
+    log(f"upscaling {job['case_id']} (job pid {proc.pid}): {job['resolution']} from the {job['source']}, "
+        f"{job['strength']}, audio {job['audio']}")
+    halt, seen = threading.Event(), {}
+    threads = [threading.Thread(target=upscale_tail, args=(log_path, job, halt, seen), daemon=True),
+               threading.Thread(target=upscale_guard, args=(proc, halt, seen), daemon=True)]
+    for thread in threads:
+        thread.start()
+    try:
+        code = proc.wait()
+    finally:
+        halt.set()
+        for thread in threads:
+            thread.join(timeout=15)
+        with lock:
+            work["process"] = None
+    if "guard" in seen:
+        raise UpscaleFailed(f"stopped: MemAvailable was below {UPSCALE_CONF['guard_gib']:g} GiB for 3 s "
+                            f"({seen['guard']:.1f} GiB; LFSTUDIO_UPSCALE_GUARD_GIB)")
+    if code and stopping.is_set():
+        raise UpscaleFailed("the studio was stopped")
+    if code:
+        raise UpscaleFailed(seen.get("error") or f"the upscale job exited with code {code}; see {log_path}")
+    silent = out / regen.OUTPUT_VIDEO
+    if not silent.is_file():
+        raise UpscaleFailed(f"the upscale job wrote no {silent.name}; see {log_path}")
+    width, height = regen.SIZES[job["resolution"]]
+    final = out / f"regen_{width}x{height}_{regen.FINAL['frames']}f.mp4"
+    partial = out / f".{final.stem}.part.mp4"
+    job["upscale_phase"] = "adding the sound"
+    try:
+        mux = subprocess.run(regen.mux_command(silent, parent_mp4, partial), capture_output=True, text=True,
+                             timeout=600)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise UpscaleFailed(f"could not add the clip's sound: {error}") from None
+    if mux.returncode != 0 or not partial.is_file():
+        partial.unlink(missing_ok=True)
+        raise UpscaleFailed(f"could not add the clip's sound (ffmpeg: {regen.one_line(mux.stderr)[-300:]})")
+    os.replace(partial, final)
+    silent.unlink()                        # the job's MP4 without sound (CRF 10, large): the muxed one replaces it
+    return final
+
+
+def upscale_tail(path, job, halt, seen):
+    """Follow the upscale job's worker.log: each "[lf-studio] phase <name>" line becomes job["upscale_phase"], the
+    last "[lf-studio] error <text>" seen["error"]. Reads what is left once more after `halt` is set."""
+    pos, rest, chunk = 0, b"", 1 << 20
+    while True:
+        last = halt.is_set()
+        try:
+            with open(path, "rb") as log_file:
+                log_file.seek(pos)
+                data = log_file.read(chunk)
+        except OSError:
+            data = b""
+        pos += len(data)
+        *lines, rest = (rest + data).split(b"\n")
+        rest = rest[-4096:]                # a line without an end (a progress bar) can't grow without bound
+        for line in lines:
+            found = regen.parse_line(line.rsplit(b"\r", 1)[-1].decode("utf-8", "replace"))
+            if found and found[0] == "phase":
+                job["upscale_phase"] = found[1][:80]
+            elif found:
+                seen["error"] = found[1]
+        if len(data) == chunk:             # more to read now
+            continue
+        if last:
+            return
+        halt.wait(0.25)
+
+
+def upscale_guard(proc, halt, seen):
+    """Stop the upscale's job when MemAvailable stays below LFSTUDIO_UPSCALE_GUARD_GIB for 3 s, as
+    bench/memguard-run.sh does: SIGTERM to its process group, SIGKILL 10 s later. On the DGX Spark's unified memory a
+    job that takes the last few GiB can hang the machine, and this fires before the launcher's guard (4 GiB), which
+    would stop the whole studio. Sets seen["guard"] (the MemAvailable it saw) when it fires; ends when `halt` is set."""
+    floor, low = UPSCALE_CONF["guard_gib"], 0
+    while floor > 0 and not halt.wait(1):
+        available = mem_available_gib()
+        low = low + 1 if available is not None and available < floor else 0
+        if low < 3:
+            continue
+        seen["guard"] = available
+        log(f"upscale: MemAvailable {available:.1f} GiB, below {floor:g} GiB for 3 s: stopping its job")
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            with contextlib.suppress(OSError):
+                os.killpg(proc.pid, sig)
+            if halt.wait(10):
+                break
+        return
+
+
+def stop_upscale():
+    """At shutdown: SIGTERM a running upscale's job (its process group; SIGKILL if it is still there 20 s later), so
+    that it does not go on without the studio. (bin/lf-studio's cleanup stops one left behind too: WORKER_RE.)"""
+    with lock:
+        proc = work["process"]
+    if proc is None or proc.poll() is not None:
+        return
+    log("stopping the running upscale")
+    with contextlib.suppress(OSError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
+def warm_up_after_upscale():
+    """After an upscale none of the studio's models are loaded. With LFSTUDIO_PRELOAD=1 and nothing queued, warm up
+    the last clip's settings again, as at start."""
+    if not PRELOAD:
+        return
+    with lock:
+        busy = (stopping.is_set() or preload["pending"] or session["pipeline"] is not None
+                or any(j["status"] == "queued" for j in jobs))
+        pending = None if busy else preload_candidate()
+        if pending:
+            preload["pending"] = pending
+            session["switching_to"] = pending[0]
+    if pending:
+        log("will preload", pending[0], "again after the upscale")
+        wake.set()
+
+
+def next_job():
+    """The job to run next: the first clip queued, else the first upscale queued. An upscale closes the models, so it
+    waits while any clip is queued (runs_before). Call it holding `lock`."""
+    return min((j for j in jobs if j["status"] == "queued"), key=lambda j: (is_upscale(j), j["created"]),
+               default=None)
+
+
 def worker_loop():
     purged = time.time()                           # main() purged at start
     while not stopping.is_set():
@@ -1136,22 +1615,25 @@ def worker_loop():
                 shutil.rmtree(WARMUP_INPUTS, ignore_errors=True)   # read by the loading pass only
         while True:
             with lock:
-                job = None if stopping.is_set() else next((j for j in jobs if j["status"] == "queued"), None)
+                job = None if stopping.is_set() else next_job()
                 if job is None:
                     break
                 job["status"] = "starting"
                 job["started"] = time.time()
             try:
-                try:
-                    run_job(job)
-                except Exception as e:   # worker died -> session was closed; rebuild it and retry this job once
-                    if job.get("cancel_requested"):            # cancelled: no retry (run_job closed the session)
-                        raise
-                    traceback.print_exc()
-                    job["first_error"] = f"{type(e).__name__}: {e}"[:600]
-                    job["status"] = "retrying after a worker error"
-                    log("retrying job", job["id"], "after:", job["first_error"][:200])
-                    run_job(job)
+                if is_upscale(job):
+                    run_upscale(job)             # no retry: a failed upscale most likely ran out of memory
+                else:
+                    try:
+                        run_job(job)
+                    except Exception as e:   # worker died -> session was closed; rebuild it and retry this job once
+                        if job.get("cancel_requested"):        # cancelled: no retry (run_job closed the session)
+                            raise
+                        traceback.print_exc()
+                        job["first_error"] = f"{type(e).__name__}: {e}"[:600]
+                        job["status"] = "retrying after a worker error"
+                        log("retrying job", job["id"], "after:", job["first_error"][:200])
+                        run_job(job)
                 final = "done"
             except BaseException as e:
                 if job.get("cancel_requested"):
@@ -1167,6 +1649,8 @@ def worker_loop():
             for k in ("saving", "cancel_requested"):     # only while it runs; after the status, so Cancel keeps
                 job.pop(k, None)                         # answering 409 meanwhile
             save_job(job)                   # wakes GET /api/jobs/<id>?wait=
+            if is_upscale(job):
+                warm_up_after_upscale()
 
 
 # ------------------------------------------------------------------------------------------ HTTP
@@ -1216,7 +1700,10 @@ REF_TYPE = {"ref_images": "image", "ref_videos": "video", "ref_audio": "audio"}
 
 
 def zone_files(job, zone):
-    """The input files of `job` for one form zone, in order (reference videos: the normalized copy the run used)."""
+    """The input files of `job` for one form zone, in order (reference videos: the normalized copy the run used).
+    Nothing for an upscale: its only input is its clip."""
+    if is_upscale(job):
+        return []
     if zone in REF_TYPE:
         return [r["path"] for r in job.get("references") or [] if r.get("type") == REF_TYPE[zone]]
     return [job[zone]] if job.get(zone) else []
@@ -1236,8 +1723,10 @@ def card_picture(job):
     An image goes out as it is if ffmpeg can't make the JPEG, or if the clip has no input directory of its own (an
     old history). None for t2va, when the file is gone, or when a video's frame can't be read. While ffmpeg makes the
     JPEG, it is a temporary file in INPUTS itself, not in the clip's directory, which a Delete can move meanwhile (the
-    JPEG is then not kept, and the moved image is not served). Never writes elsewhere."""
+    JPEG is then not kept, and the moved image is not served). Never writes elsewhere. None for an upscale."""
     src, video = None, False
+    if is_upscale(job):
+        return None
     if job.get("task") == "fl2va":
         src = job.get("first_frame") or job.get("last_frame")
     elif job.get("task") == "ref2va":
@@ -1329,8 +1818,10 @@ def job_labels(job):
     first frame is <Picture 1>, the last frame the next picture. ref2va, in the order of its references (images,
     then videos, then audio): an image is the next <Picture N>; a video the next <Video N>, and if it has sound, its
     sound track takes the next <Audio N> just before it (sound_of names the video); an audio file the next <Audio N>.
-    Reference videos are probed as stored (the normalized copy the pipeline reads). [] for t2va."""
+    Reference videos are probed as stored (the normalized copy the pipeline reads). [] for t2va and for an upscale."""
     labels, count, index = [], {"Picture": 0, "Video": 0, "Audio": 0}, {}
+    if is_upscale(job):
+        return labels
 
     def add(kind, zone, path, **extra):
         count[kind] += 1
@@ -1708,13 +2199,14 @@ class H(BaseHTTPRequestHandler):
                 window = sorted(active + finished[-PAGE:], key=lambda j: j["created"], reverse=True)
                 warmable = [t for t in ready if mode_warmup_case(t)]     # modes "Load selected now" can warm up
                 state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS, "warmable": warmable,
-                         "reshape": RESHAPE, "backend": BACKEND, "api": API,
+                         "reshape": RESHAPE, "backend": BACKEND, "api": API, "upscale": UPSCALE,
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
                                                                  "takeover_until", "load_eta", "warm_s",
                                                                  "switching_to")},
                          "jobs": [dict(j) for j in window],
                          "done": sum(j["status"] == "done" for j in finished), "more": len(finished) > PAGE,
                          "deleted": {j["id"]: j["created"] for j in jobs if j.get("deleted")}}   # in the trash
+            with_upscalable(state["jobs"])                              # (reads files: without the lock)
             return self.send(200, state)
         if path == "/api/jobs":            # older clips: ?before=<created>&limit=<n>, newest first
             q = parse_qs(urlsplit(self.path).query)
@@ -1726,7 +2218,7 @@ class H(BaseHTTPRequestHandler):
             with lock:
                 older = [j for j in jobs if j["created"] < before and not j.get("deleted")]
                 page = [dict(j) for j in older[::-1][:limit]]
-            return self.send(200, {"jobs": page, "more": len(older) > limit})
+            return self.send(200, {"jobs": with_upscalable(page), "more": len(older) > limit})
         m = re.fullmatch(r"/poster/([0-9a-f]{32})", path)
         if m:
             mp4 = clip_file(find_job(m.group(1)))
@@ -1900,11 +2392,13 @@ class H(BaseHTTPRequestHandler):
             return
         if not self.same_origin():
             return self.send(403, {"error": "cross-origin request refused"})
-        if self.path in ("/api/unload", "/api/load", "/api/cancel", "/api/delete", "/api/undelete"):
+        if self.path in ("/api/unload", "/api/load", "/api/cancel", "/api/delete", "/api/undelete", "/api/upscale"):
             n = self.body_length(SMALL_BODY, f"request body too large ({SMALL_BODY // 1024} KiB max)")
             if n is None:
                 return
             small = self.rfile.read(n)                 # JSON, {"id": ...} or {task, orientation, seconds}
+        if self.path == "/api/upscale":    # the experimental Upscale (the docstring); 404 when it is off
+            return self.send(*submit_upscale(small))
         if self.path == "/api/unload":
             with lock:
                 busy = any(j["status"] not in FINISHED + ("queued",) for j in jobs)
@@ -2010,6 +2504,10 @@ class H(BaseHTTPRequestHandler):
                     reply = None if job.get("deleted") else (200, {"ok": True, "job": dict(job)})
                 elif job["status"] not in FINISHED:
                     reply = 409, {"error": "the clip is still queued or running"}
+                elif self.path == "/api/delete" and any(is_upscale(j) and j["parent"] == jid and j["status"] not in
+                                                        FINISHED for j in jobs):    # it reads the clip's files
+                    reply = 409, {"error": "an upscale of this clip is queued or running; cancel it first, or wait "
+                                           "for it"}
                 elif job.get("deleted"):
                     reply = 200, {"ok": True}
                 else:
@@ -2130,6 +2628,9 @@ def main():
     if not API:
         log("the API for programs is off (LFSTUDIO_API=0): JSON submits, submits from bin/lf-cli and "
             "/api/jobs/<id> answer 403; the page works as usual")
+    if UPSCALE:
+        log(f"the experimental Upscale is on (LFSTUDIO_UPSCALE=1): {UPSCALE_SCRIPT} with {UPSCALE_CONF['python']}; "
+            f"default strength {UPSCALE_CONF['strength']}, audio {UPSCALE_CONF['audio']}")
     log(f"LF Studio on http://{HOST}:{PORT}/ (package {PKG}, state {STATE_DIR})")
     try:
         srv.serve_forever()
@@ -2141,6 +2642,7 @@ def main():
         with changed:                                  # the waiting requests' 503s go out before the process ends
             changed.notify_all()
             changed.wait_for(lambda: waiting == 0, timeout=5)
+        stop_upscale()
         close_session("server exit")
         log("bye")
 

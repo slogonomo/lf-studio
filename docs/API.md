@@ -350,8 +350,9 @@ The clip as stored (the keys `/api/state` shows), plus these keys, worked out fo
 | Key | Value |
 |---|---|
 | `state` | `queued`, `running`, `done`, `failed` or `cancelled`. Use this; `status` is a phrase for people (`loading models + generating`, ...). `done`, `failed` and `cancelled` are final. |
-| `phase` | `null` unless running; then `starting`, `loading` (the models, then this clip), `generating`, `retrying` (after a worker error), `saving`, `cancelling` or `running` |
-| `ahead` | queued only: the clips queued before it |
+| `phase` | `null` unless running; then `starting`, `loading` (the models, then this clip), `generating`, `retrying` (after a worker error), `saving`, `cancelling` or `running`; an upscale: `unloading`, then `upscaling` ([Upscale](#upscale-experimental-post-apiupscale)) |
+| `ahead` | queued only: the jobs that run before it (every queued clip runs before a queued upscale) |
+| `upscalable` | done, with the experimental Upscale on: whether it can be upscaled ([Upscale](#upscale-experimental-post-apiupscale)) |
 | `elapsed_s` | running only: seconds since it started |
 | `urls` | done, while its MP4 exists: `{"video": "/video/<id>", "poster": "/poster/<id>"}`, relative to the studio's address |
 | `labels` | fl2va and ref2va: what each input file is called in the prompt (below) |
@@ -445,11 +446,60 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 A cancelled clip keeps its input files for Remix. Stopping a wait (Ctrl-C, a closed connection, a cancelled MCP
 call) never cancels the clip.
 
+## Upscale (experimental): `POST /api/upscale`
+
+Only on a DGX Spark studio with `LFSTUDIO_UPSCALE=1` (off by default; `bin/env.example`). It upscales a finished
+clip to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regenerate-2K, run as a job of its own
+(`upscale/regen2k_job.py`, in an environment of its own). For now it takes **5 s 16:9 text clips (t2va)** only:
+NVIDIA's pipeline is fixed at 1344×768 and 121 frames, and fl2va and ref2va clips need a text-only encode of their
+prompt first. Portrait, 10 and 15 s, fl2va and ref2va are follow-ups.
+
+```bash
+curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: application/json' \
+  -d "{\"id\": \"$id\", \"resolution\": \"2k\"}" "$S/api/upscale"
+```
+
+| Key | Value |
+|---|---|
+| `id` | the finished clip (required) |
+| `resolution` | `1080p`, `2k` (default) or `4k` |
+| `source` | `final` (default: the clip's MP4) or `draft` (its Stage-1 latent, upscaled x2 by the same latent upscaler first) |
+| `strength` | how much it may redraw: `faithful` (start noise 0.5, 2 steps), `balanced` (0.7, 2 steps) or `full` (NVIDIA's release setting, 3 steps from 0.909: sharpest, but it redraws faces). Default `LFSTUDIO_UPSCALE_STRENGTH` (`balanced`). Provisional, until measured |
+| `audio` | what the picture is refined against: `clip` (the clip's own Stage-1 audio) or `silence` (NVIDIA's). Default `LFSTUDIO_UPSCALE_AUDIO` (`clip`). The result gets the clip's sound either way, copied |
+| `seed` | the refine's seed; default (or `null`) the clip's |
+
+- 200 `{"id", "job": <API record>}`: queued as a job of its own (`"kind": "upscale"`, `"parent": "<clip id>"`; `task`,
+  `orientation`, `seconds`, `prompt` and `seed` are the clip's). It waits while any clip is queued, even one queued
+  after it, since it closes the studio's models. It runs as `status` `freeing memory` (`phase` `unloading`: the models
+  close) and then `upscaling` (`phase` `upscaling`, with `upscale_phase` from the job: `encoding`, `loading`,
+  `refine 1/2`, ..., `decoding`, `saving`, `adding the sound`). The next clip loads the models again.
+- 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `unknown key "steps" (...)`, ...), `an upscale can't
+  be upscaled again`, `Upscale takes text-to-video (t2va) clips only, for now` or `Upscale needs a 5 s 16:9 clip
+  (...)`.
+- 404 `no such clip`; with the Upscale off, `the experimental Upscale is off on this studio (LFSTUDIO_UPSCALE=1 turns
+  it on)`.
+- 409 for a clip that is not done (`the clip is still queued`, `the clip failed`, ...), is being deleted or restored,
+  or whose files are gone (its session directory; for `source` `draft` its Stage-1 latent, for `audio` `clip` its
+  Stage-1 audio). 429 when the queue is full.
+
+Cancel, Delete, Undo, `/api/jobs/<id>[?wait=]`, `/video/<id>` and `/poster/<id>` work on an upscale as on a clip.
+It downloads as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>.mp4`, and its `LFSTUDIO_PUBLISH_DIR` copy
+is named as the clip's with `_<resolution>` after it. Its files are in a directory of their own, so Delete moves
+only them; a clip can't be deleted while an upscale of it is queued or running (409). It fails, without a retry,
+below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` of free memory once the models are closed (default 110), or when the memory
+guard stops it (`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s); `error` says why (the job's own error line when it
+has one). A finished upscale also has `phases_s`, `peak_gib` and `low_mem_gib` from its job.
+
+With the Upscale on, `/api/state` has `"upscale": true`, and every finished job in `/api/state`, `/api/jobs` and the
+API record has `upscalable`: `{"ok": true, "draft": <has its Stage-1 latent>, "clip_audio": <has its Stage-1
+audio>}` or `{"ok": false, "why": "<the 400 or 409 text above>"}`. This endpoint is the page's, like Cancel: it
+works with `LFSTUDIO_API=0`.
+
 ## Other endpoints
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "session", "jobs", "done", "more", "deleted"}`. `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
+| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "upscale", "session", "jobs", "done", "more", "deleted"}`. `upscale` is true when the experimental Upscale is on (`LFSTUDIO_UPSCALE=1`); then finished jobs have `upscalable`. `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
 | `GET /api/jobs?before=<created>&limit=<n>` | Older clips, newest first: `{"jobs": [...], "more": true/false}`. `before` is a `created` time (default: now), `limit` 1-100 (default 24). Records as stored. |
 | `GET /api/inputs/<id>` | A clip's input files, for Remix: `{"task", "inputs": {"<zone>": [{"name", "index", "url"}]}, "missing": [...]}` |
 | `GET /input/<id>/<zone>/<index>` | One input file (reference videos as converted). 404 `no such input`. |
@@ -460,7 +510,7 @@ Used by the page; stable, but not designed for agents. Each takes a JSON body of
 
 | Endpoint | Body | Does |
 |---|---|---|
-| `POST /api/delete` | `{"id"}` | moves a finished clip and its files to the trash for `LFSTUDIO_TRASH_DAYS` (default 7); 409 while it is queued or running |
+| `POST /api/delete` | `{"id"}` | moves a finished clip and its files to the trash for `LFSTUDIO_TRASH_DAYS` (default 7); 409 while it is queued or running, or while an upscale of it is |
 | `POST /api/undelete` | `{"id"}` | brings it back |
 | `POST /api/load` | `{"task", "orientation", "seconds"}` | loads the models for those settings ahead of a clip ("Load selected now"). With that task loaded, it only changes the session's length and orientation, without a warm-up clip (`reshape` true). 409 while a clip is queued or running |
 | `POST /api/unload` | none | frees the models; 409 while a clip runs |
