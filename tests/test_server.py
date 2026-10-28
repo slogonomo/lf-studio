@@ -2214,12 +2214,13 @@ class Upscale(UpscaleTest):
                            seed=99)
         job = self.done(uid)
         self.assertEqual(Path(job["output"]).name, "regen_1920x1080_121f.mp4")
-        self.assertEqual((job["seed"], job["refine_seed"], job["steps"], job["start_sigma"]), (1, 99, 3, None))
+        self.assertEqual((job["seed"], job["refine_seed"], job["steps"], job["start_sigma"], job["load"]),
+                         (1, 99, 3, None, "fast"))                      # LFSTUDIO_UPSCALE_LOAD's default
         data = json.loads((self.regen(job) / "job.json").read_text())
         root = self.dir / "regen2k"                     # tests/stub/studio.py's LFSTUDIO_UPSCALE_PKG and so on
         self.assertEqual(data, {"version": 1, "case": str(Path(parent["output"]).parents[1]), "source": "draft",
                                 "resolution": "1080p", "steps": 3, "start_sigma": None, "seed": 99,
-                                "audio": "silence", "preread": False,
+                                "audio": "silence", "load": "fast", "preread": False,
                                 "paths": {"package": str(root / "package"), "weights": str(root / "weights"),
                                           "base_model": str(root / "base"), "output": str(self.regen(job))},
                                 "meta": {"studio_job": uid, "parent": parent["id"], "strength": "full"}})
@@ -2255,8 +2256,10 @@ class Upscale(UpscaleTest):
 
 
 class UpscaleSettings(UpscaleTest):
-    """LFSTUDIO_UPSCALE_STRENGTH, _AUDIO and _PREREAD are a request's defaults; the paths go into job.json."""
-    env = {"LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence", "LFSTUDIO_UPSCALE_PREREAD": "1",
+    """LFSTUDIO_UPSCALE_STRENGTH and _AUDIO are a request's defaults; _LOAD, _PREREAD and the paths go into job.json
+    (and _LOAD into the upscale's record)."""
+    env = {"LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence",
+           "LFSTUDIO_UPSCALE_LOAD": "standard", "LFSTUDIO_UPSCALE_PREREAD": "1",
            "LFSTUDIO_UPSCALE_PKG": "/opt/regen2k/package", "LFSTUDIO_UPSCALE_WEIGHTS": "/opt/regen2k/weights",
            "LFSTUDIO_UPSCALE_BASE": "/opt/minimax-h3"}
 
@@ -2268,10 +2271,12 @@ class UpscaleSettings(UpscaleTest):
         self.assertEqual((job["strength"], job["steps"], job["start_sigma"], job["audio"]),
                          ("full", 3, None, "silence"))
         data = json.loads((self.regen(job) / "job.json").read_text())
-        self.assertEqual((data["preread"], data["audio"], data["paths"]["package"], data["paths"]["weights"],
-                          data["paths"]["base_model"]),
-                         (True, "silence", "/opt/regen2k/package", "/opt/regen2k/weights", "/opt/minimax-h3"))
-        self.assertIn("default strength full, audio silence", self.studio.log.read_text())
+        self.assertEqual((data["load"], data["preread"], data["audio"], data["paths"]["package"],
+                          data["paths"]["weights"], data["paths"]["base_model"]),
+                         ("standard", True, "silence", "/opt/regen2k/package", "/opt/regen2k/weights",
+                          "/opt/minimax-h3"))
+        self.assertEqual(job["load"], "standard")
+        self.assertIn("default strength full, audio silence; standard load", self.studio.log.read_text())
 
 
 class UpscaleRefusals(UpscaleTest):
@@ -2790,6 +2795,10 @@ class BadUpscaleSettings(unittest.TestCase):
                  "LFSTUDIO_UPSCALE_STRENGTH=nvidia: must be faithful, balanced or full (see bin/env.example)"),
                 ({"LFSTUDIO_UPSCALE_AUDIO": "both"}, "LFSTUDIO_UPSCALE_AUDIO=both: must be clip or silence"),
                 ({"LFSTUDIO_UPSCALE_PREREAD": "yes"}, "LFSTUDIO_UPSCALE_PREREAD=yes: must be 0 or 1"),
+                ({"LFSTUDIO_UPSCALE_LOAD": "quick"}, "LFSTUDIO_UPSCALE_LOAD=quick: must be fast or standard"),
+                ({"LFSTUDIO_UPSCALE_PREREAD": "1"}, "LFSTUDIO_UPSCALE_PREREAD=1: only with "
+                                                    "LFSTUDIO_UPSCALE_LOAD=standard (the fast load reads the weight "
+                                                    "files past the page cache) (see bin/env.example)"),
                 ({"LFSTUDIO_UPSCALE_MIN_FREE_GIB": "-1"}, "LFSTUDIO_UPSCALE_MIN_FREE_GIB=-1: must be a number of GiB, "
                                                           "0 or more"),
                 ({"LFSTUDIO_UPSCALE_GUARD_GIB": "nan"}, "LFSTUDIO_UPSCALE_GUARD_GIB=nan: must be a number of GiB"),
@@ -2857,6 +2866,12 @@ class LauncherUpscale(LauncherSettingsCheck):
                      **settings, LFSTUDIO_UPSCALE_STRENGTH="max")
         self.refused("LFSTUDIO_UPSCALE_GUARD_GIB=-5: must be a number of GiB, 0 or more (see bin/env.example)",
                      **settings, LFSTUDIO_UPSCALE_GUARD_GIB="-5")
+        self.refused("LFSTUDIO_UPSCALE_LOAD=mmap: must be fast or standard (see bin/env.example)",
+                     **settings, LFSTUDIO_UPSCALE_LOAD="mmap")
+        self.refused("LFSTUDIO_UPSCALE_PREREAD=1: only with LFSTUDIO_UPSCALE_LOAD=standard",
+                     **settings, LFSTUDIO_UPSCALE_PREREAD="1")
+        code, out = self.check(**settings, LFSTUDIO_UPSCALE_LOAD="standard", LFSTUDIO_UPSCALE_PREREAD="1")
+        self.assertEqual(code, 0, out)
         self.refused("LFSTUDIO_UPSCALE_WEIGHTS=weights: must be an absolute path",
                      **dict(settings, LFSTUDIO_UPSCALE_WEIGHTS="weights"))
         self.refused(f"{upscale}no Python at LFSTUDIO_UPSCALE_PYTHON={self.d / 'nothing'} (the "

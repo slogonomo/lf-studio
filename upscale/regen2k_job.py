@@ -17,6 +17,20 @@ What this wrapper changes, and why:
   next to the 62 GiB DiT, and the load runs out of it. OneShotMerger merges once, in place, with NVIDIA's arithmetic
   (bf16(W.float() + B @ A), 512 rows at a time) and keeps nothing; on the GPU its weights were bit-identical to
   StageMerger's. Only the refine stage of the standard forward is used, so there is nothing to switch back to.
+- The load, for time and memory on GB10 (job.json "load"). NVIDIA's code loads through diffusers' from_pretrained
+  and safetensors' load_file, which read the files through mmap: on GB10 the page faults come in at ~0.2 GB/s (455 s
+  for the job's load, below), every page read stays in the page cache (the GPU's memory too), and diffusers builds
+  each model in host memory before Pipeline moves it to the GPU. "fast" (the default) installs the bench wrapper's
+  measured setup before anything loads, the encodes too: safetensors.torch.load_file and open_h3.adapters.load_file
+  become fastload.load_file(filename, device="cuda") (upscale/fastload.py, a copy of LF Studio's runtime/fastload.py:
+  O_DIRECT reads into a few reused windows, each tensor sliced out of one and copied straight to the GPU, never a host
+  copy of a file), and from_pretrained of diffusers' MiniMaxH3Transformer3DModel, AutoencoderKLMiniMaxH3 and
+  AutoencoderKLMiniMaxH3Audio gets device_map={"": "cuda"} unless the call names one, so each tensor goes to the GPU
+  as it is read. Where O_DIRECT can't be used, fastload falls back to safetensors' own load_file, to the GPU as well
+  (the receipt counts the files and the fallbacks). Measured with the bench wrapper (a 768p draft, 3 steps): loaded in
+  21 s with the 312 LoRA weights merged in 2.8 s, the native and refined latents bit-identical to a standard load's,
+  ~1.9 GB of anonymous memory in the process, 40.0 GiB MemAvailable after the load. "standard" is NVIDIA's own
+  loading, the fallback (~7.5 min). The latent upscaler's checkpoint (0.7 GB) loads through NVIDIA's node either way.
 - The text: the clip's own prompt conditioning (qwen/conditioning.pt; t2va: prompt_embeds [1, L, 5120] bf16, every
   text_token_tag 1) instead of loading the 32B text encoder (66.7 GB). It is the same layer-50 hidden state, from
   LF Studio's NVFP4 encoder: close to NVIDIA's BF16 one, not bit-identical.
@@ -31,33 +45,40 @@ What this wrapper changes, and why:
   with its row-wise parts over the sequence in 16 chunks and q/k/v written straight into SDPA's layout (on GB10
   bit-identical to the stock forward, with 2.5x less activation memory). The stock forward with only its FFN in 8
   chunks ran out of memory at 4K. Once the weights are in GPU memory their page cache is dropped (on GB10 it takes
-  the same memory). With "preread" (off unless asked for), 8 threads read the weight files into the page cache
-  before the load; it did not shorten the one load measured with it.
+  the same memory; with the fast load only the upscaler's file and fallbacks are in it). With "preread" (the standard
+  load only, off unless asked for), 8 threads read the weight files into the page cache before the load; it did not
+  shorten the one load measured with it. job.json refuses it with the fast load, which reads past the page cache.
 - The output has no audio (video_noaudio.mp4, NVIDIA's encode_mp4, CRF 10): the server muxes the clip's audio in.
 
 Scope: t2va clips, 16:9, 5 s (1344x768, 121 frames), the shapes NVIDIA's pipeline is fixed at. fl2va and ref2va need
 a text-only encode of the prompt (their conditioning interleaves the pictures), portrait and 10/15 s need changes
 to NVIDIA's fixed shapes: follow-ups.
 
-Measured on a DGX Spark (GB10) with the bench wrapper this job is derived from, one 5 s clip, standard forward and
-VAE, cuDNN attention: load 445-539 s; per refine step 144 s at 1080p and 378 s at 2K; decode 104 / 180 s; MP4 8 /
-16 s; peak allocated 81 / 91 GiB; lowest MemAvailable 28 / 15 GiB. 4K, with the lean blocks (and a load through
-device_map, which this job does not use): steps of 1687 and 1701 s, decode 399 s, peak allocated 94.5 GiB, lowest
-MemAvailable 13.8 GiB. This job's own 4K path has not run on the GPU yet.
+Measured on a DGX Spark (GB10), one 5 s clip, standard forward and VAE, cuDNN attention. This job, run by a staging
+studio (2K, balanced: 2 steps from 0.7, source final, the clip's audio, the standard load): encode_video 185 s, load
+455 s, steps of 379 and 380 s, decode 181 s, MP4 17 s, 1620.7 s from the request to the MP4; peak allocated 91.08
+GiB, lowest MemAvailable 18.32 GiB (34.13 GiB during the load), 4.91 GiB allocated before the decode. The bench
+wrapper it is derived from, standard load: load 445-539 s; per refine step 144 s at 1080p and 378 s at 2K; decode
+104 / 180 s; MP4 8 / 16 s; peak allocated 81 / 91 GiB; lowest MemAvailable 28 / 15 GiB. 4K, with the lean blocks
+(and a load through device_map): steps of 1687 and 1701 s, decode 399 s, peak allocated 94.5 GiB, lowest
+MemAvailable 13.8 GiB. The bench with the fast load: above (768p). Not run on the GPU yet: this job with the fast
+load (its default), and its 4K path.
 
-Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done,
-failed or cancelled; times per stage, steps, sigmas, peak GPU memory, lowest MemAvailable, the inputs' sha256,
-versions). Progress on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n, decoding and saving, in
-that order (encoding only for the final source or the clip's audio), and "[lf-studio] error <text>" last on failure.
+Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
+cancelled; times per stage, steps, sigmas, peak GPU memory, lowest MemAvailable, the inputs' sha256, versions, the load:
+its mode, and for fast the files and how many fell back to mmap). Progress on stdout: "[lf-studio] phase <name>" for
+encoding, loading, refine k/n, decoding and saving, in that order (encoding only for the final source or the clip's
+audio), and "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loaded), 143 stopped by SIGTERM.
 --check validates job.json and the inputs, prints the plan and exits (0 or 2) without torch and without writing.
 --parent PID (the server passes its own): the job is killed when that process ends (PR_SET_PDEATHSIG), so it never
 outlives the studio that guards its memory; if that process is gone already, it exits at once (143).
 
 job.json: {"version": 1, "case": DIR, "source": "final"|"draft", "resolution": "1080p"|"2k"|"4k", "steps": 1-4,
-"start_sigma": 0<x<1 | null (steps 2 or 3), "seed": INT, "audio": "clip"|"silence", "preread": BOOL (false),
-"vae_batch": INT (26), "paths": {"package": DIR, "weights": DIR, "base_model": DIR, "output": DIR (optional)},
-"meta": {...} (optional, copied into the receipt)}. Paths are absolute.
+"start_sigma": 0<x<1 | null (steps 2 or 3), "seed": INT, "audio": "clip"|"silence", "load": "fast"|"standard" ("fast"),
+"preread": BOOL (false; true only with load "standard"), "vae_batch": INT (26), "paths": {"package": DIR,
+"weights": DIR, "base_model": DIR, "output": DIR (optional)}, "meta": {...} (optional, copied into the receipt)}.
+Paths are absolute.
 
 Everything outside run() and the torch helpers is standard library only, so the server (its settings, the command
 line, the progress lines, the mux), bin/lf-studio --check (studio_settings, check_weights) and tests/test_upscale.py
@@ -66,6 +87,7 @@ import this file without torch.
 import argparse
 import gc
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -93,6 +115,12 @@ MAX_STEPS = 4
 LEAN_CHUNKS = {"4k": 16}
 VAE_BATCH = 26                   # NVIDIA's default
 VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior sample of the final MP4)
+# how the weights load (job.json "load", LFSTUDIO_UPSCALE_LOAD; the docstring): "fast" with upscale/fastload.py
+# straight to the GPU, "standard" NVIDIA's own loading through mmap (the fallback)
+LOADS = ("fast", "standard")
+DEFAULT_LOAD = "fast"
+FASTLOAD = Path(__file__).resolve().parent / "fastload.py"
+DIRECT_LOAD = ("MiniMaxH3Transformer3DModel", "AutoencoderKLMiniMaxH3", "AutoencoderKLMiniMaxH3Audio")   # diffusers'
 # Provisional, until the quality measurements settle them: strength name -> (start_sigma, steps); None = NVIDIA's
 # schedule for the steps. "full" is NVIDIA's release setting (3 steps from 0.909375: SCHEDULES[3], not
 # shifted_grid(0.909375, 3)), much sharper but it regenerates faces. The studio's request field and
@@ -123,7 +151,7 @@ FINAL = {"width": 1344, "height": 768, "frames": 121, "fps": "24/1"}
 
 OUTPUT_VIDEO = "video_noaudio.mp4"
 RECEIPT = "receipt.json"
-JOB_KEYS = {"version", "case", "source", "resolution", "steps", "start_sigma", "seed", "audio", "preread",
+JOB_KEYS = {"version", "case", "source", "resolution", "steps", "start_sigma", "seed", "audio", "load", "preread",
             "vae_batch", "paths", "meta"}
 REQUIRED = ("case", "source", "resolution", "steps", "start_sigma", "seed", "audio", "paths")
 PATH_KEYS = ("package", "weights", "base_model", "output")
@@ -192,9 +220,14 @@ def parse_job(data, job_dir):
     seed = data["seed"]
     if not _is_int(seed) or not 0 <= seed < 2 ** 63:
         raise JobError(f"seed: a whole number from 0 to 2**63-1, got {seed!r}")
+    load = data.get("load", DEFAULT_LOAD)
+    if not isinstance(load, str) or load not in LOADS:
+        raise JobError(f"load: one of {', '.join(LOADS)}, got {load!r}")
     preread = data.get("preread", False)
     if not isinstance(preread, bool):
         raise JobError(f"preread: true or false, got {preread!r}")
+    if preread and load == "fast":
+        raise JobError('preread: only with load "standard" (the fast load reads the weight files past the page cache)')
     vae_batch = data.get("vae_batch", VAE_BATCH)
     if not _is_int(vae_batch) or not 1 <= vae_batch <= 256:
         raise JobError(f"vae_batch: a whole number from 1 to 256, got {vae_batch!r}")
@@ -210,7 +243,7 @@ def parse_job(data, job_dir):
     meta = data.get("meta", {})
     if not isinstance(meta, dict):
         raise JobError("meta: a JSON object")
-    job.update(steps=steps, start_sigma=sigma, seed=seed, preread=preread, vae_batch=vae_batch, meta=meta)
+    job.update(steps=steps, start_sigma=sigma, seed=seed, load=load, preread=preread, vae_batch=vae_batch, meta=meta)
     return job
 
 
@@ -253,11 +286,15 @@ def studio_settings(environ):
             problems.append(f"{name}={settings[key]}: must be an absolute path")
     for key, name, default, choices in (("strength", "LFSTUDIO_UPSCALE_STRENGTH", DEFAULT_STRENGTH, tuple(STRENGTHS)),
                                         ("audio", "LFSTUDIO_UPSCALE_AUDIO", DEFAULT_AUDIO, AUDIO),
+                                        ("load", "LFSTUDIO_UPSCALE_LOAD", DEFAULT_LOAD, LOADS),
                                         ("preread", "LFSTUDIO_UPSCALE_PREREAD", "0", ("0", "1"))):
         settings[key] = environ.get(name) or default
         if settings[key] not in choices:
             problems.append(f"{name}={settings[key]}: must be {', '.join(choices[:-1])} or {choices[-1]}")
     settings["preread"] = settings["preread"] == "1"
+    if settings["preread"] and settings["load"] == "fast":         # parse_job's refusal, said at start
+        problems.append("LFSTUDIO_UPSCALE_PREREAD=1: only with LFSTUDIO_UPSCALE_LOAD=standard (the fast load reads "
+                        "the weight files past the page cache)")
     for key, name, default in (("min_free_gib", "LFSTUDIO_UPSCALE_MIN_FREE_GIB", MIN_FREE_GIB),
                                ("guard_gib", "LFSTUDIO_UPSCALE_GUARD_GIB", GUARD_GIB)):
         raw = environ.get(name) or str(default)
@@ -754,6 +791,49 @@ def versions(torch):
     return found
 
 
+def load_fastload(path=FASTLOAD):
+    """upscale/fastload.py as a module of its own, from this file's directory: the job runs with -I, so that directory
+    is not on sys.path, and nothing on it (NVIDIA's package is) can stand in for it. Standard library on import."""
+    spec = importlib.util.spec_from_file_location("lf_studio_fastload", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def install_fast_load(adapters, fastload, safetensors_torch, diffusers):
+    """The fast load (the docstring), the bench wrapper's: safetensors.torch.load_file (diffusers calls it by
+    attribute) and NVIDIA's adapters.load_file (imported by name) load every tensor straight to the GPU through
+    fastload.load_file, whatever device the caller asks for, so no host copy of a file is made; from_pretrained of
+    the DIRECT_LOAD classes gets device_map={"": "cuda"} unless the call names one, so diffusers keeps the tensors
+    where they are. Call it before anything loads. Returns the receipt's "load", whose counts grow as files load."""
+    stock = safetensors_torch.load_file
+    record = {"mode": "fast", "o_direct": bool(fastload.ENABLED and fastload.DIRECT), "files": 0, "fallbacks": 0}
+    inside = threading.local()
+
+    def load_file(filename, device="cpu"):
+        if getattr(inside, "active", False):
+            # fastload.load_file's own fallback (no O_DIRECT for this file, or SPARK_FAST_SAFETENSORS=0) calls
+            # safetensors.torch.load_file as it is now, this function: the stock loader, to the GPU too
+            record["fallbacks"] += 1
+            return stock(filename, device="cuda")
+        inside.active = True
+        try:
+            record["files"] += 1
+            return fastload.load_file(filename, device="cuda")
+        finally:
+            inside.active = False
+    safetensors_torch.load_file = adapters.load_file = load_file
+    for name in DIRECT_LOAD:
+        cls = getattr(diffusers, name)
+        original = cls.from_pretrained.__func__
+
+        def direct(klass, *args, _original=original, **kwargs):
+            kwargs.setdefault("device_map", {"": "cuda"})
+            return _original(klass, *args, **kwargs)
+        cls.from_pretrained = classmethod(direct)
+    return record
+
+
 def run(job, files, receipt, trace):
     """The upscale on the GPU. Fills the receipt as it goes."""
     import torch
@@ -796,6 +876,15 @@ def run(job, files, receipt, trace):
     if job["audio"] == "clip":
         pcm = pcm_input(torch.load(files["pcm"], map_location="cpu", weights_only=True), torch)
 
+    if job["load"] == "fast":                         # before any model loads, the encodes too
+        import diffusers
+        import safetensors.torch
+        receipt["load"] = install_fast_load(adapters, load_fastload(), safetensors.torch, diffusers)
+        say(f"fast load: upscale/fastload.py to the GPU (O_DIRECT {'on' if receipt['load']['o_direct'] else 'off'}), "
+            "from_pretrained with device_map cuda")
+    else:
+        receipt["load"] = {"mode": "standard"}
+
     # the final MP4 and the clip's audio through the VAEs, loaded, used and freed before the DiT
     if job["source"] == "final" or pcm is not None:
         phase("encoding")
@@ -820,6 +909,8 @@ def run(job, files, receipt, trace):
         resolution=job["resolution"], vae="standard", vae_batch=job["vae_batch"]))
     pipe.node.load_model("upscaler", pipe.device, "bf16")    # the node reads its checkpoint on first use: now
     drop_from_page_cache(loaded_files(job))
+    if job["load"] == "fast":
+        say(f"fast load: {receipt['load']['files']} files, {receipt['load']['fallbacks']} of them through mmap")
     receipt["merge"] = {"weights": pipe.merger.merged, "seconds": round(pipe.merger.seconds, 2)}
     receipt["lean_chunks"] = LEAN_CHUNKS.get(job["resolution"])
     if receipt["lean_chunks"]:

@@ -1,9 +1,10 @@
 """upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json, the clip's and the weights'
 files, the text check on a stand-in, the command lines and the environment, the progress lines, the memory trace,
 the script's --check and its refusals, main's receipt when the GPU part finishes, fails or gets SIGTERM (a stand-in
-run()), and run() itself with a stand-in torch and a stand-in of NVIDIA's open_h3 that records its calls. No GPU, no
+run()), and run() itself with a stand-in torch and a stand-in of NVIDIA's open_h3 that records its calls, with both
+loads (fast and standard; stand-ins for safetensors, diffusers and upscale/fastload.py record every load). No GPU, no
 weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters, pipeline and upscaler), the
-weights are small files.
+weights are small files. upscale/fastload.py is checked against the patch's runtime/fastload.py.
 
 The parts that need torch (the merger, the lean block forward, the tensor checks) run on the CPU when torch is
 importable and are skipped otherwise. python3 -m unittest tests.test_upscale -v   (needs ffmpeg)
@@ -176,9 +177,10 @@ class FastloadCopyTests(unittest.TestCase):
 
 class JobTests(Fixture):
     def test_a_valid_job_and_its_defaults(self):
-        job = job_module.parse_job(self.job(preread=DROP, vae_batch=DROP, version=DROP, meta=DROP), "/jobs/x")
-        self.assertEqual((job["source"], job["resolution"], job["audio"], job["steps"], job["seed"]),
-                         ("final", "2k", "clip", 2, 1234))
+        job = job_module.parse_job(self.job(load=DROP, preread=DROP, vae_batch=DROP, version=DROP, meta=DROP),
+                                   "/jobs/x")
+        self.assertEqual((job["source"], job["resolution"], job["audio"], job["steps"], job["seed"], job["load"]),
+                         ("final", "2k", "clip", 2, 1234, "fast"))
         self.assertEqual((job["start_sigma"], job["preread"], job["vae_batch"], job["meta"]), (0.7, False, 26, {}))
         self.assertEqual((job["case"], job["package"], job["output"]), (self.case, self.package, self.out))
         self.assertIsInstance(job["start_sigma"], float)
@@ -211,13 +213,27 @@ class JobTests(Fixture):
                              ("steps", True), ("steps", 2.0), ("start_sigma", 0), ("start_sigma", 1),
                              ("start_sigma", -0.1), ("start_sigma", "0.7"), ("start_sigma", True),
                              ("start_sigma", nan), ("seed", -1), ("seed", 2 ** 63), ("seed", 1.5), ("seed", True),
-                             ("seed", None), ("preread", 1), ("preread", "yes"), ("vae_batch", 0),
+                             ("seed", None), ("preread", 1), ("preread", "yes"), ("load", "quick"),
+                             ("load", "Fast"), ("load", None), ("load", True), ("vae_batch", 0),
                              ("vae_batch", 257), ("vae_batch", "26"), ("version", 2), ("version", True),
                              ("meta", []), ("case", "relative/dir"), ("case", ""), ("case", 7), ("paths", []),
                              ("paths", None)):
             with self.subTest(field=field, value=value):
                 with self.assertRaisesRegex(JobError, field):
                     job_module.parse_job(self.job(**{field: value}), "/")
+
+    def test_load_and_preread(self):
+        """load: fast (the default) or standard; preread only with standard (the fast load reads past the page
+        cache), refused with fast, also when fast is the default."""
+        for load in ("fast", "standard"):
+            self.assertEqual(job_module.parse_job(self.job(load=load), "/")["load"], load)
+        job = job_module.parse_job(self.job(load="standard", preread=True), "/")
+        self.assertEqual((job["load"], job["preread"]), ("standard", True))
+        for changes in ({"load": "fast", "preread": True}, {"load": DROP, "preread": True}):
+            with self.subTest(**{k: str(v) for k, v in changes.items()}):
+                with self.assertRaisesRegex(JobError, '^preread: only with load "standard"'):
+                    job_module.parse_job(self.job(**changes), "/")
+        self.assertFalse(job_module.parse_job(self.job(load="fast", preread=False), "/")["preread"])
 
     def test_paths(self):
         for key in ("package", "weights", "base_model", "output"):
@@ -267,7 +283,8 @@ class StudioSettingsTests(unittest.TestCase):
                                     "package": Path("/srv/lf/Open-H3-Regenerate-2K"),
                                     "weights": Path("/srv/lf/checkpoints/Open-H3-Regenerate-2K"),
                                     "base_model": Path("/srv/lf/checkpoints/MiniMax-H3"), "strength": "balanced",
-                                    "audio": "clip", "preread": False, "min_free_gib": 110.0, "guard_gib": 5.0})
+                                    "audio": "clip", "load": "fast", "preread": False, "min_free_gib": 110.0,
+                                    "guard_gib": 5.0})
         settings, _ = job_module.studio_settings({"LFSTUDIO_HOME": "/srv/lf", "LFSTUDIO_CHECKPOINTS": "/data/ckpt",
                                                   "LFSTUDIO_UPSCALE_STRENGTH": ""})      # empty: the default
         self.assertEqual((settings["weights"], settings["base_model"], settings["strength"]),
@@ -278,21 +295,33 @@ class StudioSettingsTests(unittest.TestCase):
 
     def test_values(self):
         settings, problems = job_module.studio_settings({
-            "LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence", "LFSTUDIO_UPSCALE_PREREAD": "1",
-            "LFSTUDIO_UPSCALE_MIN_FREE_GIB": "0", "LFSTUDIO_UPSCALE_GUARD_GIB": "2.5"})
+            "LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence",
+            "LFSTUDIO_UPSCALE_LOAD": "standard", "LFSTUDIO_UPSCALE_PREREAD": "1", "LFSTUDIO_UPSCALE_MIN_FREE_GIB": "0",
+            "LFSTUDIO_UPSCALE_GUARD_GIB": "2.5"})
         self.assertEqual(problems, [])
-        self.assertEqual([settings[k] for k in ("strength", "audio", "preread", "min_free_gib", "guard_gib")],
-                         ["full", "silence", True, 0.0, 2.5])
+        self.assertEqual([settings[k] for k in ("strength", "audio", "load", "preread", "min_free_gib", "guard_gib")],
+                         ["full", "silence", "standard", True, 0.0, 2.5])
+        settings, problems = job_module.studio_settings({"LFSTUDIO_UPSCALE_LOAD": "fast",
+                                                         "LFSTUDIO_UPSCALE_PREREAD": ""})       # empty: the default
+        self.assertEqual((settings["load"], settings["preread"], problems), ("fast", False, []))
         _, problems = job_module.studio_settings({
             "LFSTUDIO_UPSCALE_PYTHON": "python3", "LFSTUDIO_UPSCALE_STRENGTH": "light",
-            "LFSTUDIO_UPSCALE_AUDIO": "Clip", "LFSTUDIO_UPSCALE_PREREAD": "yes", "LFSTUDIO_UPSCALE_MIN_FREE_GIB": "-1",
-            "LFSTUDIO_UPSCALE_GUARD_GIB": "inf"})
+            "LFSTUDIO_UPSCALE_AUDIO": "Clip", "LFSTUDIO_UPSCALE_LOAD": "quick", "LFSTUDIO_UPSCALE_PREREAD": "yes",
+            "LFSTUDIO_UPSCALE_MIN_FREE_GIB": "-1", "LFSTUDIO_UPSCALE_GUARD_GIB": "inf"})
         self.assertEqual(problems, [
             "LFSTUDIO_UPSCALE_PYTHON=python3: must be an absolute path",
             "LFSTUDIO_UPSCALE_STRENGTH=light: must be faithful, balanced or full",
-            "LFSTUDIO_UPSCALE_AUDIO=Clip: must be clip or silence", "LFSTUDIO_UPSCALE_PREREAD=yes: must be 0 or 1",
+            "LFSTUDIO_UPSCALE_AUDIO=Clip: must be clip or silence",
+            "LFSTUDIO_UPSCALE_LOAD=quick: must be fast or standard", "LFSTUDIO_UPSCALE_PREREAD=yes: must be 0 or 1",
             "LFSTUDIO_UPSCALE_MIN_FREE_GIB=-1: must be a number of GiB, 0 or more",
             "LFSTUDIO_UPSCALE_GUARD_GIB=inf: must be a number of GiB, 0 or more (see bin/env.example)"])
+
+    def test_preread_needs_the_standard_load(self):
+        """parse_job refuses preread with the fast load; the settings say so at start, for the default load too."""
+        for load in ({"LFSTUDIO_UPSCALE_LOAD": "fast"}, {}):
+            _, problems = job_module.studio_settings({**load, "LFSTUDIO_UPSCALE_PREREAD": "1"})
+            self.assertEqual(problems, ["LFSTUDIO_UPSCALE_PREREAD=1: only with LFSTUDIO_UPSCALE_LOAD=standard (the "
+                                        "fast load reads the weight files past the page cache) (see bin/env.example)"])
 
 
 class TextTests(unittest.TestCase):
@@ -529,10 +558,11 @@ class MemTraceTests(unittest.TestCase):
 class ScriptTests(Fixture):
     def test_importing_it_needs_no_torch(self):
         probe = (f"import importlib.util, sys; spec = importlib.util.spec_from_file_location('j', {str(SCRIPT)!r}); "
-                 "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); "
-                 "print(sorted({k.split('.')[0] for k in sys.modules} & {'torch', 'numpy', 'diffusers', 'open_h3'}))")
+                 "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); f = m.load_fastload(); "
+                 "print(f.__file__, sorted({k.split('.')[0] for k in sys.modules} & {'torch', 'numpy', 'diffusers', "
+                 "'open_h3', 'safetensors', 'fastload'}))")
         result = subprocess.run([sys.executable, "-I", "-B", "-c", probe], capture_output=True, text=True, check=True)
-        self.assertEqual(result.stdout.strip(), "[]")
+        self.assertEqual(result.stdout.strip(), f"{FASTLOAD} []")        # upscale/fastload.py, by its path
         self.assertIn("--check", self.script("--help", check=True).stdout)
 
     def test_check_prints_the_plan_and_writes_nothing(self):
@@ -543,7 +573,7 @@ class ScriptTests(Fixture):
         self.assertEqual((planned["ok"], planned["sigmas"], planned["size"], planned["steps"], planned["lean_chunks"]),
                          (True, [0.7, 0.35, 0.0], [2560, 1440], 2, None))
         self.assertEqual(set(planned["inputs"]), {"conditioning", "final", "pcm"})
-        self.assertEqual(planned["job"]["meta"]["strength"], "balanced")
+        self.assertEqual((planned["job"]["meta"]["strength"], planned["job"]["load"]), ("balanced", "fast"))
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])
         path = self.write_job(resolution="4k", steps=3, start_sigma=None, source="draft", audio="silence")
         planned = json.loads(self.script("--job", str(path), "--check", check=True).stdout)
@@ -762,10 +792,74 @@ def stand_in_torch(loaded):
     return fake
 
 
-# NVIDIA's open_h3 as far as run() uses it; every call goes into pipeline.CALLS
-STAND_IN_ADAPTERS = f'''LORA_FILE = {job_module.LORA_FILE!r}
+def weight_name(path):
+    """A weight file by its directory and name (the base model's parts share one name)."""
+    return f"{Path(path).parent.name}/{Path(path).name}"
+
+
+def stand_in_loaders(loads):
+    """safetensors and diffusers as NVIDIA's code uses them: {module name: module}. safetensors.torch.load_file records
+    ("load_file", file, device); from_pretrained of diffusers' three classes records ("from_pretrained", class,
+    subfolder, device_map) and reads its subfolder's .safetensors files with safetensors.torch.load_file, by attribute
+    when it is called, as diffusers' load_state_dict does."""
+    safetensors, st_torch, diffusers = (types.ModuleType(name) for name in ("safetensors", "safetensors.torch",
+                                                                             "diffusers"))
+
+    def load_file(filename, device="cpu"):
+        loads.append(("load_file", weight_name(filename), str(device)))
+        return {}
+    st_torch.load_file = st_torch.stock_load_file = load_file
+    safetensors.torch = st_torch
+
+    class ModelMixin:
+        @classmethod
+        def from_pretrained(cls, path, subfolder=None, **kwargs):
+            loads.append(("from_pretrained", cls.__name__, subfolder, kwargs.get("device_map")))
+            for file in sorted((Path(path) / subfolder).glob("*.safetensors")):
+                st_torch.load_file(str(file), device="cpu")
+            return cls()
+
+        def cuda(self):
+            return self
+        eval = cuda
+    for name in job_module.DIRECT_LOAD:
+        setattr(diffusers, name, type(name, (ModelMixin,), {}))
+    diffusers.ModelMixin = ModelMixin
+    return {"safetensors": safetensors, "safetensors.torch": st_torch, "diffusers": diffusers}
+
+
+def stand_in_fastload(loads, fallback=()):
+    """upscale/fastload.py as the job uses it: load_file records ("fastload", file, device). For the files named in
+    `fallback` it does what fastload does where O_DIRECT can't be used: safetensors.torch.load_file as it is then."""
+    fastload = types.ModuleType("lf_studio_fastload")
+    fastload.ENABLED = fastload.DIRECT = True
+
+    def load_file(filename, device="cpu"):
+        if weight_name(filename) in fallback:
+            from safetensors.torch import load_file as original
+            return original(filename, device=device)
+        loads.append(("fastload", weight_name(filename), str(device)))
+        return {}
+    fastload.load_file = load_file
+    return fastload
+
+
+# NVIDIA's open_h3 as far as run() uses it; every call goes into pipeline.CALLS, every load (diffusers'
+# from_pretrained, safetensors' load_file, imported by name as adapters does) into the stand-in loaders' list
+STAND_IN_ADAPTERS = f'''import types
+from pathlib import Path
+
+from safetensors.torch import load_file
+
+LORA_FILE = {job_module.LORA_FILE!r}
 CURVE_FILE = {job_module.CURVE_FILE!r}
 CURVE_TABLE = {job_module.CURVE_TABLE!r}
+
+
+def attach(model, weights_dir):
+    load_file(str(Path(weights_dir) / LORA_FILE), device="cpu")
+    load_file(str(Path(weights_dir) / CURVE_FILE), device="cpu")
+    return {{}}, types.SimpleNamespace(strength=0.0)
 
 
 class StageMerger:
@@ -788,6 +882,9 @@ CALLS = []
 
 
 def encode_video(base_model, path, size="768p", seed=42):
+    from diffusers import AutoencoderKLMiniMaxH3
+    AutoencoderKLMiniMaxH3.from_pretrained(base_model, subfolder="vae", torch_dtype=torch.float32,
+                                           local_files_only=True).cuda().eval()
     CALLS.append(("encode_video", Path(path).name, size, seed))
     return torch.Tensor(*NATIVE_SHAPE, tag="final")
 
@@ -808,8 +905,13 @@ class Node:
 class Pipeline:
     def __init__(self, weights_dir, base_model, fwd="sol_engine", hyperflow=None, vae_batch=26, steps=3,
                  start_sigma=None, resolution="2k", vae="standard"):
+        from diffusers import AutoencoderKLMiniMaxH3, AutoencoderKLMiniMaxH3Audio, MiniMaxH3Transformer3DModel
         CALLS.append(("Pipeline", dict(fwd=fwd, hyperflow=hyperflow, vae_batch=vae_batch, steps=steps,
                                        start_sigma=start_sigma, resolution=resolution, vae=vae)))
+        AutoencoderKLMiniMaxH3Audio.from_pretrained(base_model, subfolder="audio_vae", torch_dtype=torch.float32,
+                                                    local_files_only=True).cuda().eval()     # encode_silence
+        MiniMaxH3Transformer3DModel.from_pretrained(base_model, subfolder="transformer", torch_dtype=torch.bfloat16,
+                                                    low_cpu_mem_usage=True, local_files_only=True)
         self.sigmas = SCHEDULES[steps] if start_sigma is None else shifted_grid(start_sigma, steps)
         height, width, self.keep_rows = RESOLUTIONS[resolution]
         self.target_shape = (24, 37, height // 16, width // 16)
@@ -817,10 +919,11 @@ class Pipeline:
         self.audio = torch.Tensor(2, 32, 207, tag="silence", device="cuda")
         self.model = types.SimpleNamespace(transformer_blocks=[
             types.SimpleNamespace(ff=types.SimpleNamespace(forward=lambda x: x)) for _ in range(3)])
-        self.curve = types.SimpleNamespace(strength=0.0)
-        self.merger = adapters.StageMerger(self.model, {{"refine": [({{}}, 1.0)]}}, self.device, resident=False)
+        lora, self.curve = adapters.attach(self.model, weights_dir)
+        self.merger = adapters.StageMerger(self.model, {{"refine": [(lora, 1.0)]}}, self.device, resident=False)
         self.node = Node()
-        self.vae = object()
+        self.vae = AutoencoderKLMiniMaxH3.from_pretrained(base_model, subfolder="vae", torch_dtype=torch.float32,
+                                                          local_files_only=True).cuda().eval()    # load_video_vae
 
     def set_stage(self, stage):
         self.curve.strength = 1.0
@@ -867,15 +970,25 @@ class RunTests(Fixture):
             "h3_normalized_native.pt": {"h3_normalized": StandInTensor(1, 24, 37, 24, 42)},
             "stage1_direct_tensors.pt": {"audio": StandInTensor(1, 2, 161333)}}
 
-    def run_job(self, **changes):
+    def run_job(self, fallback=(), **changes):
+        """main() on job.json with `changes`; the loads go into self.loads, the stand-in modules into self.modules."""
         handler = signal.getsignal(signal.SIGTERM)
         self.addCleanup(signal.signal, signal.SIGTERM, handler)
         fake = stand_in_torch(self.loaded)
         stdout = io.StringIO()
         clip_audio = StandInTensor(2, 32, 207, tag="clip")
-        with mock.patch.dict(sys.modules, {"torch": fake}), mock.patch.object(sys, "path", list(sys.path)), \
+        self.loads = []
+        self.modules = stand_in_loaders(self.loads)
+
+        def encode_audio(base, pcm, torch):            # the audio VAE as the job's encode_audio loads it
+            self.modules["diffusers"].AutoencoderKLMiniMaxH3Audio.from_pretrained(
+                base, subfolder="audio_vae", torch_dtype=torch.float32, local_files_only=True).cuda().eval()
+            return clip_audio
+        with mock.patch.dict(sys.modules, {"torch": fake, **self.modules}), \
+                mock.patch.object(sys, "path", list(sys.path)), \
                 mock.patch.object(job_module, "apply_environment"), \
-                mock.patch.object(job_module, "encode_audio", return_value=clip_audio) as encode_audio, \
+                mock.patch.object(job_module, "load_fastload", return_value=stand_in_fastload(self.loads, fallback)), \
+                mock.patch.object(job_module, "encode_audio", side_effect=encode_audio) as encode_audio, \
                 mock.patch.object(job_module, "install_lean_blocks", return_value=3) as lean, \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
             status = job_module.main(["--job", str(self.write_job(**changes))])
@@ -884,10 +997,42 @@ class RunTests(Fixture):
         self.lean = lean
         return status, json.loads((self.out / "receipt.json").read_text()), calls, phases, encode_audio
 
+    def expected_loads(self, fast, encodes=True, fallback=()):
+        """Every load of a run in order: the encodes (the clip's video and audio VAEs), then NVIDIA's Pipeline (the
+        audio VAE for its silence, the DiT, the LoRA and the Sharp curves, the video VAE). Fast: from_pretrained with
+        device_map cuda and every file through fastload to the GPU (a fallback through the stock loader, to the GPU);
+        standard: NVIDIA's own calls, unchanged."""
+        def model(cls, part):
+            name = f"{part}/diffusion_pytorch_model.safetensors"
+            return [("from_pretrained", cls, part, {"": "cuda"} if fast else None), read(name)]
+
+        def read(name):
+            if not fast:
+                return ("load_file", name, "cpu")
+            return ("load_file", name, "cuda") if name in fallback else ("fastload", name, "cuda")
+        loads = model("AutoencoderKLMiniMaxH3", "vae") + model("AutoencoderKLMiniMaxH3Audio", "audio_vae") \
+            if encodes else []
+        return loads + model("AutoencoderKLMiniMaxH3Audio", "audio_vae") + \
+            model("MiniMaxH3Transformer3DModel", "transformer") + \
+            [read(job_module.LORA_FILE), read(job_module.CURVE_FILE)] + model("AutoencoderKLMiniMaxH3", "vae")
+
+    def assert_loaders(self, fast):
+        """After a run: the fast load replaced the loaders, the standard one left them as they were."""
+        st_torch, diffusers = self.modules["safetensors.torch"], self.modules["diffusers"]
+        self.assertEqual(st_torch.load_file is not st_torch.stock_load_file, fast)
+        for name in job_module.DIRECT_LOAD:
+            self.assertEqual(getattr(diffusers, name).from_pretrained.__func__ is
+                             diffusers.ModelMixin.from_pretrained.__func__, not fast, name)
+
     def test_final_with_the_clip_audio(self):
+        """The default job: the final clip, its audio, 2K, the fast load."""
         status, receipt, calls, phases, encode_audio = self.run_job()
         lean = self.lean
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual(self.loads, self.expected_loads(fast=True))     # patched before the first load
+        self.assertEqual((receipt["job"]["load"], receipt["load"]),
+                         ("fast", {"mode": "fast", "o_direct": True, "files": 7, "fallbacks": 0}))
+        self.assert_loaders(fast=True)
         self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
         self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage",
                                                  "refine", "on_step", "on_step", "decode", "encode_mp4"])
@@ -915,11 +1060,36 @@ class RunTests(Fixture):
         self.assertEqual(receipt["allocated_before_decode_gib"], 5.0)
         self.assertIn("refine 2/2", receipt["lowest_mem_available_gib"])
 
+    def test_the_standard_load_leaves_nvidia_loaders_alone(self):
+        status, receipt, calls, phases, _ = self.run_job(load="standard")
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual(self.loads, self.expected_loads(fast=False))
+        self.assertEqual((receipt["job"]["load"], receipt["load"]), ("standard", {"mode": "standard"}))
+        self.assert_loaders(fast=False)
+        self.assertNotIn("preread", receipt)
+        self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage",
+                                                 "refine", "on_step", "on_step", "decode", "encode_mp4"])
+        self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
+
+    def test_a_file_without_o_direct_loads_through_the_stock_loader_to_the_gpu(self):
+        """fastload falls back to safetensors.torch.load_file, which is the job's own then: the stock loader (once,
+        no recursion), to the GPU as the fast load wants it; the receipt counts it."""
+        fallback = (job_module.CURVE_FILE, "transformer/diffusion_pytorch_model.safetensors")
+        status, receipt, _, _, _ = self.run_job(fallback=fallback)
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual(self.loads, self.expected_loads(fast=True, fallback=fallback))
+        self.assertEqual(receipt["load"], {"mode": "fast", "o_direct": True, "files": 7, "fallbacks": 2})
+
     def test_draft_with_silence_at_4k(self):
-        status, receipt, calls, phases, encode_audio = self.run_job(source="draft", audio="silence",
-                                                                     resolution="4k", steps=3, start_sigma=None)
+        """No encodes; the standard load with preread (only allowed with it)."""
+        status, receipt, calls, phases, encode_audio = self.run_job(source="draft", audio="silence", load="standard",
+                                                                     preread=True, resolution="4k", steps=3,
+                                                                     start_sigma=None)
         lean = self.lean
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual(self.loads, self.expected_loads(fast=False, encodes=False))
+        self.assertEqual(receipt["preread"], {"files": 4, "gb": 0.0})
+        self.assertIn("preread", receipt["times_s"])
         self.assertEqual(phases, ["loading", "refine 1/3", "refine 2/3", "refine 3/3", "decoding", "saving"])
         names = [c[0] for c in calls]
         self.assertEqual(names[:5], ["Pipeline", "load_model", "draft_x2", "upscale", "set_stage"])
@@ -943,20 +1113,70 @@ class RunTests(Fixture):
             with self.assertRaises(AssertionError):
                 load(self.case / "qwen" / "conditioning.pt", **kwargs)
 
+    def test_draft_with_the_fast_load(self):
+        status, receipt, _, phases, _ = self.run_job(source="draft", audio="silence")
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual(self.loads, self.expected_loads(fast=True, encodes=False))
+        self.assertEqual(receipt["load"]["files"], 5)
+        self.assertEqual(phases[0], "loading")
+
+    def test_preread_with_the_fast_load_is_refused_before_anything_loads(self):
+        status, receipt, calls, phases, _ = self.run_job(preread=True)
+        self.assertEqual((status, receipt["state"]), (2, "failed"))
+        self.assertIn('preread: only with load "standard"', receipt["error"])
+        self.assertEqual((calls, phases, self.loads), ([], [], []))
+
     def test_another_package_is_refused(self):
         (self.package / "open_h3" / "adapters.py").write_text(
             STAND_IN_ADAPTERS.replace("open_h3_regenerate_2k_lora", "open_h3_regenerate_2k_lora_v2"))
         status, receipt, calls, phases, _ = self.run_job()
         self.assertEqual((status, receipt["state"]), (2, "failed"))
         self.assertIn("not the one this wrapper was written for", receipt["error"])
-        self.assertEqual((calls, phases), ([], []))
+        self.assertEqual((calls, phases, self.loads), ([], [], []))
+        self.assert_loaders(fast=False)                             # refused before the fast load is installed
 
     def test_fl2va_conditioning_is_refused_before_anything_loads(self):
         self.loaded["conditioning.pt"]["text_token_tags"] = StandInTensor(41, values=[1] * 6 + [0] * 35)
         status, receipt, calls, phases, _ = self.run_job()
         self.assertEqual((status, receipt["state"]), (2, "failed"))
         self.assertIn("35 non-text rows", receipt["error"])
-        self.assertEqual((calls, phases), ([], []))
+        self.assertEqual((calls, phases, self.loads), ([], [], []))
+        self.assert_loaders(fast=False)
+
+
+class FastLoadTests(unittest.TestCase):
+    """install_fast_load with the real upscale/fastload.py, no torch: where fastload can't read with O_DIRECT it calls
+    safetensors.torch.load_file, which is then the job's own; that must end in the stock loader, once."""
+
+    def test_the_real_fastload_falls_back_to_the_stock_loader_once(self):
+        loads = []
+        modules = stand_in_loaders(loads)
+        fastload = job_module.load_fastload()
+        self.assertEqual(Path(fastload.__file__), FASTLOAD)
+        self.assertIsNot(fastload, job_module.load_fastload())       # a module of its own each time, not imported
+        fastload.DIRECT = False                                      # as SPARK_DIRECT_IO=0
+        adapters = types.SimpleNamespace(load_file=modules["safetensors.torch"].load_file)    # imported by name
+        with mock.patch.dict(sys.modules, modules):
+            record = job_module.install_fast_load(adapters, fastload, modules["safetensors.torch"],
+                                                  modules["diffusers"])
+            self.assertEqual(adapters.load_file("/w/lora/a.safetensors", device="cpu"), {})
+            self.assertEqual(modules["safetensors.torch"].load_file("/w/vae/b.safetensors"), {})
+        self.assertEqual(loads, [("load_file", "lora/a.safetensors", "cuda"),
+                                 ("load_file", "vae/b.safetensors", "cuda")])
+        self.assertEqual(record, {"mode": "fast", "o_direct": False, "files": 2, "fallbacks": 2})
+
+    def test_device_map_is_a_default(self):
+        loads = []
+        modules = stand_in_loaders(loads)
+        job_module.install_fast_load(types.SimpleNamespace(), types.SimpleNamespace(ENABLED=True, DIRECT=True),
+                                     modules["safetensors.torch"], modules["diffusers"])
+        diffusers = modules["diffusers"]
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertIsInstance(diffusers.MiniMaxH3Transformer3DModel.from_pretrained(empty, subfolder="t"),
+                                  diffusers.MiniMaxH3Transformer3DModel)
+            diffusers.AutoencoderKLMiniMaxH3.from_pretrained(empty, subfolder="v", device_map="auto")
+        self.assertEqual(loads, [("from_pretrained", "MiniMaxH3Transformer3DModel", "t", {"": "cuda"}),
+                                 ("from_pretrained", "AutoencoderKLMiniMaxH3", "v", "auto")])
 
 
 @unittest.skipUnless(torch, "needs torch (CPU is enough)")

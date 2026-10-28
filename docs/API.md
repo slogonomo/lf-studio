@@ -469,8 +469,9 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 | `seed` | the refine's seed; default (or `null`) the clip's |
 
 - 200 `{"id", "job": <API record>}`: queued as a job of its own (`"kind": "upscale"`, `"parent": "<clip id>"`; `task`,
-  `orientation`, `seconds`, `prompt` and `seed` are the clip's). It waits while any clip is queued, even one queued
-  after it, since it closes the studio's models. It runs as `status` `freeing memory` (`phase` `unloading`: the models
+  `orientation`, `seconds`, `prompt` and `seed` are the clip's; `load` is how its job loads the weights, `fast` or
+  `standard`, from `LFSTUDIO_UPSCALE_LOAD`). It waits while any clip is queued, even one queued after it, since it
+  closes the studio's models. It runs as `status` `freeing memory` (`phase` `unloading`: the models
   close) and then `upscaling` (`phase` `upscaling`, with `upscale_phase` from the job: `encoding`, `loading`,
   `refine 1/2`, ..., `decoding`, `saving`, `adding the sound`). The next clip loads the models again; with
   `LFSTUDIO_PRELOAD=1` (the default) the studio warms up the last clip's settings again as soon as the upscale is

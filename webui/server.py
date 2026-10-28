@@ -22,13 +22,14 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   default) or draft (its Stage-1 latent). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS;
   default LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
   LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). The upscale is a job of its own (kind "upscale",
-  parent = the clip; task, format, length, prompt and seed copied from it) in the same queue, where it waits while any
-  clip is queued. It frees the memory first (status "freeing memory": the session is closed), refuses to start below
-  LFSTUDIO_UPSCALE_MIN_FREE_GIB of MemAvailable, then runs the job in a process group of its own (status
-  "upscaling", "upscale_phase" from the job's "[lf-studio] phase" lines), so Cancel stops it; it stops the job when
-  MemAvailable stays below LFSTUDIO_UPSCALE_GUARD_GIB for 3 s. The clip's sound is copied in (ffmpeg, no re-encode).
-  Its files go into a session directory of their own, <session>-upscale-<resolution>/<case_id>/regen/, so Delete and
-  Undo move only them; a clip can't be deleted while an upscale of it is queued or running. No retry after a failure.
+  parent = the clip; task, format, length, prompt and seed copied from it; "load" = LFSTUDIO_UPSCALE_LOAD) in the same
+  queue, where it waits while any clip is queued. It frees the memory first (status "freeing memory": the session is
+  closed), refuses to start below LFSTUDIO_UPSCALE_MIN_FREE_GIB of MemAvailable, then runs the job in a process group of
+  its own (status "upscaling", "upscale_phase" from the job's "[lf-studio] phase" lines), so Cancel stops it; it stops
+  the job when MemAvailable stays below LFSTUDIO_UPSCALE_GUARD_GIB for 3 s. The clip's sound is copied in (ffmpeg, no
+  re-encode). Its files go into a session directory of their own, <session>-upscale-<resolution>/<case_id>/regen/, so
+  Delete and Undo move only them; a clip can't be deleted while an upscale of it is queued or running. No retry after a
+  failure.
   Answers: 200 {"id", "job"}, 400 for a bad field or a clip of another kind or shape, 404 for an unknown clip (and for
   everything with the Upscale off), 409 for a clip that is not done, being moved, or without the files needed (its
   session directory; for source draft its Stage-1 latent, for audio clip its Stage-1 audio), 429 when the queue is
@@ -109,8 +110,11 @@ Environment:
   LFSTUDIO_UPSCALE_AUDIO     what the picture is refined against, when the request does not say: clip (the clip's own
                              Stage-1 audio; the default, an experiment) or silence (NVIDIA's). The clip's sound is
                              added to the result either way.
+  LFSTUDIO_UPSCALE_LOAD      how the job loads its weights: fast (the default: upscale/fastload.py, O_DIRECT reads
+                             straight to the GPU; ~20-30 s in the bench) or standard (NVIDIA's own loading through
+                             mmap, ~7.5 min; the fallback).
   LFSTUDIO_UPSCALE_PREREAD   0 (default): off. 1: the job reads its weights into the page cache in parallel before
-                             it loads them (not shown to shorten the load yet).
+                             it loads them (not shown to shorten the load yet). Needs LFSTUDIO_UPSCALE_LOAD=standard.
   LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 0 = no check)
   LFSTUDIO_UPSCALE_GUARD_GIB stop an upscale when MemAvailable stays below this for 3 s (default 5; 0 = no guard)
   Test hooks: LFSTUDIO_UPSCALE_SCRIPT (the job script, default upscale/regen2k_job.py) and LFSTUDIO_TEST_MEMINFO (a
@@ -1355,7 +1359,8 @@ def submit_upscale(raw):
            "task": parent["task"], "orientation": parent["orientation"], "seconds": parent.get("seconds", 5),
            "prompt": parent["prompt"], "seed": parent["seed"], "resolution": resolution, "source": source,
            "strength": strength, "steps": steps, "start_sigma": sigma, "audio": audio,
-           "refine_seed": parent["seed"] if seed is None else seed, "status": "queued", "created": time.time()}
+           "refine_seed": parent["seed"] if seed is None else seed, "load": UPSCALE_CONF["load"], "status": "queued",
+           "created": time.time()}
     with lock:
         full = queue_full()
         now = find_job(jid)
@@ -1433,7 +1438,8 @@ def run_upscale(job):
     job_path = out / "job.json"
     data = {"version": regen.JOB_VERSION, "case": str(files["case"]), "source": job["source"],
             "resolution": job["resolution"], "steps": job["steps"], "start_sigma": job["start_sigma"],
-            "seed": job["refine_seed"], "audio": job["audio"], "preread": UPSCALE_CONF["preread"],
+            "seed": job["refine_seed"], "audio": job["audio"], "load": job.get("load", UPSCALE_CONF["load"]),
+            "preread": UPSCALE_CONF["preread"],
             "paths": {"package": str(UPSCALE_CONF["package"]), "weights": str(UPSCALE_CONF["weights"]),
                       "base_model": str(UPSCALE_CONF["base_model"]), "output": str(out)},
             "meta": {"studio_job": job["id"], "parent": job["parent"], "strength": job["strength"]}}
@@ -2665,7 +2671,7 @@ def main():
             "/api/jobs/<id> answer 403; the page works as usual")
     if UPSCALE:
         log(f"the experimental Upscale is on (LFSTUDIO_UPSCALE=1): {UPSCALE_SCRIPT} with {UPSCALE_CONF['python']}; "
-            f"default strength {UPSCALE_CONF['strength']}, audio {UPSCALE_CONF['audio']}")
+            f"default strength {UPSCALE_CONF['strength']}, audio {UPSCALE_CONF['audio']}; {UPSCALE_CONF['load']} load")
     if UPSCALE and MEMINFO != "/proc/meminfo":
         log(f"WARNING: LFSTUDIO_TEST_MEMINFO={MEMINFO}, a test hook: the Upscale's memory floor and guard read "
             "MemAvailable from that file, not from this machine; unset it outside the tests")
