@@ -32,8 +32,10 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   Answers: 200 {"id", "job"}, 400 for a bad field or a clip of another kind or shape, 404 for an unknown clip (and for
   everything with the Upscale off), 409 for a clip that is not done, being moved, or without the files needed (its
   session directory; for source draft its Stage-1 latent, for audio clip its Stage-1 audio), 429 when the queue is
-  full. /api/state has "upscale" (on or off); with it on, every finished job in /api/state, /api/jobs and the API
-  record has "upscalable": {"ok": true, "draft": bool, "clip_audio": bool} or {"ok": false, "why": "..."}.
+  full. /api/state has "upscale" (on or off) and "upscale_defaults" (null with it off, else what a request without
+  those keys gets: {"resolution", "source", "strength", "audio"}, for the page's choices); with it on, every finished
+  job in /api/state, /api/jobs and the API record has "upscalable": {"ok": true, "draft": bool, "clip_audio": bool}
+  or {"ok": false, "why": "..."}.
 
 For agents and scripts (#29; docs/API.md):
 - POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
@@ -1270,6 +1272,14 @@ def with_upscalable(records):
     return records
 
 
+def upscale_defaults():
+    """What a POST /api/upscale without resolution, source, strength or audio gets (/api/state "upscale_defaults", so
+    the page offers the same), or None with the Upscale off."""
+    if not UPSCALE:
+        return None
+    return {"resolution": "2k", "source": "final", "strength": UPSCALE_CONF["strength"], "audio": UPSCALE_CONF["audio"]}
+
+
 def upscale_request(raw):
     """POST /api/upscale's JSON body -> (id, resolution, source, strength, audio, seed or None). null is the same as
     leaving a key out. Raises ValueError with what the client is told."""
@@ -1287,10 +1297,10 @@ def upscale_request(raw):
     if not isinstance(body.get("id"), str) or not body["id"]:
         raise ValueError("id must be the id of a finished clip")
     picked = []
-    for key, choices, default in (("resolution", tuple(regen.SIZES), "2k"), ("source", regen.SOURCES, "final"),
-                                  ("strength", tuple(regen.STRENGTHS), UPSCALE_CONF["strength"]),
-                                  ("audio", regen.AUDIO, UPSCALE_CONF["audio"])):
-        value = body.get(key, default)
+    defaults = upscale_defaults()
+    for key, choices in (("resolution", tuple(regen.SIZES)), ("source", regen.SOURCES),
+                         ("strength", tuple(regen.STRENGTHS)), ("audio", regen.AUDIO)):
+        value = body.get(key, defaults[key])
         if not isinstance(value, str) or value not in choices:
             raise ValueError(f"{key} must be one of {', '.join(choices)}")
         picked.append(value)
@@ -2200,6 +2210,7 @@ class H(BaseHTTPRequestHandler):
                 warmable = [t for t in ready if mode_warmup_case(t)]     # modes "Load selected now" can warm up
                 state = {"now": time.time(), "tasks_ready": ready, "trash_days": TRASH_DAYS, "warmable": warmable,
                          "reshape": RESHAPE, "backend": BACKEND, "api": API, "upscale": UPSCALE,
+                         "upscale_defaults": upscale_defaults(),
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
                                                                  "takeover_until", "load_eta", "warm_s",
                                                                  "switching_to")},
