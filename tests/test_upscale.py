@@ -15,6 +15,7 @@ import io
 import json
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -28,6 +29,8 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "upscale" / "regen2k_job.py"
+FASTLOAD = REPO / "upscale" / "fastload.py"
+PATCH_FASTLOAD = "models/minimax_h3/Sol-H3-Spark/runtime/fastload.py"
 
 if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
     raise unittest.SkipTest("ffmpeg not installed")
@@ -148,6 +151,27 @@ class Fixture(unittest.TestCase):
 
 
 DROP = object()
+
+
+def patch_new_file(rel):
+    """A file that patches/lf-studio.patch adds: (its content, the abbreviated blob hash of its index line)."""
+    text = (REPO / "patches" / "lf-studio.patch").read_text()
+    for section in re.split(r"(?m)^(?=diff --git )", text):
+        if section.startswith(f"diff --git a/{rel} b/{rel}\n") and "\nnew file mode" in section:
+            blob = re.search(r"(?m)^index 0+\.\.([0-9a-f]+)$", section).group(1)
+            body = section.split("\n+++ ", 1)[1].split("\n", 1)[1]
+            return "".join(line[1:] + "\n" for line in body.splitlines() if line.startswith("+")), blob
+    raise AssertionError(f"{rel} is not a new file in the patch")
+
+
+class FastloadCopyTests(unittest.TestCase):
+    def test_the_patch_file_byte_for_byte(self):
+        """upscale/fastload.py is runtime/fastload.py as patches/lf-studio.patch adds it, so the two never drift:
+        the same text as the patch's lines, and the same git blob as the patch's index line names."""
+        data = FASTLOAD.read_bytes()
+        text, blob = patch_new_file(PATCH_FASTLOAD)
+        self.assertEqual(data, text.encode())
+        self.assertTrue(hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest().startswith(blob), blob)
 
 
 class JobTests(Fixture):

@@ -21,6 +21,8 @@ This repository contains:
   adapters.StageMerger and the audio encode of pipeline.encode_silence. Apache License, Version 2.0. Its
   lean_forward is adapted from MiniMaxH3TransformerBlock.forward and MiniMaxH3AttnProcessor of Diffusers
   (https://github.com/huggingface/diffusers, 0.40.0, by The HuggingFace Team), Apache License, Version 2.0.
+  upscale/fastload.py, with which it loads the weights, is a copy of runtime/fastload.py from
+  patches/lf-studio.patch: a new file there, lf-studio's own code, not NVIDIA's.
 - install/regen2k_weights.py contains code adapted from that package's download.py (the byte-range read of Sharp's
   AdaLN table, fetch_curve, and its file hashes), and install/constraints/regen2k-requirements.in starts from its
   requirements.txt. Apache License, Version 2.0.
