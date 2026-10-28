@@ -206,7 +206,9 @@ class Protocol(McpTest):
         codes = [n["error"]["code"] for n in self.m.notes if n.get("error")]
         self.assertEqual(sorted(codes), [-32700, -32600])
         for args, words in [({"prompt": "x", "frist_frame": "a.png"}, 'unknown argument "frist_frame"'),
-                            ({"prompt": "x", "seconds": 9}, "seconds must be one of 3, 4, 5"),
+                            ({"prompt": "x", "seconds": 9}, "seconds must be one of 5, 6, 7, 8, 10, 12, 15"),
+                            ({"prompt": "x", "seconds": 3}, "seconds must be one of 5, 6, 7, 8, 10, 12, 15"),
+                            ({"prompt": "x", "seconds": 4}, "seconds must be one of 5, 6, 7, 8, 10, 12, 15"),
                             ({"prompt": "x", "seconds": "5"}, "seconds must be an integer"),
                             ({"prompt": "x", "seed": -1}, "seed must be 0 or more"),
                             ({"prompt": "x", "references": "a.png"}, "references must be a list of strings"),
@@ -230,6 +232,8 @@ class Protocol(McpTest):
             for name in schema["properties"]:
                 self.assertRegex(name, r"^[A-Za-z0-9_.-]{1,64}$")
             self.assertLessEqual(len(tool["description"]), 2048)
+        self.assertEqual(r["tools"][0]["inputSchema"]["properties"]["seconds"],
+                         {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went in 0.5
         generate = r["tools"][0]["description"]
         self.assertIn("stretched or cropped", generate)                          # DECISIONS 12
         self.assertIn("change the seed", generate)                               # DECISIONS 14
