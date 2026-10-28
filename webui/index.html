@@ -340,9 +340,9 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 </div>
 <div class="pop" id="uppop" role="dialog" aria-labelledby="uptitle" hidden>
   <h3 id="uptitle">Upscale this clip <small>experimental</small></h3>
-  <div class="lbl">Resolution <small>after a ~8 min load</small></div>
+  <div class="lbl" title="Each time in all: reading the clip ~3 min, loading the models ~25 s (the fast load; ~7.5 min with LFSTUDIO_UPSCALE_LOAD=standard), the refine and the decode">Resolution <small>in all, with a ~25 s load</small></div>
   <div class="seg" role="radiogroup" aria-label="Resolution">
-    <input type="radio" name="up_res" id="up-1080p" value="1080p"><label for="up-1080p">1080p<small>~10 min</small></label>
+    <input type="radio" name="up_res" id="up-1080p" value="1080p"><label for="up-1080p">1080p<small>~11 min</small></label>
     <input type="radio" name="up_res" id="up-2k" value="2k"><label for="up-2k">2K<small>~20 min</small></label>
     <input type="radio" name="up_res" id="up-4k" value="4k"><label for="up-4k" title="The studio's 4K upscale has not been run end to end yet">4K<small>~1.1 h · untested</small></label>
   </div>
@@ -402,11 +402,13 @@ applyMachine((document.querySelector('meta[name="lf-studio-backend"]')||{}).cont
 const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
 // The experimental Upscale (LFSTUDIO_UPSCALE=1; /api/state "upscale"): an upscale is a job of its own (kind "upscale",
 // parent: the clip). Its expected time for the progress bar: `base` (closing the models ~40 s, the job's start, its
-// ~8 min load, encoding the final clip ~3 min, the decode and the MP4) plus `step` per refine step, less ~3 min from
-// the draft, from the times measured on one DGX Spark (docs/PERFORMANCE.md; 4K from the bench's one 4K run).
+// fast load ~25 s, encoding the final clip ~3 min, the decode and the MP4) plus `step` per refine step, less ~3 min
+// from the draft, plus ~7 min with the standard load (j.load). From the job's own 2K run on one DGX Spark with its
+// standard load (455 s) replaced by ~25 s, 1080p's decode and MP4 and all of 4K from the bench (docs/PERFORMANCE.md).
 const isUp=j=>j.kind==='upscale';
-const UPSCALE={"1080p":{name:'1080p',base:860,step:144},"2k":{name:'2K',base:940,step:378},"4k":{name:'4K',base:1160,step:1700}};
-const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];return u.base+(j.steps||2)*u.step-(j.source==='draft'?180:0);};
+const UPSCALE={"1080p":{name:'1080p',base:385,step:144},"2k":{name:'2K',base:470,step:380},"4k":{name:'4K',base:685,step:1700}};
+const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
+  return u.base+(j.steps||2)*u.step-(j.source==='draft'?185:0)+(j.load==='standard'?430:0);};
 const STRENGTH={faithful:'Faithful',balanced:'Balanced',full:'Full re-generate'};
 const UP_PHASE={starting:'starting',encoding:'reading the clip',loading:'loading its models',decoding:'decoding',
   saving:'saving','adding the sound':"adding the clip's sound"};

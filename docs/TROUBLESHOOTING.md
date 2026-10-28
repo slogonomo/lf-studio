@@ -298,9 +298,18 @@ before the launcher's guard would have stopped the whole studio. Usually another
 the job itself (the studio's 4K path has not run end to end yet; [PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
 `worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
 
-**It sits at "Upscaling · loading its models" for minutes.** Expected: the job first encodes the clip ("reading the
-clip", ~3 min from the final clip), then loads the 62 GB DiT and 14 GB of LoRA weights (445-539 s when it was
-measured), then refines and decodes for 10-25 min at 1080p and 2K ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
+**It sits at "Upscaling · loading its models" for minutes.** With the fast load (`LFSTUDIO_UPSCALE_LOAD=fast`, the
+default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (21 s in the bench); "reading the clip"
+before it takes ~3 min from the final clip, and the refine and decode after it 10-25 min at 1080p and 2K
+([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). Minutes at loading mean the standard
+load (`LFSTUDIO_UPSCALE_LOAD=standard`, NVIDIA's loaders through mmap: ~7.5 min, 455 s measured), or files the fast
+load could not read with O_DIRECT and read through mmap instead: `worker.log` in the upscale's `regen/` folder says
+`fast load: N files, M of them through mmap`, and its `receipt.json` has the same as `"load"`.
+
+**An upscale fails while it loads its models.** With the fast load, the default, try `LFSTUDIO_UPSCALE_LOAD=standard`
+(NVIDIA's own loading, ~7.5 min) and restart the studio; the fast load has run in the bench but not yet in the studio's
+own job on the GPU, so its `worker.log` is worth a report. `LFSTUDIO_UPSCALE_PREREAD=1` at start is refused with the
+fast load (`only with LFSTUDIO_UPSCALE_LOAD=standard`): it fills the page cache, which the fast load reads past.
 An upscale waits while any clip is queued, also one queued after it, since it closes the studio's models; the next
 clip loads them again, and with `LFSTUDIO_PRELOAD=1` the studio warms them up again once the upscale is done.
 

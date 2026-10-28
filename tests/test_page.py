@@ -1432,10 +1432,16 @@ class UpscalePage(UpscaleCards, PageTest):
         self.open_popover(ok)
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength", "up_source")], ["2k", "balanced", "final"])
         text = self.page.inner_text("#uppop")
-        for words in ("1080p\n~10 min", "2K\n~20 min", "4K\n~1.1 h · untested", "after a ~8 min load", "Faithful",
-                      "Start noise 0.5, 2 steps", "Balanced", "Full re-generate", "redraws faces", "From the final clip",
-                      "From the draft", "Unloads the models while it runs"):
+        for words in ("1080p\n~11 min", "2K\n~20 min", "4K\n~1.1 h · untested", "in all, with a ~25 s load",
+                      "Faithful", "Start noise 0.5, 2 steps", "Balanced", "Full re-generate", "redraws faces",
+                      "From the final clip", "From the draft", "Unloads the models while it runs"):
             self.assertIn(words, text)
+        # the progress bar's expected seconds (docs/PERFORMANCE.md): the fast load, ~3 min less from the draft, ~7 min
+        # more with the standard load (the record's "load")
+        self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, source: 'final', load: 'fast'},
+            {resolution: '2k', steps: 3, source: 'final'}, {resolution: '1080p', steps: 2, source: 'draft'},
+            {resolution: '2k', steps: 2, source: 'final', load: 'standard'},
+            {resolution: '4k', steps: 2, source: 'final'}].map(upEta)"""), [1230, 1610, 488, 1660, 4085])
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
         self.page.focus(up)                                                   # the keyboard: Enter opens it, focus
