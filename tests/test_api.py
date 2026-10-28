@@ -667,12 +667,13 @@ class ApiOff(ApiTest):
         self.assertEqual(self.get_job("abc"), (404, {"error": "not found"}))  # not an id: not the API's path
 
     def test_the_page_works(self):
-        """Every endpoint the page calls (webui/index.html), none of them /api/jobs/<id>."""
+        """Every endpoint the page calls (webui/index.html), none of them /api/jobs/<id>. (/api/upscale, the
+        experimental Upscale's: test_upscale_is_the_pages.)"""
         page = PAGE.read_text()
         self.assertNotIn("/api/jobs/", page)
         self.assertEqual(sorted(set(re.findall(r"/api/[a-z]+", page))),
                          ["/api/cancel", "/api/delete", "/api/generate", "/api/inputs", "/api/jobs", "/api/load",
-                          "/api/state", "/api/undelete", "/api/unload"])
+                          "/api/state", "/api/undelete", "/api/unload", "/api/upscale"])
         for path in ("/", "/index.html", "/health"):
             self.assertEqual(self.studio.get(path)[0], 200, path)
         a = self.generate(task="fl2va", files={"first_frame": [("f.png", png())]})
