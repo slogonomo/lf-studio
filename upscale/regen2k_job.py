@@ -58,8 +58,8 @@ What this wrapper changes, and why:
   with no error. upscale_route runs NVIDIA's upscaler as Pipeline.upscale does, with that 2K grid turned to portrait
   (160x90 latents): at 4K only. NVIDIA's decode keeps every row of a portrait output; the job keeps the centre
   columns (keep_columns: 1088 -> 1080 at 1080p, 2176 -> 2160 at 4K), as that decode keeps the centre rows of a
-  landscape one. check_package pins NVIDIA's pipeline.py and upscaler.py (sha256) for this, and refuses a portrait
-  key NVIDIA has itself.
+  landscape one. check_package pins NVIDIA's pipeline.py, upscaler.py and upscaler_node.py (sha256) for this, and
+  refuses a portrait key NVIDIA has itself; bin/lf-studio notes at start when the package's files are other ones.
 
 The input: the clip's MP4 (stage2/refined_*.mp4), through NVIDIA's encode_video at 768p (1344x768, or 768x1344 for
 9:16). Scope: t2va clips, 5 s (121 frames at 24 fps, the length NVIDIA's pipeline is fixed at), 16:9 or 9:16. fl2va
@@ -95,8 +95,8 @@ Stage-1 latent, which redrew the video too much), it always reads the clip's MP4
 either: the clip's MP4 has it (16:9 or 9:16), and the output is that way round (2k: 2560x1440 or 1440x2560).
 
 Everything outside run() and the torch helpers is standard library only, so the server (its settings, the command
-line, the progress lines, the mux), bin/lf-studio --check (studio_settings, check_weights) and tests/test_upscale.py
-import this file without torch.
+line, the progress lines, the mux), bin/lf-studio --check (studio_settings, check_weights, nvidia_files) and
+tests/test_upscale.py import this file without torch.
 """
 import argparse
 import gc
@@ -141,9 +141,11 @@ PORTRAIT_ENTRIES = {"INPUT_SIZES": {"768p-portrait": (768, 1344)}, "NATIVE_SHAPE
                                     "4k-portrait": (3840, 2176, 3840)}}
 UPSCALED_SHAPE = (24, 37, 90, 160)           # NVIDIA's pipeline.UPSCALED_SHAPE: the 2K grid 4K is upscaled through
 # NVIDIA's files the portrait route builds on (it adds to pipeline.py's dicts, stands in for its Pipeline.upscale and
-# crops after its decode, and calls upscaler.upscale): their sha256 at NVIDIA_COMMIT, checked for a 9:16 clip
+# crops after its decode, and calls upscaler.upscale, whose node, upscaler_node.py, sizes the portrait grid and aligns
+# it to 32 px): their sha256 at NVIDIA_COMMIT, checked for a 9:16 clip (check_package) and by bin/lf-studio at start
 NVIDIA_FILES = {"open_h3/pipeline.py": "361729e81b9d15c8af4b1336e4bcbc36a4f20ddfe0e911e65e1d5c434a0f04ab",
-                "open_h3/upscaler.py": "e54959b609c5732711fd8e87b5e6cbe4e80977379d988df175afa1c7745f4521"}
+                "open_h3/upscaler.py": "e54959b609c5732711fd8e87b5e6cbe4e80977379d988df175afa1c7745f4521",
+                "open_h3/upscaler_node.py": "f5945b500ddb38afee23c377034bf15394ba64748511a7e9608953040c4be437"}
 NVIDIA_STEPS = (2, 3)            # steps with a schedule of their own (sigmas.SCHEDULES); others need start_sigma
 MAX_STEPS = 4
 # sequence chunks of lean_forward, which every transformer block runs at these sizes (the stock forward elsewhere).
@@ -468,6 +470,13 @@ def sha256(path):
         for chunk in iter(lambda: handle.read(8 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def nvidia_files(package):
+    """NVIDIA_FILES as they are in NVIDIA's package dir `package`: {path: sha256, or None for a file that is not
+    there}. check_package compares them with the pins for a 9:16 clip, bin/lf-studio at start."""
+    package = Path(package)
+    return {rel: sha256(package / rel) if (package / rel).is_file() else None for rel in NVIDIA_FILES}
 
 
 def plan(job, schedules, shifted_grid):
@@ -830,9 +839,8 @@ def check_package(adapters, pipeline, resolution, orientation="landscape"):
     height, width, keep = pipeline.RESOLUTIONS[resolution]
     found["size"], wanted["size"] = (width, keep), SIZES[resolution]
     if orientation == "portrait":
-        root = Path(pipeline.__file__).resolve().parent.parent
-        for rel, digest in NVIDIA_FILES.items():
-            found[rel], wanted[rel] = sha256(root / rel), digest
+        found.update(nvidia_files(Path(pipeline.__file__).resolve().parent.parent))
+        wanted.update(NVIDIA_FILES)
         found["UPSCALED_SHAPE"], wanted["UPSCALED_SHAPE"] = tuple(pipeline.UPSCALED_SHAPE), UPSCALED_SHAPE
         for name, entries in NVIDIA_ENTRIES.items():
             table = getattr(pipeline, name)

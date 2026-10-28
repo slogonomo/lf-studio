@@ -547,6 +547,17 @@ class PackageTests(unittest.TestCase):
                 for key, value in saved.items():
                     setattr(self.pipeline, key, value)
 
+    def test_a_pinned_file_that_is_not_there(self):
+        """nvidia_files gives None for a file that is not there, so a 9:16 clip is refused (JobError, exit 2) with
+        its name rather than failing on FileNotFoundError."""
+        self.assertEqual(job_module.nvidia_files(self.tmp), job_module.NVIDIA_FILES)
+        self.assertEqual(set(job_module.NVIDIA_FILES), {"open_h3/pipeline.py", "open_h3/upscaler.py",
+                                                        "open_h3/upscaler_node.py"})
+        (self.tmp / "open_h3" / "upscaler_node.py").unlink()
+        self.assertIsNone(job_module.nvidia_files(str(self.tmp))["open_h3/upscaler_node.py"])
+        self.assertIn("'open_h3/upscaler_node.py': None", self.refused())
+        job_module.check_package(self.adapters, self.pipeline, "2k", "landscape")        # 16:9 does not check them
+
     def test_add_portrait_entries(self):
         job_module.add_portrait_entries(self.pipeline)
         self.assertEqual(self.pipeline.INPUT_SIZES, {"768p": (1344, 768), "576p": (1024, 576),
@@ -569,6 +580,11 @@ class NvidiaPackageTests(unittest.TestCase):
     def test_the_pinned_files(self):
         for rel, digest in job_module.NVIDIA_FILES.items():
             self.assertEqual(job_module.sha256(self.package / rel), digest, rel)
+        self.assertEqual(job_module.nvidia_files(self.package), job_module.NVIDIA_FILES)     # bin/lf-studio's note
+        # the node's sizes the portrait grid from the target's latent size and aligns it to 32 px
+        source = (self.package / "open_h3" / "upscaler.py").read_text()
+        self.assertIn('"width": target_shape[3] * 16, "height": target_shape[2] * 16}', source)
+        self.assertIn("align=32", source)
 
     def test_the_entries_and_the_route(self):
         import ast
@@ -1253,7 +1269,7 @@ class RunTests(Fixture):
     def setUp(self):
         super().setUp()
         for name, text in (("adapters", STAND_IN_ADAPTERS), ("pipeline", STAND_IN_PIPELINE),
-                           ("upscaler", STAND_IN_UPSCALER)):
+                           ("upscaler", STAND_IN_UPSCALER), ("upscaler_node", "# a stand-in, never imported\n")):
             (self.package / "open_h3" / f"{name}.py").write_text(text)
         self.loaded = {
             "conditioning.pt": {"prompt_embeds": StandInTensor(1, 41, 5120), "task": "t2va", "prompt": "a test",
@@ -1480,7 +1496,19 @@ class RunTests(Fixture):
         self.assertEqual((status, receipt["state"], receipt["orientation"]), (2, "failed", "portrait"))
         self.assertRegex(receipt["error"], r"^NVIDIA's package is not the one this wrapper was written for "
                                            r"\(6e4a440\): \{'open_h3/pipeline\.py': '[0-9a-f]{64}', "
-                                           r"'open_h3/upscaler\.py': '[0-9a-f]{64}'\}$")
+                                           r"'open_h3/upscaler\.py': '[0-9a-f]{64}', "
+                                           r"'open_h3/upscaler_node\.py': '[0-9a-f]{64}'\}$")
+        self.assertEqual((calls, phases, self.loads), ([], [], []))
+
+    def test_portrait_without_a_pinned_file_is_refused(self):
+        """A pinned file that is not in NVIDIA's package: refused (exit 2, its digest None), not a traceback."""
+        self.portrait_clip()
+        (self.package / "open_h3" / "upscaler_node.py").unlink()
+        status, receipt, calls, phases, _ = self.run_job()
+        self.assertEqual((status, receipt["state"]), (2, "failed"), receipt.get("traceback"))
+        self.assertEqual(receipt["error"], "NVIDIA's package is not the one this wrapper was written for (6e4a440): "
+                                           "{'open_h3/upscaler_node.py': None}")
+        self.assertNotIn("traceback", receipt)
         self.assertEqual((calls, phases, self.loads), ([], [], []))
 
     def test_the_standard_load_leaves_nvidia_loaders_alone(self):

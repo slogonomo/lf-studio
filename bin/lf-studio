@@ -375,7 +375,8 @@ if problems:
     # the experimental Upscale's settings and files, checked by its job's own code (standard library only, so the
     # studio's Python runs it): the settings as the server reads them (studio_settings; exit 3), its Python, and
     # NVIDIA's package and the weights where they say, and the fast load's upscale/fastload.py (check_weights; exit 4).
-    # The job runs nothing else here.
+    # NVIDIA's files that its 9:16 route is pinned to (nvidia_files) only get a note (exit 5): the job refuses a 9:16
+    # clip with other ones, but not a 16:9 one. The job runs nothing else here.
     if [[ "${LFSTUDIO_UPSCALE:-0}" == 1 ]]; then
         f=$("$LFSTUDIO_PYTHON" -I -B -c 'import importlib.util, os, sys
 from pathlib import Path
@@ -393,11 +394,20 @@ try:
     job.check_weights({k: settings[k] for k in ("package", "weights", "base_model", "load")} | {"output": Path("/")})
 except job.JobError as error:
     print(str(error).replace("paths.package", "LFSTUDIO_UPSCALE_PKG"))
-    sys.exit(4)' "$REPO/upscale/regen2k_job.py" 2>&1)
+    sys.exit(4)
+found = job.nvidia_files(settings["package"])
+differ = ["%s %s" % (rel, "missing" if found[rel] is None else "changed") for rel in found
+          if found[rel] != job.NVIDIA_FILES[rel]]
+if differ:
+    print("NVIDIA\x27s package (LFSTUDIO_UPSCALE_PKG) has other files than the Upscale\x27s 9:16 route was written "
+          "for (%s; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips will be refused (16:9 clips are not checked "
+          "against these files)" % ", ".join(differ))
+    sys.exit(5)' "$REPO/upscale/regen2k_job.py" 2>&1)
         rc=$?
         f=$(grep . <<<"$f" | tail -n 1)
         case $rc in
-            0) log "the experimental Upscale is on (LFSTUDIO_UPSCALE=1): its environment, package and weights are there" ;;
+            0|5) log "the experimental Upscale is on (LFSTUDIO_UPSCALE=1): its environment, package and weights are there"
+                 if (( rc == 5 )); then log "note: $f"; fi ;;
             3) refuse "$f" ;;
             4) refuse "the experimental Upscale (LFSTUDIO_UPSCALE=1): $f; set it up, or set LFSTUDIO_UPSCALE=0" ;;
             *) refuse "cannot check the experimental Upscale with $REPO/upscale/regen2k_job.py: ${f:-exit code $rc}" ;;

@@ -5,6 +5,7 @@ library only)
 """
 import concurrent.futures
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -2931,6 +2932,42 @@ class LauncherUpscale(LauncherSettingsCheck):
                      "without it)", launcher=repo / "bin/lf-studio", **settings)
         code, out = self.check(repo / "bin/lf-studio", **settings, LFSTUDIO_UPSCALE_LOAD="standard")
         self.assertEqual(code, 0, out)
+
+    def test_a_note_for_other_nvidia_files(self):
+        """NVIDIA's files the job's 9:16 route is pinned to (NVIDIA_FILES, by sha256): other or missing ones get a note
+        at start, not a refusal (the job refuses only a 9:16 clip with them); the pinned ones none. Here a copy of the
+        launcher, the server and the job with the stand-in files pinned."""
+        settings = self.regen2k()
+        package = Path(settings["LFSTUDIO_UPSCALE_PKG"])
+        upscale_on = ("the experimental Upscale is on (LFSTUDIO_UPSCALE=1): its environment, package and weights are "
+                      "there")
+        note = ("note: NVIDIA's package (LFSTUDIO_UPSCALE_PKG) has other files than the Upscale's 9:16 route was "
+                "written for ({}; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips will be refused (16:9 clips "
+                "are not checked against these files)")
+        code, out = self.check(**settings)
+        self.assertEqual(code, 0, out)
+        self.assertIn(upscale_on, out)
+        self.assertIn(note.format("open_h3/pipeline.py changed, open_h3/upscaler.py missing, "
+                                  "open_h3/upscaler_node.py missing"), out)
+        repo = self.d / "repo"
+        for rel in ("bin/lf-studio", "webui/server.py", "upscale/regen2k_job.py", "upscale/fastload.py"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(__file__).resolve().parents[1] / rel, repo / rel)
+        job = (repo / "upscale/regen2k_job.py").read_text()
+        pins = dict(re.findall(r'"(open_h3/\w+\.py)": "([0-9a-f]{64})"', job))
+        self.assertEqual(sorted(pins), ["open_h3/pipeline.py", "open_h3/upscaler.py", "open_h3/upscaler_node.py"])
+        for rel, digest in pins.items():
+            (package / rel).write_text(f"# a stand-in of {rel}\n")
+            job = job.replace(digest, hashlib.sha256((package / rel).read_bytes()).hexdigest())
+        (repo / "upscale/regen2k_job.py").write_text(job)
+        code, out = self.check(repo / "bin/lf-studio", **settings)
+        self.assertEqual(code, 0, out)
+        self.assertIn(upscale_on, out)
+        self.assertNotIn("note: NVIDIA's package", out)
+        (package / "open_h3" / "upscaler_node.py").write_text("# another version\n")
+        code, out = self.check(repo / "bin/lf-studio", **settings)
+        self.assertEqual(code, 0, out)
+        self.assertIn(note.format("open_h3/upscaler_node.py changed"), out)
 
     def test_defaults(self):
         """The defaults under LFSTUDIO_HOME and LFSTUDIO_CHECKPOINTS, as in bin/env.example."""
