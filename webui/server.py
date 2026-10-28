@@ -1234,6 +1234,8 @@ UPSCALE_REQUEST = ("id", "resolution", "strength", "audio", "seed")    # POST /a
 UPSCALE_FREE_WAIT_S = 5          # how long the memory floor waits for a closed session's memory to come back
 UPSCALE_STOP_S = 20              # Cancel and shutdown: SIGKILL an upscale's job this long after its SIGTERM
 UPSCALE_LENGTH = "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"
+# a guard: every orientation the studio makes (runtime.geometry's ORIENTATIONS) is one of the job's SHAPES
+# (tests/test_upscale.py checks it), so only an orientation added later gets this
 UPSCALE_SHAPE = "Upscale needs a 16:9 or 9:16 clip (1344x768 or 768x1344)"
 
 

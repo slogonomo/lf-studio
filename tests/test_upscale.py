@@ -159,9 +159,9 @@ class Fixture(unittest.TestCase):
 DROP = object()
 
 
-def patch_new_file(rel):
-    """A file that patches/lf-studio.patch adds: (its content, the abbreviated blob hash of its index line)."""
-    text = (REPO / "patches" / "lf-studio.patch").read_text()
+def patch_new_file(rel, patch="lf-studio.patch"):
+    """A file that patches/<patch> adds: (its content, the abbreviated blob hash of its index line)."""
+    text = (REPO / "patches" / patch).read_text()
     for section in re.split(r"(?m)^(?=diff --git )", text):
         if section.startswith(f"diff --git a/{rel} b/{rel}\n") and "\nnew file mode" in section:
             blob = re.search(r"(?m)^index 0+\.\.([0-9a-f]+)$", section).group(1)
@@ -430,6 +430,19 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(port["sizes"], {"1080p": (1080, 1920), "2k": (1440, 2560), "4k": (2160, 3840)})
         self.assertEqual(job_module.output_size("portrait", "2k"), (1440, 2560))
         self.assertEqual(job_module.output_size("landscape", "4k"), (3840, 2160))
+
+    def test_every_orientation_the_studio_makes(self):
+        """The orientations of both patches (and the stub runtime's) are the job's SHAPES, so the server's
+        UPSCALE_SHAPE refusal is a guard for an orientation added later: such a change fails here first."""
+        import ast
+        sources = {name: patch_new_file(f"models/minimax_h3/{package}/runtime/geometry.py", patch)[0]
+                   for name, package, patch in (("spark", "Sol-H3-Spark", "lf-studio.patch"),
+                                                ("rtx5090", "Sol-H3-RTX5090", "lf-studio-rtx5090.patch"))}
+        sources["stub"] = (REPO / "tests" / "stub" / "runtime" / "geometry.py").read_text()
+        for name, source in sources.items():
+            found = [ast.literal_eval(node.value) for node in ast.parse(source).body if isinstance(node, ast.Assign)
+                     and [getattr(t, "id", None) for t in node.targets] == ["ORIENTATIONS"]]
+            self.assertEqual([set(value) for value in found], [set(job_module.SHAPES)], name)
 
     def test_the_portrait_entries_are_nvidias_turned(self):
         """INPUT_SIZES and NATIVE_SHAPES for encode_video, RESOLUTIONS for Pipeline: NVIDIA's landscape entries with
