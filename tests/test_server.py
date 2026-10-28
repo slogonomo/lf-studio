@@ -2648,6 +2648,27 @@ class UpscaleFailure(UpscaleTest):
         self.assertEqual(self.studio.post("/api/delete", json_body={"id": job["id"]}), (200, {"ok": True}))
         self.assertFalse(case.exists())
 
+    def test_no_output(self):
+        self.studio.stop()
+        self.studio.env.update(STUB_UPSCALE_FAIL="0", STUB_UPSCALE_OUTPUT="none")
+        self.studio.start()
+        job = self.studio.wait([self.upscale(self.clip()["id"])], timeout=30)[0]
+        log = self.regen(job) / "worker.log"
+        self.assertEqual((job["status"], job["error"]),
+                         ("failed", f"UpscaleFailed: the upscale job wrote no video_noaudio.mp4; see {log}"))
+        self.assertNotIn("output", job)
+
+    def test_the_sound_cannot_be_added(self):
+        self.studio.stop()
+        self.studio.env.update(STUB_UPSCALE_FAIL="0", STUB_UPSCALE_OUTPUT="bad")
+        self.studio.start()
+        job = self.studio.wait([self.upscale(self.clip()["id"])], timeout=30)[0]
+        self.assertEqual(job["status"], "failed")
+        self.assertTrue(job["error"].startswith("UpscaleFailed: could not add the clip's sound (ffmpeg: "), job["error"])
+        self.assertNotIn("output", job)
+        self.assertEqual(sorted(p.name for p in self.regen(job).iterdir()),         # no half-made MP4 left
+                         ["job.json", "receipt.json", "video_noaudio.mp4", "worker.log"])
+
     def test_no_python(self):
         python = self.dir / "regen2k" / "no-python"
         self.studio.env["LFSTUDIO_UPSCALE_PYTHON"] = str(python)
@@ -2657,6 +2678,81 @@ class UpscaleFailure(UpscaleTest):
         self.assertEqual((job["status"], job["error"]), ("failed", "UpscaleFailed: cannot start the upscale job with "
                                                                    f"LFSTUDIO_UPSCALE_PYTHON={python} (No such file "
                                                                    "or directory)"))
+
+
+class UpscaleRunTimeChecks(UpscaleTest):
+    """An upscale checks its clip again when it starts: files removed while it waited fail it, without running its
+    job."""
+    load_s, clip_s = 1, 4
+
+    def seed(self):
+        self.studio.env.update(STUB_UPSCALE_LOG=str(self.dir / "upscale-jobs.log"))
+
+    def queued_behind_a_clip(self, parent, **fields):
+        a = self.generate(seed=7)
+        self.until(a, lambda j: j["status"] in ("generating", "loading models + generating"))
+        return a, self.upscale(parent["id"], **fields)
+
+    def test_files_gone_meanwhile(self):
+        parent = self.clip()
+        case = Path(parent["output"]).parents[1]
+        a, uid = self.queued_behind_a_clip(parent, source="draft")
+        (case / "stage1" / "h3_normalized_native.pt").unlink()
+        job = self.studio.wait([a, uid], timeout=60)[1]
+        self.assertEqual((job["status"], job["error"]), ("failed", "UpscaleFailed: the clip's Stage-1 files are gone"))
+        a, uid = self.queued_behind_a_clip(parent)
+        (case / "qwen" / "conditioning.pt").unlink()
+        job = self.studio.wait([a, uid], timeout=60)[1]
+        self.assertEqual((job["status"], job["error"]),
+                         ("failed", f"UpscaleFailed: the clip can't be upscaled now: {FILES_GONE}"))
+        self.assertNotIn("case_dirs", job)
+        self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
+
+
+class UpscaleQueueFull(UpscaleTest):
+    """LFSTUDIO_MAX_QUEUED counts queued upscales with the clips: a request while the queue is full gets 429."""
+    load_s, clip_s = 1, 6
+    env = {"LFSTUDIO_MAX_QUEUED": "1"}
+
+    def test_full(self):
+        parent = self.clip()
+        a = self.generate(seed=2)
+        self.until(a, lambda j: j["status"] == "generating")              # the running clip does not count
+        uid = self.upscale(parent["id"])                                    # waits: the queue is full now
+        full = "the queue is full (1 clips waiting); try again when one has finished"
+        code, headers, answer = self.studio.request("POST", "/api/upscale", json.dumps({"id": parent["id"]}).encode(),
+                                                    {"Content-Type": "application/json"})
+        self.assertEqual((code, headers["Retry-After"], json.loads(answer)), (429, "60", {"error": full}))
+        self.assertEqual(self.studio.generate(seed=3), (429, {"error": full}))
+        self.assertEqual(len(self.studio.state()["jobs"]), 3)
+        self.assertEqual([j["status"] for j in self.studio.wait([a, uid], timeout=60)], ["done", "done"])
+
+
+class UpscaleWhileMoving(UpscaleTest):
+    """A request for a clip whose Delete is moving its files gets 409 (the move is held up by a lock on jobs.db
+    that this test takes, under the server's 5 s busy timeout)."""
+
+    def test_being_moved(self):
+        import sqlite3
+        import threading
+        parent = self.clip()
+        db = sqlite3.connect(self.studio.state_dir / "jobs.db", isolation_level=None, timeout=1)
+        self.addCleanup(db.close)
+        answers = []
+        db.execute("BEGIN EXCLUSIVE")
+        try:
+            delete = threading.Thread(target=lambda: answers.append(
+                self.studio.post("/api/delete", json_body={"id": parent["id"]})))
+            delete.start()
+            moving = "the clip is being moved; try again in a moment"
+            self.studio.wait_for(lambda st: any(j["id"] == parent["id"] and (j.get("upscalable") or {}).get("why")
+                                                == moving for j in st["jobs"]), timeout=3)
+            self.assertEqual(self.studio.upscale(parent["id"]), (409, {"error": moving}))
+        finally:
+            db.execute("ROLLBACK")
+        delete.join(timeout=15)
+        self.assertEqual(answers, [(200, {"ok": True})])
+        self.assertEqual([j["id"] for j in self.studio.state()["jobs"] if j.get("kind") == "upscale"], [])
 
 
 class UpscaleOff(StudioTest):
