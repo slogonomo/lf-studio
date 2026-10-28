@@ -213,8 +213,9 @@ path_re() {
     fi
 }
 # Pipeline workers run in their own sessions, so stopping the server's process group does not reach them.
-# Their command lines name runtime.worker and an options file under this runtime root's web-UI outputs.
-WORKER_RE="($(path_re "$PKG")/(runtime|qwen_python\.sh)|runtime\.worker --module [a-z0-9]+ --options $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/)"
+# Their command lines name runtime.worker and an options file under this runtime root's web-UI outputs. So does the
+# experimental Upscale's job (upscale/regen2k_job.py --job <runtime root>/outputs/webui/...; webui/server.py).
+WORKER_RE="($(path_re "$PKG")/(runtime|qwen_python\.sh)|runtime\.worker --module [a-z0-9]+ --options $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/|$(path_re "$REPO")/upscale/regen2k_job\.py --job $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/)"
 SERVER_RE="$(path_re "$SERVER")"
 
 stop_containers() {   # $1 = docker stop | docker rm -f
@@ -284,6 +285,13 @@ detect_backend() {
 
 run_checks() {
     local t f rc found=0 missing=() have free other vram
+    # the experimental Upscale (webui/server.py checks LFSTUDIO_UPSCALE with the same words); empty counts as unset.
+    # Its job needs nearly the whole DGX Spark: refused on the RTX 5090 before anything else is checked
+    [[ "${LFSTUDIO_UPSCALE:-0}" == [01] ]] ||
+        refuse "LFSTUDIO_UPSCALE=$LFSTUDIO_UPSCALE: must be 0 (off, the default) or 1 (on) (see bin/env.example)"
+    if [[ "${LFSTUDIO_UPSCALE:-0}" == 1 && "$LFSTUDIO_BACKEND" != spark ]]; then
+        refuse "LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only, not with LFSTUDIO_BACKEND=$LFSTUDIO_BACKEND (Open-H3-Regenerate-2K needs ~100 GiB of GPU memory); set LFSTUDIO_UPSCALE=0"
+    fi
     [[ -x "$LFSTUDIO_PYTHON" ]] || refuse "no Python at LFSTUDIO_PYTHON=$LFSTUDIO_PYTHON (install/40-stage1.sh, or set it in $ENV_FILE)"
     "$LFSTUDIO_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null ||
         refuse "LFSTUDIO_PYTHON=$LFSTUDIO_PYTHON is not a working Python 3.10+"
@@ -364,6 +372,36 @@ if problems:
     # the API for programs (webui/server.py checks it with the same words); empty counts as unset
     [[ "${LFSTUDIO_API:-1}" == [01] ]] ||
         refuse "LFSTUDIO_API=$LFSTUDIO_API: must be 1 (on, the default) or 0 (off) (see bin/env.example)"
+    # the experimental Upscale's settings and files, checked by its job's own code (standard library only, so the
+    # studio's Python runs it): the settings as the server reads them (studio_settings; exit 3), its Python, and
+    # NVIDIA's package and the weights where they say (check_weights; exit 4). The job runs nothing else here.
+    if [[ "${LFSTUDIO_UPSCALE:-0}" == 1 ]]; then
+        f=$("$LFSTUDIO_PYTHON" -I -B -c 'import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("regen2k_job", sys.argv[1])
+job = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(job)
+settings, problems = job.studio_settings(os.environ)
+if problems:
+    print("; ".join(problems))
+    sys.exit(3)
+if not os.access(settings["python"], os.X_OK):
+    print("no Python at LFSTUDIO_UPSCALE_PYTHON=%s (the Open-H3-Regenerate-2K environment)" % settings["python"])
+    sys.exit(4)
+try:
+    job.check_weights({k: settings[k] for k in ("package", "weights", "base_model")} | {"output": Path("/")})
+except job.JobError as error:
+    print(str(error).replace("paths.package", "LFSTUDIO_UPSCALE_PKG"))
+    sys.exit(4)' "$REPO/upscale/regen2k_job.py" 2>&1)
+        rc=$?
+        f=$(grep . <<<"$f" | tail -n 1)
+        case $rc in
+            0) log "the experimental Upscale is on (LFSTUDIO_UPSCALE=1): its environment, package and weights are there" ;;
+            3) refuse "$f" ;;
+            4) refuse "the experimental Upscale (LFSTUDIO_UPSCALE=1): $f; set it up, or set LFSTUDIO_UPSCALE=0" ;;
+            *) refuse "cannot check the experimental Upscale with $REPO/upscale/regen2k_job.py: ${f:-exit code $rc}" ;;
+        esac
+    fi
     for t in t2va fl2va ref2va; do
         f=${LFSTUDIO_PATHS//\{task\}/$t}
         if [[ -f "$f" ]]; then found=$((found + 1)); else missing+=("$t"); fi
