@@ -98,6 +98,34 @@ timings, and a Stage-2 replay bench with bit-exact and picture checks
 **Tests** (`tests/`): the server and the API clients end to end against a GPU-free stub of the pipeline, and the
 page in a browser; see [AGENTS.md](AGENTS.md).
 
+## Experimental: Upscale
+
+Off by default, DGX Spark only. With `LFSTUDIO_UPSCALE=1` and the optional install step `install/65-regen2k.sh`, a
+finished clip's card gets an **Upscale** button. NVIDIA's
+[Open-H3-Regenerate-2K](https://github.com/NVlabs/Sana/tree/sol-engine/models/Open-H3-Regenerate-2K) re-renders the
+clip with MiniMax-H3 at 1080p, 2K (2560×1440) or 4K, and the result comes as a card of its own, with the clip's own
+sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and the MCP tool `upscale`
+([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
+
+- **Only 5 s 16:9 text clips (t2va) for now.** NVIDIA's pipeline is fixed at 1344×768 and 121 frames, and Keyframes
+  and Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with
+  the reason.
+- **It is slow.** Measured on one DGX Spark: the job loads its models in about 7.5 min (445 s; a pre-read of the
+  weights is on by default to shorten this, not measured yet), then a 2-step upscale takes about 10 min at 1080p and
+  20 min at 2K (25 min with 3 steps). 4K is estimated at about 29 min per step, 1.5-2 h in all. While it runs the
+  studio's models are closed; the next clip loads them again. Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
+- **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
+  much sharper picture but redraws faces into a different-looking person, even when it starts from the final clip.
+  "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the
+  clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
+  defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
+- **From the final clip or the draft.** By default it upscales the finished MP4; "From the draft" starts from the
+  clip's Stage-1 latent instead.
+
+Not yet: Keyframes and Reference clips, portrait, 10 and 15 s, a faster load (the studio's O_DIRECT loader), and
+NVIDIA's faster Sol-Attn forward. Setup: [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
+
 ## Deviations from NVIDIA's validated recipe
 
 NVIDIA validated the 5 s, 16:9 route. Portrait output is not quality-validated (the LoRAs, upscaler and adapter
@@ -187,6 +215,7 @@ own license; read it before you download or use the model or its outputs:
 | [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) | refiner, LoRA, VAEs, offline prompt-cache weights | gated; LTX-2.x Community License Agreement |
 | [LBH-123-AI/Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) ([source](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler)) | H3 ×2 latent upscaler | weights: the model card states Apache-2.0 (in its text at NVIDIA's pinned revision 13ccf95, and in its metadata since 2026-09-17). Source: MIT since 2026-09-17 (commit 40316cf); NVIDIA's pinned source revision d7c01b9 has no license file. NVIDIA's notices say no license is declared. Not redistributed here or by NVIDIA. |
 | [Efficient-Large-Model/H3-to-LTX-Latent-Adapter](https://huggingface.co/Efficient-Large-Model/H3-to-LTX-Latent-Adapter) | H3-to-LTX latent adapter | the model card assigns no separate weight license |
+| [Efficient-Large-Model/Open-H3-Regenerate-2K](https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K) | the experimental Upscale only (`install/65-regen2k.sh`): refiner LoRA, Sharp curve branches, latent upscaler | its card: the refiner LoRA follows the MiniMax H3 Community License, territory, use and redistribution terms included; the parts NVIDIA did not train keep their own licenses: the latent upscaler (the LBH-123-AI one above), and the [LightX2V FL2VA Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo) and [LMS Sharp](https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI) LoRAs merged into its LoRA. "This bundle is not covered by a single blanket license." The Sharp AdaLN table it needs is read from the Comfy-Org/MiniMax-H3 file above. |
 
 Sol-H3-Spark's own [THIRD_PARTY_NOTICES.md](https://github.com/NVlabs/Sana/blob/sol-engine/models/minimax_h3/Sol-H3-Spark/THIRD_PARTY_NOTICES.md)
 lists the pinned revisions and terms.

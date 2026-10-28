@@ -19,6 +19,9 @@ This repository contains:
 - upscale/regen2k_job.py runs NVIDIA's Open-H3-Regenerate-2K (https://github.com/NVlabs/Sana, branch sol-engine,
   models/Open-H3-Regenerate-2K; not included) and contains code adapted from it: the LoRA merge arithmetic of
   adapters.StageMerger and the audio encode of pipeline.encode_silence. Apache License, Version 2.0.
+- install/regen2k_weights.py contains code adapted from that package's download.py (the byte-range read of Sharp's
+  AdaLN table, fetch_curve, and its file hashes), and install/constraints/regen2k-requirements.in starts from its
+  requirements.txt. Apache License, Version 2.0.
 - webui/index.html and bench/prompts/bench.jsonl contain example prompts taken or adapted from NVIDIA's
   Sol-H3-Spark (README.md and examples/prompts.jsonl), Apache License, Version 2.0. The prompt formats and section
   names in webui/index.html follow MiniMax's H3 prompt-writing guides
@@ -34,7 +37,9 @@ Not included here, obtained separately by the user, each under its own terms:
 
 - Model weights: MiniMaxAI/MiniMax-H3, FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA,
   lightx2v/Minimax-h3-Turbo, Comfy-Org/MiniMax-H3, Lightricks/LTX-2.5, LBH-123-AI/Minimax_h3_latent_Upscaler,
-  Efficient-Large-Model/H3-to-LTX-Latent-Adapter. See README.md, "Model terms".
+  Efficient-Large-Model/H3-to-LTX-Latent-Adapter, and for the experimental Upscale
+  Efficient-Large-Model/Open-H3-Regenerate-2K (with the LightX2V Turbo and LMS Sharp LoRAs merged into its LoRA).
+  See README.md, "Model terms".
 - Source dependencies fetched by NVIDIA's prepare.py: FastVideo (Apache-2.0), FlashAttention (BSD-3-Clause),
   ComfyUI (GPL-3.0), Lightricks LTX-2 (LTX-2.x Community License), the LBH-123-AI H3 latent upscaler
   (https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler: MIT since 2026-09-17, commit 40316cf; the

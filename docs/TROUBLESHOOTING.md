@@ -266,6 +266,55 @@ may run. Set `LFSTUDIO_MCP_WAIT_S` below that limit and let the agent call `wait
 **MCP: `out must be inside LFSTUDIO_OUT_DIR ... or the working directory`.** The MCP server saves only there, unless
 its environment has `LFSTUDIO_MCP_OUT_ANYWHERE=1`. Point `LFSTUDIO_OUT_DIR` at the folder you want.
 
+## Upscale (experimental)
+
+The Upscale is off unless `LFSTUDIO_UPSCALE=1` ([INSTALL.md](INSTALL.md#experimental-upscale)). Each upscale has a
+directory of its own, `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/<session>-upscale-<resolution>/<case>/regen/`, with
+`job.json` (what the studio asked for), `worker.log` (the job's output) and `receipt.json` (its times, sigmas, peak
+memory and lowest MemAvailable per phase). A failed upscale's card shows the job's own error line.
+
+**No Upscale button on the cards.** The studio runs with the Upscale off (the default), or with
+`LFSTUDIO_BACKEND=rtx5090`, where it does not run. Set `LFSTUDIO_UPSCALE=1` and restart.
+
+**The Upscale button is greyed out.** It says why when you point at it, or click or tap it: for now it takes finished
+5 s 16:9 text clips only (`Upscale needs a 5 s 16:9 clip ...`, `Upscale takes text-to-video (t2va) clips only, for
+now`), and it reads the clip's working files, which clips made before per-clip folders, or whose session folder was
+removed, no longer have (`the clip's working files (its session directory) are gone`). "From the draft" is missing
+from the popover when the clip has no Stage-1 latent.
+
+**`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
+`missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's
+environment, NVIDIA's package and the weights at start. Run `install/65-regen2k.sh`, or set `LFSTUDIO_UPSCALE=0`.
+`LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only` means `LFSTUDIO_BACKEND=rtx5090`: the
+release needs ~100 GiB of GPU memory.
+
+**`not enough free memory for an upscale: N GiB available with the models closed, 110 GiB needed`.** The studio
+closed its own models, and something else still holds the memory (another app, a container). Close it and try again;
+`LFSTUDIO_UPSCALE_MIN_FREE_GIB` changes the floor (measured at 2K: ~103 GiB used by the job).
+
+**`stopped: MemAvailable was below 5 GiB for 3 s`.** The Upscale's own memory guard stopped the job before the
+machine ran out (on GB10's unified memory that can hang the box), and before the launcher's guard would have stopped
+the whole studio. Usually another app grew meanwhile; at 4K, the job itself (not run end to end yet). `receipt.json`
+lists the lowest MemAvailable per phase. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
+
+**It sits at "Upscaling · loading its models" for minutes.** Expected: the job loads the 62 GB DiT and 14 GB of LoRA
+weights, 445 s when it was measured, then encodes the clip and refines for 10-25 min at 1080p and 2K ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
+An upscale waits while any clip is queued, also one queued after it, since it closes the studio's models; the next
+clip loads them again.
+
+**The person in the upscale looks different.** "Full re-generate" (NVIDIA's setting, start noise 0.909) redraws
+faces. Use "Balanced" or "Faithful".
+
+**Delete of a clip says `an upscale of this clip is queued or running; cancel it first, or wait for it`.** The
+upscale reads the clip's files.
+
+**`install/65-regen2k.sh`: `... exists but this script did not make it`.** A venv at `envs/regen2k` that the step did
+not build is never touched; move it away. `the packages of install/freeze/regen2k-lock.txt did not install`: a
+network error or a package that changed on the index (every one is checked against its SHA-256); run the step again
+and it goes on. `does not have NVIDIA's SHA-256 (kept as ....bad)`: a weight file that is not NVIDIA's; the bad file is
+kept for a look, and a run again downloads it anew. `ignored the Range request`: something between you and Hugging Face
+(a proxy, `HF_ENDPOINT`) does not pass on byte ranges, which the AdaLN table needs.
+
 ## Stopping
 
 Ctrl-C, SIGTERM or SIGHUP: the server closes its pipeline (up to ~40 s; the launcher waits up to

@@ -15,7 +15,9 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   NVIDIA's Open-H3-Regenerate-2K (its docstring says what is NVIDIA's and what it changes). Standard library outside
   its torch functions, so the server and the tests import it without torch. The server runs it as a job of its own
   (`POST /api/upscale`, `run_upscale`; off unless `LFSTUDIO_UPSCALE=1`), and reads the `LFSTUDIO_UPSCALE_*`
-  settings with its `studio_settings`, as `bin/lf-studio --check` does.
+  settings with its `studio_settings`, as `bin/lf-studio --check` does. The page's Upscale button and popover, `lf-cli
+  upscale` and the MCP tool `upscale` use the endpoint; `install/65-regen2k.sh` (optional) builds its environment from
+  the hashed lock `install/freeze/regen2k-lock.txt` and fetches its weights (`install/regen2k_weights.py`).
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
@@ -63,7 +65,10 @@ ends at once on SIGTERM, writes a small 121-frame MP4 without sound and a receip
 Stage-1 latent and audio) for it to find, and the server reads MemAvailable from a file the stub studio writes
 (`LFSTUDIO_TEST_MEMINFO`; `StubStudio.set_memory`), so the memory floor and guard are tested without the machine's
 memory. The `Upscale*` classes in `tests/test_server.py` cover the job type (queue, Cancel, Delete and Undo, restart,
-warm-up, memory, failure, the settings, the launcher's checks and `--kill`), `tests/test_api.py` its API record.
+warm-up, memory, failure, the settings, the launcher's checks and `--kill`), `tests/test_api.py` its API record, the
+`Upscale*` classes in `tests/test_cli.py` and `tests/test_mcp.py` the client, and those in `tests/test_page.py` the
+button (disabled with the reason on clips it can't take; in cards too narrow for the names, Upscale and Delete show
+icons, so the buttons keep one row), the popover, the upscale's card and `tests/ui_test.py` with an upscale in the gallery.
 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
@@ -73,7 +78,9 @@ page's per-backend texts without a browser (its `MACHINES` table, and its `apply
 installed); and every install script's `--dry-run` under both backends, with fake `uname`, `nvidia-smi`, `gcc`,
 `docker` and `sg` on PATH and everything in a temp directory; on the RTX 5090 also the caches under `$LFSTUDIO_HOME`,
 the GCC 14 toolchain kept on `FORCE=1`, the adoption of a venv whose fake `pip freeze` is the reference freeze, and
-the dated prompt-cache backup. Add a test there for every backend change.
+the dated prompt-cache backup. Add a test there for every backend change. It also covers `install/65-regen2k.sh` (its
+dry run, and runs with a fake uv: a failed step stops it and leaves the venv unmarked, #74) and
+`install/regen2k_weights.py` (with a stand-in `huggingface_hub` and a fake Hugging Face for the range reads).
 
 `tests/test_old_names.py` covers the names up to 0.4 that work until 0.6: the old setting names in the environment
 and the settings file (and that the four `OLD_SETTINGS` lists agree), the old places, the shims, the launcher's check

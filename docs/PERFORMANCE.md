@@ -235,6 +235,40 @@ no "Load selected now" for it. A clip of the warm-up's mode with another length 
 models: early in the warm-up it takes the warm-up over, later it waits for it and the session then changes its
 shape.
 
+## Experimental Upscale (Open-H3-Regenerate-2K)
+
+Measured on one DGX Spark (GB10) on 2026-10-28, with the bench wrapper that `upscale/regen2k_job.py` was made from
+(the same NVIDIA code and changes), the studio stopped, one 5 s 16:9 t2va clip. NVIDIA's standard forward (BF16,
+dense attention through cuDNN, about 90 TFLOPS) and its released VAE; the LoRA merged once in place (bit-identical to
+NVIDIA's merge, checked). One run per resolution:
+
+| | 768p (no upscale; not offered) | 1080p | 2K (2560×1440) |
+|---|---|---|---|
+| Loading the models (once per job) | 445 s | 445 s | 445 s |
+| Encoding the final clip (source `final`) | 183 s | 183 s | 183 s |
+| Refine, per step | 48 s | 144 s | 378 s |
+| VAE decode | 49 s | 104 s | 180 s |
+| MP4 (x264) | 5 s | 8 s | 16 s |
+| Peak GPU memory allocated | 75 GiB | 81 GiB | 91 GiB |
+| Lowest MemAvailable during the job | 38 GiB | 28 GiB | 15 GiB |
+
+- In all, after the load: 1080p about 10 min with 2 steps (`faithful`, `balanced`), 12 min with 3 (`full`); 2K about
+  19 and 25 min. The page rounds this to ~10 min and ~25 min after a ~2-7 min load. The load faults the weight files
+  in through mmap at about 0.2 GB/s; the job reads them into the page cache in parallel first
+  (`LFSTUDIO_UPSCALE_PREREAD=1`, the default), which is not measured yet, and the studio's O_DIRECT loader
+  (`runtime/fastload.py`) is a candidate for a follow-up.
+- 4K (3840×2160) was not run end to end. Its attention at 302,534 rows gave the right result on GB10 (checked
+  against fp32), and a refine step is estimated at about 29 min, so 1.5-2 h in all. The job runs its FFN in 8
+  sequence chunks there and frees the DiT before the decode.
+- The studio needs ~110 GiB free to start an upscale (`LFSTUDIO_UPSCALE_MIN_FREE_GIB`, 117.7 GiB were free on the idle
+  box), and stops it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`).
+- Quality, so far: at NVIDIA's settings (start noise 0.909, 3 steps: `full`) the result is much sharper but has a
+  different-looking face, also from the final clip. Lower start noise (0.7 and 0.5 with 2 steps) and refining
+  against the clip's own audio instead of NVIDIA's silence are being measured; the defaults (`balanced`, `clip`)
+  are provisional until then.
+- Not tried: NVIDIA's `sol_engine` forward (Sol-Attn sparse attention, MXFP8; NVIDIA lists ~150 GB for it) and its
+  fast VAE decoder.
+
 ## Replay bench: Stage 2 on saved drafts
 
 `bench/duration.sh` and `bench/first-clip.sh` time whole sessions. `bench/replay.sh` replays one stage, Stage 2, on
