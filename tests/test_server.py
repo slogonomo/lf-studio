@@ -2204,6 +2204,9 @@ class Upscale(UpscaleTest):
         self.assertEqual(up["upscalable"], {"ok": False, "why": "an upscale can't be upscaled again"})
         self.assertFalse(alive(self.job_pids()[0]))
         self.assertTrue(self.clip(seed=2)["includes_model_load"])              # the next clip loads them again
+        self.assertIn(f"WARNING: LFSTUDIO_TEST_MEMINFO={self.studio.meminfo}, a test hook", self.studio.log.read_text())
+        argv = json.loads((self.dir / "upscale-jobs.log").read_text().splitlines()[0])["argv"]
+        self.assertEqual(argv[-4:], ["--job", str(self.regen(job) / "job.json"), "--parent", str(self.studio.proc.pid)])
 
     def test_job_json_and_request_fields(self):
         parent = self.clip()
@@ -2368,8 +2371,8 @@ class UpscaleQueue(UpscaleTest):
 
 
 class UpscaleCancel(UpscaleTest):
-    """Cancel takes a queued upscale out of the queue, or stops its job (SIGTERM to its process group); the card stays,
-    cancelled, and Delete moves its directory."""
+    """Cancel takes a queued upscale out of the queue, or stops its job (SIGTERM to its process group, SIGKILL 20 s
+    later if it is still there); the card stays, cancelled, and Delete moves its directory."""
     load_s, clip_s = 1, 3
     env = {"STUB_UPSCALE_S": "30"}
 
@@ -2435,12 +2438,39 @@ class UpscaleCancel(UpscaleTest):
         self.assertNotIn("case_dirs", job)                                  # nothing of its own ran
         self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
 
+    def test_a_job_that_ignores_sigterm(self):
+        """The real job's SIGTERM handler runs only once the GPU call under way returns (minutes at 4K): SIGKILL
+        follows 20 s after the SIGTERM."""
+        self.studio.stop()
+        self.studio.env["STUB_UPSCALE_TERM"] = "ignore"
+        self.studio.start()
+        uid = self.upscale(self.clip()["id"])
+        pid = self.upscaling(uid)
+        t0 = time.time()
+        self.assertEqual(self.cancel(uid)[0], 200)
+        time.sleep(3)
+        self.assertTrue(alive(pid))                                         # it ignored the SIGTERM
+        self.assertEqual(self.studio.job(uid)["status"], "upscaling")
+        job = self.studio.wait([uid], timeout=40)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertGreater(time.time() - t0, 19)
+        self.assertFalse(alive(pid))
+        self.assertIn(f"cancel: the upscale's job {pid} is still there 20 s after SIGTERM: SIGKILL",
+                      self.studio.log.read_text())
+        self.assertEqual(worker_groups(self.studio.proc.pid), [])
+
     def test_restart_while_running(self):
+        """A server killed hard takes its job with it (the job's --parent), so a studio started again never runs clips
+        next to an unguarded upscale."""
         parent = self.clip()
         uid = self.upscale(parent["id"])
-        self.upscaling(uid)
+        pid = self.upscaling(uid)
         self.studio.proc.kill()                                             # no clean shutdown
         self.studio.proc.wait()
+        deadline = time.time() + 10
+        while alive(pid) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(alive(pid), "the upscale's job outlived the server")
         self.studio.start()
         job = self.studio.job(uid)
         self.assertEqual((job["status"], job["error"]), ("failed", "server restarted"))
@@ -2572,9 +2602,22 @@ class UpscaleMemory(UpscaleTest):
             "UpscaleFailed: stopped: MemAvailable was below 5 GiB for 3 s (1.0 GiB; LFSTUDIO_UPSCALE_GUARD_GIB)")))
         self.assertLess(time.time() - t0, 8)
         self.assertFalse(alive(pid))
-        self.assertEqual(json.loads((self.regen(job) / "receipt.json").read_text())["state"], "cancelled")
-        self.assertIn("upscale: MemAvailable 1.0 GiB, below 5 GiB for 3 s: stopping its job",
+        # SIGKILL at once, not SIGTERM: the job had no time for its receipt
+        self.assertEqual(json.loads((self.regen(job) / "receipt.json").read_text())["state"], "running")
+        self.assertIn("upscale: MemAvailable 1.0 GiB, below 5 GiB for 3 s: stopping its job (SIGKILL)",
                       self.studio.log.read_text())
+
+    def test_guard_on_a_job_that_ignores_sigterm(self):
+        self.studio.stop()
+        self.studio.env["STUB_UPSCALE_TERM"] = "ignore"
+        self.studio.start()
+        uid = self.upscale(self.clip()["id"])
+        pid = self.upscaling(uid)
+        self.studio.set_memory(1)
+        t0 = time.time()
+        self.assertEqual(self.studio.wait([uid], timeout=30)[0]["status"], "failed")
+        self.assertLess(time.time() - t0, 6)                               # 3 s below the floor, then at once
+        self.assertFalse(alive(pid))
 
 
 class UpscaleMemoryChecksOff(UpscaleTest):

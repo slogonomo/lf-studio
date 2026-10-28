@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Stand-in for upscale/regen2k_job.py, the experimental Upscale's GPU job: no torch, no GPU, no weights.
 
-    python -I -B tests/stub/upscale_job.py --job <dir>/job.json
+    python -I -B tests/stub/upscale_job.py --job <dir>/job.json [--parent PID]
 
 The server runs it as it runs the real job (LFSTUDIO_UPSCALE_SCRIPT; tests/stub/studio.py sets that): in its own
 process group, with its output in worker.log. It reads job.json, prints the real job's progress lines
 ("[lf-studio] phase encoding", "loading", "refine 1/N" ... "refine N/N", "decoding", "saving"; N = the job's steps)
 spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (a small ffmpeg testsrc2 pattern,
 121 frames at 24 fps, no audio, as the real job's MP4 has none) and receipt.json. SIGTERM (Cancel) ends it at once,
-like the real job: a "cancelled" receipt, an error line, exit status 143.
-  STUB_UPSCALE_S     seconds the job takes (default 2)
-  STUB_UPSCALE_FAIL  1: fail after loading, as a job that ran out of memory ("[lf-studio] error ...", exit 1)
-  STUB_UPSCALE_LOG   a file each run appends a JSON line to ({"pid", "job"}), so a test can find a job it left
-                     running (the server killed with SIGKILL)
+like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status 143. With --parent, as the
+real job, it is killed when that process (the server) ends.
+  STUB_UPSCALE_S          seconds the job takes (default 2)
+  STUB_UPSCALE_FAIL       1: fail after loading, as a job that ran out of memory ("[lf-studio] error ...", exit 1)
+  STUB_UPSCALE_LOG        a file each run appends a JSON line to ({"pid", "job", "argv"}), so a test can find a
+                          job and its command line
+  STUB_UPSCALE_TERM       "ignore": SIGTERM does nothing, like the real job's handler while a long GPU call runs
+  STUB_UPSCALE_OUTPUT     "none": exit 0 without video_noaudio.mp4; "bad": a video_noaudio.mp4 that is not an MP4
+                          (the server's mux fails)
 Standard library only, so it runs under -I with any Python 3.10+.
 """
 import json
@@ -50,14 +54,26 @@ def write_json(path, data):
     os.replace(tmp, path)
 
 
+def tie_to_parent(parent):
+    """As the real job's: SIGKILL when `parent` ends; False if it has ended already."""
+    import ctypes
+    if ctypes.CDLL(None, use_errno=True).prctl(1, int(signal.SIGKILL), 0, 0, 0) != 0:     # 1 = PR_SET_PDEATHSIG
+        return True
+    return os.getppid() == parent
+
+
 def main(argv):
-    signal.signal(signal.SIGTERM, cancel)
+    if "--parent" in argv and not tie_to_parent(int(argv[argv.index("--parent") + 1])):
+        say("error", "the studio's server is gone; not starting")
+        return 143
+    ignore = os.environ.get("STUB_UPSCALE_TERM") == "ignore"
+    signal.signal(signal.SIGTERM, signal.SIG_IGN if ignore else cancel)
     job_path = Path(argv[argv.index("--job") + 1]).resolve()
     job = json.loads(job_path.read_text())
     out = Path(job["paths"].get("output") or job_path.parent)
     if os.environ.get("STUB_UPSCALE_LOG"):
         with open(os.environ["STUB_UPSCALE_LOG"], "a") as log:
-            log.write(json.dumps({"pid": os.getpid(), "job": str(job_path)}) + "\n")
+            log.write(json.dumps({"pid": os.getpid(), "job": str(job_path), "argv": argv[1:]}) + "\n")
     receipt = {"state": "running", "pid": os.getpid(), "job": job, "times_s": {}, "stub": True}
     started, status = time.time(), 0
     phases = ["encoding", "loading"] + [f"refine {i}/{job['steps']}" for i in range(1, job["steps"] + 1)] + \
@@ -74,10 +90,15 @@ def main(argv):
             receipt["times_s"][key] = round(receipt["times_s"].get(key, 0) + time.time() - t0, 2)
         width, height = SIZE[job["resolution"]]
         partial = out / ".video_noaudio.mp4.partial.mp4"
-        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
-                        f"testsrc2=s={width}x{height}:r=24", "-frames:v", "121", "-an", "-c:v", "libx264",
-                        "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(partial)], check=True, timeout=120)
-        os.replace(partial, out / "video_noaudio.mp4")
+        output = os.environ.get("STUB_UPSCALE_OUTPUT")
+        if output == "bad":
+            partial.write_bytes(b"not an mp4\n" * 100)
+        elif output != "none":
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+                            f"testsrc2=s={width}x{height}:r=24", "-frames:v", "121", "-an", "-c:v", "libx264",
+                            "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(partial)], check=True, timeout=120)
+        if output != "none":
+            os.replace(partial, out / "video_noaudio.mp4")
         receipt.update(state="done", output={"file": "video_noaudio.mp4", "size": [width, height], "frames": 121})
     except Cancelled as error:
         receipt.update(state="cancelled", error=str(error))

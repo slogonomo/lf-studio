@@ -417,6 +417,8 @@ class LineAndCommandTests(unittest.TestCase):
     def test_worker_command(self):
         self.assertEqual(job_module.worker_command(Path("/env/bin/python"), SCRIPT, Path("/out/job.json")),
                          ["/env/bin/python", "-I", "-B", str(SCRIPT), "--job", "/out/job.json"])
+        self.assertEqual(job_module.worker_command(Path("/env/bin/python"), SCRIPT, Path("/out/job.json"), 4321)[-2:],
+                         ["--parent", "4321"])
 
     def test_worker_environment(self):
         env = job_module.worker_environment({"HF_TOKEN": "hf_x", "HUGGING_FACE_HUB_TOKEN": "hf_y", "PATH": "/bin",
@@ -634,6 +636,48 @@ class MainTests(Fixture):
         self.assertEqual((status, receipt["state"], receipt["exit_status"]), (143, "cancelled", 143))
         self.assertEqual(receipt["error"], "stopped by SIGTERM")
         self.assertEqual(receipt["phase"], "refine 1/2")
+
+
+def gone(pid):
+    """Whether a process has ended (a zombie that its new parent has not reaped yet counts as ended)."""
+    try:
+        return (Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):
+        return True
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_PDEATHSIG is Linux's")
+class ParentTests(Fixture):
+    """--parent: the job is killed when the studio's server ends, and does not start when it is gone already. In
+    child processes only: tie_to_parent in this one would tie the test runner to its own parent."""
+
+    def test_killed_with_its_parent(self):
+        child = (f"import importlib.util, os, sys, time; spec = importlib.util.spec_from_file_location('j', "
+                 f"{str(SCRIPT)!r}); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); "
+                 "print(m.tie_to_parent(int(sys.argv[1])), flush=True); time.sleep(60)")
+        middle = ("import subprocess, sys; p = subprocess.Popen([sys.executable, '-I', '-c', sys.argv[1], "
+                  "str(__import__('os').getpid())], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True); "
+                  "print(p.pid, p.stdout.readline().strip(), flush=True)")
+        result = subprocess.run([sys.executable, "-I", "-c", middle, child], capture_output=True, text=True,
+                                timeout=60, check=True)                      # the middle process ends here
+        pid, tied = result.stdout.split()
+        self.assertEqual(tied, "True")
+        deadline = time.time() + 10
+        while not gone(int(pid)) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(gone(int(pid)), "the job outlived its parent")
+
+    def test_a_parent_gone_already(self):
+        probe = (f"import importlib.util, os; spec = importlib.util.spec_from_file_location('j', {str(SCRIPT)!r}); "
+                 "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); "
+                 "print(m.tie_to_parent(os.getppid()), m.tie_to_parent(os.getppid() + 1))")
+        result = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.stdout.split(), ["True", "False"])
+        result = self.script("--job", str(self.write_job()), "--parent", str(os.getpid() + 1))
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        self.assertEqual(job_module.parse_line(result.stdout.splitlines()[-1]),
+                         ("error", f"the studio's server (pid {os.getpid() + 1}) is gone; not starting"))
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])        # nothing written
 
 
 class StandInTensor:

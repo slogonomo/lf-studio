@@ -51,6 +51,8 @@ versions). Progress on stdout: "[lf-studio] phase <name>" for encoding, loading,
 that order (encoding only for the final source or the clip's audio), and "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loaded), 143 stopped by SIGTERM.
 --check validates job.json and the inputs, prints the plan and exits (0 or 2) without torch and without writing.
+--parent PID (the server passes its own): the job is killed when that process ends (PR_SET_PDEATHSIG), so it never
+outlives the studio that guards its memory; if that process is gone already, it exits at once (143).
 
 job.json: {"version": 1, "case": DIR, "source": "final"|"draft", "resolution": "1080p"|"2k"|"4k", "steps": 1-4,
 "start_sigma": 0<x<1 | null (steps 2 or 3), "seed": INT, "audio": "clip"|"silence", "preread": BOOL (false),
@@ -449,9 +451,11 @@ def drop_from_page_cache(paths):
 
 # ---------------------------------------------------------------- processes and lines (standard library only)
 
-def worker_command(python, script, job_path):
-    """How the server runs a job: -I (no user site, no PYTHONPATH, no script dir) and -B (no .pyc files)."""
-    return [str(python), "-I", "-B", str(script), "--job", str(job_path)]
+def worker_command(python, script, job_path, parent=None):
+    """How the server runs a job: -I (no user site, no PYTHONPATH, no script dir) and -B (no .pyc files); with
+    `parent` (the server's pid) the job ends when the server does (--parent)."""
+    return [str(python), "-I", "-B", str(script), "--job", str(job_path)] + \
+        (["--parent", str(int(parent))] if parent is not None else [])
 
 
 # the Hub must never be asked (a missed local path would download with the user's token); NVIDIA's own loaders
@@ -916,15 +920,40 @@ def cancel(signum, frame):
     raise Cancelled("stopped by SIGTERM")
 
 
+PR_SET_PDEATHSIG = 1
+
+
+def tie_to_parent(parent):
+    """SIGKILL this process when `parent` (the studio's server, which started it) ends: then nothing guards the
+    job's memory any more, and a studio started again would run clips next to it. Python's SIGTERM handler waits for
+    the GPU call under way, which can take minutes, so SIGKILL. Returns False when `parent` is gone already (this
+    process was handed to another parent before the prctl), True otherwise, also where prctl is not available."""
+    if not sys.platform.startswith("linux"):
+        return True
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0) != 0:
+            return True
+    except (OSError, AttributeError):
+        return True
+    return os.getppid() == parent
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--job", required=True, help="job.json written by the studio's server")
     parser.add_argument("--check", action="store_true",
                         help="validate the job and its inputs, print the plan and exit; no torch, no files written")
+    parser.add_argument("--parent", type=int, metavar="PID",
+                        help="the studio server's pid: end with it (the server passes its own)")
     args = parser.parse_args(argv)
     job_path = Path(os.path.abspath(args.job))
     if args.check:
         return check(job_path)
+    if args.parent is not None and not tie_to_parent(args.parent):
+        print(error_line(f"the studio's server (pid {args.parent}) is gone; not starting"), flush=True)
+        return EXIT_CANCELLED
 
     signal.signal(signal.SIGTERM, cancel)
     apply_environment(os.environ)

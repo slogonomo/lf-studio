@@ -96,8 +96,9 @@ process, stopping it under `bench/memguard-run.sh`, the report, the quality step
 `tests/test_upscale.py` covers `upscale/regen2k_job.py` on the CPU: job.json, the clip's and the weights' files (a
 5 s 16:9 MP4 made by ffmpeg), the text check on stand-in tensors, the command lines (the mux run with ffmpeg) and the
 environment, the progress lines, the memory trace, `--check`, the receipt when a job is done, fails, is refused or
-gets SIGTERM, and `run()` with a stand-in torch and a stand-in of NVIDIA's `open_h3`. Its torch tests (the merger,
-the FFN chunks, the tensor checks) run where torch is importable (CPU is enough) and are skipped otherwise.
+gets SIGTERM, `--parent` (the job dies with the server), and `run()` with a stand-in torch and a stand-in of NVIDIA's
+`open_h3`. Its torch tests (the merger, the lean block forward against a stock-style block, the tensor checks) run
+where torch is importable (CPU is enough) and are skipped otherwise.
 
 The patch has its own 135 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 The RTX 5090 patch has 201 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).
