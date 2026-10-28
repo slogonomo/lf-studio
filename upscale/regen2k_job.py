@@ -27,10 +27,12 @@ What this wrapper changes, and why:
 - The strength: start_sigma re-noises from there on NVIDIA's shifted_grid; null keeps NVIDIA's schedule for the
   steps (3 steps: 0.909375, which regenerates faces: a sharper, different-looking person).
 - Memory, for GB10 again. The DiT is freed before the decode (a job is the only work in its process; at 4K the
-  decode's pixels don't fit next to it). At 4K the FFN runs over the sequence in 8 chunks (row-wise, so the same
-  result up to GEMM tiling). Once the weights are in GPU memory their page cache is dropped (on GB10 it takes the
-  same memory). With "preread", 8 threads read the weight files into the page cache before the load (the loaders
-  fault them in through mmap at ~0.2 GB/s).
+  decode's pixels don't fit next to it). At 4K every transformer block runs lean_forward: diffusers' block forward
+  with its row-wise parts over the sequence in 16 chunks and q/k/v written straight into SDPA's layout (on GB10
+  bit-identical to the stock forward, with 2.5x less activation memory). The stock forward with only its FFN in 8
+  chunks ran out of memory at 4K. Once the weights are in GPU memory their page cache is dropped (on GB10 it takes
+  the same memory). With "preread" (off unless asked for), 8 threads read the weight files into the page cache
+  before the load; it did not shorten the one load measured with it.
 - The output has no audio (video_noaudio.mp4, NVIDIA's encode_mp4, CRF 10): the server muxes the clip's audio in.
 
 Scope: t2va clips, 16:9, 5 s (1344x768, 121 frames), the shapes NVIDIA's pipeline is fixed at. fl2va and ref2va need
@@ -38,8 +40,10 @@ a text-only encode of the prompt (their conditioning interleaves the pictures), 
 to NVIDIA's fixed shapes: follow-ups.
 
 Measured on a DGX Spark (GB10) with the bench wrapper this job is derived from, one 5 s clip, standard forward and
-VAE, cuDNN attention: load 445 s; per refine step 144 s at 1080p and 378 s at 2K; decode 104 / 180 s; MP4 8 / 16 s;
-peak allocated 81 / 91 GiB; lowest MemAvailable 28 / 15 GiB. 4K: estimated at ~29 min per step.
+VAE, cuDNN attention: load 445-539 s; per refine step 144 s at 1080p and 378 s at 2K; decode 104 / 180 s; MP4 8 /
+16 s; peak allocated 81 / 91 GiB; lowest MemAvailable 28 / 15 GiB. 4K, with the lean blocks (and a load through
+device_map, which this job does not use): steps of 1687 and 1701 s, decode 399 s, peak allocated 94.5 GiB, lowest
+MemAvailable 13.8 GiB. This job's own 4K path has not run on the GPU yet.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done,
 failed or cancelled; times per stage, steps, sigmas, peak GPU memory, lowest MemAvailable, the inputs' sha256,
@@ -82,7 +86,9 @@ AUDIO = ("clip", "silence")
 SIZES = {"1080p": (1920, 1080), "2k": (2560, 1440), "4k": (3840, 2160)}
 NVIDIA_STEPS = (2, 3)            # steps with a schedule of their own (sigmas.SCHEDULES); others need start_sigma
 MAX_STEPS = 4
-FFN_CHUNKS = {"4k": 8}           # sequence chunks of every block's FFN; 1 elsewhere
+# sequence chunks of lean_forward, which every transformer block runs at these sizes (the stock forward elsewhere).
+# 4K: the setup of the one 4K run that finished on GB10; the stock forward with its FFN in 8 chunks ran out of memory.
+LEAN_CHUNKS = {"4k": 16}
 VAE_BATCH = 26                   # NVIDIA's default
 VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior sample of the final MP4)
 # Provisional, until the quality measurements settle them: strength name -> (start_sigma, steps); None = NVIDIA's
@@ -94,7 +100,8 @@ DEFAULT_STRENGTH = "balanced"
 DEFAULT_AUDIO = "clip"
 # The studio's memory floor before a job starts, and its guard while one runs (GiB of MemAvailable). Measured at 2K:
 # MemAvailable 117.7 GiB on the idle box, lowest 15 GiB during the job, so the job takes ~103 GiB; 110 (the launcher's
-# own floor for the studio) keeps the guard's 5 GiB clear. 4K is not measured yet.
+# own floor for the studio) keeps the guard's 5 GiB clear. At 4K (the bench run with the lean blocks) the lowest was
+# 13.8 GiB of 117.3, so ~104 GiB.
 MIN_FREE_GIB = 110
 GUARD_GIB = 5
 
@@ -388,7 +395,7 @@ def plan(job, schedules, shifted_grid):
     else:
         sigmas = list(shifted_grid(job["start_sigma"], job["steps"]))
     return {"size": list(SIZES[job["resolution"]]), "frames": FINAL["frames"], "steps": len(sigmas) - 1,
-            "sigmas": sigmas, "ffn_chunks": FFN_CHUNKS.get(job["resolution"], 1)}
+            "sigmas": sigmas, "lean_chunks": LEAN_CHUNKS.get(job["resolution"])}
 
 
 # ---------------------------------------------------------------- weights in the page cache (standard library only)
@@ -599,18 +606,69 @@ class OneShotMerger:
         raise RuntimeError("OneShotMerger: no MXFP8 layers (standard forward only)")
 
 
-def chunk_ffn(model, chunks):
-    """Run every block's FFN over the sequence in `chunks` pieces (rows are independent in an FFN). Returns the
-    number of blocks changed."""
+def lean_forward(block, hidden_states, temb, adaln_indices, rotary_emb, attention_mask=None, *, chunks, rotary):
+    """diffusers' MiniMaxH3TransformerBlock.forward (diffusers 0.40.0) with less memory, for 4K on GB10. The stock
+    forward keeps several full-sequence tensors alive at once (the modulations gathered per row, q/k/v and the
+    attention backend's copies of them, the attention output, the FFN's 2 x 28,672-wide hidden); at 4K (~302k rows)
+    that does not fit next to the DiT. Here everything but the attention runs over the sequence in `chunks` pieces
+    (it is row-wise), q/k/v are written straight into (1, heads, rows, head_dim) buffers that SDPA takes as they are,
+    and only q/k/v, the attention output and the block output are full-sized. The same operations in the same order
+    per row (only the GEMMs' row counts differ); on GB10 its output was bit-identical to the stock forward's at 4,096
+    and 37,910 rows with cuDNN attention, with 2.5x less activation memory. `rotary`: diffusers' _apply_rotary_emb."""
     import torch
-    if chunks < 2:
-        return 0
+    import torch.nn.functional as F
+    attn = block.attn
+    if attention_mask is not None or hidden_states.shape[0] != 1 or getattr(attn, "fused_projections", False):
+        raise RuntimeError("lean_forward: one unmasked sequence and separate q/k/v projections only")
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(temb)
+    rows = hidden_states.shape[1]
+    step = -(-rows // chunks)
+    heads = attn.heads
+    q = torch.empty((1, heads, rows, attn.head_dim), dtype=hidden_states.dtype, device=hidden_states.device)
+    k = torch.empty_like(q)
+    v = torch.empty_like(q)
+    for a in range(0, rows, step):
+        b = min(rows, a + step)
+        index = adaln_indices[a:b]
+        x = block.norm1(hidden_states[:, a:b])
+        x = x * (1.0 + scale_msa.index_select(0, index)) + shift_msa.index_select(0, index)
+        qa = attn.norm_q(attn.to_q(x).unflatten(-1, (heads, -1)))
+        ka = attn.norm_k(attn.to_k(x).unflatten(-1, (heads, -1)))
+        va = attn.to_v(x).unflatten(-1, (heads, -1))
+        if rotary_emb is not None:
+            cos, sin = rotary_emb
+            qa = rotary(qa, cos[a:b], sin[a:b])
+            ka = rotary(ka, cos[a:b], sin[a:b])
+        q[:, :, a:b] = qa.transpose(1, 2)
+        k[:, :, a:b] = ka.transpose(1, 2)
+        v[:, :, a:b] = va.transpose(1, 2)
+        del x, qa, ka, va
+    out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False)
+    del q, k, v
+    result = torch.empty_like(hidden_states)
+    for a in range(0, rows, step):
+        b = min(rows, a + step)
+        index = adaln_indices[a:b]
+        o = out[:, :, a:b].transpose(1, 2).flatten(2, 3).type_as(hidden_states)
+        h = hidden_states[:, a:b] + gate_msa.index_select(0, index) * attn.to_out[1](attn.to_out[0](o))
+        y = block.norm2(h) * (1.0 + scale_mlp.index_select(0, index)) + shift_mlp.index_select(0, index)
+        result[:, a:b] = h + gate_mlp.index_select(0, index) * block.ff(y)
+        del o, h, y
+    return result
+
+
+def install_lean_blocks(model, chunks):
+    """Every transformer block of the DiT runs lean_forward, with SDPA pinned to cuDNN (the standard forward's own
+    attention, _native_cudnn). Returns the number of blocks."""
+    import types
+    from diffusers.models.transformers.transformer_minimax_h3 import _apply_rotary_emb
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    def forward(self, *args, **kwargs):
+        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+            return lean_forward(self, *args, chunks=chunks, rotary=_apply_rotary_emb, **kwargs)
     for block in model.transformer_blocks:
-        def chunked(x, *args, _forward=block.ff.forward, **kwargs):
-            if x.dim() < 2:
-                return _forward(x, *args, **kwargs)
-            return torch.cat([_forward(part, *args, **kwargs) for part in x.chunk(chunks, dim=-2)], dim=-2)
-        block.ff.forward = chunked
+        block.forward = types.MethodType(forward, block)
     return len(model.transformer_blocks)
 
 
@@ -759,8 +817,9 @@ def run(job, files, receipt, trace):
     pipe.node.load_model("upscaler", pipe.device, "bf16")    # the node reads its checkpoint on first use: now
     drop_from_page_cache(loaded_files(job))
     receipt["merge"] = {"weights": pipe.merger.merged, "seconds": round(pipe.merger.seconds, 2)}
-    receipt["ffn_chunks"] = FFN_CHUNKS.get(job["resolution"], 1)
-    chunk_ffn(pipe.model, receipt["ffn_chunks"])
+    receipt["lean_chunks"] = LEAN_CHUNKS.get(job["resolution"])
+    if receipt["lean_chunks"]:
+        install_lean_blocks(pipe.model, receipt["lean_chunks"])
     if clip_audio is not None:
         if tuple(clip_audio.shape) != tuple(pipe.audio.shape):
             raise RuntimeError(f"the clip's audio latent is {tuple(clip_audio.shape)}, NVIDIA's silence "

@@ -5,8 +5,8 @@ run()), and run() itself with a stand-in torch and a stand-in of NVIDIA's open_h
 weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters, pipeline and upscaler), the
 weights are small files.
 
-The parts that need torch (the merger, the FFN chunks, the tensor checks) run on the CPU when torch is importable
-and are skipped otherwise. python3 -m unittest tests.test_upscale -v   (needs ffmpeg)
+The parts that need torch (the merger, the lean block forward, the tensor checks) run on the CPU when torch is
+importable and are skipped otherwise. python3 -m unittest tests.test_upscale -v   (needs ffmpeg)
 """
 import contextlib
 import hashlib
@@ -393,11 +393,11 @@ class InputTests(Fixture):
         job = job_module.parse_job(self.job(steps=3, start_sigma=None), "/")
         self.assertEqual(job_module.plan(job, schedules, grid),
                          {"size": [2560, 1440], "frames": 121, "steps": 3, "sigmas": [0.9, 0.8, 0.6, 0.0],
-                          "ffn_chunks": 1})
+                          "lean_chunks": None})
         job = job_module.parse_job(self.job(resolution="4k", steps=2, start_sigma=0.5), "/")
         planned = job_module.plan(job, schedules, grid)
-        self.assertEqual((planned["sigmas"], planned["size"], planned["ffn_chunks"]),
-                         ([0.5, 0.25, 0.0], [3840, 2160], 8))
+        self.assertEqual((planned["sigmas"], planned["size"], planned["lean_chunks"]),
+                         ([0.5, 0.25, 0.0], [3840, 2160], 16))
         with self.assertRaisesRegex(JobError, "no 3-step schedule"):
             job_module.plan(job_module.parse_job(self.job(steps=3, start_sigma=None), "/"), {2: [0.7, 0.4, 0]}, grid)
 
@@ -514,15 +514,15 @@ class ScriptTests(Fixture):
         result = self.script("--job", str(path), "--check")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         planned = json.loads(result.stdout)
-        self.assertEqual((planned["ok"], planned["sigmas"], planned["size"], planned["steps"], planned["ffn_chunks"]),
-                         (True, [0.7, 0.35, 0.0], [2560, 1440], 2, 1))
+        self.assertEqual((planned["ok"], planned["sigmas"], planned["size"], planned["steps"], planned["lean_chunks"]),
+                         (True, [0.7, 0.35, 0.0], [2560, 1440], 2, None))
         self.assertEqual(set(planned["inputs"]), {"conditioning", "final", "pcm"})
         self.assertEqual(planned["job"]["meta"]["strength"], "balanced")
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])
         path = self.write_job(resolution="4k", steps=3, start_sigma=None, source="draft", audio="silence")
         planned = json.loads(self.script("--job", str(path), "--check", check=True).stdout)
-        self.assertEqual((planned["sigmas"], planned["size"], planned["ffn_chunks"]),
-                         ([0.9, 0.8, 0.6, 0.0], [3840, 2160], 8))
+        self.assertEqual((planned["sigmas"], planned["size"], planned["lean_chunks"]),
+                         ([0.9, 0.8, 0.6, 0.0], [3840, 2160], 16))
         self.assertEqual(set(planned["inputs"]), {"conditioning", "final", "draft"})
 
     def test_check_refuses(self):
@@ -808,14 +808,17 @@ class RunTests(Fixture):
         with mock.patch.dict(sys.modules, {"torch": fake}), mock.patch.object(sys, "path", list(sys.path)), \
                 mock.patch.object(job_module, "apply_environment"), \
                 mock.patch.object(job_module, "encode_audio", return_value=clip_audio) as encode_audio, \
+                mock.patch.object(job_module, "install_lean_blocks", return_value=3) as lean, \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
             status = job_module.main(["--job", str(self.write_job(**changes))])
             calls = list(sys.modules["open_h3.pipeline"].CALLS) if "open_h3.pipeline" in sys.modules else []
         phases = [p[1] for p in map(job_module.parse_line, stdout.getvalue().splitlines()) if p and p[0] == "phase"]
+        self.lean = lean
         return status, json.loads((self.out / "receipt.json").read_text()), calls, phases, encode_audio
 
     def test_final_with_the_clip_audio(self):
         status, receipt, calls, phases, encode_audio = self.run_job()
+        lean = self.lean
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
         self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
         self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage",
@@ -837,7 +840,8 @@ class RunTests(Fixture):
                                                    "refine", "vae_decode", "mp4"})
         self.assertEqual(set(receipt["peak_gib"]), set(receipt["times_s"]))
         self.assertEqual(receipt["peak_allocated_gib"], 81.0)
-        self.assertEqual((receipt["merge"]["weights"], receipt["ffn_chunks"], receipt["text_rows"]), (0, 1, 41))
+        self.assertEqual((receipt["merge"]["weights"], receipt["lean_chunks"], receipt["text_rows"]), (0, None, 41))
+        lean.assert_not_called()                                    # the stock block forward below 4K
         self.assertEqual((receipt["prompt"], receipt["versions"]["gpu"], receipt["versions"]["torch"]),
                          ("a test", "stand-in GPU", "0.0+stand-in"))
         self.assertEqual(receipt["allocated_before_decode_gib"], 5.0)
@@ -846,6 +850,7 @@ class RunTests(Fixture):
     def test_draft_with_silence_at_4k(self):
         status, receipt, calls, phases, encode_audio = self.run_job(source="draft", audio="silence",
                                                                      resolution="4k", steps=3, start_sigma=None)
+        lean = self.lean
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
         self.assertEqual(phases, ["loading", "refine 1/3", "refine 2/3", "refine 3/3", "decoding", "saving"])
         names = [c[0] for c in calls]
@@ -854,9 +859,21 @@ class RunTests(Fixture):
         self.assertEqual(calls[3], ("upscale", (24, 37, 48, 84), "draft"))
         self.assertEqual(calls[5][4], "silence")
         encode_audio.assert_not_called()
-        self.assertEqual((receipt["sigmas"], receipt["ffn_chunks"], receipt["output"]["size"]),
-                         ([0.9, 0.8, 0.6, 0.0], 8, [3840, 2160]))
+        self.assertEqual((receipt["sigmas"], receipt["lean_chunks"], receipt["output"]["size"]),
+                         ([0.9, 0.8, 0.6, 0.0], 16, [3840, 2160]))
+        self.assertEqual(lean.call_count, 1)                        # the DiT's blocks, 16 chunks, after the load
+        self.assertEqual(lean.call_args.args[1], 16)
+        self.assertEqual(len(lean.call_args.args[0].transformer_blocks), 3)
         self.assertEqual(set(receipt["inputs_sha256"]), {"conditioning", "final", "draft"})
+
+    def test_the_stand_in_load_wants_weights_only(self):
+        load = stand_in_torch(self.loaded).load
+        self.assertIs(load(self.case / "qwen" / "conditioning.pt", map_location="cpu", weights_only=True),
+                      self.loaded["conditioning.pt"])
+        for kwargs in ({"map_location": "cpu"}, {"map_location": "cpu", "weights_only": False},
+                       {"weights_only": True}, {"map_location": "cuda", "weights_only": True}):
+            with self.assertRaises(AssertionError):
+                load(self.case / "qwen" / "conditioning.pt", **kwargs)
 
     def test_another_package_is_refused(self):
         (self.package / "open_h3" / "adapters.py").write_text(
@@ -908,23 +925,77 @@ class TorchTests(unittest.TestCase):
         self.assertEqual(job_module.OneShotMerger(model, {"refine": [(pairs, 0.0)]}, torch.device("cpu")).merged, 0)
         self.assertTrue(torch.equal(model[0].weight, before))
 
-    def test_ffn_chunks(self):
+    def test_lean_forward_matches_the_stock_block(self):
+        """lean_forward against a small block written as diffusers' MiniMaxH3TransformerBlock.forward and its
+        attention processor (SDPA), with diffusers' rotary embedding: the same result for any number of chunks, also
+        ones that do not divide the rows."""
         torch.manual_seed(0)
+        nn, F = torch.nn, torch.nn.functional
+        hidden, heads, dim, table = 32, 4, 8, 6
 
-        class Block(torch.nn.Module):
+        def rotary(x, cos, sin):                         # diffusers' _apply_rotary_emb
+            width = cos.shape[-1]
+            turned, passed = x[..., :width], x[..., width:]
+            cos, sin = cos.to(x.dtype)[None, :, None, :], sin.to(x.dtype)[None, :, None, :]
+            x1, x2 = turned.chunk(2, dim=-1)
+            return torch.cat((turned * cos + torch.cat((-x2, x1), dim=-1) * sin, passed), dim=-1).contiguous()
+
+        class Modulation(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.ff = torch.nn.Sequential(torch.nn.Linear(16, 64), torch.nn.GELU(), torch.nn.Linear(64, 16))
+                self.linear = nn.Linear(6 * hidden, 6 * hidden)
 
-        model = torch.nn.Module()
-        model.transformer_blocks = torch.nn.ModuleList([Block(), Block()])
-        x = torch.randn(1, 37, 16)
-        expected = [block.ff(x) for block in model.transformer_blocks]
-        self.assertEqual(job_module.chunk_ffn(model, 1), 0)
-        self.assertEqual(job_module.chunk_ffn(model, 8), 2)
-        for block, want in zip(model.transformer_blocks, expected):
-            self.assertTrue(torch.allclose(block.ff(x), want, atol=1e-5))
-            self.assertTrue(torch.allclose(block.ff(x[0]), want[0], atol=1e-5))
+            def forward(self, temb):                     # six (table rows, hidden) tensors
+                return self.linear(temb).chunk(6, dim=-1)
+
+        class Attention(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.heads, self.head_dim = heads, dim
+                self.to_q = nn.Linear(hidden, heads * dim, bias=False)
+                self.to_k = nn.Linear(hidden, heads * dim, bias=False)
+                self.to_v = nn.Linear(hidden, heads * dim, bias=False)
+                self.norm_q, self.norm_k = nn.RMSNorm(dim), nn.RMSNorm(dim)
+                self.to_out = nn.ModuleList([nn.Linear(heads * dim, hidden, bias=False), nn.Dropout(0.0)])
+
+            def forward(self, x, rotary_emb, attention_mask=None):      # MiniMaxH3AttnProcessor
+                q = rotary(self.norm_q(self.to_q(x).unflatten(-1, (heads, -1))), *rotary_emb)
+                k = rotary(self.norm_k(self.to_k(x).unflatten(-1, (heads, -1))), *rotary_emb)
+                v = self.to_v(x).unflatten(-1, (heads, -1))
+                out = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
+                return self.to_out[1](self.to_out[0](out.transpose(1, 2).flatten(2, 3).type_as(q)))
+
+        class Block(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.norm1, self.norm2 = nn.RMSNorm(hidden), nn.RMSNorm(hidden)
+                self.attn = Attention()
+                self.ff = nn.Sequential(nn.Linear(hidden, 64), nn.GELU(), nn.Linear(64, hidden))
+                self.adaln_proj = Modulation()
+
+            def forward(self, x, temb, index, rotary_emb, attention_mask=None):     # the stock block forward
+                shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
+                y = self.norm1(x) * (1.0 + scale_msa.index_select(0, index)) + shift_msa.index_select(0, index)
+                x = x + gate_msa.index_select(0, index) * self.attn(y, rotary_emb, attention_mask)
+                y = self.norm2(x) * (1.0 + scale_mlp.index_select(0, index)) + shift_mlp.index_select(0, index)
+                return x + gate_mlp.index_select(0, index) * self.ff(y)
+
+        block = Block().eval()
+        temb = torch.randn(table, 6 * hidden)
+        for rows in (37, 64):
+            x = torch.randn(1, rows, hidden)
+            index = torch.randint(0, table, (rows,))
+            angles = torch.rand(rows, 3) * 6.28          # the rotary embedding turns 6 of each head's 8 channels
+            cos, sin = torch.cat([angles.cos()] * 2, -1), torch.cat([angles.sin()] * 2, -1)
+            with torch.no_grad():
+                want = block(x, temb, index, (cos, sin))
+                for chunks in (1, 4, 16):
+                    got = job_module.lean_forward(block, x, temb, index, (cos, sin), chunks=chunks, rotary=rotary)
+                    self.assertEqual(got.shape, want.shape)
+                    self.assertTrue(torch.allclose(got, want, atol=1e-5), (rows, chunks))
+        with self.assertRaisesRegex(RuntimeError, "unmasked"):
+            job_module.lean_forward(block, x, temb, index, (cos, sin), torch.ones(rows, rows, dtype=torch.bool),
+                                    chunks=4, rotary=rotary)
 
     def test_tensor_inputs(self):
         cond = {"prompt_embeds": torch.randn(1, 5, 5120), "text_token_tags": torch.ones(5, dtype=torch.int64),
