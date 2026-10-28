@@ -120,8 +120,8 @@ VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior 
 LOADS = ("fast", "standard")
 DEFAULT_LOAD = "fast"
 FASTLOAD = Path(__file__).resolve().parent / "fastload.py"
-# the patch's switches for its loader (bin/env.example), which the job inherits from the studio: either one off and
-# fastload reads nothing with O_DIRECT, every file goes through mmap (fastload reads them at import, so)
+# the patch's switches for its loader (bin/env.example), which the job inherits from the studio and fastload reads at
+# import: either one anything but 1 (unset is 1) and it reads nothing with O_DIRECT, every file goes through mmap
 FASTLOAD_SWITCHES = ("SPARK_FAST_SAFETENSORS", "SPARK_DIRECT_IO")
 DIRECT_LOAD = ("MiniMaxH3Transformer3DModel", "AutoencoderKLMiniMaxH3", "AutoencoderKLMiniMaxH3Audio")   # diffusers'
 # Provisional, until the quality measurements settle them: strength name -> (start_sigma, steps); None = NVIDIA's
@@ -277,7 +277,7 @@ def studio_settings(environ):
     """The studio's LFSTUDIO_UPSCALE_* settings (bin/env.example) from an environment, with their defaults:
     (settings, problems). webui/server.py stops with the problems and bin/lf-studio --check refuses with them, so
     both say the same. LFSTUDIO_UPSCALE itself (0 or 1) is checked by each of them. "o_direct" is whether the fast
-    load's reads can use O_DIRECT: the patch's FASTLOAD_SWITCHES, which the job inherits, are not 0."""
+    load's reads can use O_DIRECT: the patch's FASTLOAD_SWITCHES, which the job inherits, are both 1 (or unset)."""
     home = Path(environ.get("LFSTUDIO_HOME") or Path.home() / "sol-h3").expanduser()
     checkpoints = Path(environ.get("LFSTUDIO_CHECKPOINTS") or home / "checkpoints").expanduser()
     settings, problems = {}, []
