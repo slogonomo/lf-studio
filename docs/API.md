@@ -482,6 +482,9 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   or whose files are gone (its session directory; for `source` `draft` its Stage-1 latent, for `audio` `clip` its
   Stage-1 audio). 429 when the queue is full.
 
+From a program: `lf-cli upscale` ([CLI](#cli-binlf-cli)) or the MCP tool `upscale` ([Tools](#tools)). Behind
+spark-switchboard the POST starts a stopped studio, as a submit does; send `X-Switchboard-Wait` with it.
+
 Cancel, Delete, Undo, `/api/jobs/<id>[?wait=]`, `/video/<id>` and `/poster/<id>` work on an upscale as on a clip.
 It downloads as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>.mp4`, and its `LFSTUDIO_PUBLISH_DIR` copy
 is named as the clip's with `_<resolution>` after it. Its files are in a directory of their own, so Delete moves
@@ -559,6 +562,8 @@ lf-cli wait ID [--out PATH] [--poster] [--timeout S]
 lf-cli status [ID]
 lf-cli cancel ID
 lf-cli fetch ID [--out PATH] [--poster] [--wake]
+lf-cli upscale ID [--resolution 1080p|2k|4k] [--source final|draft] [--strength faithful|balanced|full]
+       [--audio clip|silence] [--seed N] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
 lf-cli guide                  # the prompt guide
 lf-cli mcp                    # the MCP server on stdin/stdout
 common options, before or after the command: --url URL  --json  --quiet
@@ -592,6 +597,15 @@ for example with `--prompt` (`--prompt-file -` also keeps CRLF, on Linux).
 **`wait ID`** waits for a clip and saves it as above. **`fetch ID`** saves a finished clip (also one made in the
 page) without waiting; a clip still running is exit 4. **`status`** prints one line per clip: the queued and
 running ones, oldest first, then the newest 5 finished ones; `status ID` one clip. **`cancel ID`** cancels it.
+
+**`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s 16:9
+t2va clip ([Upscale](#upscale-experimental-post-apiupscale)) and works as `generate` from there: without `--wait`,
+`--out` or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
+`lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>.mp4`. It sends only the choices given, so the studio's
+defaults hold for the rest (2K, the final clip, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the clip's
+seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes 10 min to 2 h, so `--timeout` and a
+later `wait` are the usual way. `status` shows it as `2k upscale of <clip id8>, balanced, ...`, `cancel` stops it
+within seconds, and the studio's refusals (`Upscale needs a 5 s 16:9 clip ...`, the Upscale off) are exit 2.
 
 **Waiting** is a loop of `GET /api/jobs/<id>/video?wait=15`, so the MP4 comes on the connection that saw the clip
 finish. It shows one progress line per change on stderr (`queued 5cfd57b0 (fl2va, landscape, 5 s, seed 1234),
@@ -631,6 +645,8 @@ id=$(lf-cli generate --prompt-file t2va.txt)                                   #
 lf-cli status "$id"
 lf-cli wait "$id" --out clip.mp4 --poster --timeout 600
 lf-cli --json fetch "$id" --out clips/
+up=$(lf-cli upscale "$id" --resolution 2k --strength faithful)                # experimental: queue an upscale
+lf-cli wait "$up" --out clips/                                                 # ~25 min later: ..._2k.mp4
 ```
 
 ## MCP server: `lf-cli mcp`
@@ -665,6 +681,7 @@ host registered with `sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; 
 | `status` | `id` | one clip's record; without an id, the clips this session submitted, then the queue and the newest clips. Never waits, downloads or starts a stopped studio. |
 | `cancel` | `id` (required) | cancels a queued or running clip |
 | `fetch` | `id` (required), `out`, `poster`, `wake` (default false) | saves a finished clip (also one made in the page); refuses on a studio switchboard has stopped unless `wake` is true |
+| `upscale` | `id` (required), `resolution`, `source`, `strength`, `audio`, `seed`, `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished 5 s 16:9 t2va clip ([Upscale](#upscale-experimental-post-apiupscale)), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. Each call queues another upscale |
 | `prompt_guide` | none | the [prompt guide](#prompt-guide) |
 
 **Results.** A done clip gives a text block (`Clip <id> is done: saved <absolute path> (3.2 MB, 5 s fl2va
@@ -704,6 +721,9 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
   the message.
 - **spark-switchboard:** as the CLI; a stopped studio makes `wait` and `fetch` answer that `fetch` with `wake: true`
   would start it.
+- **`upscale`** answers `Queued upscale <id> of clip <clip id> (2k, balanced, from the final).`, then as `generate`.
+  An upscale takes 10 min to 2 h, far longer than any `wait_s`: the usual result says it is still running, and a
+  later `wait` saves it.
 
 ### Waiting values per client
 

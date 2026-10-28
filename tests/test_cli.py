@@ -565,6 +565,25 @@ class Switchboard(unittest.TestCase):
                       p.stderr)
         self.assertEqual(json.loads(p.stdout)["job"]["phase"], "generating")
 
+    def test_upscale_while_stopped(self):
+        """An upscale is held like a submit (X-Switchboard-Wait, --hold), with only the choices given; switchboard's
+        503 means nothing was queued."""
+        jid = "0123456789abcdef0123456789abcdef"
+
+        def answer(method, path, headers, body):
+            if path == "/__switchboard/status":
+                return 200, JSON, {"state": "stopped", "paused": None, "message": "LF Studio is not running"}
+            return switchboard_error("waiting", "LF Studio will start once memory is free", retry=120)
+        fake = self.fake(answer)
+        p = self.sol(fake, "upscale", jid, "--resolution", "4k", "--hold", 30)
+        self.assertEqual(p.returncode, 3, p.stderr)
+        self.assertIn("LF Studio will start once memory is free The upscale was NOT queued; try again in about 120 s.",
+                      p.stderr)
+        method, path, headers, body = fake.requests[-1]
+        self.assertEqual((method, path, headers["X-Switchboard-Wait"], headers["Content-Type"]),
+                         ("POST", "/api/upscale", "30", "application/json"))
+        self.assertEqual(json.loads(body), {"id": jid, "resolution": "4k"})
+
     def test_loading_is_retried(self):
         """A switchboard 503 "loading" while waiting is retried (5 s later), then the MP4 arrives."""
         jid = "0123456789abcdef0123456789abcdef"
@@ -584,6 +603,99 @@ class Switchboard(unittest.TestCase):
         self.assertGreaterEqual(polls[1] - polls[0], 4.5)
         self.assertEqual((self.dir / "x.mp4").read_bytes(), b"\x00\x00\x00\x18ftypmp42")
         self.assertIn("done in 1:01", p.stderr)
+
+
+class Upscale(CliTest):
+    """lf-cli upscale: the experimental Upscale (the stub studio has it on, with a stand-in job of about 1 s)."""
+
+    def clip(self, **kw):
+        jid = self.studio.generate(**kw)[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        return jid
+
+    def test_wait_and_save(self):
+        """--wait --out <dir>/ saves it under the studio's name for it: the clip's, with the resolution after it."""
+        jid = self.clip(seed=7)
+        p = self.ok("upscale", jid, "--resolution", "1080p", "--strength", "faithful", "--source", "draft",
+                    "--audio", "silence", "--seed", 99, "--out", "up/", "--poster")
+        out = self.work / "up" / f"lf-studio_t2va_5s_seed7_{jid[:6]}_1080p.mp4"
+        self.assertEqual(p.stdout, f"{out}\n")
+        self.assertEqual(out.read_bytes()[4:8], b"ftyp")
+        self.assertEqual(out.with_suffix(".jpg").read_bytes()[:2], b"\xff\xd8")
+        self.assertRegex(p.stderr, rf"queued [0-9a-f]{{8}} \(1080p upscale of {jid[:8]}, faithful, t2va, 5 s, seed 7\), "
+                                   r"next in line")
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.assertEqual({k: job[k] for k in ("parent", "resolution", "strength", "source", "audio", "refine_seed",
+                                              "status")},
+                         {"parent": jid, "resolution": "1080p", "strength": "faithful", "source": "draft",
+                          "audio": "silence", "refine_seed": 99, "status": "done"})
+        p = self.ok("upscale", jid, "--json")                                  # the studio's defaults; no wait
+        rec = json.loads(p.stdout)
+        self.assertEqual((rec["kind"], rec["parent"], rec["state"], rec["resolution"], rec["strength"], rec["audio"]),
+                         ("upscale", jid, "queued", "2k", "balanced", "clip"))
+        p = self.ok("wait", rec["id"], "--json")
+        self.assertEqual(Path(json.loads(p.stdout)["path"]).name, f"lf-studio_t2va_5s_seed7_{jid[:6]}_2k.mp4")
+        lines = self.ok("status").stdout.splitlines()
+        self.assertTrue(lines[0].startswith(f"{rec['id']}  done       2k upscale of {jid[:8]}, balanced"), lines)
+
+    def test_refusals(self):
+        """The studio's refusals are exit 2 with its words; argparse checks the choices."""
+        ten = self.clip(seconds=10)
+        p = self.sol("upscale", ten, "--json")
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertEqual(json.loads(p.stdout), {"error": "Upscale needs a 5 s 16:9 clip (NVIDIA's upscaler takes "
+                                                         "1344x768, 121 frames)", "http_status": 400, "id": ten})
+        p = self.sol("upscale", "f" * 32)
+        self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: no such clip\n"))
+        for args in (["upscale", ten, "--resolution", "8k"], ["upscale", ten, "--strength", "nvidia"],
+                     ["upscale", "nonsense"], ["upscale", ten, "--seed", -1], ["upscale", ten, "--hold", 9999]):
+            p = self.sol(*args)
+            self.assertEqual(p.returncode, 2, (args, p.stderr))
+        self.assertEqual([j.get("kind") for j in self.studio.state()["jobs"]], [None])     # nothing was queued
+        if os.geteuid() != 0:
+            ro = self.work / "ro"
+            ro.mkdir()
+            ro.chmod(0o555)
+            self.addCleanup(lambda: ro.exists() and ro.chmod(0o755))
+            p = self.sol("upscale", self.clip(seed=3), "--out", "ro/")
+            self.assertEqual(p.returncode, 2, p.stderr)
+            self.assertIn(f"can't save the upscale there: no permission to write to {ro}; nothing was queued",
+                          p.stderr)
+
+
+class UpscaleRunning(CliTest):
+    """An upscale that takes a while (its stand-in job: 30 s): --timeout, status, cancel and wait."""
+    studio_env = {"STUB_UPSCALE_S": "30"}
+
+    def test_timeout_status_cancel(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid], timeout=60)
+        p = self.sol("upscale", jid, "--resolution", "4k", "--wait", "--timeout", 3)
+        self.assertEqual(p.returncode, 4, p.stderr)
+        uid = p.stdout.strip()
+        self.assertRegex(uid, r"^[0-9a-f]{32}$")
+        self.assertIn(f"Keep waiting with: lf-cli wait {uid}", p.stderr)
+        self.assertRegex(p.stderr, r"\n(closing the studio's models for the upscale|upscaling(: [a-z /0-9]+)?)\n")
+        rec = json.loads(self.ok("status", uid, "--json").stdout)
+        self.assertEqual((rec["state"], rec["phase"]), ("running", "upscaling"))
+        self.assertRegex(self.ok("status", uid).stdout, rf"^{uid}  running    4k upscale of {jid[:8]}, balanced, t2va, "
+                                                        r"5 s, seed \d+  upscaling: [a-z /0-9]+, 0:\d\d since it started\n$")
+        self.assertEqual(self.ok("cancel", uid).stdout, f"cancelling upscale {uid}: its job stops in a few seconds\n")
+        p = self.sol("wait", uid)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(f"upscale {uid} was cancelled", p.stderr)
+
+
+class UpscaleOff(CliTest):
+    studio_env = {"LFSTUDIO_UPSCALE": "0"}
+
+    def test_off(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid], timeout=60)
+        p = self.sol("upscale", jid)
+        self.assertEqual((p.returncode, p.stdout), (2, ""), p.stderr)
+        self.assertEqual(p.stderr, "lf-cli: the experimental Upscale is off on this studio (LFSTUDIO_UPSCALE=1 turns "
+                                   "it on)\n")
 
 
 class Guide(unittest.TestCase):
@@ -626,7 +738,7 @@ class SwitchboardIntegration(unittest.TestCase):
                      f"/poster/{jid}"):
             self.assertTrue(any(fnmatch.fnmatch(path, p) for p in patterns), path)
         for path in (f"/video/{jid}", f"/input/{jid}/first_frame/0", f"/api/inputs/{jid}", f"/still/{jid}",
-                     "/api/generate", "/api/cancel", "/"):
+                     "/api/generate", "/api/cancel", "/api/upscale", "/"):
             self.assertFalse(any(fnmatch.fnmatch(path, p) for p in patterns), path)
 
 
