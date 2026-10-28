@@ -85,8 +85,10 @@ FFN_CHUNKS = {"4k": 8}           # sequence chunks of every block's FFN; 1 elsew
 VAE_BATCH = 26                   # NVIDIA's default
 VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior sample of the final MP4)
 # Provisional, until the quality measurements settle them: strength name -> (start_sigma, steps); None = NVIDIA's
-# schedule for the steps. NVIDIA's own (0.909375, 3 steps) is much sharper but regenerates faces.
-STRENGTHS = {"light": (0.5, 2), "balanced": (0.7, 2), "nvidia": (None, 3)}
+# schedule for the steps. "full" is NVIDIA's release setting (3 steps from 0.909375: SCHEDULES[3], not
+# shifted_grid(0.909375, 3)), much sharper but it regenerates faces. The studio's request field and
+# LFSTUDIO_UPSCALE_STRENGTH take these names.
+STRENGTHS = {"faithful": (0.5, 2), "balanced": (0.7, 2), "full": (None, 3)}
 DEFAULT_STRENGTH = "balanced"
 DEFAULT_AUDIO = "clip"
 

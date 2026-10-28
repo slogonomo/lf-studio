@@ -176,6 +176,7 @@ class JobTests(Fixture):
         self.assertIn(job_module.DEFAULT_STRENGTH, job_module.STRENGTHS)
         self.assertIn(job_module.DEFAULT_AUDIO, job_module.AUDIO)
         self.assertEqual(job_module.STRENGTHS[job_module.DEFAULT_STRENGTH], (0.7, 2))
+        self.assertEqual(job_module.STRENGTHS, {"faithful": (0.5, 2), "balanced": (0.7, 2), "full": (None, 3)})
         for sigma, steps in job_module.STRENGTHS.values():
             job_module.parse_job(self.job(start_sigma=sigma, steps=steps), "/")
 
