@@ -17,8 +17,9 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   or the first frame of a reference video, as a JPEG at most 640 px wide (made on the first request, kept with the
   clip's input files; an image ffmpeg can't read goes out as it is). 404 for t2va.
 - Experimental, with LFSTUDIO_UPSCALE=1: POST /api/upscale {"id", "resolution", "strength", "audio", "seed"} upscales a
-  finished 5 s 16:9 t2va clip ("id"), from its MP4, to 1080p, 2k (2560x1440, the default) or 4k with NVIDIA's
-  Open-H3-Regenerate-2K (upscale/regen2k_job.py, run in its own environment). strength: faithful, balanced or full
+  finished 5 s t2va clip ("id"), 16:9 or 9:16, from its MP4, to 1080p, 2k (2560x1440, or 1440x2560 for 9:16; the
+  default) or 4k with NVIDIA's Open-H3-Regenerate-2K (upscale/regen2k_job.py, run in its own environment; it upscales
+  a 9:16 clip through NVIDIA's code with the shapes turned, see its docstring). strength: faithful, balanced or full
   (upscale/regen2k_job.py STRENGTHS; default LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is
   refined against (default LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). The upscale is a job of its
   own (kind "upscale", parent = the clip; task, format, length, prompt and seed copied from it; "load" =
@@ -29,14 +30,14 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   clip's sound is copied in (ffmpeg, no re-encode). Its files go into a session directory of their own,
   <session>-upscale-<resolution>/<case_id>/regen/, so Delete and Undo move only them; a clip can't be deleted while an
   upscale of it is queued or running. No retry after a failure.
-  Answers: 200 {"id", "job"}, 400 for a bad field (any other key too, "source" among them: there is no draft
-  source any more) or a clip of another kind or shape, 404 for an unknown clip (and for everything with the Upscale
-  off), 409 for a clip that is not done, being moved, or without the files needed (its session directory; for audio
-  clip its Stage-1 audio), 429 when the queue is full. /api/state has "upscale" (on or off), "upscale_defaults" (null
-  with it off, else what a request without those keys gets: {"resolution", "strength", "audio"}, for the page's
-  choices) and "upscale_load" (null with it off, else LFSTUDIO_UPSCALE_LOAD, for the page's expected times); with it
-  on, every finished job in /api/state, /api/jobs and the API record has "upscalable": {"ok": true, "clip_audio":
-  bool} or {"ok": false, "why": "..."}.
+  Answers: 200 {"id", "job"}, 400 for a bad field (any other key too, "source" among them: there is no draft source any
+  more) or a clip of another kind or length (fl2va, ref2va, anything but 5 s), 404 for an unknown clip (and for
+  everything with the Upscale off), 409 for a clip that is not done, being moved, or without the files needed (its
+  session directory; for audio clip its Stage-1 audio), 429 when the queue is full. /api/state has "upscale" (on or
+  off), "upscale_defaults" (null with it off, else what a request without those keys gets: {"resolution", "strength",
+  "audio"}, for the page's choices) and "upscale_load" (null with it off, else LFSTUDIO_UPSCALE_LOAD, for the page's
+  expected times); with it on, every finished job in /api/state, /api/jobs and the API record has "upscalable": {"ok":
+  true, "clip_audio": bool} or {"ok": false, "why": "..."}.
 
 For agents and scripts (#29; docs/API.md):
 - POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
@@ -1232,7 +1233,8 @@ def stop_job(job):
 UPSCALE_REQUEST = ("id", "resolution", "strength", "audio", "seed")    # POST /api/upscale's keys
 UPSCALE_FREE_WAIT_S = 5          # how long the memory floor waits for a closed session's memory to come back
 UPSCALE_STOP_S = 20              # Cancel and shutdown: SIGKILL an upscale's job this long after its SIGTERM
-UPSCALE_SHAPE = "Upscale needs a 5 s 16:9 clip (NVIDIA's upscaler takes 1344x768, 121 frames)"
+UPSCALE_LENGTH = "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"
+UPSCALE_SHAPE = "Upscale needs a 16:9 or 9:16 clip (1344x768 or 768x1344)"
 
 
 class UpscaleFailed(RuntimeError):
@@ -1264,14 +1266,17 @@ def upscale_files(job):
 
 def upscalable(job):
     """Whether a job can be upscaled now: (200, {"clip_audio"}, whether its Stage-1 audio is there for audio clip)
-    or (the HTTP status, why not). v1 takes finished 5 s 16:9 t2va clips:
-    NVIDIA's pipeline is fixed at 1344x768 and 121 frames, and fl2va and ref2va clips need a text-only encode of
-    their prompt first (follow-ups). Looks at the clip's files: call it without `lock`, with a copy of the job."""
+    or (the HTTP status, why not). It takes finished 5 s t2va clips, 16:9 or 9:16 (the job upscales 9:16 through
+    NVIDIA's code with the shapes turned): NVIDIA's pipeline is fixed at 121 frames, and fl2va and ref2va clips need
+    a text-only encode of their prompt first (follow-ups). Looks at the clip's files: call it without `lock`, with a
+    copy of the job."""
     if is_upscale(job):
         return 400, "an upscale can't be upscaled again"
     if job.get("task") != "t2va":
         return 400, "Upscale takes text-to-video (t2va) clips only, for now"
-    if job.get("orientation") != "landscape" or job.get("seconds", 5) != 5:
+    if job.get("seconds", 5) != 5:
+        return 400, UPSCALE_LENGTH
+    if job.get("orientation") not in regen.SHAPES:
         return 400, UPSCALE_SHAPE
     if job.get("status") != "done":
         return 409, {"queued": "the clip is still queued", "failed": "the clip failed",
@@ -1509,7 +1514,7 @@ def upscale_process(job, out, job_path, parent_mp4):
     silent = out / regen.OUTPUT_VIDEO
     if not silent.is_file():
         raise UpscaleFailed(f"the upscale job wrote no {silent.name}; see {log_path}")
-    width, height = regen.SIZES[job["resolution"]]
+    width, height = regen.output_size(job.get("orientation", "landscape"), job["resolution"])
     final = out / f"regen_{width}x{height}_{regen.FINAL['frames']}f.mp4"
     partial = out / f".{final.stem}.part.mp4"
     job["upscale_phase"] = "adding the sound"

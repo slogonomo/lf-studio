@@ -7,7 +7,8 @@ The server runs it as it runs the real job (LFSTUDIO_UPSCALE_SCRIPT; tests/stub/
 process group, with its output in worker.log. It reads job.json, prints the real job's progress lines
 ("[lf-studio] phase encoding", "loading", "refine 1/N" ... "refine N/N", "decoding", "saving"; N = the job's steps)
 spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (a small ffmpeg testsrc2 pattern,
-121 frames at 24 fps, no audio, as the real job's MP4 has none) and receipt.json. SIGTERM (Cancel) ends it at once,
+121 frames at 24 fps, no audio, as the real job's MP4 has none; upright when the clip's MP4, <case>/stage2/
+refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json. SIGTERM (Cancel) ends it at once,
 like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status 143. With --parent, as the
 real job, it is killed when that process (the server) ends.
   STUB_UPSCALE_S          seconds the job takes (default 2)
@@ -29,6 +30,20 @@ from pathlib import Path
 
 TAG = "[lf-studio]"
 SIZE = {"1080p": (384, 216), "2k": (512, 288), "4k": (768, 432)}      # small; the server names the file by the setting
+
+
+def orientation(case):
+    """The clip's orientation from its MP4's size, as the real job's check_final reads it (landscape when unknown)."""
+    finals = sorted(Path(case).glob("stage2/refined_*.mp4"))
+    if not finals:
+        return "landscape"
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                            "-of", "csv=p=0", str(finals[0])], capture_output=True, text=True, timeout=60)
+    try:
+        width, height = map(int, probe.stdout.split(",")[:2])
+    except ValueError:
+        return "landscape"
+    return "portrait" if height > width else "landscape"
 
 
 class Cancelled(BaseException):
@@ -74,7 +89,8 @@ def main(argv):
     if os.environ.get("STUB_UPSCALE_LOG"):
         with open(os.environ["STUB_UPSCALE_LOG"], "a") as log:
             log.write(json.dumps({"pid": os.getpid(), "job": str(job_path), "argv": argv[1:]}) + "\n")
-    receipt = {"state": "running", "pid": os.getpid(), "job": job, "times_s": {}, "stub": True}
+    receipt = {"state": "running", "pid": os.getpid(), "job": job, "orientation": orientation(job["case"]),
+               "times_s": {}, "stub": True}
     started, status = time.time(), 0
     phases = ["encoding", "loading"] + [f"refine {i}/{job['steps']}" for i in range(1, job["steps"] + 1)] + \
         ["decoding", "saving"]
@@ -88,7 +104,7 @@ def main(argv):
             t0, key = time.time(), name.split()[0]                # refine k/N: one time for all steps
             time.sleep(pause)
             receipt["times_s"][key] = round(receipt["times_s"].get(key, 0) + time.time() - t0, 2)
-        width, height = SIZE[job["resolution"]]
+        width, height = SIZE[job["resolution"]][::1 if receipt["orientation"] == "landscape" else -1]
         partial = out / ".video_noaudio.mp4.partial.mp4"
         output = os.environ.get("STUB_UPSCALE_OUTPUT")
         if output == "bad":

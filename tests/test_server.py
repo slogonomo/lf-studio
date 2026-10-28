@@ -2060,7 +2060,7 @@ class CancelRace(CancelTest):
 
 
 # ------------------------------------------------------------------------------------------ the experimental Upscale
-UPSCALE_SHAPE = "Upscale needs a 5 s 16:9 clip (NVIDIA's upscaler takes 1344x768, 121 frames)"
+UPSCALE_LENGTH = "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"
 NOT_T2VA = "Upscale takes text-to-video (t2va) clips only, for now"
 FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
 PARENT_BUSY = "an upscale of this clip is queued or running; cancel it first, or wait for it"
@@ -2233,6 +2233,26 @@ class Upscale(UpscaleTest):
         self.assertEqual((job["steps"], job["start_sigma"], job["refine_seed"], job["audio"]), (2, 0.5, 1, "clip"))
         self.assertEqual(len(self.upscale_dirs()), 2)
 
+    def test_a_9x16_clip(self):
+        """A 5 s 9:16 t2va clip at each resolution: the output upright (the job takes the orientation from the clip's
+        MP4; job.json has no field for it), named by its size."""
+        parent = self.clip(orientation="portrait")
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"], {"ok": True, "clip_audio": True})
+        for resolution, name in (("2k", "regen_1440x2560_121f.mp4"), ("1080p", "regen_1080x1920_121f.mp4"),
+                                 ("4k", "regen_2160x3840_121f.mp4")):
+            job = self.done(self.upscale(parent["id"], resolution=resolution))
+            self.assertEqual((job["orientation"], Path(job["output"]).name), ("portrait", name), resolution)
+            video = probe(job["output"])["video"]
+            self.assertLess(video["width"], video["height"])                       # the stand-in job's, upright
+            self.assertEqual(video["nb_frames"], "121")
+            data = json.loads((self.regen(job) / "job.json").read_text())
+            self.assertNotIn("orientation", data)
+            self.assertEqual(data["resolution"], resolution)
+            self.assertEqual(json.loads((self.regen(job) / "receipt.json").read_text())["orientation"], "portrait")
+        code, headers, _ = self.studio.get(f"/video/{job['id']}", {"Range": "bytes=0-9"})
+        self.assertEqual(headers["Content-Disposition"],
+                         f'inline; filename="lf-studio_t2va_5s_seed1_{parent["id"][:6]}_4k_{job["id"][:6]}.mp4"')
+
     def test_progress(self):
         """The status while it runs, and the job's own phase lines as upscale_phase."""
         self.studio.stop()
@@ -2323,16 +2343,17 @@ class UpscaleRefusals(UpscaleTest):
         self.assertEqual([j["id"] for j in self.studio.state()["jobs"]], [jid])           # nothing queued
 
     def test_clips_it_cannot_upscale(self):
-        portrait = self.clip(orientation="portrait")
         ten = self.clip(seconds=10, seed=2)
+        three = self.clip(orientation="portrait", seconds=3, seed=6)
         fl2va = self.clip(task="fl2va", seed=3, files={"first_frame": [("f.png", png())]})
         failed = self.studio.wait([self.generate(prompt="STUB_FAIL", seed=4)])[0]
-        for job, code, why in ((portrait, 400, UPSCALE_SHAPE), (ten, 400, UPSCALE_SHAPE), (fl2va, 400, NOT_T2VA),
+        for job, code, why in ((ten, 400, UPSCALE_LENGTH), (three, 400, UPSCALE_LENGTH), (fl2va, 400, NOT_T2VA),
                                (failed, 409, "the clip failed")):
             self.assertEqual(self.studio.upscale(job["id"]), (code, {"error": why}), job["id"])
         found = {j["id"]: j.get("upscalable") for j in self.studio.state()["jobs"]}
-        self.assertEqual((found[portrait["id"]], found[fl2va["id"]], found[failed["id"]]),
-                         ({"ok": False, "why": UPSCALE_SHAPE}, {"ok": False, "why": NOT_T2VA}, None))
+        self.assertEqual((found[ten["id"]], found[three["id"]], found[fl2va["id"]], found[failed["id"]]),
+                         ({"ok": False, "why": UPSCALE_LENGTH}, {"ok": False, "why": UPSCALE_LENGTH},
+                          {"ok": False, "why": NOT_T2VA}, None))
         uid = self.upscale(self.clip(seed=5)["id"])
         self.assertEqual(self.studio.upscale(uid), (400, {"error": "an upscale can't be upscaled again"}))  # queued
         self.done(uid)
