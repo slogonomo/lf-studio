@@ -27,15 +27,14 @@ What this wrapper changes, and why:
   copy of a file), and from_pretrained of diffusers' MiniMaxH3Transformer3DModel, AutoencoderKLMiniMaxH3 and
   AutoencoderKLMiniMaxH3Audio gets device_map={"": "cuda"} unless the call names one, so each tensor goes to the GPU
   as it is read. Where O_DIRECT can't be used, fastload falls back to safetensors' own load_file, to the GPU as well
-  (the receipt counts the files and the fallbacks). Measured with the bench wrapper (a 768p draft, 3 steps): loaded in
-  21 s with the 312 LoRA weights merged in 2.8 s, the native and refined latents bit-identical to a standard load's,
-  ~1.9 GB of anonymous memory in the process, 40.0 GiB MemAvailable after the load. "standard" is NVIDIA's own
+  (the receipt counts the files and the fallbacks). Measured with the bench wrapper (3 steps at 768p from a clip's
+  Stage-1 latent, a route of the bench's that the job does not take): loaded in 21 s with the 312 LoRA weights merged
+  in 2.8 s, the native and refined latents bit-identical to a standard load's, ~1.9 GB of anonymous memory in the
+  process, 40.0 GiB MemAvailable after the load. "standard" is NVIDIA's own
   loading, the fallback (~7.5 min). The latent upscaler's checkpoint (0.7 GB) loads through NVIDIA's node either way.
 - The text: the clip's own prompt conditioning (qwen/conditioning.pt; t2va: prompt_embeds [1, L, 5120] bf16, every
   text_token_tag 1) instead of loading the 32B text encoder (66.7 GB). It is the same layer-50 hidden state, from
   LF Studio's NVFP4 encoder: close to NVIDIA's BF16 one, not bit-identical.
-- The source. "final": the clip's MP4 (stage2/refined_*.mp4) through NVIDIA's encode_video at 768p. "draft": the
-  Stage-1 latent (stage1/h3_normalized_native.pt, 384p), first upscaled x2 to 768p by the same latent upscaler.
 - The audio the refine attends to. "silence" is NVIDIA's. "clip" is the clip's own Stage-1 audio
   (stage1/stage1_direct_tensors.pt["audio"]) through the audio VAE, encoded as encode_silence encodes its zeros.
 - The strength: start_sigma re-noises from there on NVIDIA's shifted_grid; null keeps NVIDIA's schedule for the
@@ -50,12 +49,13 @@ What this wrapper changes, and why:
   shorten the one load measured with it. job.json refuses it with the fast load, which reads past the page cache.
 - The output has no audio (video_noaudio.mp4, NVIDIA's encode_mp4, CRF 10): the server muxes the clip's audio in.
 
+The input: the clip's MP4 (stage2/refined_*.mp4), through NVIDIA's encode_video at 768p.
 Scope: t2va clips, 16:9, 5 s (1344x768, 121 frames), the shapes NVIDIA's pipeline is fixed at. fl2va and ref2va need
 a text-only encode of the prompt (their conditioning interleaves the pictures), portrait and 10/15 s need changes
 to NVIDIA's fixed shapes: follow-ups.
 
 Measured on a DGX Spark (GB10), one 5 s clip, standard forward and VAE, cuDNN attention. This job, run by a staging
-studio (2K, balanced: 2 steps from 0.7, source final, the clip's audio, the standard load): encode_video 185 s, load
+studio (2K, balanced: 2 steps from 0.7, the clip's audio, the standard load): encode_video 185 s, load
 455 s, steps of 379 and 380 s, decode 181 s, MP4 17 s, 1620.7 s from the request to the MP4; peak allocated 91.08
 GiB, lowest MemAvailable 18.32 GiB (34.13 GiB during the load), 4.91 GiB allocated before the decode. The bench
 wrapper it is derived from, standard load: load 445-539 s; per refine step 144 s at 1080p and 378 s at 2K; decode
@@ -67,18 +67,18 @@ load (its default), and its 4K path.
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
 cancelled; times per stage, steps, sigmas, peak GPU memory, lowest MemAvailable, the inputs' sha256, versions, the load:
 its mode, and for fast the files and how many fell back to mmap). Progress on stdout: "[lf-studio] phase <name>" for
-encoding, loading, refine k/n, decoding and saving, in that order (encoding only for the final source or the clip's
-audio), and "[lf-studio] error <text>" last on failure.
+encoding, loading, refine k/n, decoding and saving, in that order, and "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loaded), 143 stopped by SIGTERM.
 --check validates job.json and the inputs, prints the plan and exits (0 or 2) without torch and without writing.
 --parent PID (the server passes its own): the job is killed when that process ends (PR_SET_PDEATHSIG), so it never
 outlives the studio that guards its memory; if that process is gone already, it exits at once (143).
 
-job.json: {"version": 1, "case": DIR, "source": "final"|"draft", "resolution": "1080p"|"2k"|"4k", "steps": 1-4,
+job.json: {"version": 1, "case": DIR, "resolution": "1080p"|"2k"|"4k", "steps": 1-4,
 "start_sigma": 0<x<1 | null (steps 2 or 3), "seed": INT, "audio": "clip"|"silence", "load": "fast"|"standard" ("fast"),
 "preread": BOOL (false; true only with load "standard"), "vae_batch": INT (26), "paths": {"package": DIR,
 "weights": DIR, "base_model": DIR, "output": DIR (optional)}, "meta": {...} (optional, copied into the receipt)}.
-Paths are absolute.
+Paths are absolute. Any other field is refused, "source" too: the job has no draft source any more (the clip's
+Stage-1 latent, which redrew the video too much), it always reads the clip's MP4.
 
 Everything outside run() and the torch helpers is standard library only, so the server (its settings, the command
 line, the progress lines, the mux), bin/lf-studio --check (studio_settings, check_weights) and tests/test_upscale.py
@@ -103,7 +103,6 @@ from pathlib import Path
 
 TAG = "[lf-studio]"
 JOB_VERSION = 1
-SOURCES = ("final", "draft")
 AUDIO = ("clip", "silence")
 # output sizes (width, height); NVIDIA's pipeline.RESOLUTIONS computes 1080p and 4K at whole latent rows and keeps
 # the centre rows. Its 768p (no upscale) is not offered.
@@ -147,16 +146,15 @@ CURVE_TABLE = "lora/adaln_t_table.bin"
 UPSCALER_FILE = "latent_upsampler/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors"
 BASE_PARTS = ("transformer", "vae", "audio_vae")
 NATIVE_SHAPE = (24, 37, 48, 84)                  # 1344x768, 121 frames, normalized H3 latent
-DRAFT_SHAPE = (1, 24, 37, 24, 42)                # h3_normalized_native.pt at 5 s 16:9 (672x384)
 AUDIO_SAMPLES = round(124 / 24 * 32000)          # encode_silence's length: 124 frames at 32 kHz
 TEXT_WIDTH = 5120
 FINAL = {"width": 1344, "height": 768, "frames": 121, "fps": "24/1"}
 
 OUTPUT_VIDEO = "video_noaudio.mp4"
 RECEIPT = "receipt.json"
-JOB_KEYS = {"version", "case", "source", "resolution", "steps", "start_sigma", "seed", "audio", "load", "preread",
-            "vae_batch", "paths", "meta"}
-REQUIRED = ("case", "source", "resolution", "steps", "start_sigma", "seed", "audio", "paths")
+JOB_KEYS = {"version", "case", "resolution", "steps", "start_sigma", "seed", "audio", "load", "preread", "vae_batch",
+            "paths", "meta"}
+REQUIRED = ("case", "resolution", "steps", "start_sigma", "seed", "audio", "paths")
 PATH_KEYS = ("package", "weights", "base_model", "output")
 EXIT_FAILED, EXIT_REFUSED, EXIT_CANCELLED = 1, 2, 128 + signal.SIGTERM
 
@@ -205,7 +203,7 @@ def parse_job(data, job_dir):
     if missing:
         raise JobError(f"missing field(s): {', '.join(missing)}")
     job = {"version": JOB_VERSION, "case": _path(data["case"], "case")}
-    for key, choices in (("source", SOURCES), ("resolution", tuple(SIZES)), ("audio", AUDIO)):
+    for key, choices in (("resolution", tuple(SIZES)), ("audio", AUDIO)):
         job[key] = _choice(data, key, choices)
     steps = data["steps"]
     if not _is_int(steps) or not 1 <= steps <= MAX_STEPS:
@@ -326,14 +324,11 @@ def case_inputs(job):
     if len(finals) != 1:
         raise JobError(f"expected one stage2/refined_*.mp4 in {case}, found {len(finals)}")
     files = {"conditioning": case / "qwen" / "conditioning.pt", "final": finals[0]}
-    if job["source"] == "draft":
-        files["draft"] = case / "stage1" / "h3_normalized_native.pt"
     if job["audio"] == "clip":
         files["pcm"] = case / "stage1" / "stage1_direct_tensors.pt"
     for name, path in files.items():
         if not path.is_file():
-            what = {"conditioning": "the prompt conditioning", "draft": "the Stage-1 latent (source draft)",
-                    "pcm": "the Stage-1 audio (audio clip)"}.get(name, name)
+            what = {"conditioning": "the prompt conditioning", "pcm": "the Stage-1 audio (audio clip)"}.get(name, name)
             raise JobError(f"the clip has no {what}: {path} is missing")
     return files
 
@@ -414,11 +409,6 @@ def check_text(cond):
     if shape != (1, len(tags), TEXT_WIDTH):
         raise JobError(f"prompt_embeds {shape} do not match {len(tags)} text rows of {TEXT_WIDTH}")
     return len(tags)
-
-
-def check_draft_shape(shape):
-    if tuple(shape) != DRAFT_SHAPE:
-        raise JobError(f"the Stage-1 latent is {tuple(shape)}, not a 5 s 16:9 one {DRAFT_SHAPE}")
 
 
 def check_pcm_shape(shape):
@@ -732,17 +722,6 @@ def text_input(cond, torch):
     return {"prompt_embeds": embeds, "text_token_tags": cond["text_token_tags"].flatten().long()}
 
 
-def draft_input(saved, torch):
-    """h3_normalized_native.pt -> the normalized (24, 37, 24, 42) Stage-1 latent, fp32."""
-    if not isinstance(saved, dict) or "h3_normalized" not in saved:
-        raise JobError("the Stage-1 latent file has no h3_normalized")
-    check_draft_shape(saved["h3_normalized"].shape)
-    latent = saved["h3_normalized"][0].float()
-    if not bool(torch.isfinite(latent).all()):
-        raise JobError("the Stage-1 latent has values that are not finite")
-    return latent
-
-
 def pcm_input(saved, torch):
     """stage1_direct_tensors.pt -> the clip's Stage-1 audio, (2, samples) fp32 at 32 kHz."""
     if not isinstance(saved, dict) or "audio" not in saved:
@@ -853,7 +832,7 @@ def run(job, files, receipt, trace):
     """The upscale on the GPU. Fills the receipt as it goes."""
     import torch
     sys.path.insert(0, str(job["package"]))           # -I drops PYTHONPATH and the script dir: name it explicitly
-    from open_h3 import adapters, pipeline, upscaler
+    from open_h3 import adapters, pipeline
     check_package(adapters, pipeline, job["resolution"])
     receipt["versions"] = versions(torch)
     torch.cuda.set_device(0)
@@ -885,9 +864,7 @@ def run(job, files, receipt, trace):
     receipt["prompt"] = cond.get("prompt") if isinstance(cond.get("prompt"), str) else None
     receipt["text_rows"] = int(text["text_token_tags"].numel())
     del cond
-    draft = pcm = native = clip_audio = None
-    if job["source"] == "draft":
-        draft = draft_input(torch.load(files["draft"], map_location="cpu", weights_only=True), torch)
+    pcm = clip_audio = None
     if job["audio"] == "clip":
         pcm = pcm_input(torch.load(files["pcm"], map_location="cpu", weights_only=True), torch)
 
@@ -901,15 +878,13 @@ def run(job, files, receipt, trace):
         receipt["load"] = {"mode": "standard"}
 
     # the final MP4 and the clip's audio through the VAEs, loaded, used and freed before the DiT
-    if job["source"] == "final" or pcm is not None:
-        phase("encoding")
-        if job["source"] == "final":
-            native = timed("encode_video", lambda: pipeline.encode_video(base, files["final"], "768p", seed=VAE_SEED))
-        if pcm is not None:
-            clip_audio = timed("encode_audio", lambda: encode_audio(base, pcm, torch))
-        gc.collect()
-        torch.cuda.empty_cache()
-        drop_from_page_cache(p for part in ("vae", "audio_vae") for p in (base / part).glob("*.safetensors"))
+    phase("encoding")
+    native = timed("encode_video", lambda: pipeline.encode_video(base, files["final"], "768p", seed=VAE_SEED))
+    if pcm is not None:
+        clip_audio = timed("encode_audio", lambda: encode_audio(base, pcm, torch))
+    gc.collect()
+    torch.cuda.empty_cache()
+    drop_from_page_cache(p for part in ("vae", "audio_vae") for p in (base / part).glob("*.safetensors"))
 
     phase("loading")
     if job["preread"]:
@@ -939,8 +914,6 @@ def run(job, files, receipt, trace):
             raise RuntimeError(f"the clip's audio latent is {tuple(clip_audio.shape)}, NVIDIA's silence "
                                f"{tuple(pipe.audio.shape)}")
         pipe.audio = clip_audio.to(pipe.device)
-    if draft is not None:
-        native = timed("draft_x2", lambda: upscaler.upscale(pipe.node, draft.to(pipe.device), pipeline.NATIVE_SHAPE))
     if tuple(native.shape) != NATIVE_SHAPE:
         raise RuntimeError(f"the 768p latent is {tuple(native.shape)}, not {NATIVE_SHAPE}")
     low = timed("upscale", lambda: pipe.upscale(native.to(pipe.device)))
@@ -969,7 +942,7 @@ def run(job, files, receipt, trace):
     phase("decoding")
     pipe.model = None                                 # the DiT, ~62 GiB: nothing runs on it any more
     getattr(pipe.node, "MODEL_CACHE", {}).clear()     # the latent upscaler
-    del low, native, draft
+    del low, native
     gc.collect()
     torch.cuda.empty_cache()
     receipt["allocated_before_decode_gib"] = round(torch.cuda.memory_allocated() / 2 ** 30, 2)

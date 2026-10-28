@@ -274,9 +274,10 @@ Peak GPU memory allocated 91.08 GiB (in the refine), 4.91 GiB before the decode 
 | Peak GPU memory allocated | 75 GiB | 81 GiB | 91 GiB | 94.5 GiB |
 | Lowest MemAvailable during the job | 38 GiB | 28 GiB | 15 GiB | 13.8 GiB |
 
-**The bench wrapper, fast load** (the setup that `LFSTUDIO_UPSCALE_LOAD=fast` copies into the job; one run from a 768p
-draft, 3 steps). NVIDIA's loaders fault the weight files in through mmap at about 0.2 GB/s on GB10, and what they read
-stays in the page cache, the same memory as the GPU's. The fast load replaces, before anything loads,
+**The bench wrapper, fast load** (the setup that `LFSTUDIO_UPSCALE_LOAD=fast` copies into the job; one run at 768p from
+a clip's Stage-1 latent, a route of the bench's that the studio does not take, 3 steps). NVIDIA's loaders fault the
+weight files in through mmap at about 0.2 GB/s on GB10, and what they read stays in the page cache, the same memory as
+the GPU's. The fast load replaces, before anything loads,
 `safetensors.torch.load_file` and NVIDIA's `adapters.load_file` with LF Studio's O_DIRECT loader (`upscale/fastload.py`,
 a copy of the patch's `runtime/fastload.py`), which copies every tensor from its read window straight to the GPU, and
 has diffusers build the DiT and the VAEs on the GPU (`device_map`). Measured: the models loaded in 21 s, the 312 LoRA
@@ -285,7 +286,7 @@ anonymous memory in the process and 40.0 GiB MemAvailable right after the load. 
 of the shards loaded in 23-108 s but kept 10-17 GiB resident (26-32 GiB MemAvailable after the load, against ~42 with
 the standard load) and once tripped the memory guard; earlier 2K runs from the final clip with `device_map` and such a
 fast load ran without trouble, and encoded the final clip in 135-139 s (three runs), against 183-191 s with the standard
-load. The run above started from the draft, so the two encodes did not run under the fast load.
+load. The run above started from the Stage-1 latent, so the two encodes did not run under the fast load.
 
 - What the page shows: its progress bar expects the job's stages above with the load at ~25 s, plus ~40 s for closing
   the studio's models: 470 s plus 380 s per refine step at 2K; 385 s plus 144 s per step at 1080p (the bench's decode

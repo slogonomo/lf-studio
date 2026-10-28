@@ -1435,7 +1435,7 @@ def run_upscale(job):
     out.mkdir(parents=True)
     job.setdefault("case_dirs", []).append(str(case))      # for Delete, even if it fails
     job_path = out / "job.json"
-    data = {"version": regen.JOB_VERSION, "case": str(files["case"]), "source": "final",
+    data = {"version": regen.JOB_VERSION, "case": str(files["case"]),
             "resolution": job["resolution"], "steps": job["steps"], "start_sigma": job["start_sigma"],
             "seed": job["refine_seed"], "audio": job["audio"], "load": job.get("load", UPSCALE_CONF["load"]),
             "preread": UPSCALE_CONF["preread"],

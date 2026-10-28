@@ -3,7 +3,7 @@ files, the text check on a stand-in, the command lines and the environment, the 
 the script's --check and its refusals, main's receipt when the GPU part finishes, fails or gets SIGTERM (a stand-in
 run()), and run() itself with a stand-in torch and a stand-in of NVIDIA's open_h3 that records its calls, with both
 loads (fast and standard; stand-ins for safetensors, diffusers and upscale/fastload.py record every load). No GPU, no
-weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters, pipeline and upscaler), the
+weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters and pipeline), the
 weights are small files. upscale/fastload.py is checked against the patch's runtime/fastload.py.
 
 The parts that need torch (the merger, the lean block forward, the tensor checks) run on the CPU when torch is
@@ -110,8 +110,7 @@ class Fixture(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="upscale-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.case = self.tmp / "outputs" / "webui" / "20261028-010203-t2va-landscape-5s" / "web_010203_abcdef"
-        for rel, data in (("qwen/conditioning.pt", b"conditioning"), ("stage1/h3_normalized_native.pt", b"draft"),
-                          ("stage1/stage1_direct_tensors.pt", b"pcm")):
+        for rel, data in (("qwen/conditioning.pt", b"conditioning"), ("stage1/stage1_direct_tensors.pt", b"pcm")):
             (self.case / rel).parent.mkdir(parents=True, exist_ok=True)
             (self.case / rel).write_bytes(data)
         (self.case / "stage2").mkdir()
@@ -134,7 +133,7 @@ class Fixture(unittest.TestCase):
         self.out.mkdir(parents=True)
 
     def job(self, **changes):
-        data = {"version": 1, "case": str(self.case), "source": "final", "resolution": "2k", "steps": 2,
+        data = {"version": 1, "case": str(self.case), "resolution": "2k", "steps": 2,
                 "start_sigma": 0.7, "seed": 1234, "audio": "clip",
                 "paths": {"package": str(self.package), "weights": str(self.weights), "base_model": str(self.base),
                           "output": str(self.out)},
@@ -180,8 +179,9 @@ class JobTests(Fixture):
     def test_a_valid_job_and_its_defaults(self):
         job = job_module.parse_job(self.job(load=DROP, preread=DROP, vae_batch=DROP, version=DROP, meta=DROP),
                                    "/jobs/x")
-        self.assertEqual((job["source"], job["resolution"], job["audio"], job["steps"], job["seed"], job["load"]),
-                         ("final", "2k", "clip", 2, 1234, "fast"))
+        self.assertEqual((job["resolution"], job["audio"], job["steps"], job["seed"], job["load"]),
+                         ("2k", "clip", 2, 1234, "fast"))
+        self.assertNotIn("source", job)
         self.assertEqual((job["start_sigma"], job["preread"], job["vae_batch"], job["meta"]), (0.7, False, 26, {}))
         self.assertEqual((job["case"], job["package"], job["output"]), (self.case, self.package, self.out))
         self.assertIsInstance(job["start_sigma"], float)
@@ -209,7 +209,7 @@ class JobTests(Fixture):
 
     def test_bad_values_are_refused_by_name(self):
         nan = float("nan")
-        for field, value in (("source", "upscaled"), ("source", None), ("resolution", "768p"), ("resolution", "2K"),
+        for field, value in (("resolution", "768p"), ("resolution", "2K"),
                              ("resolution", ["2k"]), ("audio", "both"), ("steps", 0), ("steps", 5), ("steps", "2"),
                              ("steps", True), ("steps", 2.0), ("start_sigma", 0), ("start_sigma", 1),
                              ("start_sigma", -0.1), ("start_sigma", "0.7"), ("start_sigma", True),
@@ -222,6 +222,14 @@ class JobTests(Fixture):
             with self.subTest(field=field, value=value):
                 with self.assertRaisesRegex(JobError, field):
                     job_module.parse_job(self.job(**{field: value}), "/")
+
+    def test_no_source(self):
+        """job.json has no "source" any more (the draft, from the clip's Stage-1 latent, is gone): any value of it is
+        an unknown field."""
+        for value in ("final", "draft", None):
+            with self.subTest(value=value), self.assertRaisesRegex(JobError, r"^unknown field\(s\): source$"):
+                job_module.parse_job(self.job(source=value), "/")
+        self.assertNotIn("source", job_module.JOB_KEYS)
 
     def test_load_and_preread(self):
         """load: fast (the default) or standard; preread only with standard (the fast load reads past the page
@@ -370,11 +378,7 @@ class TextTests(unittest.TestCase):
         with self.assertRaisesRegex(JobError, "no prompt_embeds"):
             job_module.check_text(None)
 
-    def test_draft_and_audio_shapes(self):
-        job_module.check_draft_shape((1, 24, 37, 24, 42))
-        for shape in ((1, 24, 72, 24, 42), (1, 24, 37, 42, 24), (24, 37, 24, 42)):
-            with self.subTest(shape=shape), self.assertRaisesRegex(JobError, "not a 5 s 16:9"):
-                job_module.check_draft_shape(shape)
+    def test_audio_shapes(self):
         self.assertEqual(job_module.AUDIO_SAMPLES, 165333)
         for samples in (161333, 165333, 1):
             job_module.check_pcm_shape((1, 2, samples))
@@ -388,13 +392,12 @@ class InputTests(Fixture):
         files = job_module.case_inputs(job_module.parse_job(self.job(audio="silence"), "/"))
         self.assertEqual(set(files), {"conditioning", "final"})
         self.assertEqual(files["final"], self.case / "stage2" / "refined_1344x768_121f.mp4")
-        files = job_module.case_inputs(job_module.parse_job(self.job(source="draft", audio="clip"), "/"))
-        self.assertEqual(files["draft"], self.case / "stage1" / "h3_normalized_native.pt")
+        files = job_module.case_inputs(job_module.parse_job(self.job(audio="clip"), "/"))
+        self.assertEqual(set(files), {"conditioning", "final", "pcm"})
         self.assertEqual(files["pcm"], self.case / "stage1" / "stage1_direct_tensors.pt")
 
     def test_missing_files_are_refused(self):
-        for rel, changes, message in (("stage1/h3_normalized_native.pt", {"source": "draft"}, "Stage-1 latent"),
-                                      ("stage1/stage1_direct_tensors.pt", {"audio": "clip"}, "Stage-1 audio"),
+        for rel, changes, message in (("stage1/stage1_direct_tensors.pt", {"audio": "clip"}, "Stage-1 audio"),
                                       ("qwen/conditioning.pt", {}, "prompt conditioning")):
             with self.subTest(rel=rel):
                 moved = self.tmp / "moved"
@@ -605,11 +608,11 @@ class ScriptTests(Fixture):
         self.assertEqual(set(planned["inputs"]), {"conditioning", "final", "pcm"})
         self.assertEqual((planned["job"]["meta"]["strength"], planned["job"]["load"]), ("balanced", "fast"))
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])
-        path = self.write_job(resolution="4k", steps=3, start_sigma=None, source="draft", audio="silence")
+        path = self.write_job(resolution="4k", steps=3, start_sigma=None, audio="silence")
         planned = json.loads(self.script("--job", str(path), "--check", check=True).stdout)
         self.assertEqual((planned["sigmas"], planned["size"], planned["lean_chunks"]),
                          ([0.9, 0.8, 0.6, 0.0], [3840, 2160], 16))
-        self.assertEqual(set(planned["inputs"]), {"conditioning", "final", "draft"})
+        self.assertEqual(set(planned["inputs"]), {"conditioning", "final"})
 
     def test_check_refuses(self):
         make_mp4(self.case / "stage2" / "refined_768x1344_121f.mp4", width=768, height=1344)
@@ -625,6 +628,9 @@ class ScriptTests(Fixture):
         result = self.script("--job", str(self.write_job()), "--check")
         self.assertEqual(result.returncode, 2)
         self.assertIn("cannot import open_h3.sigmas", result.stdout)
+        result = self.script("--job", str(self.write_job(source="draft")), "--check")     # no draft source any more
+        self.assertEqual((result.returncode, result.stdout.splitlines()[-1]),
+                         (2, "[lf-studio] error unknown field(s): source"))
 
     def test_a_refused_job_leaves_a_failed_receipt(self):
         path = self.write_job(resolution="768p")
@@ -982,13 +988,6 @@ class Pipeline:
         CALLS.append(("decode", self.model is None, self.vae is not None, dict(self.node.MODEL_CACHE)))
         return torch.Tensor(121, self.keep_rows, self.target_shape[3] * 16, 3)
 '''
-STAND_IN_UPSCALER = '''from . import pipeline
-
-
-def upscale(node, native, target_shape):
-    pipeline.CALLS.append(("draft_x2", native.shape, target_shape))
-    return pipeline.torch.Tensor(*target_shape, tag="draft")
-'''
 
 
 class RunTests(Fixture):
@@ -996,13 +995,11 @@ class RunTests(Fixture):
 
     def setUp(self):
         super().setUp()
-        for name, text in (("adapters", STAND_IN_ADAPTERS), ("pipeline", STAND_IN_PIPELINE),
-                           ("upscaler", STAND_IN_UPSCALER)):
+        for name, text in (("adapters", STAND_IN_ADAPTERS), ("pipeline", STAND_IN_PIPELINE)):
             (self.package / "open_h3" / f"{name}.py").write_text(text)
         self.loaded = {
             "conditioning.pt": {"prompt_embeds": StandInTensor(1, 41, 5120), "task": "t2va", "prompt": "a test",
                                 "text_token_tags": StandInTensor(41, values=[1] * 41)},
-            "h3_normalized_native.pt": {"h3_normalized": StandInTensor(1, 24, 37, 24, 42)},
             "stage1_direct_tensors.pt": {"audio": StandInTensor(1, 2, 161333)}}
 
     def run_job(self, fallback=(), **changes):
@@ -1032,11 +1029,11 @@ class RunTests(Fixture):
         self.lean, self.stdout, self.emptied = lean, stdout.getvalue(), fake.emptied
         return status, json.loads((self.out / "receipt.json").read_text()), calls, phases, encode_audio
 
-    def expected_loads(self, fast, encodes=True, fallback=()):
-        """Every load of a run in order: the encodes (the clip's video and audio VAEs), then NVIDIA's Pipeline (the
-        audio VAE for its silence, the DiT, the LoRA and the Sharp curves, the video VAE). Fast: from_pretrained with
-        device_map cuda and every file through fastload to the GPU (a fallback through the stock loader, to the GPU);
-        standard: NVIDIA's own calls, unchanged."""
+    def expected_loads(self, fast, audio=True, fallback=()):
+        """Every load of a run in order: the encodes (the clip's video VAE, and with `audio` its audio VAE), then
+        NVIDIA's Pipeline (the audio VAE for its silence, the DiT, the LoRA and the Sharp curves, the video VAE).
+        Fast: from_pretrained with device_map cuda and every file through fastload to the GPU (a fallback through the
+        stock loader, to the GPU); standard: NVIDIA's own calls, unchanged."""
         def model(cls, part):
             name = f"{part}/diffusion_pytorch_model.safetensors"
             return [("from_pretrained", cls, part, {"": "cuda"} if fast else None), read(name)]
@@ -1045,8 +1042,8 @@ class RunTests(Fixture):
             if not fast:
                 return ("load_file", name, "cpu")
             return ("load_file", name, "cuda") if name in fallback else ("fastload", name, "cuda")
-        loads = model("AutoencoderKLMiniMaxH3", "vae") + model("AutoencoderKLMiniMaxH3Audio", "audio_vae") \
-            if encodes else []
+        loads = model("AutoencoderKLMiniMaxH3", "vae") + (model("AutoencoderKLMiniMaxH3Audio", "audio_vae")
+                                                          if audio else [])
         return loads + model("AutoencoderKLMiniMaxH3Audio", "audio_vae") + \
             model("MiniMaxH3Transformer3DModel", "transformer") + \
             [read(job_module.LORA_FILE), read(job_module.CURVE_FILE)] + model("AutoencoderKLMiniMaxH3", "vae")
@@ -1125,29 +1122,29 @@ class RunTests(Fixture):
         self.assertRegex(self.stdout, r"(?m)^\[lf-studio\] \d\d:\d\d:\d\d fast load: 7 files, 2 of them through "
                                       r"mmap$")                          # worker.log, as TROUBLESHOOTING quotes it
 
-    def test_draft_with_silence_at_4k(self):
-        """No encodes; the standard load with preread (only allowed with it)."""
-        status, receipt, calls, phases, encode_audio = self.run_job(source="draft", audio="silence", load="standard",
-                                                                     preread=True, resolution="4k", steps=3,
-                                                                     start_sigma=None)
+    def test_silence_at_4k(self):
+        """The clip's video encoded, its audio not; the standard load with preread (only allowed with it)."""
+        status, receipt, calls, phases, encode_audio = self.run_job(audio="silence", load="standard", preread=True,
+                                                                     resolution="4k", steps=3, start_sigma=None)
         lean = self.lean
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
-        self.assertEqual(self.loads, self.expected_loads(fast=False, encodes=False))
+        self.assertEqual(self.loads, self.expected_loads(fast=False, audio=False))
         self.assertEqual(receipt["preread"], {"files": 4, "gb": 0.0})
         self.assertIn("preread", receipt["times_s"])
-        self.assertEqual(phases, ["loading", "refine 1/3", "refine 2/3", "refine 3/3", "decoding", "saving"])
-        names = [c[0] for c in calls]
-        self.assertEqual(names[:5], ["Pipeline", "load_model", "draft_x2", "upscale", "set_stage"])
-        self.assertEqual(calls[2], ("draft_x2", (24, 37, 24, 42), (24, 37, 48, 84)))
-        self.assertEqual(calls[3], ("upscale", (24, 37, 48, 84), "draft"))
+        self.assertEqual(phases, ["encoding", "loading", "refine 1/3", "refine 2/3", "refine 3/3", "decoding",
+                                  "saving"])
+        self.assertEqual([c[0] for c in calls][:5], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage"])
+        self.assertEqual(calls[3], ("upscale", (24, 37, 48, 84), "final"))
         self.assertEqual(calls[5][4], "silence")
         encode_audio.assert_not_called()
+        self.assertEqual(set(receipt["times_s"]), {"encode_video", "preread", "load", "upscale", "merge_refine",
+                                                   "refine", "vae_decode", "mp4"})
         self.assertEqual((receipt["sigmas"], receipt["lean_chunks"], receipt["output"]["size"]),
                          ([0.9, 0.8, 0.6, 0.0], 16, [3840, 2160]))
         self.assertEqual(lean.call_count, 1)                        # the DiT's blocks, 16 chunks, after the load
         self.assertEqual(lean.call_args.args[1], 16)
         self.assertEqual(len(lean.call_args.args[0].transformer_blocks), 3)
-        self.assertEqual(set(receipt["inputs_sha256"]), {"conditioning", "final", "draft"})
+        self.assertEqual(set(receipt["inputs_sha256"]), {"conditioning", "final"})
 
     def test_the_stand_in_load_wants_weights_only(self):
         load = stand_in_torch(self.loaded).load
@@ -1158,12 +1155,18 @@ class RunTests(Fixture):
             with self.assertRaises(AssertionError):
                 load(self.case / "qwen" / "conditioning.pt", **kwargs)
 
-    def test_draft_with_the_fast_load(self):
-        status, receipt, _, phases, _ = self.run_job(source="draft", audio="silence")
+    def test_silence_with_the_fast_load(self):
+        status, receipt, _, phases, _ = self.run_job(audio="silence")
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
-        self.assertEqual(self.loads, self.expected_loads(fast=True, encodes=False))
-        self.assertEqual(receipt["load"]["files"], 5)
-        self.assertEqual(phases[0], "loading")
+        self.assertEqual(self.loads, self.expected_loads(fast=True, audio=False))
+        self.assertEqual(receipt["load"]["files"], 6)
+        self.assertEqual(phases[:2], ["encoding", "loading"])
+
+    def test_a_draft_source_is_refused_before_anything_loads(self):
+        status, receipt, calls, phases, _ = self.run_job(source="draft")
+        self.assertEqual((status, receipt["state"], receipt["error"]), (2, "failed", "unknown field(s): source"))
+        self.assertEqual((calls, phases, self.loads), ([], [], []))
+        self.assert_loaders(fast=False)
 
     def test_preread_with_the_fast_load_is_refused_before_anything_loads(self):
         status, receipt, calls, phases, _ = self.run_job(preread=True)
@@ -1367,14 +1370,10 @@ class TorchTests(unittest.TestCase):
         cond["text_token_tags"][3] = 0
         with self.assertRaisesRegex(JobError, "non-text"):
             job_module.text_input(cond, torch)
-        draft = job_module.draft_input({"h3_normalized": torch.zeros(1, 24, 37, 24, 42)}, torch)
-        self.assertEqual((tuple(draft.shape), draft.dtype), ((24, 37, 24, 42), torch.float32))
-        with self.assertRaisesRegex(JobError, "not a 5 s 16:9"):
-            job_module.draft_input({"h3_normalized": torch.zeros(1, 24, 72, 24, 42)}, torch)
         pcm = job_module.pcm_input({"audio": torch.zeros(1, 2, 161333)}, torch)
         self.assertEqual(tuple(pcm.shape), (2, 161333))
         with self.assertRaisesRegex(JobError, "no audio"):
-            job_module.pcm_input({"h3_normalized": torch.zeros(1)}, torch)
+            job_module.pcm_input({"latent": torch.zeros(1)}, torch)
 
 
 if __name__ == "__main__":

@@ -2220,7 +2220,7 @@ class Upscale(UpscaleTest):
                          (1, 99, 3, None, "fast"))                      # LFSTUDIO_UPSCALE_LOAD's default
         data = json.loads((self.regen(job) / "job.json").read_text())
         root = self.dir / "regen2k"                     # tests/stub/studio.py's LFSTUDIO_UPSCALE_PKG and so on
-        self.assertEqual(data, {"version": 1, "case": str(Path(parent["output"]).parents[1]), "source": "final",
+        self.assertEqual(data, {"version": 1, "case": str(Path(parent["output"]).parents[1]),
                                 "resolution": "1080p", "steps": 3, "start_sigma": None, "seed": 99,
                                 "audio": "silence", "load": "fast", "preread": False,
                                 "paths": {"package": str(root / "package"), "weights": str(root / "weights"),
