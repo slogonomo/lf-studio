@@ -683,7 +683,8 @@ class UpscaleRunning(CliTest):
         self.assertEqual((rec["state"], rec["phase"]), ("running", "upscaling"))
         self.assertRegex(self.ok("status", uid).stdout, rf"^{uid}  running    4k upscale of {jid[:8]}, balanced, t2va, "
                                                         r"5 s, seed \d+  upscaling: [a-z /0-9]+, 0:\d\d since it started\n$")
-        self.assertEqual(self.ok("cancel", uid).stdout, f"cancelling upscale {uid}: its job stops in a few seconds\n")
+        self.assertEqual(self.ok("cancel", uid).stdout,
+                         f"cancelling upscale {uid}: its job stops within about 20 s\n")
         p = self.sol("wait", uid)
         self.assertEqual(p.returncode, 1)
         self.assertIn(f"upscale {uid} was cancelled", p.stderr)

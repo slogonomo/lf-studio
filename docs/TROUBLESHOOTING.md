@@ -292,15 +292,20 @@ release needs ~100 GiB of GPU memory.
 closed its own models, and something else still holds the memory (another app, a container). Close it and try again;
 `LFSTUDIO_UPSCALE_MIN_FREE_GIB` changes the floor (measured at 2K: ~103 GiB used by the job).
 
-**`stopped: MemAvailable was below 5 GiB for 3 s`.** The Upscale's own memory guard stopped the job before the
-machine ran out (on GB10's unified memory that can hang the box), and before the launcher's guard would have stopped
-the whole studio. Usually another app grew meanwhile; at 4K, the job itself (not run end to end yet). `receipt.json`
-lists the lowest MemAvailable per phase. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
+**`stopped: MemAvailable was below 5 GiB for 3 s`.** The Upscale's own memory guard killed the job (SIGKILL, so its
+`receipt.json` still says `running`) before the machine ran out (on GB10's unified memory that can hang the box), and
+before the launcher's guard would have stopped the whole studio. Usually another app grew meanwhile; at 4K it can be
+the job itself (the studio's 4K path has not run end to end yet; [PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
+`worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
 
-**It sits at "Upscaling · loading its models" for minutes.** Expected: the job loads the 62 GB DiT and 14 GB of LoRA
-weights, 445 s when it was measured, then encodes the clip and refines for 10-25 min at 1080p and 2K ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
+**It sits at "Upscaling · loading its models" for minutes.** Expected: the job first encodes the clip ("reading the
+clip", ~3 min from the final clip), then loads the 62 GB DiT and 14 GB of LoRA weights (445-539 s when it was
+measured), then refines and decodes for 10-25 min at 1080p and 2K ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
 An upscale waits while any clip is queued, also one queued after it, since it closes the studio's models; the next
-clip loads them again.
+clip loads them again, and with `LFSTUDIO_PRELOAD=1` the studio warms them up again once the upscale is done.
+
+**Cancel of an upscale shows "Cancelling" for up to ~20 s.** The job stops once the GPU call under way returns; if
+that takes longer than 20 s, the studio kills it. Either way the next job starts only after it is gone.
 
 **The person in the upscale looks different.** "Full re-generate" (NVIDIA's setting, start noise 0.909) redraws
 faces. Use "Balanced" or "Faithful".

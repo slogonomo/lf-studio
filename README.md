@@ -110,10 +110,12 @@ sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and
 - **Only 5 s 16:9 text clips (t2va) for now.** NVIDIA's pipeline is fixed at 1344×768 and 121 frames, and Keyframes
   and Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with
   the reason.
-- **It is slow.** Measured on one DGX Spark: the job loads its models in about 7.5 min (445 s; a pre-read of the
-  weights is on by default to shorten this, not measured yet), then a 2-step upscale takes about 10 min at 1080p and
-  20 min at 2K (25 min with 3 steps). 4K is estimated at about 29 min per step, 1.5-2 h in all. While it runs the
-  studio's models are closed; the next clip loads them again. Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
+- **It is slow.** Measured on one DGX Spark: the job loads its models in about 8 min (445-539 s), then a 2-step
+  upscale from the final clip takes about 10 min at 1080p and 20 min at 2K (25 min with 3 steps). **4K is untested in
+  the studio:** one bench run with the same 4K forward took about 67 min after its load (2 steps of 28 min), and the
+  studio's job has not run it end to end yet. While it runs the studio's models are closed; the next clip loads them
+  again, and with `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
+  Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person, even when it starts from the final clip.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the

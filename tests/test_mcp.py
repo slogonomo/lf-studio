@@ -533,6 +533,29 @@ class Upscale(McpTest):
         self.assertEqual([j.get("kind") for j in self.studio.state()["jobs"]], [None])       # nothing queued
 
 
+class UpscaleCancel(McpTest):
+    """cancel on an upscale says so, queued or running (its job stops within about 20 s, not the clip's ~40 s)."""
+    load_s, clip_s = 1, 4
+    studio_env = {"STUB_UPSCALE_S": "30"}
+
+    def test_queued_and_running(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid], timeout=60)
+        m = self.mcp()
+        busy = self.studio.generate(seed=2)[1]["id"]                         # the upscale waits for it
+        uid = m.call("upscale", {"id": jid, "wait_s": 0})["structuredContent"]["id"]
+        r = m.call("cancel", {"id": uid})
+        self.assertEqual((r["isError"], text(r).split("\n\n")[0]),
+                         (False, f"Upscale {uid} was cancelled (it had not started)."))
+        self.studio.wait([busy], timeout=60)
+        uid = m.call("upscale", {"id": jid, "wait_s": 0})["structuredContent"]["id"]
+        self.studio.wait_for(lambda st: any(j["id"] == uid and j["status"] == "upscaling" for j in st["jobs"]), 30)
+        r = m.call("cancel", {"id": uid})
+        self.assertEqual((r["isError"], text(r).split("\n\n")[0]),
+                         (False, f"Upscale {uid} is being cancelled: its job stops within about 20 s."))
+        self.assertEqual(self.studio.wait([uid], timeout=30)[0]["status"], "cancelled")
+
+
 class UpscaleOff(McpTest):
     studio_env = {"LFSTUDIO_UPSCALE": "0"}
 

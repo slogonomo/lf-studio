@@ -240,28 +240,35 @@ shape.
 Measured on one DGX Spark (GB10) on 2026-10-28, with the bench wrapper that `upscale/regen2k_job.py` was made from
 (the same NVIDIA code and changes), the studio stopped, one 5 s 16:9 t2va clip. NVIDIA's standard forward (BF16,
 dense attention through cuDNN, about 90 TFLOPS) and its released VAE; the LoRA merged once in place (bit-identical to
-NVIDIA's merge, checked). One run per resolution:
+NVIDIA's merge, checked). One run per resolution; 1080p and 2K with 3 steps (`full`), 4K with 2 (`balanced`):
 
-| | 768p (no upscale; not offered) | 1080p | 2K (2560×1440) |
-|---|---|---|---|
-| Loading the models (once per job) | 445 s | 445 s | 445 s |
-| Encoding the final clip (source `final`) | 183 s | 183 s | 183 s |
-| Refine, per step | 48 s | 144 s | 378 s |
-| VAE decode | 49 s | 104 s | 180 s |
-| MP4 (x264) | 5 s | 8 s | 16 s |
-| Peak GPU memory allocated | 75 GiB | 81 GiB | 91 GiB |
-| Lowest MemAvailable during the job | 38 GiB | 28 GiB | 15 GiB |
+| | 768p (no upscale; not offered) | 1080p | 2K (2560×1440) | 4K (3840×2160), see below |
+|---|---|---|---|---|
+| Loading the models (once per job) | 445 s | 445 s | 445 s | 501 s (another loader) |
+| Encoding the final clip (source `final`) | 183 s | 183 s | 183 s | 188 s |
+| Refine, per step | 48 s | 144 s | 378 s | 1687 s, 1701 s |
+| VAE decode | 49 s | 104 s | 180 s | 399 s |
+| MP4 (x264) | 5 s | 8 s | 16 s | 13 s |
+| Peak GPU memory allocated | 75 GiB | 81 GiB | 91 GiB | 94.5 GiB |
+| Lowest MemAvailable during the job | 38 GiB | 28 GiB | 15 GiB | 13.8 GiB |
 
 - In all, after the load: 1080p about 10 min with 2 steps (`faithful`, `balanced`), 12 min with 3 (`full`); 2K about
-  19 and 25 min. The page rounds this to ~10 min and ~25 min after a ~2-7 min load. The load faults the weight files
-  in through mmap at about 0.2 GB/s; the job reads them into the page cache in parallel first
-  (`LFSTUDIO_UPSCALE_PREREAD=1`, the default), which is not measured yet, and the studio's O_DIRECT loader
-  (`runtime/fastload.py`) is a candidate for a follow-up.
-- 4K (3840×2160) was not run end to end. Its attention at 302,534 rows gave the right result on GB10 (checked
-  against fp32), and a refine step is estimated at about 29 min, so 1.5-2 h in all. The job runs its FFN in 8
-  sequence chunks there and frees the DiT before the decode.
+  19 and 25 min. The page shows ~10 min and ~20 min after a ~8 min load, and its progress bar adds the load, the
+  close of the studio's models and one step per strength step. The load faults the weight files in through mmap at
+  about 0.2 GB/s: 445 s, and 539 s in a run that read them into the page cache in parallel first
+  (`LFSTUDIO_UPSCALE_PREREAD=1`, off by default since; the files were cached already, so this says little about a
+  cold start). The studio's O_DIRECT loader (`runtime/fastload.py`) loaded in 23-108 s in later bench runs, so far
+  with less memory left after the load (26-32 GiB of MemAvailable, against 42), and is a candidate for a follow-up.
+- 4K: the stock block forward with only its FFN in 8 sequence chunks ran out of memory in the first step (the bench's
+  guard stopped it at 3 GiB of MemAvailable). The run in the table had every block run a memory-lean forward
+  (everything but the attention over the sequence in 16 chunks, q/k/v straight into SDPA's layout; bit-identical to
+  the stock forward on GB10, with 2.5x less activation memory), which the studio's job now uses at 4K, and loaded the
+  weights with `device_map` straight to the GPU, which the job does not do (the memory after the load was the same,
+  42-44 GiB, either way). About 67 min after the load, 75 min in all. Its attention at 302,534 rows gave the right
+  result on GB10 (checked against fp32). **The studio's own 4K path has not been run end to end yet**, so the page,
+  the CLI and the MCP tool call 4K untested.
 - The studio needs ~110 GiB free to start an upscale (`LFSTUDIO_UPSCALE_MIN_FREE_GIB`, 117.7 GiB were free on the idle
-  box), and stops it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`).
+  box), and kills it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`).
 - Quality, so far: at NVIDIA's settings (start noise 0.909, 3 steps: `full`) the result is much sharper but has a
   different-looking face, also from the final clip. Lower start noise (0.7 and 0.5 with 2 steps) and refining
   against the clip's own audio instead of NVIDIA's silence are being measured; the defaults (`balanced`, `clip`)

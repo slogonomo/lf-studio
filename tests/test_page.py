@@ -113,7 +113,8 @@ class Durations(PageTest):
         want = {0: ("0 s", "0:00"), 0.4: ("0 s", "0:00"), 0.5: ("1 s", "0:00"), 59.4: ("59 s", "0:59"),
                 59.5: ("60 s", "0:59"), 59.6: ("60 s", "0:59"), 89.4: ("89 s", "1:29"), 89.5: ("1:30 min", "1:29"),
                 119.4: ("1:59 min", "1:59"), 119.5: ("2:00 min", "1:59"), 119.6: ("2:00 min", "1:59"),
-                120: ("2:00 min", "2:00"), 3599.4: ("59:59 min", "59:59"), 3599.6: ("60:00 min", "59:59"),
+                120: ("2:00 min", "2:00"), 3599.4: ("59:59 min", "59:59"), 3599.6: ("1:00:00", "59:59"),
+                3600: ("1:00:00", "1:00:00"), 4300.4: ("1:11:40", "1:11:40"),     # an upscale: hours, as its timer
                 -3: ("0 s", "0:00"), -0.4: ("0 s", "0:00")}
         got = self.page.evaluate(f"{json.dumps(list(want))}.map(s => [fmtS(s), clock(s)])")
         self.assertEqual(dict(zip(want, map(tuple, got))), want)
@@ -1431,9 +1432,9 @@ class UpscalePage(UpscaleCards, PageTest):
         self.open_popover(ok)
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength", "up_source")], ["2k", "balanced", "final"])
         text = self.page.inner_text("#uppop")
-        for words in ("1080p\n~10 min", "2K\n~25 min", "4K\n~1.5–2 h", "after a ~2–7 min load", "Faithful",
-                      "Balanced", "Full re-generate", "redraws faces", "From the final clip", "From the draft",
-                      "Unloads the models while it runs"):
+        for words in ("1080p\n~10 min", "2K\n~20 min", "4K\n~1.1 h · untested", "after a ~8 min load", "Faithful",
+                      "Start noise 0.5, 2 steps", "Balanced", "Full re-generate", "redraws faces", "From the final clip",
+                      "From the draft", "Unloads the models while it runs"):
             self.assertIn(words, text)
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
@@ -1476,6 +1477,9 @@ class UpscalePage(UpscaleCards, PageTest):
                          f"lf-studio_t2va_5s_seed31_{ok[:6]}_1080p_{uid[:6]}.mp4")
         self.assertEqual(self.page.inner_text(f"{card} .st"), "Done")
         self.assertIn("Move this upscale to the trash", self.page.get_attribute(f"{card} .del", "title"))
+        self.page.click(f"{card} .del")                                     # its own Undo toast
+        self.page.wait_for_selector(card, state="detached")
+        self.page.wait_for_function("document.querySelector('#undo span').textContent === 'Upscale deleted'")
 
     def test_without_the_clips_stage1_files_and_a_refusal(self):
         """No Stage-1 latent: no source choice; no Stage-1 audio: the request asks for silence. A refusal shows in the

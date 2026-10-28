@@ -340,17 +340,17 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 </div>
 <div class="pop" id="uppop" role="dialog" aria-labelledby="uptitle" hidden>
   <h3 id="uptitle">Upscale this clip <small>experimental</small></h3>
-  <div class="lbl">Resolution <small>after a ~2–7 min load</small></div>
+  <div class="lbl">Resolution <small>after a ~8 min load</small></div>
   <div class="seg" role="radiogroup" aria-label="Resolution">
     <input type="radio" name="up_res" id="up-1080p" value="1080p"><label for="up-1080p">1080p<small>~10 min</small></label>
-    <input type="radio" name="up_res" id="up-2k" value="2k"><label for="up-2k">2K<small>~25 min</small></label>
-    <input type="radio" name="up_res" id="up-4k" value="4k"><label for="up-4k">4K<small>~1.5–2 h</small></label>
+    <input type="radio" name="up_res" id="up-2k" value="2k"><label for="up-2k">2K<small>~20 min</small></label>
+    <input type="radio" name="up_res" id="up-4k" value="4k"><label for="up-4k" title="The studio's 4K upscale has not been run end to end yet">4K<small>~1.1 h · untested</small></label>
   </div>
   <div class="lbl">Strength</div>
   <div class="opts" role="radiogroup" aria-label="Strength">
-    <label class="opt"><input type="radio" name="up_strength" value="faithful"><span>Faithful<small>Keeps the most of the clip</small></span></label>
-    <label class="opt"><input type="radio" name="up_strength" value="balanced"><span>Balanced<small>More new detail, a little redrawn</small></span></label>
-    <label class="opt"><input type="radio" name="up_strength" value="full"><span>Full re-generate<small>Sharpest, but it redraws faces into a different-looking person</small></span></label>
+    <label class="opt"><input type="radio" name="up_strength" value="faithful"><span>Faithful<small>Start noise 0.5, 2 steps: redraws the least</small></span></label>
+    <label class="opt"><input type="radio" name="up_strength" value="balanced"><span>Balanced<small>Start noise 0.7, 2 steps</small></span></label>
+    <label class="opt"><input type="radio" name="up_strength" value="full"><span>Full re-generate<small>NVIDIA's setting, one step more: sharpest, but it redraws faces into a different-looking person</small></span></label>
   </div>
   <div id="upsrc">
     <div class="lbl">Source</div>
@@ -401,18 +401,22 @@ function applyMachine(b){const m=MACHINES[b];if(!m||b===machine)return;machine=b
 applyMachine((document.querySelector('meta[name="lf-studio-backend"]')||{}).content||'spark');
 const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
 // The experimental Upscale (LFSTUDIO_UPSCALE=1; /api/state "upscale"): an upscale is a job of its own (kind "upscale",
-// parent: the clip). Its expected time for the progress bar, the load (~2-7 min) included: 1080p ~10 min, 2K ~25 min,
-// 4K ~1.5-2 h, from the times measured on one DGX Spark (docs/PERFORMANCE.md; 4K from its measured steps).
+// parent: the clip). Its expected time for the progress bar: `base` (closing the models ~40 s, the job's start, its
+// ~8 min load, encoding the final clip ~3 min, the decode and the MP4) plus `step` per refine step, less ~3 min from
+// the draft, from the times measured on one DGX Spark (docs/PERFORMANCE.md; 4K from the bench's one 4K run).
 const isUp=j=>j.kind==='upscale';
-const UPSCALE={"1080p":{name:'1080p',eta:870},"2k":{name:'2K',eta:1770},"4k":{name:'4K',eta:6570}};
+const UPSCALE={"1080p":{name:'1080p',base:860,step:144},"2k":{name:'2K',base:940,step:378},"4k":{name:'4K',base:1160,step:1700}};
+const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];return u.base+(j.steps||2)*u.step-(j.source==='draft'?180:0);};
 const STRENGTH={faithful:'Faithful',balanced:'Balanced',full:'Full re-generate'};
 const UP_PHASE={starting:'starting',encoding:'reading the clip',loading:'loading its models',decoding:'decoding',
   saving:'saving','adding the sound':"adding the clip's sound"};
 // durations: whole seconds first (none, negative or not a number: 0), then minutes and seconds, so 119.6 s reads
-// 2:00 and never 1:60 (#26); fmtS rounds ("45 s", "2:05 min"), clock counts up like a stopwatch (floors)
+// 2:00 and never 1:60 (#26); from an hour on (an upscale) hours too, 1:02:05. fmtS rounds ("45 s", "2:05 min",
+// "1:02:05"), clock counts up like a stopwatch (floors)
 const whole=(s,f)=>Number.isFinite(s=f(+s))?Math.max(0,s):0, mmss=n=>`${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;
-const fmtS=s=>{s=whole(s,Math.round);return s<90?`${s} s`:`${mmss(s)} min`;};
-const clock=s=>{s=whole(s,Math.floor);return s<3600?mmss(s):`${Math.floor(s/3600)}:${mmss(s%3600).padStart(5,'0')}`;};   // an upscale: 1:02:05
+const hms=n=>n<3600?mmss(n):`${Math.floor(n/3600)}:${mmss(n%3600).padStart(5,'0')}`;
+const fmtS=s=>{s=whole(s,Math.round);return s<90?`${s} s`:s<3600?`${mmss(s)} min`:hms(s);};
+const clock=s=>hms(whole(s,Math.floor));
 // until 0.6: settings this browser kept under solh3.* (up to 0.4) are copied once to lfstudio.*, where those are missing
 try{for(const k of Object.keys(localStorage))if(k.startsWith('solh3.')&&localStorage.getItem('lfstudio.'+k.slice(6))===null)localStorage.setItem('lfstudio.'+k.slice(6),localStorage.getItem(k));}catch(e){}
 const store={get(k,d){try{const v=localStorage.getItem('lfstudio.'+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem('lfstudio.'+k,v)}catch(e){}}};
@@ -656,7 +660,7 @@ async function remove(j,keyboard){const del=els[j.id]&&els[j.id].querySelector('
   undoFocus=near&&near.classList.contains('job')?near.querySelector('.del,.reuse-all'):null;
   gone.set(j.id,pollSeq);hideCard(j.id);
   if(!$('undo').classList.contains('show'))undoIds=[];undoIds.push(j.id);
-  showUndo(undoIds.length>1?`${undoIds.length} clips deleted`:'Clip deleted','Undo');render();
+  showUndo(undoIds.length>1?`${undoIds.length} clips deleted`:isUp(j)?'Upscale deleted':'Clip deleted','Undo');render();
   if(keyboard)$('undo').querySelector('button').focus();}  // the card and its focus are gone; Undo is next
 // Cancel takes a queued clip out of the queue at once; a running one is stopped (the server stops its pipeline's
 // workers, so the next clip loads the models again). The card stays as Cancelled, with Remix and Delete. The answer
@@ -748,7 +752,7 @@ function update(d,j,queue,s,t){
     else if(j.status==='cancelled'){setText(big,'Cancelled');setText(small,j.started?'stopped before it was done':'taken out of the queue');bar.hidden=true;}
     else if(cancelling){setText(big,'Cancelling');setText(small,'stopping the pipeline');bar.hidden=true;}
     else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading&&!isUp(j)?'starts after the warm-up':'next up');bar.hidden=true;}
-    else if(isUp(j)){bar.hidden=false;const el=t-(j.started||j.created),eta=(UPSCALE[j.resolution]||UPSCALE['2k']).eta;
+    else if(isUp(j)){bar.hidden=false;const el=t-(j.started||j.created),eta=upEta(j);
       setText(big,clock(el));
       setText(small,j.status==='upscaling'?`Upscaling · ${UP_PHASE[j.upscale_phase]||j.upscale_phase||'starting'}`:j.status==='freeing memory'?'Freeing memory · closing the models':'Starting');
       const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}

@@ -462,7 +462,7 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 | Key | Value |
 |---|---|
 | `id` | the finished clip (required) |
-| `resolution` | `1080p`, `2k` (default) or `4k` |
+| `resolution` | `1080p`, `2k` (default) or `4k` (untested: the studio's 4K path has not been run end to end yet) |
 | `source` | `final` (default: the clip's MP4) or `draft` (its Stage-1 latent, upscaled x2 by the same latent upscaler first) |
 | `strength` | how much it may redraw: `faithful` (start noise 0.5, 2 steps), `balanced` (0.7, 2 steps) or `full` (NVIDIA's release setting, 3 steps from 0.909: sharpest, but it redraws faces). Default `LFSTUDIO_UPSCALE_STRENGTH` (`balanced`). Provisional, until measured |
 | `audio` | what the picture is refined against: `clip` (the clip's own Stage-1 audio) or `silence` (NVIDIA's). Default `LFSTUDIO_UPSCALE_AUDIO` (`clip`). The result gets the clip's sound either way, copied |
@@ -472,7 +472,9 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   `orientation`, `seconds`, `prompt` and `seed` are the clip's). It waits while any clip is queued, even one queued
   after it, since it closes the studio's models. It runs as `status` `freeing memory` (`phase` `unloading`: the models
   close) and then `upscaling` (`phase` `upscaling`, with `upscale_phase` from the job: `encoding`, `loading`,
-  `refine 1/2`, ..., `decoding`, `saving`, `adding the sound`). The next clip loads the models again.
+  `refine 1/2`, ..., `decoding`, `saving`, `adding the sound`). The next clip loads the models again; with
+  `LFSTUDIO_PRELOAD=1` (the default) the studio warms up the last clip's settings again as soon as the upscale is
+  done and nothing is queued.
 - 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `unknown key "steps" (...)`, ...), `an upscale can't
   be upscaled again`, `Upscale takes text-to-video (t2va) clips only, for now` or `Upscale needs a 5 s 16:9 clip
   (...)`.
@@ -485,13 +487,15 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 From a program: `lf-cli upscale` ([CLI](#cli-binlf-cli)) or the MCP tool `upscale` ([Tools](#tools)). Behind
 spark-switchboard the POST starts a stopped studio, as a submit does; send `X-Switchboard-Wait` with it.
 
-Cancel, Delete, Undo, `/api/jobs/<id>[?wait=]`, `/video/<id>` and `/poster/<id>` work on an upscale as on a clip.
-It downloads as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`, and its
-`LFSTUDIO_PUBLISH_DIR` copy is named as the clip's with `_<resolution>` after it (`-2`, ... for a second one). Its files are in a directory of their own, so Delete moves
-only them; a clip can't be deleted while an upscale of it is queued or running (409). It fails, without a retry,
-below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` of free memory once the models are closed (default 110), or when the memory
-guard stops it (`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s); `error` says why (the job's own error line when it
-has one). A finished upscale also has `phases_s`, `peak_gib` and `low_mem_gib` from its job.
+Cancel, Delete, Undo, `/api/jobs/<id>[?wait=]`, `/video/<id>` and `/poster/<id>` work on an upscale as on a clip;
+Cancel stops its job within about 20 s (SIGTERM, then SIGKILL if the GPU call under way has not returned). It
+downloads as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`, and its
+`LFSTUDIO_PUBLISH_DIR` copy is named as the clip's with `_<resolution>` after it (`-2`, ... for a second one). Its
+files are in a directory of their own, so Delete moves only them; a clip can't be deleted while an upscale of it is
+queued or running (409). It fails, without a retry, below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` of free memory once the
+models are closed (default 110), or when the memory guard kills it (`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s);
+`error` says why (the job's own error line when it has one). A finished upscale also has `phases_s`, `peak_gib` and
+`low_mem_gib` from its job.
 
 With the Upscale on, `/api/state` has `"upscale": true` and `"upscale_defaults"`, what a request without those keys
 gets (`{"resolution": "2k", "source": "final", "strength": <LFSTUDIO_UPSCALE_STRENGTH>, "audio":
@@ -598,14 +602,15 @@ for example with `--prompt` (`--prompt-file -` also keeps CRLF, on Linux).
 page) without waiting; a clip still running is exit 4. **`status`** prints one line per clip: the queued and
 running ones, oldest first, then the newest 5 finished ones; `status ID` one clip. **`cancel ID`** cancels it.
 
-**`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s 16:9
-t2va clip ([Upscale](#upscale-experimental-post-apiupscale)) and works as `generate` from there: without `--wait`,
-`--out` or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
-`lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the studio's
-defaults hold for the rest (2K, the final clip, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the clip's
-seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes 10 min to 2 h, so `--timeout` and a
-later `wait` are the usual way. `status` shows it as `2k upscale of <clip id8>, balanced, ...`, `cancel` stops it
-within seconds, and the studio's refusals (`Upscale needs a 5 s 16:9 clip ...`, the Upscale off) are exit 2.
+**`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s 16:9 t2va
+clip ([Upscale](#upscale-experimental-post-apiupscale)) and works as `generate` from there: without `--wait`, `--out`
+or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
+`lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the
+studio's defaults hold for the rest (2K, the final clip, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the
+clip's seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes about 20 min to 1.5 h with its
+~8 min load (4K is untested), so `--timeout` and a later `wait` are the usual way. `status` shows it as `2k upscale
+of <clip id8>, balanced, ...`, `cancel` stops it within about 20 s, and the studio's refusals (`Upscale needs a 5 s
+16:9 clip ...`, the Upscale off) are exit 2.
 
 **Waiting** is a loop of `GET /api/jobs/<id>/video?wait=15`, so the MP4 comes on the connection that saw the clip
 finish. It shows one progress line per change on stderr (`queued 5cfd57b0 (fl2va, landscape, 5 s, seed 1234),
@@ -646,7 +651,7 @@ lf-cli status "$id"
 lf-cli wait "$id" --out clip.mp4 --poster --timeout 600
 lf-cli --json fetch "$id" --out clips/
 up=$(lf-cli upscale "$id" --resolution 2k --strength faithful)                # experimental: queue an upscale
-lf-cli wait "$up" --out clips/                                                 # ~25 min later: ..._2k_<id6>.mp4
+lf-cli wait "$up" --out clips/                                                 # ~30 min later: ..._2k_<id6>.mp4
 ```
 
 ## MCP server: `lf-cli mcp`
@@ -722,7 +727,7 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
 - **spark-switchboard:** as the CLI; a stopped studio makes `wait` and `fetch` answer that `fetch` with `wake: true`
   would start it.
 - **`upscale`** answers `Queued upscale <id> of clip <clip id> (2k, balanced, from the final).`, then as `generate`.
-  An upscale takes 10 min to 2 h, far longer than any `wait_s`: the usual result says it is still running, and a
+  An upscale takes about 20 min to 1.5 h, far longer than any `wait_s`: the usual result says it is still running, and a
   later `wait` saves it.
 
 ### Waiting values per client

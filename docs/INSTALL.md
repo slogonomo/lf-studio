@@ -102,7 +102,8 @@ for a mode whose weights were not downloaded.
 | `install/80-prompt-cache.sh` | One-time Stage2 prompt cache (`fixed-prompt.pt`) with NVIDIA's `runtime.cache_builder`. Reads ~37 GB of INT8 weights and uses the GPU for ~20 s. | 16.7 s, 12.6 MB |
 | `install/90-env.sh` | Writes `~/.config/lf-studio/env` and runs `bin/lf-studio --check`. | - |
 
-Run them in order. Don't run 40 and 50 at the same time: two `nvcc` builds at once can run the box out of memory.
+Run them in order, and skip 65 unless you want the [experimental Upscale](#experimental-upscale). Don't run 40 and
+50 at the same time: two `nvcc` builds at once can run the box out of memory.
 After 40, run `install/10-sana.sh` again to run the CPU tests with the new env.
 
 After step 80 the two offline weight files (~37 GB, INT8 Gemma and INT8 connector) are only needed to rebuild the

@@ -79,7 +79,9 @@ Environment:
                              names ending in .ts.net, .local, .lan, .home, .home.arpa or .internal. A request for any
                              other name (Host, or X-Forwarded-Host when present) gets 421, so a web page can't reach
                              the studio by DNS rebinding (a name of its own that resolves to the studio's address).
-  LFSTUDIO_PRELOAD           1 (default): at start, warm up the settings of the last finished clip. 0: off.
+  LFSTUDIO_PRELOAD           1 (default): at start, warm up the settings of the last finished clip; with the
+                             experimental Upscale on, also after each upscale (which closes the models) when nothing
+                             is queued. 0: off.
   LFSTUDIO_RESHAPE           1 (default): a clip with the loaded task but another length or orientation keeps the
                              models loaded and changes the session's shape. 0: close the session and load the models
                              again, as before 0.4. A patch without Pipeline.reshape always reloads.
