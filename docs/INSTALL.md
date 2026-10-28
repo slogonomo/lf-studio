@@ -187,7 +187,8 @@ Then restart the studio. What the step does:
    Face cache (`HF_HUB_CACHE`) is linked rather than copied, as is the studio's own H3-upscaler checkpoint, which is
    the same file; the rest downloads into that directory, and nothing is written into the cache. Sharp's AdaLN table
    (32,800 bytes, not in the release) is read by HTTP range from one tensor of `Comfy-Org/MiniMax-H3` at a pinned
-   revision, as NVIDIA's `download.py` does, and checked. The base model is the studio's MiniMax-H3
+   revision, as NVIDIA's `download.py` does, and checked; unlike there, without your `HF_TOKEN` (the repository is
+   public, and a redirect to Hugging Face's CDN would take the token along). The base model is the studio's MiniMax-H3
    (`LFSTUDIO_UPSCALE_BASE`, `$LFSTUDIO_CHECKPOINTS/MiniMax-H3`).
 5. `upscale/regen2k_job.py`'s own check of the package and the weights.
 

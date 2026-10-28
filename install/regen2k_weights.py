@@ -17,9 +17,10 @@ checked. The release does not carry the AdaLN table (it is derived from the base
 from one tensor of Comfy-Org/MiniMax-H3 at a pinned revision, as NVIDIA's download.py (fetch_curve) does, and
 checked against its SHA-256. A file that fails its check is kept as <name>.bad, and the step fails.
 
-The release files need huggingface_hub (the Regen-2K environment's Python runs this); the AdaLN table needs the
-standard library only. HF_ENDPOINT and HF_TOKEN are used as huggingface_hub uses them. Exit status 0 when every file
-is in place, 1 otherwise (the last line says why).
+The release files need huggingface_hub (the Regen-2K environment's Python runs this), which uses HF_ENDPOINT and
+HF_TOKEN as it always does. The AdaLN table needs the standard library only; its range reads go to HF_ENDPOINT and
+never carry a token: the repository is public, and urllib would send an Authorization header on to the host that
+Hugging Face redirects to (its CDN). Exit status 0 when every file is in place, 1 otherwise (the last line says why).
 """
 import argparse
 import hashlib
@@ -132,12 +133,11 @@ def release_file(weights, name, digest, upscaler_copy=None):
     say(f"downloaded {name} (SHA-256 checked)")
 
 
-def read_range(url, start, length, token=None):
-    """`length` bytes of `url` from `start`, by an HTTP Range request (never the whole file)."""
+def read_range(url, start, length):
+    """`length` bytes of `url` from `start`, by an HTTP Range request (never the whole file). No credentials: the
+    file is public, and a redirect would take any header along to the next host."""
     headers = {"Range": f"bytes={start}-{start + length - 1}", "Accept-Encoding": "identity",
                "User-Agent": "lf-studio-install"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:
         if response.status != 206:
             raise Failed(f"{url} ignored the Range request (HTTP {response.status}); refusing to download the whole "
@@ -148,15 +148,15 @@ def read_range(url, start, length, token=None):
     return data
 
 
-def fetch_table(dest, endpoint, token=None):
+def fetch_table(dest, endpoint):
     """Sharp's AdaLN table: one tensor of a Comfy-Org checkpoint, read by range (NVIDIA's download.py fetch_curve),
     checked, then written to dest (through a .part file)."""
     url = f"{endpoint.rstrip('/')}/{CURVE['repo']}/resolve/{CURVE['revision']}/{CURVE['file']}"
-    size, = struct.unpack("<Q", read_range(url, 0, 8, token))
+    size, = struct.unpack("<Q", read_range(url, 0, 8))
     if not 0 < size <= MAX_HEADER:
         raise Failed(f"{url} does not start with a safetensors header")
     try:
-        header = json.loads(read_range(url, 8, size, token))
+        header = json.loads(read_range(url, 8, size))
         tensor = header[CURVE["tensor"]]
         start, end = tensor["data_offsets"]
     except (ValueError, KeyError, TypeError) as error:
@@ -164,7 +164,7 @@ def fetch_table(dest, endpoint, token=None):
     if tensor.get("dtype") != CURVE["dtype"] or tensor.get("shape") != CURVE["shape"] or end - start != CURVE["bytes"]:
         raise Failed(f"{url}: {CURVE['tensor']} is {tensor.get('dtype')} {tensor.get('shape')}, not "
                      f"{CURVE['dtype']} {CURVE['shape']}")
-    data = read_range(url, 8 + size + start, end - start, token)
+    data = read_range(url, 8 + size + start, end - start)
     if hashlib.sha256(data).hexdigest() != CURVE["sha256"]:
         raise Failed(f"{CURVE['tensor']} from {url} does not have the SHA-256 {CURVE['sha256']}; nothing was written")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -173,7 +173,7 @@ def fetch_table(dest, endpoint, token=None):
     os.replace(part, dest)
 
 
-def table(weights, endpoint, token=None):
+def table(weights, endpoint):
     dest = weights / TABLE
     if has(dest, CURVE["sha256"]):
         say(f"have {TABLE} (SHA-256 checked)")
@@ -183,7 +183,7 @@ def table(weights, endpoint, token=None):
         if moved:
             say(f"{dest} is not the expected table: kept as {moved}")
     say(f"reading {TABLE} by range from {CURVE['repo']} at {CURVE['revision'][:7]} ({CURVE['file']})")
-    fetch_table(dest, endpoint, token)
+    fetch_table(dest, endpoint)
     say(f"wrote {TABLE} (SHA-256 checked)")
 
 
@@ -197,7 +197,7 @@ def main(argv=None):
         weights.mkdir(parents=True, exist_ok=True)
         for name, digest in FILES.items():
             release_file(weights, name, digest, args.upscaler_copy)
-        table(weights, os.environ.get("HF_ENDPOINT") or "https://huggingface.co", os.environ.get("HF_TOKEN"))
+        table(weights, os.environ.get("HF_ENDPOINT") or "https://huggingface.co")
     except (Failed, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr, flush=True)
         return 1

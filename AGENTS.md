@@ -80,7 +80,8 @@ installed); and every install script's `--dry-run` under both backends, with fak
 the GCC 14 toolchain kept on `FORCE=1`, the adoption of a venv whose fake `pip freeze` is the reference freeze, and
 the dated prompt-cache backup. Add a test there for every backend change. It also covers `install/65-regen2k.sh` (its
 dry run, and runs with a fake uv: a failed step stops it and leaves the venv unmarked, #74) and
-`install/regen2k_weights.py` (with a stand-in `huggingface_hub` and a fake Hugging Face for the range reads).
+`install/regen2k_weights.py` (with a stand-in `huggingface_hub` and a fake Hugging Face for the range reads, which
+must never send a token, also through a redirect).
 
 `tests/test_old_names.py` covers the names up to 0.4 that work until 0.6: the old setting names in the environment
 and the settings file (and that the four `OLD_SETTINGS` lists agree), the old places, the shims, the launcher's check

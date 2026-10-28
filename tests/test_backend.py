@@ -5,6 +5,8 @@ CPU only, against the stub runtime. nvidia-smi, uname, gcc, docker and sg are sm
 CPU type and the compiler of the machine running the tests do not matter. The install scripts run with --dry-run
 only, with their home, settings file and temp files in a temp directory.
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio, free_port  # noqa: E402
@@ -1161,8 +1164,9 @@ class Regen2kWeights(unittest.TestCase):
         self.assertIn("does not have NVIDIA's SHA-256", str(e.exception))
         self.assertEqual(sorted(p.name for p in (weights / "lora").iterdir()), ["sharp_curve_branches.safetensors.bad"])
 
-    def serve(self, body, ranges=True):
-        """A fake Hugging Face that serves `body` for the pinned Comfy-Org file, by Range unless `ranges` is false."""
+    def serve(self, body, ranges=True, redirect=None, auth=None):
+        """A fake Hugging Face that serves `body` for the pinned Comfy-Org file, by Range unless `ranges` is false, or
+        redirects it to `redirect` (another server's address). `auth`: a list for the Authorization headers seen."""
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         import threading
         seen = []
@@ -1174,6 +1178,14 @@ class Regen2kWeights(unittest.TestCase):
 
             def do_GET(self):
                 seen.append(self.headers.get("Range"))
+                if auth is not None:
+                    auth.append(self.headers.get("Authorization"))
+                if redirect:                                # as Hugging Face sends a file to its CDN
+                    self.send_response(302)
+                    self.send_header("Location", redirect + self.path)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if self.path != path:
                     self.send_response(404)
                     self.end_headers()
@@ -1220,6 +1232,26 @@ class Regen2kWeights(unittest.TestCase):
             self.w.fetch_table(self.d / "other.bin", url)
         self.assertIn("is F32 [1024, 8], not F32 [1025, 8]", str(e.exception))
         self.assertFalse((self.d / "other.bin").exists())
+
+    def test_no_token_goes_along(self):
+        """HF_TOKEN in the environment never reaches the table's host, nor the host it redirects to (urllib passes
+        an Authorization header on through a redirect, to any host)."""
+        import hashlib
+        table = bytes(range(256)) * 128 + b"\x02" * 32
+        self.w.CURVE = dict(self.w.CURVE, sha256=hashlib.sha256(table).hexdigest())
+        cdn_auth, hub_auth = [], []
+        cdn, cdn_seen = self.serve(self.checkpoint(table), auth=cdn_auth)
+        hub, _ = self.serve(b"", redirect=cdn.replace("127.0.0.1", "localhost"), auth=hub_auth)   # another host name
+        weights = self.d / "weights"
+        for name, data in self.data.items():                                 # the release files are in place
+            (weights / name).parent.mkdir(parents=True, exist_ok=True)
+            (weights / name).write_bytes(data)
+        with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_secret", "HF_ENDPOINT": hub}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.w.main(["--weights", str(weights)]), 0)
+        self.assertEqual((weights / "lora" / "adaln_t_table.bin").read_bytes(), table)
+        self.assertEqual(len(cdn_seen), 3)                                  # header length, header, the tensor
+        self.assertEqual((hub_auth, cdn_auth), ([None] * 3, [None] * 3))
 
 
 # A venv's python for pillow_update: `pip show -q`, `pip uninstall -y` and `pip install` act on the package names in
