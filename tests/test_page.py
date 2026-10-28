@@ -1442,8 +1442,23 @@ class UpscalePage(UpscaleCards, PageTest):
             {resolution: '2k', steps: 3, source: 'final'}, {resolution: '1080p', steps: 2, source: 'draft'},
             {resolution: '2k', steps: 2, source: 'final', load: 'standard'},
             {resolution: '4k', steps: 2, source: 'final'}].map(upEta)"""), [1230, 1610, 488, 1660, 4085])
+        # its times are upEta's for 2 steps from the final clip with the studio's load (/api/state upscale_load), and
+        # follow it each time it opens (one evaluate: no poll in between)
+        self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
+            upEta({resolution: r, steps: 2, source: 'final', load})))"""), [673, 1103, 1230, 1660, 4085, 4515])
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
+        times = self.page.evaluate("""id => {
+            const btn = document.querySelector(`article[data-id="${id}"] .act.up`), seen = [];
+            for (const load of ['standard', 'fast', 'standard', undefined]) {
+              state.upscale_load = load; openUpscale(id, btn);
+              seen.push([...document.querySelectorAll('#uppop small[data-standard]')].map(e => e.textContent));
+              closeUpscale(false);
+            }
+            state.upscale_load = 'fast'; return seen;}""", ok)
+        fast = ["in all, with a ~25 s load", "~11 min", "~20 min", "~1.1 h · untested"]
+        standard = ["in all, with a ~7.5 min load", "~18 min", "~28 min", "~1.3 h · untested"]
+        self.assertEqual(times, [standard, fast, standard, fast])
         self.page.focus(up)                                                   # the keyboard: Enter opens it, focus
         self.page.keyboard.press("Enter")                                     # on the resolution; Escape returns
         self.page.wait_for_selector("#uppop", state="visible")
@@ -1541,15 +1556,19 @@ class UpscaleRunning(UpscaleCards, PageTest):
 
 
 class UpscaleDefaults(UpscaleCards, PageTest):
-    """The popover starts at the server's defaults (/api/state upscale_defaults: LFSTUDIO_UPSCALE_STRENGTH)."""
+    """The popover starts at the server's defaults (/api/state upscale_defaults: LFSTUDIO_UPSCALE_STRENGTH) and shows
+    the times with its load (upscale_load: LFSTUDIO_UPSCALE_LOAD=standard, ~7 min more)."""
 
     def seed(self):
-        self.studio.env["LFSTUDIO_UPSCALE_STRENGTH"] = "full"
+        self.studio.env.update(LFSTUDIO_UPSCALE_STRENGTH="full", LFSTUDIO_UPSCALE_LOAD="standard")
 
-    def test_the_servers_strength(self):
+    def test_the_servers_strength_and_load(self):
         ok = self.done_clip(prompt="defaults")
         self.open_popover(ok)
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength", "up_source")], ["2k", "full", "final"])
+        text = self.page.inner_text("#uppop")
+        for words in ("1080p\n~18 min", "2K\n~28 min", "4K\n~1.3 h · untested", "in all, with a ~7.5 min load"):
+            self.assertIn(words, text)
 
 
 class UpscalePageOff(PageTest):

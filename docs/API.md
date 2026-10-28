@@ -498,18 +498,19 @@ models are closed (default 110), or when the memory guard kills it (`LFSTUDIO_UP
 `error` says why (the job's own error line when it has one). A finished upscale also has `phases_s`, `peak_gib` and
 `low_mem_gib` from its job.
 
-With the Upscale on, `/api/state` has `"upscale": true` and `"upscale_defaults"`, what a request without those keys
+With the Upscale on, `/api/state` has `"upscale": true`, `"upscale_defaults"`, what a request without those keys
 gets (`{"resolution": "2k", "source": "final", "strength": <LFSTUDIO_UPSCALE_STRENGTH>, "audio":
-<LFSTUDIO_UPSCALE_AUDIO>}`; `null` with the Upscale off), and every finished job in `/api/state`, `/api/jobs` and the
-API record has `upscalable`: `{"ok": true, "draft": <has its Stage-1 latent>, "clip_audio": <has its Stage-1
-audio>}` or `{"ok": false, "why": "<the 400 or 409 text above>"}`. This endpoint is the page's, like Cancel: it
-works with `LFSTUDIO_API=0`.
+<LFSTUDIO_UPSCALE_AUDIO>}`; `null` with the Upscale off), `"upscale_load"`, how its jobs load their weights (`fast` or
+`standard`, `LFSTUDIO_UPSCALE_LOAD`; the page's popover shows its times with it; `null` with the Upscale off), and
+every finished job in `/api/state`, `/api/jobs` and the API record has `upscalable`: `{"ok": true, "draft": <has its
+Stage-1 latent>, "clip_audio": <has its Stage-1 audio>}` or `{"ok": false, "why": "<the 400 or 409 text above>"}`.
+This endpoint is the page's, like Cancel: it works with `LFSTUDIO_API=0`.
 
 ## Other endpoints
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "upscale", "upscale_defaults", "session", "jobs", "done", "more", "deleted"}`. `upscale` is true when the experimental Upscale is on (`LFSTUDIO_UPSCALE=1`); then finished jobs have `upscalable`, and `upscale_defaults` holds the choices the page's Upscale starts with (else `null`). `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
+| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "upscale", "upscale_defaults", "upscale_load", "session", "jobs", "done", "more", "deleted"}`. `upscale` is true when the experimental Upscale is on (`LFSTUDIO_UPSCALE=1`); then finished jobs have `upscalable`, `upscale_defaults` holds the choices the page's Upscale starts with and `upscale_load` its load, `fast` or `standard` (else both `null`). `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
 | `GET /api/jobs?before=<created>&limit=<n>` | Older clips, newest first: `{"jobs": [...], "more": true/false}`. `before` is a `created` time (default: now), `limit` 1-100 (default 24). Records as stored. |
 | `GET /api/inputs/<id>` | A clip's input files, for Remix: `{"task", "inputs": {"<zone>": [{"name", "index", "url"}]}, "missing": [...]}` |
 | `GET /input/<id>/<zone>/<index>` | One input file (reference videos as converted). 404 `no such input`. |

@@ -291,7 +291,7 @@ ran without trouble. The run above started from the draft, so the two encodes di
   and MP4 in place of 2K's); 685 s plus 1700 s per step at 4K (the bench's 4K decode and MP4). From the draft ~3 min
   less (no encode), with the standard load ~7 min more. In all, with 2 steps (`faithful`, `balanced`) about 11 min at
   1080p, 20 min at 2K and 1.1 h at 4K; with 3 (`full`) about 14 min, 27 min and 1.6 h. The popover shows the 2-step
-  times. A run with the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
+  times with the studio's load (`/api/state` `upscale_load`; with the standard load ~18 min, ~28 min and ~1.3 h). A run with the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
   page cache first) loaded in 539 s, against 445 s without; the files were cached already, so this says little about
   a cold start.
 - 4K: the stock block forward with only its FFN in 8 sequence chunks ran out of memory in the first step (the bench's

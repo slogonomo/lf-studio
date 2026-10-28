@@ -2157,6 +2157,7 @@ class Upscale(UpscaleTest):
         self.assertIs(st["upscale"], True)
         self.assertEqual(st["upscale_defaults"], {"resolution": "2k", "source": "final", "strength": "balanced",
                                                   "audio": "clip"})            # the page's choices start there
+        self.assertEqual(st["upscale_load"], "fast")                         # the page's times: LFSTUDIO_UPSCALE_LOAD
         self.assertEqual(st["jobs"][0]["upscalable"], {"ok": True, "draft": True, "clip_audio": True})
         uid = self.upscale(parent["id"])
         job = self.done(uid)
@@ -2268,6 +2269,7 @@ class UpscaleSettings(UpscaleTest):
         parent = self.clip()
         self.assertEqual(self.studio.state()["upscale_defaults"],
                          {"resolution": "2k", "source": "final", "strength": "full", "audio": "silence"})
+        self.assertEqual(self.studio.state()["upscale_load"], "standard")
         job = self.done(self.upscale(parent["id"]))
         self.assertEqual((job["strength"], job["steps"], job["start_sigma"], job["audio"]),
                          ("full", 3, None, "silence"))
@@ -2788,6 +2790,7 @@ class UpscaleOff(StudioTest):
         st = self.studio.state()
         self.assertIs(st["upscale"], False)
         self.assertIsNone(st["upscale_defaults"])
+        self.assertIsNone(st["upscale_load"])
         self.assertNotIn("upscalable", st["jobs"][0])
         self.assertEqual(self.studio.upscale(jid), (404, {"error": "the experimental Upscale is off on this studio "
                                                                    "(LFSTUDIO_UPSCALE=1 turns it on)"}))
