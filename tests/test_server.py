@@ -1750,17 +1750,28 @@ class OldLengths(StudioTest):
 
 
 class OldLengthWarmUp(StudioTest):
-    """The start-up warm-up after a 3 s clip (the last finished, up to 0.5.0) loads 5 s, as its Remix on the page does."""
+    """A 0.5.0 state started by this server: the start-up warm-up after a 4 s clip (the last finished) loads 5 s, as
+    its Remix on the page does, and a 3 s clip that was queued or running when 0.5.0 stopped reads failed ("server
+    restarted") as any other, keeps its length and is not run or warmed up for."""
     preload = True
 
     def seed(self):
-        self.write_state([finished_job("1" * 32, seconds=10, created=1), finished_job("2" * 32, seconds=3, created=2)])
+        self.write_state([finished_job("1" * 32, seconds=10, created=1), finished_job("2" * 32, seconds=4, created=2),
+                          dict(finished_job("3" * 32, seconds=3, created=3), status="queued"),
+                          dict(finished_job("5" * 32, seconds=3, created=4), status="generating", started=4)])
 
     def test_warm_up_at_5_s(self):
-        s = self.studio.wait_for(lambda s: s["session"].get("loading_key"))["session"]
-        self.assertEqual(s["loading_key"], ["t2va", "landscape", 5])
+        s = self.studio.wait_for(lambda s: s["session"].get("loading_key"))
+        self.assertEqual(s["session"]["loading_key"], ["t2va", "landscape", 5])
+        jobs = {j["id"]: j for j in s["jobs"]}
+        for jid in ("3" * 32, "5" * 32):
+            self.assertEqual((jobs[jid]["status"], jobs[jid].get("error"), jobs[jid]["seconds"]),
+                             ("failed", "server restarted", 3))
         self.studio.wait_for(lambda s: s["session"]["key"] == ["t2va", "landscape", 5] and s["session"]["state"] == "ready")
         self.assertIn("preloading ('t2va', 'landscape', 5)", self.studio.log.read_text())
+        sessions = [d.name for d in (self.studio.runtime / "outputs" / "webui").iterdir() if d.is_dir()]
+        self.assertTrue(sessions)
+        self.assertEqual([n for n in sessions if not re.search(r"-t2va-landscape-5s(-\d+)?$", n)], [])   # no 3 s one
 
 
 class WarmUpWithWarmTime(WarmUp):
