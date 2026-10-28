@@ -243,7 +243,7 @@ class StudioSettingsTests(unittest.TestCase):
                                     "package": Path("/srv/lf/Open-H3-Regenerate-2K"),
                                     "weights": Path("/srv/lf/checkpoints/Open-H3-Regenerate-2K"),
                                     "base_model": Path("/srv/lf/checkpoints/MiniMax-H3"), "strength": "balanced",
-                                    "audio": "clip", "preread": True, "min_free_gib": 110.0, "guard_gib": 5.0})
+                                    "audio": "clip", "preread": False, "min_free_gib": 110.0, "guard_gib": 5.0})
         settings, _ = job_module.studio_settings({"LFSTUDIO_HOME": "/srv/lf", "LFSTUDIO_CHECKPOINTS": "/data/ckpt",
                                                   "LFSTUDIO_UPSCALE_STRENGTH": ""})      # empty: the default
         self.assertEqual((settings["weights"], settings["base_model"], settings["strength"]),
@@ -254,11 +254,11 @@ class StudioSettingsTests(unittest.TestCase):
 
     def test_values(self):
         settings, problems = job_module.studio_settings({
-            "LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence", "LFSTUDIO_UPSCALE_PREREAD": "0",
+            "LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence", "LFSTUDIO_UPSCALE_PREREAD": "1",
             "LFSTUDIO_UPSCALE_MIN_FREE_GIB": "0", "LFSTUDIO_UPSCALE_GUARD_GIB": "2.5"})
         self.assertEqual(problems, [])
         self.assertEqual([settings[k] for k in ("strength", "audio", "preread", "min_free_gib", "guard_gib")],
-                         ["full", "silence", False, 0.0, 2.5])
+                         ["full", "silence", True, 0.0, 2.5])
         _, problems = job_module.studio_settings({
             "LFSTUDIO_UPSCALE_PYTHON": "python3", "LFSTUDIO_UPSCALE_STRENGTH": "light",
             "LFSTUDIO_UPSCALE_AUDIO": "Clip", "LFSTUDIO_UPSCALE_PREREAD": "yes", "LFSTUDIO_UPSCALE_MIN_FREE_GIB": "-1",

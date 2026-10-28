@@ -244,7 +244,7 @@ def studio_settings(environ):
             problems.append(f"{name}={settings[key]}: must be an absolute path")
     for key, name, default, choices in (("strength", "LFSTUDIO_UPSCALE_STRENGTH", DEFAULT_STRENGTH, tuple(STRENGTHS)),
                                         ("audio", "LFSTUDIO_UPSCALE_AUDIO", DEFAULT_AUDIO, AUDIO),
-                                        ("preread", "LFSTUDIO_UPSCALE_PREREAD", "1", ("0", "1"))):
+                                        ("preread", "LFSTUDIO_UPSCALE_PREREAD", "0", ("0", "1"))):
         settings[key] = environ.get(name) or default
         if settings[key] not in choices:
             problems.append(f"{name}={settings[key]}: must be {', '.join(choices[:-1])} or {choices[-1]}")

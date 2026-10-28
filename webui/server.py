@@ -107,11 +107,12 @@ Environment:
   LFSTUDIO_UPSCALE_AUDIO     what the picture is refined against, when the request does not say: clip (the clip's own
                              Stage-1 audio; the default, an experiment) or silence (NVIDIA's). The clip's sound is
                              added to the result either way.
-  LFSTUDIO_UPSCALE_PREREAD   1 (default): the job reads its weights into the page cache in parallel first. 0: off.
+  LFSTUDIO_UPSCALE_PREREAD   0 (default): off. 1: the job reads its weights into the page cache in parallel before
+                             it loads them (not shown to shorten the load yet).
   LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 0 = no check)
   LFSTUDIO_UPSCALE_GUARD_GIB stop an upscale when MemAvailable stays below this for 3 s (default 5; 0 = no guard)
   Test hooks: LFSTUDIO_UPSCALE_SCRIPT (the job script, default upscale/regen2k_job.py) and LFSTUDIO_TEST_MEMINFO (a
-  file read for MemAvailable instead of /proc/meminfo).
+  file read for MemAvailable instead of /proc/meminfo; with the Upscale on, the start log warns when it is set).
 Until 0.6 these settings may also have their names up to 0.4 (SOLH3_HOST for LFSTUDIO_HOST, and so on; not
 LFSTUDIO_LAUNCHER_PID or the LFSTUDIO_UPSCALE ones, which are new): an old name counts where the new one is not set,
 with one warning. The default state directory is ~/.local/state/sol-h3-studio while that has jobs.db and
@@ -2642,6 +2643,9 @@ def main():
     if UPSCALE:
         log(f"the experimental Upscale is on (LFSTUDIO_UPSCALE=1): {UPSCALE_SCRIPT} with {UPSCALE_CONF['python']}; "
             f"default strength {UPSCALE_CONF['strength']}, audio {UPSCALE_CONF['audio']}")
+    if UPSCALE and MEMINFO != "/proc/meminfo":
+        log(f"WARNING: LFSTUDIO_TEST_MEMINFO={MEMINFO}, a test hook: the Upscale's memory floor and guard read "
+            "MemAvailable from that file, not from this machine; unset it outside the tests")
     log(f"LF Studio on http://{HOST}:{PORT}/ (package {PKG}, state {STATE_DIR})")
     try:
         srv.serve_forever()

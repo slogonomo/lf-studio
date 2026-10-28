@@ -2216,7 +2216,7 @@ class Upscale(UpscaleTest):
         root = self.dir / "regen2k"                     # tests/stub/studio.py's LFSTUDIO_UPSCALE_PKG and so on
         self.assertEqual(data, {"version": 1, "case": str(Path(parent["output"]).parents[1]), "source": "draft",
                                 "resolution": "1080p", "steps": 3, "start_sigma": None, "seed": 99,
-                                "audio": "silence", "preread": True,
+                                "audio": "silence", "preread": False,
                                 "paths": {"package": str(root / "package"), "weights": str(root / "weights"),
                                           "base_model": str(root / "base"), "output": str(self.regen(job))},
                                 "meta": {"studio_job": uid, "parent": parent["id"], "strength": "full"}})
@@ -2253,7 +2253,7 @@ class Upscale(UpscaleTest):
 
 class UpscaleSettings(UpscaleTest):
     """LFSTUDIO_UPSCALE_STRENGTH, _AUDIO and _PREREAD are a request's defaults; the paths go into job.json."""
-    env = {"LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence", "LFSTUDIO_UPSCALE_PREREAD": "0",
+    env = {"LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence", "LFSTUDIO_UPSCALE_PREREAD": "1",
            "LFSTUDIO_UPSCALE_PKG": "/opt/regen2k/package", "LFSTUDIO_UPSCALE_WEIGHTS": "/opt/regen2k/weights",
            "LFSTUDIO_UPSCALE_BASE": "/opt/minimax-h3"}
 
@@ -2267,7 +2267,7 @@ class UpscaleSettings(UpscaleTest):
         data = json.loads((self.regen(job) / "job.json").read_text())
         self.assertEqual((data["preread"], data["audio"], data["paths"]["package"], data["paths"]["weights"],
                           data["paths"]["base_model"]),
-                         (False, "silence", "/opt/regen2k/package", "/opt/regen2k/weights", "/opt/minimax-h3"))
+                         (True, "silence", "/opt/regen2k/package", "/opt/regen2k/weights", "/opt/minimax-h3"))
         self.assertIn("default strength full, audio silence", self.studio.log.read_text())
 
 
