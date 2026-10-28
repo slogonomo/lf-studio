@@ -268,7 +268,7 @@ class Generate(CliTest):
                 (["--first-frame", "missing.png"], "no such file: missing.png"),
                 (["--seconds", 9], re.compile(r"invalid choice: '?9'?")),     # Python 3.14 quotes the value
                 (["--seconds", 3], re.compile(r"invalid choice: '?3'? \(choose from '?5'?, '?6'?, '?7'?, '?8'?, "
-                                              r"'?10'?, '?12'?, '?15'?\)")),   # 3 and 4 s went in 0.5
+                                              r"'?10'?, '?12'?, '?15'?\)")),   # 3 and 4 s went after 0.5.0
                 (["--seconds", 4], re.compile(r"invalid choice: '?4'?")),
                 (["--task", "t2va", "--first-frame", "f.png"], "t2va takes no files"),
                 (["--first-frame", "f.png", "--ref", "f.png"], "can't go together"),
@@ -605,7 +605,7 @@ class Guide(unittest.TestCase):
         self.assertEqual(m.group(1).strip(), cli.GUIDE.strip())
 
     def test_lengths_offered(self):
-        """3 and 4 s went in 0.5: the guide, the usage, generate --help and the MCP instructions name 5-15 s only."""
+        """3 and 4 s went after 0.5.0: the guide, the usage, generate --help and the MCP instructions name 5-15 s."""
         cli = load_cli()
         self.assertEqual(cli.DURATIONS, (5, 6, 7, 8, 10, 12, 15))
         self.assertIn("- `seconds`: 5, 6, 7, 8, 10, 12 or 15.\n", cli.GUIDE)

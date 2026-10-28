@@ -457,8 +457,8 @@ class JsonGenerate(ApiTest):
         self.assertEqual(len(self.studio.job(jid)["prompt"]), 32768)
 
     def test_lengths_offered(self):
-        """0.5 offers 5, 6, 7, 8, 10, 12 and 15 s. 3 and 4 s (up to 0.4) get 400 with the lengths offered, from JSON
-        and the form alike, and leave nothing behind; every length offered is taken."""
+        """The studio offers 5, 6, 7, 8, 10, 12 and 15 s. 3 and 4 s (up to 0.5.0) get 400 with the lengths offered,
+        from JSON and the form alike, and leave nothing behind; every length offered is taken."""
         offered = "ValueError: duration must be 5, 6, 7, 8, 10, 12 or 15 seconds"
         for seconds in (3, 4):
             for answer in (self.submit({"prompt": "x", "seconds": seconds}),

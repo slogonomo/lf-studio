@@ -519,8 +519,8 @@ class ReleaseReviewPage(PageTest):
 
 
 class OldLengths(PageTest):
-    """3 and 4 s went in 0.5: the page offers 5-15 s, a length kept from 0.4 reads 5 s, and clips of 3 and 4 s made
-    before still list and play, and Remix brings them back at 5 s without an error."""
+    """3 and 4 s went after 0.5.0: the page offers 5-15 s, a length kept from 0.5.0 reads 5 s, and clips of 3 and 4 s
+    made before still list and play, and Remix brings them back at 5 s without an error."""
 
     def seed(self):
         old = self.dir / "old"
@@ -540,7 +540,7 @@ class OldLengths(PageTest):
         offered = self.page.eval_on_selector_all('input[name="seconds"]', "els => els.map(e => e.value)")
         self.assertEqual(offered, ["5", "6", "7", "8", "10", "12", "15"])
         self.assertEqual(self.page.eval_on_selector_all(".len label", "els => els.map(e => e.textContent)"), offered)
-        self.page.evaluate("localStorage.setItem('lfstudio.seconds', '3')")       # kept by a 0.4 page
+        self.page.evaluate("localStorage.setItem('lfstudio.seconds', '3')")       # kept by a 0.5.0 page
         other = self.ctx.new_page()                                           # (a reload here would cancel a poll)
         other.goto(self.studio.url + "/")
         self.assertEqual(other.evaluate("val('seconds')"), "5")

@@ -337,7 +337,7 @@ const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","n
 // "backend"): its name in the header, the note on times, and the seconds per clip once the models are loaded (t2va
 // 16:9). The DGX Spark's are measured (clips over 10 s also reload the prompt encoder each time). The RTX 5090's are
 // measured at 5, 10 and 15 s, the other lengths interpolated (docs/RTX5090.md). One per length offered (5-15 s; 3
-// and 4 s went in 0.5). JSON between the markers: tests/test_backend.py reads it.
+// and 4 s went after 0.5.0). JSON between the markers: tests/test_backend.py reads it.
 const MACHINES=/*machines*/{
 "spark":{"name":"one DGX Spark","times":["Times shown are ","measured on a DGX Spark"," with nothing else running."],
   "eta":{"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
@@ -371,7 +371,7 @@ function stamp(ts){const d=new Date(ts*1000),n=new Date(),t=d.toLocaleTimeString
   return `${d.toLocaleDateString([],o)}, ${t}`;}
 function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),2200);}
 
-// restore persisted choices (each field on its own); a length no longer offered (3 or 4 s, up to 0.4) reads 5 s
+// restore persisted choices (each field on its own); a length no longer offered (3 or 4 s, up to 0.5.0) reads 5 s
 setRadio('task',store.get('task','t2va'))||setRadio('task','t2va');
 setRadio('orientation',store.get('orientation','landscape'))||setRadio('orientation','landscape');
 setRadio('seconds',store.get('seconds','5'))||setRadio('seconds','5');
@@ -538,8 +538,8 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
-  // new seed (#14); unticked, it keeps the clip's seed. A clip of a length no longer offered (3 or 4 s, up to 0.4)
-  // comes back at 5 s
+  // new seed (#14); unticked, it keeps the clip's seed. A clip of a length no longer offered (3 or 4 s, up to
+  // 0.5.0) comes back at 5 s
   body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5)||setRadio('seconds','5');
     prompt.value=j.prompt;seed.value=j.seed;
     [['task',j.task],['orientation',j.orientation],['seconds',val('seconds')],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));

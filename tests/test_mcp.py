@@ -233,7 +233,7 @@ class Protocol(McpTest):
                 self.assertRegex(name, r"^[A-Za-z0-9_.-]{1,64}$")
             self.assertLessEqual(len(tool["description"]), 2048)
         self.assertEqual(r["tools"][0]["inputSchema"]["properties"]["seconds"],
-                         {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went in 0.5
+                         {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went after 0.5.0
         generate = r["tools"][0]["description"]
         self.assertIn("stretched or cropped", generate)                          # DECISIONS 12
         self.assertIn("change the seed", generate)                               # DECISIONS 14

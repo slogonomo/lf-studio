@@ -9,7 +9,7 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   again. LFSTUDIO_RESHAPE=0 closes and reloads for any change, as before 0.4.
 - Tasks: t2va (text), fl2va (first and/or last frame), ref2va (reference images, videos, audio).
 - Output: 1344x768 (landscape) or 768x1344 (portrait), 24 fps, 5, 6, 7, 8, 10, 12 or 15 s, with audio. 3 and 4 s,
-  offered up to 0.4, get 400 (length_refusal), also from /api/load. Clips made at those lengths stay in the history:
+  offered up to 0.5.0, get 400 (length_refusal), also from /api/load. Clips made at those lengths stay in the history:
   they play and download as before, Remix reuses their files, and the start-up warm-up after one loads 5 s.
 - POST /api/cancel {"id": ...}: a queued clip leaves the queue at once; a running one is stopped (its pipeline
   workers get SIGTERM, so the next clip loads the models again). Either way it stays in the history with the status
@@ -957,7 +957,7 @@ def warmup_case(job):
 
 def preload_candidate():
     """The last finished clip's settings and warm-up case, or None (see warmup_case). A clip of a length no longer
-    offered (3 or 4 s, up to 0.4) warms up 5 s, the length its Remix on the page picks."""
+    offered (3 or 4 s, up to 0.5.0) warms up 5 s, the length its Remix on the page picks."""
     last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")), None)
     case = warmup_case(last) if last else None
     if not case:
@@ -1366,8 +1366,8 @@ def job_labels(job):
 IMG = {".png", ".jpg", ".jpeg", ".webp"}
 AUD = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 VID = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
-# seconds; 5 = NVIDIA's frozen route, others = lf-studio extension. 3 and 4 s went in 0.5 (3 s clips never came out
-# right; the patch still takes 3-15 s, for infer.py and the bench).
+# seconds; 5 = NVIDIA's frozen route, others = lf-studio extension. 3 and 4 s went after 0.5.0 (3 s clips never came
+# out right; the patch still takes 3-15 s, for infer.py and the bench).
 DURATIONS = (5, 6, 7, 8, 10, 12, 15)
 MAX_UPLOAD = 200 * 1024 * 1024
 SMALL_BODY = 64 * 1024           # the JSON bodies of /api/cancel, /api/delete, /api/undelete, /api/load, /api/unload
