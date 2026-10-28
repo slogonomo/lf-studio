@@ -558,12 +558,15 @@ class OldLengths(PageTest):
             self.assertEqual(self.page.evaluate("id => fetch('/video/' + id).then(r => r.status)", jid), 200)
         self.pick("seconds", "10")
         self.page.click(f"{self.card('3' * 32)} .reuse-all")                   # t2va, 3 s
-        self.page.wait_for_function("document.getElementById('toast').textContent === 'Settings loaded'")
+        self.page.wait_for_function("document.getElementById('toast').textContent"
+                                    " === 'Settings loaded at 5 s (3 s is no longer offered)'")
         self.assertEqual(self.page.evaluate("[val('task'), val('seconds'), store.get('seconds')]"), ["t2va", "5", "5"])
         self.assertEqual(self.page.input_value("#prompt"), "three seconds")
         self.assertEqual(self.page.inner_text("#err"), "")
         self.page.click(f"{self.card('4' * 32)} .reuse-all")                   # fl2va, 4 s, with its first frame
         self.page.wait_for_function("document.querySelectorAll('#fl .thumbs img.kept').length === 1")
+        self.page.wait_for_function("document.getElementById('toast').textContent"
+                                    " === 'Settings and files loaded at 5 s (4 s is no longer offered)'")
         self.assertEqual(self.page.evaluate("[val('task'), val('seconds')]"), ["fl2va", "5"])
         self.assertEqual(self.page.inner_text("#err"), "")
         self.page.click("#go")
@@ -592,6 +595,7 @@ class RemixSeed(PageTest):
     def test_ticked_stays_ticked_and_draws_a_new_seed(self):
         self.page.check("#autoroll")
         a = self.remix(777)
+        self.page.wait_for_function("document.getElementById('toast').textContent === 'Settings loaded'")  # 5 s: as is
         self.assertTrue(self.page.is_checked("#autoroll"))
         self.assertEqual(self.page.input_value("#seed"), "777")
         new = self.generate_from_page(a)                                    # Remix, then Generate in the same tab

@@ -539,20 +539,21 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
   // new seed (#14); unticked, it keeps the clip's seed. A clip of a length no longer offered (3 or 4 s, up to
-  // 0.5.0) comes back at 5 s
-  body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5)||setRadio('seconds','5');
+  // 0.5.0) comes back at 5 s, and the message says so
+  body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);
+    const gone=!setRadio('seconds',j.seconds||5);if(gone)setRadio('seconds','5');const at=gone?` at 5 s (${j.seconds} s is no longer offered)`:'';
     prompt.value=j.prompt;seed.value=j.seed;
     [['task',j.task],['orientation',j.orientation],['seconds',val('seconds')],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
     modeUI();updateGo();showForm(e.detail===0);$('err').textContent='';
     zones.forEach(z=>{z.querySelector('input').value='';z.kept=[];z.show();});remixFrom=null;const my=++remixSeq;
-    if(j.task==='t2va'){toast('Settings loaded');return;}
+    if(j.task==='t2va'){toast('Settings loaded'+at);return;}
     // the clip's input files go back into the form (the server reuses them, nothing is uploaded again); a reply
     // for an earlier Remix click is dropped
     fetch('/api/inputs/'+j.id,{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(x=>{if(my!==remixSeq)return;remixFrom=j.id;
       zones.forEach(z=>{z.kept=x.inputs[z.querySelector('input').name]||[];z.show();});
-      if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
-      toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
-    .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
+      if(x.missing.length)$('err').textContent=`Settings loaded${at}. Gone from the server, attach again: ${x.missing.join(', ')}.`;
+      toast(x.missing.length?`Settings loaded${at}, some files are gone`:'Settings and files loaded'+at);})
+    .catch(()=>{if(my===remixSeq)$('err').textContent=`Settings loaded${at} - the files could not be loaded, attach them again.`;});};
   // detail 0: Enter/Space, not a pointer. Remix, Cancel and Delete ignore detail 2+, the rest of a double-click whose
   // first click changed what is under the pointer: Cancel of a queued clip shows Delete where Cancel was; Delete of a
   // card moves the next card's Delete or Cancel into its place. Undo hides at once and drops the rest of its
