@@ -617,8 +617,8 @@ class Upscale(CliTest):
         """--wait --out <dir>/ saves it under the studio's name for it: the clip's, with the resolution and the
         upscale's own id after it."""
         jid = self.clip(seed=7)
-        p = self.ok("upscale", jid, "--resolution", "1080p", "--strength", "faithful", "--source", "draft",
-                    "--audio", "silence", "--seed", 99, "--out", "up/", "--poster")
+        p = self.ok("upscale", jid, "--resolution", "1080p", "--strength", "faithful", "--audio", "silence",
+                    "--seed", 99, "--out", "up/", "--poster")
         up = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
         out = self.work / "up" / f"lf-studio_t2va_5s_seed7_{jid[:6]}_1080p_{up['id'][:6]}.mp4"
         self.assertEqual(p.stdout, f"{out}\n")
@@ -627,10 +627,9 @@ class Upscale(CliTest):
         self.assertRegex(p.stderr, rf"queued [0-9a-f]{{8}} \(1080p upscale of {jid[:8]}, faithful, t2va, 5 s, seed 7\), "
                                    r"next in line")
         job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
-        self.assertEqual({k: job[k] for k in ("parent", "resolution", "strength", "source", "audio", "refine_seed",
-                                              "status")},
-                         {"parent": jid, "resolution": "1080p", "strength": "faithful", "source": "draft",
-                          "audio": "silence", "refine_seed": 99, "status": "done"})
+        self.assertEqual({k: job[k] for k in ("parent", "resolution", "strength", "audio", "refine_seed", "status")},
+                         {"parent": jid, "resolution": "1080p", "strength": "faithful", "audio": "silence",
+                          "refine_seed": 99, "status": "done"})
         p = self.ok("upscale", jid, "--json")                                  # the studio's defaults; no wait
         rec = json.loads(p.stdout)
         self.assertEqual((rec["kind"], rec["parent"], rec["state"], rec["resolution"], rec["strength"], rec["audio"]),
@@ -651,7 +650,8 @@ class Upscale(CliTest):
         p = self.sol("upscale", "f" * 32)
         self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: no such clip\n"))
         for args in (["upscale", ten, "--resolution", "8k"], ["upscale", ten, "--strength", "nvidia"],
-                     ["upscale", "nonsense"], ["upscale", ten, "--seed", -1], ["upscale", ten, "--hold", 9999]):
+                     ["upscale", "nonsense"], ["upscale", ten, "--seed", -1], ["upscale", ten, "--hold", 9999],
+                     ["upscale", ten, "--source", "final"]):                  # no --source: the clip's MP4 only
             p = self.sol(*args)
             self.assertEqual(p.returncode, 2, (args, p.stderr))
         self.assertEqual([j.get("kind") for j in self.studio.state()["jobs"]], [None])     # nothing was queued

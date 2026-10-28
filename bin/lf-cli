@@ -11,7 +11,7 @@ One file, standard library only, Python 3.9 or later: copy it to any machine tha
   lf-cli status [ID]
   lf-cli cancel ID
   lf-cli fetch ID [--out PATH] [--poster] [--wake]
-  lf-cli upscale ID [--resolution 1080p|2k|4k] [--source final|draft] [--strength faithful|balanced|full]
+  lf-cli upscale ID [--resolution 1080p|2k|4k] [--strength faithful|balanced|full]
          [--audio clip|silence] [--seed N] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
                                 experimental: a finished 5 s 16:9 text clip to 1080p, 2K or 4K (untested), on a
                                 studio with LFSTUDIO_UPSCALE=1 (about 11 min to 1.6 h in all, with a ~25 s load
@@ -68,9 +68,8 @@ DURATIONS = (3, 4, 5, 6, 7, 8, 10, 12, 15)
 SIZES = {"landscape": (1344, 768), "portrait": (768, 1344)}
 FINISHED = ("done", "failed", "cancelled")
 # the experimental Upscale (POST /api/upscale, docs/API.md): what a request may ask for; the studio's defaults are
-# 2k, final, its LFSTUDIO_UPSCALE_STRENGTH and LFSTUDIO_UPSCALE_AUDIO, and the clip's seed
+# 2k, its LFSTUDIO_UPSCALE_STRENGTH and LFSTUDIO_UPSCALE_AUDIO, and the clip's seed
 UPSCALE_RESOLUTIONS = ("1080p", "2k", "4k")
-UPSCALE_SOURCES = ("final", "draft")
 UPSCALE_STRENGTHS = ("faithful", "balanced", "full")
 UPSCALE_AUDIO = ("clip", "silence")
 FRAMES = ("first_frame", "last_frame")
@@ -886,11 +885,10 @@ def submit(studio, req, hold, sent=None):
     raise error
 
 
-def upscale_body(jid, resolution=None, source=None, strength=None, audio=None, seed=None):
+def upscale_body(jid, resolution=None, strength=None, audio=None, seed=None):
     """POST /api/upscale's JSON: the clip and only the choices given (the studio fills in its defaults)."""
     body = {"id": jid}
-    for key, value in (("resolution", resolution), ("source", source), ("strength", strength), ("audio", audio),
-                       ("seed", seed)):
+    for key, value in (("resolution", resolution), ("strength", strength), ("audio", audio), ("seed", seed)):
         if value is not None:
             body[key] = value
     return body
@@ -1350,7 +1348,7 @@ def cmd_upscale(studio, args, output):
     why = saver and saver.unwritable()
     if why:
         raise Fail(f"can't save the upscale there: {why}; nothing was queued (--out picks another place)", 2)
-    body = upscale_body(jid, args.resolution, args.source, args.strength, args.audio, args.seed)
+    body = upscale_body(jid, args.resolution, args.strength, args.audio, args.seed)
     try:
         answer = submit_upscale(studio, body, args.hold)
     except Fail as error:
@@ -1503,14 +1501,12 @@ TOOLS = [
          "min on a studio with LFSTUDIO_UPSCALE_LOAD=standard) included. "
          "strength: faithful (start noise 0.5, 2 steps) redraws the least, balanced (0.7, 2 steps) more, full "
          "(NVIDIA's setting, 3 steps) is the sharpest but redraws faces into a different-looking person; the default "
-         "is the studio's. source: final (the clip's MP4, the default) or draft (its Stage-1 latent). audio: "
-         "what the picture is refined against, the clip's own (clip) or silence; the result keeps the clip's sound "
-         "either way. Waits up to wait_s and saves the MP4 when it is done; else call wait with the id it returns. "
-         "Each call queues another upscale; cancel stops one."),
+         "is the studio's. audio: what the picture is refined against, the clip's own (clip) or silence; the result "
+         "keeps the clip's sound either way. Waits up to wait_s and saves the MP4 when it is done; else call wait with "
+         "the id it returns. Each call queues another upscale; cancel stops one."),
      "inputSchema": {"type": "object", "required": ["id"], "additionalProperties": False, "properties": {
          "id": {"type": "string", "description": "The finished clip's id"},
          "resolution": {"type": "string", "enum": list(UPSCALE_RESOLUTIONS), "default": "2k"},
-         "source": {"type": "string", "enum": list(UPSCALE_SOURCES), "default": "final"},
          "strength": {"type": "string", "enum": list(UPSCALE_STRENGTHS), "description": "Default: the studio's"},
          "audio": {"type": "string", "enum": list(UPSCALE_AUDIO), "description": "Default: the studio's"},
          "seed": {"type": "integer", "minimum": 0, "description": "The refine's seed; default the clip's"},
@@ -2093,8 +2089,7 @@ class McpServer:
         budget = self.budget(args.get("wait_s"))
         saver = self.saver(args.get("out"), args.get("poster", True))
         call.set_phase("queueing the upscale (held while the studio starts)")
-        body = upscale_body(jid, args.get("resolution"), args.get("source"), args.get("strength"), args.get("audio"),
-                            args.get("seed"))
+        body = upscale_body(jid, args.get("resolution"), args.get("strength"), args.get("audio"), args.get("seed"))
         try:
             answer = submit_upscale(self.studio, body, max(0.0, budget - 15))
         except Fail as error:
@@ -2104,8 +2099,7 @@ class McpServer:
         uid, rec = answer["id"], answer.get("job") or {"id": answer["id"], "kind": "upscale", "state": "queued"}
         self.log(f"queued upscale {uid} of clip {jid}")
         call.check()
-        prefix = (f"Queued upscale {uid} of clip {jid} ({rec.get('resolution')}, {rec.get('strength')}, from the "
-                  f"{rec.get('source')}). ")
+        prefix = f"Queued upscale {uid} of clip {jid} ({rec.get('resolution')}, {rec.get('strength')}). "
         if args.get("wait_s") == 0 or time.time() >= t0 + budget:
             return self.outcome(uid, rec.get("state", "queued"), rec, saver, prefix)
         return self.wait_outcome(uid, t0 + budget, saver, call, prefix)
@@ -2180,8 +2174,6 @@ def parser():
                             "--out: and save it)")
     u.add_argument("id", help="the finished clip")
     u.add_argument("--resolution", choices=UPSCALE_RESOLUTIONS, help="default 2k (2560x1440)")
-    u.add_argument("--source", choices=UPSCALE_SOURCES,
-                   help="final (the clip's MP4, the default) or draft (its Stage-1 latent)")
     u.add_argument("--strength", choices=UPSCALE_STRENGTHS,
                    help="how much it may redraw (default: the studio's); full redraws faces into another person")
     u.add_argument("--audio", choices=UPSCALE_AUDIO,

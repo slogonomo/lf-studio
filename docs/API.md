@@ -568,7 +568,7 @@ lf-cli wait ID [--out PATH] [--poster] [--timeout S]
 lf-cli status [ID]
 lf-cli cancel ID
 lf-cli fetch ID [--out PATH] [--poster] [--wake]
-lf-cli upscale ID [--resolution 1080p|2k|4k] [--source final|draft] [--strength faithful|balanced|full]
+lf-cli upscale ID [--resolution 1080p|2k|4k] [--strength faithful|balanced|full]
        [--audio clip|silence] [--seed N] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
 lf-cli guide                  # the prompt guide
 lf-cli mcp                    # the MCP server on stdin/stdout
@@ -608,7 +608,7 @@ running ones, oldest first, then the newest 5 finished ones; `status ID` one cli
 clip ([Upscale](#upscale-experimental-post-apiupscale)) and works as `generate` from there: without `--wait`, `--out`
 or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
 `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the
-studio's defaults hold for the rest (2K, the final clip, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the
+studio's defaults hold for the rest (2K, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the
 clip's seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes about 11 min to 1.6 h in all (4K
 is untested), with a ~25 s load expected (21 s in the bench, not yet measured in the studio's job; ~7 min more on a
 studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback), so `--timeout` and a later `wait` are the usual way.
@@ -689,7 +689,7 @@ host registered with `sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; 
 | `status` | `id` | one clip's record; without an id, the clips this session submitted, then the queue and the newest clips. Never waits, downloads or starts a stopped studio. |
 | `cancel` | `id` (required) | cancels a queued or running clip |
 | `fetch` | `id` (required), `out`, `poster`, `wake` (default false) | saves a finished clip (also one made in the page); refuses on a studio switchboard has stopped unless `wake` is true |
-| `upscale` | `id` (required), `resolution`, `source`, `strength`, `audio`, `seed`, `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished 5 s 16:9 t2va clip ([Upscale](#upscale-experimental-post-apiupscale)), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. Each call queues another upscale |
+| `upscale` | `id` (required), `resolution`, `strength`, `audio`, `seed`, `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished 5 s 16:9 t2va clip ([Upscale](#upscale-experimental-post-apiupscale)), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. Each call queues another upscale |
 | `prompt_guide` | none | the [prompt guide](#prompt-guide) |
 
 **Results.** A done clip gives a text block (`Clip <id> is done: saved <absolute path> (3.2 MB, 5 s fl2va
@@ -729,7 +729,7 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
   the message.
 - **spark-switchboard:** as the CLI; a stopped studio makes `wait` and `fetch` answer that `fetch` with `wake: true`
   would start it.
-- **`upscale`** answers `Queued upscale <id> of clip <clip id> (2k, balanced, from the final).`, then as `generate`.
+- **`upscale`** answers `Queued upscale <id> of clip <clip id> (2k, balanced).`, then as `generate`.
   An upscale takes about 11 min to 1.6 h, far longer than any `wait_s`: the usual result says it is still running, and a
   later `wait` saves it.
 

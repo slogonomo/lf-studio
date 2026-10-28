@@ -234,6 +234,9 @@ class Protocol(McpTest):
         upscale = r["tools"][5]["description"]
         for words in ("Experimental", "5 s 16:9 text clips", "redraws faces", "closes the studio's models"):
             self.assertIn(words, upscale)
+        self.assertNotIn("draft", upscale)                                       # from the clip's MP4 only
+        self.assertEqual(set(r["tools"][5]["inputSchema"]["properties"]),
+                         {"id", "resolution", "strength", "audio", "seed", "wait_s", "out", "poster"})
         generate = r["tools"][0]["description"]
         self.assertIn("stretched or cropped", generate)                          # DECISIONS 12
         self.assertIn("change the seed", generate)                               # DECISIONS 14
@@ -505,14 +508,14 @@ class Upscale(McpTest):
                          ("upscale", jid, "done", "4k", "full"))
         self.assertEqual(path, self.work / "lf-clips" / f"lf-studio_t2va_5s_seed9_{jid[:6]}_4k_{uid[:6]}.mp4")
         self.assertTrue(path.is_file())
-        self.assertTrue(text(r).startswith(f"Queued upscale {uid} of clip {jid} (4k, full, from the final). Upscale "
+        self.assertTrue(text(r).startswith(f"Queued upscale {uid} of clip {jid} (4k, full). Upscale "
                                            f"{uid} is done: saved {path} ("), text(r))
         self.assertIn(f"4k of clip {jid}, full).", text(r))
         r = m.call("upscale", {"id": jid, "wait_s": 0})                         # the studio's defaults, no wait
         self.assertFalse(r["isError"], text(r))
         rec = r["structuredContent"]
-        self.assertEqual((rec["state"], rec["resolution"], rec["strength"], rec["source"], rec["audio"]),
-                         ("queued", "2k", "balanced", "final", "clip"))
+        self.assertEqual((rec["state"], rec["resolution"], rec["strength"], rec["audio"]),
+                         ("queued", "2k", "balanced", "clip"))
         self.assertIn(f'Upscale {rec["id"]} is queued, next in line. Call wait with id "{rec["id"]}"', text(r))
         r = m.call("wait", {"id": rec["id"], "wait_s": 30, "poster": False})
         self.assertFalse(r["isError"], text(r))
@@ -526,7 +529,8 @@ class Upscale(McpTest):
                             ({"id": "nope"}, "not a clip id"), ({"id": ten, "resolution": "8k"},
                                                                 "resolution must be one of 1080p, 2k, 4k"),
                             ({"id": ten, "seed": -1}, "seed must be 0 or more"), ({}, "id is required"),
-                            ({"id": ten, "steps": 3}, 'unknown argument "steps"')):
+                            ({"id": ten, "steps": 3}, 'unknown argument "steps"'),
+                            ({"id": ten, "source": "draft"}, 'unknown argument "source"')):
             r = m.call("upscale", args)
             self.assertTrue(r["isError"], args)
             self.assertIn(words, text(r))
