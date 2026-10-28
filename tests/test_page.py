@@ -1423,7 +1423,7 @@ class UpscalePage(UpscaleCards, PageTest):
         self.assertEqual(self.visible(ok), ["Remix", "Download", "Upscale", "Delete"])
         why = self.page.get_attribute(f"{self.card(ten)} .act.up", "title")
         self.assertEqual((self.page.get_attribute(f"{self.card(ten)} .act.up", "aria-disabled"), why),
-                         ("true", "Upscale needs a 5 s 16:9 clip (NVIDIA's upscaler takes 1344x768, 121 frames)"))
+                         ("true", "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"))
         self.page.click(f"{self.card(ten)} .act.up", force=True)             # aria-disabled: the reason, also on a
                                                                                # phone
         self.page.wait_for_function("t => document.getElementById('toast').textContent === t", arg=why)
@@ -1438,6 +1438,9 @@ class UpscalePage(UpscaleCards, PageTest):
                       "Unloads the models while it runs"):
             self.assertIn(words, text)
         self.assertNotIn("draft", text)
+        self.assertNotIn("9:16", text)                                       # the note is for 9:16 clips
+        self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
+                         ["1920×1080", "2560×1440", "3840×2160 · the studio's 4K upscale has not been run end to end yet"])
         # the progress bar's expected seconds (docs/PERFORMANCE.md): the fast load, ~7 min more with the standard load
         # (the record's "load"); a record of an older studio's upscale from the draft counts as any other
         self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, load: 'fast'},
@@ -1524,6 +1527,42 @@ class UpscalePage(UpscaleCards, PageTest):
         job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
         self.assertEqual(job["audio"], "silence")
         self.studio.wait([job["id"]], timeout=30)
+
+
+class UpscalePortrait(UpscaleCards, PageTest):
+    """A 5 s 9:16 clip: the button on, the popover's sizes upright with its note, and the upscale's card upright."""
+
+    def test_a_9x16_clip(self):
+        tall = self.done_clip(prompt="an upright one", orientation="portrait", seed=61)
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        self.assertEqual(self.page.get_attribute(f"{self.card(tall)} .act.up", "aria-disabled"), "false")
+        self.open_popover(tall)
+        self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
+                         ["1080×1920", "1440×2560", "2160×3840 · the studio's 4K upscale has not been run end to end yet"])
+        self.assertTrue(self.page.is_visible("#upportrait"))
+        text = self.page.inner_text("#uppop")
+        for words in ("9:16 comes out upright (2K: 1440×2560). NVIDIA trained its refiner on 16:9 video",
+                      "1080p\n~11 min", "2K\n~20 min", "4K\n~1.1 h · untested"):        # the same times: the same tokens
+            self.assertIn(words, text)
+        with self.page.expect_request("**/api/upscale") as request:
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data), {"id": tall, "resolution": "2k", "strength": "balanced"})
+        self.page.wait_for_selector("#uppop", state="hidden")
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        card = self.card(job["id"])
+        self.page.wait_for_selector(f"{card} video", timeout=30000)
+        self.assertEqual(self.page.eval_on_selector_all(f"{card} .tags .tag", "els => els.map(e => e.textContent)"),
+                         ["2K upscale", "Text", "5 s"])
+        self.assertEqual(self.page.eval_on_selector(f"{card} .media", "e => e.style.aspectRatio"), "4 / 5")  # as its clip's
+        self.assertEqual(self.page.get_attribute(f"{card} a.act", "download"),
+                         f"lf-studio_t2va_5s_seed61_{tall[:6]}_2k_{job['id'][:6]}.mp4")
+        self.open_popover(tall)                                               # and back on a 16:9 clip: no note
+        self.page.keyboard.press("Escape")
+        wide = self.done_clip(prompt="a wide one", seed=62)
+        self.page.wait_for_timeout(2200)
+        self.open_popover(wide)
+        self.assertTrue(self.page.is_hidden("#upportrait"))
+        self.assertEqual(self.page.get_attribute('#uppop label[for="up-2k"]', "title"), "2560×1440")
 
 
 class UpscaleRunning(UpscaleCards, PageTest):

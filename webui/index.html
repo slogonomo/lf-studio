@@ -344,7 +344,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
   <div class="seg" role="radiogroup" aria-label="Resolution">
     <input type="radio" name="up_res" id="up-1080p" value="1080p"><label for="up-1080p">1080p<small data-standard="~18 min">~11 min</small></label>
     <input type="radio" name="up_res" id="up-2k" value="2k"><label for="up-2k">2K<small data-standard="~28 min">~20 min</small></label>
-    <input type="radio" name="up_res" id="up-4k" value="4k"><label for="up-4k" title="The studio's 4K upscale has not been run end to end yet">4K<small data-standard="~1.3 h · untested">~1.1 h · untested</small></label>
+    <input type="radio" name="up_res" id="up-4k" value="4k"><label for="up-4k">4K<small data-standard="~1.3 h · untested">~1.1 h · untested</small></label>
   </div>
   <div class="lbl">Strength</div>
   <div class="opts" role="radiogroup" aria-label="Strength">
@@ -352,6 +352,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
     <label class="opt"><input type="radio" name="up_strength" value="balanced"><span>Balanced<small>Start noise 0.7, 2 steps</small></span></label>
     <label class="opt"><input type="radio" name="up_strength" value="full"><span>Full re-generate<small>NVIDIA's setting, one step more: sharpest, but it redraws faces into a different-looking person</small></span></label>
   </div>
+  <p class="note" id="upportrait" hidden>9:16 comes out upright (2K: 1440×2560). NVIDIA trained its refiner on 16:9 video</p>
   <p class="note">Unloads the models while it runs</p>
   <div class="errtxt" id="uperr" role="alert"></div>
   <div class="row"><button type="button" class="act" id="upclose">Cancel</button><button type="button" class="act pri" id="upgo">Upscale</button></div>
@@ -401,7 +402,11 @@ const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes
 // shows upEta for 2 steps with the studio's load (/api/state "upscale_load"): the times in its markup are the fast
 // load's, their data-standard the standard load's.
 const isUp=j=>j.kind==='upscale';
-const UPSCALE={"1080p":{name:'1080p',base:385,step:144},"2k":{name:'2K',base:470,step:380},"4k":{name:'4K',base:685,step:1700}};
+// size: the output (width, height) of a 16:9 clip; a 9:16 one's is turned (upscale/regen2k_job.py SHAPES), at the same
+// times (the same number of tokens)
+const UPSCALE={"1080p":{name:'1080p',base:385,step:144,size:[1920,1080]},"2k":{name:'2K',base:470,step:380,size:[2560,1440]},
+  "4k":{name:'4K',base:685,step:1700,size:[3840,2160]}};
+const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==='portrait'?[s[1],s[0]]:s).join('×');};
 const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
   return u.base+(j.steps||2)*u.step+(j.load==='standard'?430:0);};
 const STRENGTH={faithful:'Faithful',balanced:'Balanced',full:'Full re-generate'};
@@ -824,6 +829,10 @@ function openUpscale(id,btn,keyboard){const j=known.get(id);if(!j)return;
   if(up.id===id&&!pop.hidden){closeUpscale(true);return;}
   const dflt=state.upscale_defaults||{resolution:'2k',strength:'balanced'};
   upPick('up_res',dflt.resolution);upPick('up_strength',dflt.strength);
+  // each size's title: its output for this clip's orientation; a 9:16 clip says how it comes out
+  pop.querySelectorAll('input[name="up_res"]').forEach(i=>{pop.querySelector(`label[for="${i.id}"]`).title=
+    upSize(i.value,j.orientation)+(i.value==='4k'?" · the studio's 4K upscale has not been run end to end yet":'');});
+  $('upportrait').hidden=j.orientation!=='portrait';
   const std=state.upscale_load==='standard';              // the times with the studio's load (LFSTUDIO_UPSCALE_LOAD)
   pop.querySelectorAll('small[data-standard]').forEach(e=>{if(e.dataset.fast==null)e.dataset.fast=e.textContent;
     setText(e,std?e.dataset.standard:e.dataset.fast);});

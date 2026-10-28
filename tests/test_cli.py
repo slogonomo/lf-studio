@@ -724,7 +724,7 @@ class UpscaleTimes(unittest.TestCase):
     def page_model(self):
         page = (REPO / "webui" / "index.html").read_text()
         table = {res: (int(base), int(step)) for res, base, step in
-                 re.findall(r'"(\w+)":\{name:\'[^\']*\',base:(\d+),step:(\d+)\}', page)}
+                 re.findall(r'"(\w+)":\{name:\'[^\']*\',base:(\d+),step:(\d+)[,}]', page)}
         standard = int(re.search(r"j\.load==='standard'\?(\d+):0", page).group(1))
         self.assertEqual(set(table), {"1080p", "2k", "4k"})
         self.assertIn("return u.base+(j.steps||2)*u.step+(j.load==='standard'?", page)     # nothing else counts
