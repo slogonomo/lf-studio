@@ -640,13 +640,27 @@ class Upscale(CliTest):
         lines = self.ok("status").stdout.splitlines()
         self.assertTrue(lines[0].startswith(f"{rec['id']}  done       2k upscale of {jid[:8]}, balanced"), lines)
 
+    def test_a_9x16_clip(self):
+        """A 5 s 9:16 clip upscales as a 16:9 one does (the studio decides; the help says so), upright."""
+        jid = self.clip(orientation="portrait", seed=8)
+        p = self.ok("upscale", jid, "--wait", "--out", "up/")
+        up = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.assertEqual((up["orientation"], Path(up["output"]).name), ("portrait", "regen_1440x2560_121f.mp4"))
+        self.assertEqual(Path(p.stdout.strip()).name, f"lf-studio_t2va_5s_seed8_{jid[:6]}_2k_{up['id'][:6]}.mp4")
+        self.assertIn("upscale a finished 5 s text clip, 16:9 or 9:16, to 1080p, 2K or 4K",
+                      " ".join(self.ok("--help").stdout.split()))
+        self.assertIn("default 2k (2560x1440, or 1440x2560 for 9:16)", " ".join(self.ok("upscale", "--help")
+                                                                                 .stdout.split()))
+        self.assertIn("a finished 5 s text clip, 16:9 or 9:16, to 1080p, 2K or 4K (untested)",
+                      " ".join(load_cli().__doc__.split()))
+
     def test_refusals(self):
         """The studio's refusals are exit 2 with its words; argparse checks the choices."""
         ten = self.clip(seconds=10)
         p = self.sol("upscale", ten, "--json")
         self.assertEqual(p.returncode, 2, p.stderr)
-        self.assertEqual(json.loads(p.stdout), {"error": "Upscale needs a 5 s 16:9 clip (NVIDIA's upscaler takes "
-                                                         "1344x768, 121 frames)", "http_status": 400, "id": ten})
+        self.assertEqual(json.loads(p.stdout), {"error": "Upscale takes 5 s clips only, for now (NVIDIA's pipeline "
+                                                         "is fixed at 121 frames)", "http_status": 400, "id": ten})
         p = self.sol("upscale", "f" * 32)
         self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: no such clip\n"))
         for args in (["upscale", ten, "--resolution", "8k"], ["upscale", ten, "--strength", "nvidia"],

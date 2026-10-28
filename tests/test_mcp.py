@@ -232,7 +232,8 @@ class Protocol(McpTest):
                 self.assertRegex(name, r"^[A-Za-z0-9_.-]{1,64}$")
             self.assertLessEqual(len(tool["description"]), 2048)
         upscale = r["tools"][5]["description"]
-        for words in ("Experimental", "5 s 16:9 text clips", "redraws faces", "closes the studio's models"):
+        for words in ("Experimental", "5 s text clips (t2va), 16:9 or 9:16", "2K is 1440x2560", "redraws faces",
+                      "closes the studio's models", "not yet run end to end"):
             self.assertIn(words, upscale)
         self.assertNotIn("draft", upscale)                                       # from the clip's MP4 only
         self.assertEqual(set(r["tools"][5]["inputSchema"]["properties"]),
@@ -525,7 +526,7 @@ class Upscale(McpTest):
     def test_errors(self):
         ten = self.clip(seconds=10)
         m = self.mcp()
-        for args, words in (({"id": ten}, "Upscale needs a 5 s 16:9 clip"), ({"id": "f" * 32}, "no such clip"),
+        for args, words in (({"id": ten}, "Upscale takes 5 s clips only"), ({"id": "f" * 32}, "no such clip"),
                             ({"id": "nope"}, "not a clip id"), ({"id": ten, "resolution": "8k"},
                                                                 "resolution must be one of 1080p, 2k, 4k"),
                             ({"id": ten, "seed": -1}, "seed must be 0 or more"), ({}, "id is required"),
