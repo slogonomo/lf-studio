@@ -102,11 +102,13 @@ else
         chmod 755 "$tmp" && mv -T "$tmp" "$SRC" || die "cannot move $tmp to $SRC"
     fi
 fi
-if [[ -L "$PKG_DIR" && "$(readlink -- "$PKG_DIR")" == "$SRC/models/Open-H3-Regenerate-2K" ]]; then
+link=
+[[ -L "$PKG_DIR" ]] && link=$(readlink -- "$PKG_DIR")
+if [[ "$link" == "$SRC/models/Open-H3-Regenerate-2K" ]]; then
     say "LFSTUDIO_UPSCALE_PKG: $PKG_DIR -> $SRC/models/Open-H3-Regenerate-2K"
-elif [[ -e "$PKG_DIR" && ! -L "$PKG_DIR" ]]; then
+elif [[ -e "$PKG_DIR" || -L "$PKG_DIR" ]] && [[ "$link" != "$SOURCES"/sana-*/models/Open-H3-Regenerate-2K ]]; then
     die "$PKG_DIR (LFSTUDIO_UPSCALE_PKG) exists and is not a link this script made; move it away, or point LFSTUDIO_UPSCALE_PKG at $SRC/models/Open-H3-Regenerate-2K"
-else
+else                                                   # none yet, or this script's link to an earlier extract
     run mkdir -p "$(dirname -- "$PKG_DIR")" || die "cannot create $(dirname -- "$PKG_DIR")"
     run ln -sfn "$SRC/models/Open-H3-Regenerate-2K" "$PKG_DIR" || die "cannot link $PKG_DIR"
 fi

@@ -1068,6 +1068,22 @@ class InstallRegen2k(unittest.TestCase):
         self.assertRegex(moved[0], r"^regen2k\.\d{8}-\d{6}$")
         self.assertEqual(mark.read_text(), f"done {sha}\n")
 
+    def test_a_package_link_of_someone_else_is_not_touched(self):
+        """LFSTUDIO_UPSCALE_PKG: a link this step made to an earlier extract is replaced; a directory or a link of
+        someone else's stops it."""
+        self.fake_uv()
+        pkg, ours = self.home / "Open-H3-Regenerate-2K", self.home / "sources" / "sana-6e4a440"
+        pkg.symlink_to(self.home / "sources" / "sana-0000000" / "models" / "Open-H3-Regenerate-2K")
+        code, text = self.run_65(FAKE_PY_RC="0")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(os.readlink(pkg), str(ours / "models" / "Open-H3-Regenerate-2K"))
+        pkg.unlink()
+        pkg.symlink_to(self.d / "my-own-copy")
+        code, text = self.run_65(FAKE_PY_RC="0")
+        self.assertEqual(code, 1, text)
+        self.assertIn("exists and is not a link this script made", text)
+        self.assertEqual(os.readlink(pkg), str(self.d / "my-own-copy"))
+
     def test_a_venv_of_someone_else_is_not_touched(self):
         self.fake_uv()
         other = self.home / "envs" / "regen2k" / "bin"
