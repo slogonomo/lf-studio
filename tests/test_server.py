@@ -4,6 +4,7 @@ python3 -m unittest discover -s tests -v      (needs python3 >= 3.10 and ffmpeg;
 library only)
 """
 import concurrent.futures
+import contextlib
 import json
 import os
 import re
@@ -2055,6 +2056,708 @@ class CancelRace(CancelTest):
         self.poster.unlink()
         b = self.studio.wait([self.generate(seed=2)], timeout=30)[0]
         self.assertEqual((b["status"], b.get("includes_model_load")), ("done", None))
+
+
+# ------------------------------------------------------------------------------------------ the experimental Upscale
+UPSCALE_SHAPE = "Upscale needs a 5 s 16:9 clip (NVIDIA's upscaler takes 1344x768, 121 frames)"
+NOT_T2VA = "Upscale takes text-to-video (t2va) clips only, for now"
+FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
+PARENT_BUSY = "an upscale of this clip is queued or running; cancel it first, or wait for it"
+
+
+def probe(path):
+    """A media file's streams by type (ffprobe): {"video": {...}, "audio": {...}}."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,"
+                          "nb_frames,r_frame_rate,sample_rate,channels,duration", "-of", "json", str(path)],
+                         capture_output=True, text=True, check=True).stdout
+    return {s["codec_type"]: s for s in json.loads(out)["streams"]}
+
+
+def alive(pid):
+    """Whether process `pid` runs (not a zombie)."""
+    try:
+        return (Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
+class UpscaleTest(CancelTest):
+    """The experimental Upscale (LFSTUDIO_UPSCALE=1, which tests/stub/studio.py sets, with tests/stub/upscale_job.py
+    standing in for upscale/regen2k_job.py and MemAvailable read from a file it writes). `env` is set before start."""
+    load_s, clip_s = 1, 0.5
+    env = {}
+
+    def seed(self):
+        self.studio.env.update(self.env)
+
+    def clip(self, **kw):
+        """A finished clip: generate and wait; returns its record."""
+        job = self.studio.wait([self.generate(**kw)], timeout=60)[0]
+        self.assertEqual(job["status"], "done", job.get("error"))
+        return job
+
+    def upscale(self, jid, **fields):
+        code, body = self.studio.upscale(jid, **fields)
+        self.assertEqual(code, 200, body)
+        self.assertEqual((body["job"]["kind"], body["job"]["parent"]), ("upscale", jid))
+        return body["id"]
+
+    def done(self, uid, timeout=60):
+        job = self.studio.wait([uid], timeout=timeout)[0]
+        self.assertEqual(job["status"], "done", job.get("error"))
+        return job
+
+    def regen(self, job):
+        """The upscale's own directory, <session>-upscale-<resolution>/<case_id>/regen."""
+        return Path(job["case_dirs"][0]) / "regen"
+
+    def upscale_dirs(self):
+        return [d.name for d in (self.studio.runtime / "outputs" / "webui").iterdir() if "-upscale-" in d.name]
+
+    def job_pids(self):
+        """The pids of the stand-in upscale jobs this test's studio started (STUB_UPSCALE_LOG)."""
+        log = self.dir / "upscale-jobs.log"
+        return [json.loads(line)["pid"] for line in log.read_text().splitlines()] if log.exists() else []
+
+    def upscaling(self, uid):
+        """Wait until the upscale's job runs; returns its pid."""
+        self.until(uid, lambda j: j["status"] == "upscaling" and j.get("upscale_phase") not in (None, "starting"))
+        deadline = time.time() + 10
+        while not self.job_pids() and time.time() < deadline:
+            time.sleep(0.05)
+        return self.job_pids()[-1]
+
+    def setUp(self):
+        self.env = dict(self.env)
+        super().setUp()
+
+    def tearDown(self):
+        for pid in self.job_pids():                # a job left running by a test that killed its server
+            with contextlib.suppress(OSError):
+                if alive(pid) and b"upscale_job.py" in (Path("/proc") / str(pid) / "cmdline").read_bytes():
+                    os.killpg(pid, signal.SIGTERM)
+                    deadline = time.time() + 10
+                    while alive(pid) and time.time() < deadline:       # before its directory is removed
+                        time.sleep(0.05)
+        super().tearDown()
+
+
+class Upscale(UpscaleTest):
+    """An upscale of a finished 5 s 16:9 t2va clip: a job of its own, which closes the loaded models, runs the job in a
+    session directory of its own and copies the clip's sound into the result."""
+
+    def seed(self):
+        self.studio.env["STUB_UPSCALE_LOG"] = str(self.dir / "upscale-jobs.log")
+
+    def test_done_with_the_clips_sound(self):
+        parent = self.clip()
+        session_root = Path(parent["output"]).parents[2]
+        st = self.studio.state()
+        self.assertIs(st["upscale"], True)
+        self.assertEqual(st["jobs"][0]["upscalable"], {"ok": True, "draft": True, "clip_audio": True})
+        uid = self.upscale(parent["id"])
+        job = self.done(uid)
+        self.assertEqual({k: job[k] for k in ("task", "orientation", "seconds", "prompt", "seed")},
+                         {k: parent[k] for k in ("task", "orientation", "seconds", "prompt", "seed")})
+        self.assertEqual({k: job[k] for k in ("kind", "parent", "resolution", "source", "strength", "steps",
+                                              "start_sigma", "audio", "refine_seed")},
+                         {"kind": "upscale", "parent": parent["id"], "resolution": "2k", "source": "final",
+                          "strength": "balanced", "steps": 2, "start_sigma": 0.7, "audio": "clip", "refine_seed": 1})
+        self.assertRegex(job["case_id"], rf"^up_\d{{6}}_{uid[:6]}$")
+        case = Path(job["case_dirs"][0])
+        self.assertEqual((case.name, case.parent.parent), (job["case_id"], self.studio.runtime / "outputs" / "webui"))
+        self.assertRegex(case.parent.name, r"^\d{8}-\d{6}-upscale-2k$")
+        out = Path(job["output"])
+        self.assertEqual(out, case / "regen" / "regen_2560x1440_121f.mp4")
+        self.assertEqual(sorted(p.name for p in out.parent.iterdir()),          # no copy without sound left
+                         ["job.json", "receipt.json", "regen_2560x1440_121f.jpg", "regen_2560x1440_121f.mp4",
+                          "worker.log"])
+        mine, its = probe(out), probe(parent["output"])
+        self.assertEqual((mine["video"]["nb_frames"], mine["video"]["r_frame_rate"]), ("121", "24/1"))
+        for key in ("codec_name", "sample_rate", "channels", "nb_frames", "duration"):
+            self.assertEqual(mine["audio"][key], its["audio"][key], key)       # the clip's AAC, copied as it is
+        self.assertEqual(json.loads((out.parent / "receipt.json").read_text())["state"], "done")
+        self.assertIn("[lf-studio] phase refine 2/2", (out.parent / "worker.log").read_text())
+        self.assertEqual(set(job["phases_s"]), {"encoding", "loading", "refine", "decoding", "saving"})
+        self.assertEqual((job["peak_gib"], job["low_mem_gib"]), (91.0, 15.0))       # from the job's receipt
+        self.assertNotIn("upscale_phase", job)
+        code, headers, _ = self.studio.get(f"/video/{uid}", {"Range": "bytes=0-9"})
+        self.assertEqual((code, headers["Content-Disposition"]),
+                         (206, f'inline; filename="lf-studio_t2va_5s_seed1_{parent["id"][:6]}_2k.mp4"'))
+        self.assertEqual(self.studio.get(f"/poster/{uid}")[1]["Content-Type"], "image/jpeg")
+        for path in (f"/still/{uid}", f"/input/{uid}/first_frame/0"):            # an upscale has no inputs
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                self.studio.get(path)
+            self.assertEqual(e.exception.code, 404, path)
+        inputs = json.loads(self.studio.get(f"/api/inputs/{uid}")[2])
+        self.assertEqual((inputs["inputs"], inputs["missing"]), ({}, []))
+        # the loaded models were closed for it (the job ran in its own process, nothing of the studio's was open)
+        self.assertTrue((session_root / "CLOSED").exists())
+        self.assertEqual(self.open_pipelines(), [])
+        self.assertIn("closing session ('t2va', 'landscape', 5) - an upscale needs the memory",
+                      self.studio.log.read_text())
+        st = self.studio.state()
+        self.assertEqual((st["session"]["state"], st["session"]["key"], st["done"]), ("idle", None, 2))
+        up = next(j for j in st["jobs"] if j["id"] == uid)
+        self.assertEqual(up["upscalable"], {"ok": False, "why": "an upscale can't be upscaled again"})
+        self.assertFalse(alive(self.job_pids()[0]))
+        self.assertTrue(self.clip(seed=2)["includes_model_load"])              # the next clip loads them again
+
+    def test_job_json_and_request_fields(self):
+        parent = self.clip()
+        uid = self.upscale(parent["id"], resolution="1080p", source="draft", strength="full", audio="silence",
+                           seed=99)
+        job = self.done(uid)
+        self.assertEqual(Path(job["output"]).name, "regen_1920x1080_121f.mp4")
+        self.assertEqual((job["seed"], job["refine_seed"], job["steps"], job["start_sigma"]), (1, 99, 3, None))
+        data = json.loads((self.regen(job) / "job.json").read_text())
+        root = self.dir / "regen2k"                     # tests/stub/studio.py's LFSTUDIO_UPSCALE_PKG and so on
+        self.assertEqual(data, {"version": 1, "case": str(Path(parent["output"]).parents[1]), "source": "draft",
+                                "resolution": "1080p", "steps": 3, "start_sigma": None, "seed": 99,
+                                "audio": "silence", "preread": True,
+                                "paths": {"package": str(root / "package"), "weights": str(root / "weights"),
+                                          "base_model": str(root / "base"), "output": str(self.regen(job))},
+                                "meta": {"studio_job": uid, "parent": parent["id"], "strength": "full"}})
+        uid = self.upscale(parent["id"], resolution="4k", strength="faithful", seed=None)     # null: the default
+        job = self.done(uid)
+        self.assertEqual(Path(job["output"]).name, "regen_3840x2160_121f.mp4")
+        self.assertRegex(Path(job["case_dirs"][0]).parent.name, r"-upscale-4k$")
+        self.assertEqual((job["steps"], job["start_sigma"], job["refine_seed"], job["source"], job["audio"]),
+                         (2, 0.5, 1, "final", "clip"))
+        self.assertEqual(len(self.upscale_dirs()), 2)
+
+    def test_progress(self):
+        """The status while it runs, and the job's own phase lines as upscale_phase."""
+        self.studio.stop()
+        self.studio.env.update(STUB_UPSCALE_S="6", STUB_CLOSE_S="1")          # 1 s per phase of the job
+        self.studio.start()
+        uid = self.upscale(self.clip()["id"])
+        seen, deadline = [], time.time() + 30
+        while time.time() < deadline:
+            rec = json.loads(self.studio.get(f"/api/jobs/{uid}")[2])
+            step = (rec["status"], rec["phase"], rec.get("upscale_phase"))
+            if step not in seen:
+                seen.append(step)
+            if rec["state"] == "done":
+                break
+            time.sleep(0.03)
+        self.assertIn(("freeing memory", "unloading", None), seen)
+        phases = [p for status, phase, p in seen if status == "upscaling" and phase == "upscaling"]
+        self.assertIn(phases[0], ("starting", "encoding"))                  # starting: until the job's first line
+        self.assertEqual([p for p in phases if p not in ("starting", "adding the sound")],
+                         ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
+        self.assertEqual(seen[-1], ("done", None, None))
+
+
+class UpscaleSettings(UpscaleTest):
+    """LFSTUDIO_UPSCALE_STRENGTH, _AUDIO and _PREREAD are a request's defaults; the paths go into job.json."""
+    env = {"LFSTUDIO_UPSCALE_STRENGTH": "full", "LFSTUDIO_UPSCALE_AUDIO": "silence", "LFSTUDIO_UPSCALE_PREREAD": "0",
+           "LFSTUDIO_UPSCALE_PKG": "/opt/regen2k/package", "LFSTUDIO_UPSCALE_WEIGHTS": "/opt/regen2k/weights",
+           "LFSTUDIO_UPSCALE_BASE": "/opt/minimax-h3"}
+
+    def test_defaults(self):
+        parent = self.clip()
+        job = self.done(self.upscale(parent["id"]))
+        self.assertEqual((job["strength"], job["steps"], job["start_sigma"], job["audio"]),
+                         ("full", 3, None, "silence"))
+        data = json.loads((self.regen(job) / "job.json").read_text())
+        self.assertEqual((data["preread"], data["audio"], data["paths"]["package"], data["paths"]["weights"],
+                          data["paths"]["base_model"]),
+                         (False, "silence", "/opt/regen2k/package", "/opt/regen2k/weights", "/opt/minimax-h3"))
+        self.assertIn("default strength full, audio silence", self.studio.log.read_text())
+
+
+class UpscaleRefusals(UpscaleTest):
+    load_s, clip_s = 1, 0.3
+
+    def test_bad_requests(self):
+        jid = self.clip()["id"]
+        self.assertEqual(self.studio.upscale("f" * 32), (404, {"error": "no such clip"}))
+        bad = (({}, "id must be the id of a finished clip"), ({"id": 5}, "id must be the id of a finished clip"),
+               ({"id": jid, "resolution": "2K"}, "resolution must be one of 1080p, 2k, 4k"),
+               ({"id": jid, "resolution": "768p"}, "resolution must be one of 1080p, 2k, 4k"),
+               ({"id": jid, "source": "upscaled"}, "source must be one of final, draft"),
+               ({"id": jid, "strength": "nvidia"}, "strength must be one of faithful, balanced, full"),
+               ({"id": jid, "strength": ["full"]}, "strength must be one of faithful, balanced, full"),
+               ({"id": jid, "audio": "both"}, "audio must be one of clip, silence"),
+               ({"id": jid, "steps": 3}, 'unknown key "steps" (known: id, resolution, source, strength, audio, seed)'))
+        bad += tuple(({"id": jid, "seed": seed}, "seed must be a nonnegative 63-bit integer, or null for the clip's")
+                     for seed in (-1, 2 ** 63, "5", True, 1.5))
+        for body, error in bad:
+            self.assertEqual(self.studio.post("/api/upscale", json_body=body), (400, {"error": error}), body)
+        expected = ('expected JSON {"id": ..., "resolution": ..., "source": ..., "strength": ..., "audio": ..., '
+                    '"seed": ...}')
+        for raw_body in (b"{", b"[1]", b'"x"', b"\xff"):
+            code, _, answer = self.studio.request("POST", "/api/upscale", raw_body,
+                                                  {"Content-Type": "application/json"})
+            self.assertEqual((code, json.loads(answer)), (400, {"error": expected}), raw_body)
+        self.assertEqual(self.studio.post("/api/upscale", fields={"id": jid})[0], 400)     # a form is not JSON
+        self.assertEqual([j["id"] for j in self.studio.state()["jobs"]], [jid])           # nothing queued
+
+    def test_clips_it_cannot_upscale(self):
+        portrait = self.clip(orientation="portrait")
+        ten = self.clip(seconds=10, seed=2)
+        fl2va = self.clip(task="fl2va", seed=3, files={"first_frame": [("f.png", png())]})
+        failed = self.studio.wait([self.generate(prompt="STUB_FAIL", seed=4)])[0]
+        for job, code, why in ((portrait, 400, UPSCALE_SHAPE), (ten, 400, UPSCALE_SHAPE), (fl2va, 400, NOT_T2VA),
+                               (failed, 409, "the clip failed")):
+            self.assertEqual(self.studio.upscale(job["id"]), (code, {"error": why}), job["id"])
+        found = {j["id"]: j.get("upscalable") for j in self.studio.state()["jobs"]}
+        self.assertEqual((found[portrait["id"]], found[fl2va["id"]], found[failed["id"]]),
+                         ({"ok": False, "why": UPSCALE_SHAPE}, {"ok": False, "why": NOT_T2VA}, None))
+        uid = self.upscale(self.clip(seed=5)["id"])
+        self.assertEqual(self.studio.upscale(uid), (400, {"error": "an upscale can't be upscaled again"}))  # queued
+        self.done(uid)
+        self.assertEqual(self.studio.upscale(uid), (400, {"error": "an upscale can't be upscaled again"}))
+
+    def test_missing_files(self):
+        parent = self.clip()
+        case = Path(parent["output"]).parents[1]
+        upscalable = lambda: self.studio.job(parent["id"])["upscalable"]        # noqa: E731
+        (case / "stage1" / "h3_normalized_native.pt").unlink()
+        self.assertEqual(upscalable(), {"ok": True, "draft": False, "clip_audio": True})
+        self.assertEqual(self.studio.upscale(parent["id"], source="draft"), (409, {"error": (
+            "the clip has no Stage-1 latent (stage1/h3_normalized_native.pt), so it can be upscaled from its final MP4 "
+            "only (source final)")}))
+        (case / "stage1" / "stage1_direct_tensors.pt").unlink()
+        self.assertEqual(upscalable(), {"ok": True, "draft": False, "clip_audio": False})
+        no_audio = (409, {"error": "the clip has no Stage-1 audio (stage1/stage1_direct_tensors.pt); ask for audio "
+                                   "silence"})
+        self.assertEqual(self.studio.upscale(parent["id"]), no_audio)          # audio clip is the default
+        self.assertEqual(self.done(self.upscale(parent["id"], audio="silence"))["audio"], "silence")
+        (case / "qwen" / "conditioning.pt").unlink()
+        self.assertEqual(upscalable(), {"ok": False, "why": FILES_GONE})
+        self.assertEqual(self.studio.upscale(parent["id"], audio="silence"), (409, {"error": FILES_GONE}))
+
+
+class UpscaleUnfinishedParents(UpscaleTest):
+    load_s, clip_s = 3, 3
+
+    def test_queued_running_and_cancelled(self):
+        a, b = self.generate(), self.generate(seed=2)
+        self.until(a, lambda j: j["status"] == "loading models + generating")
+        self.assertEqual(self.studio.upscale(a), (409, {"error": "the clip is still being made"}))
+        self.assertEqual(self.studio.upscale(b), (409, {"error": "the clip is still queued"}))
+        self.assertEqual(self.cancel(b)[0], 200)
+        self.assertEqual(self.studio.upscale(b), (409, {"error": "the clip was cancelled"}))
+        self.assertEqual(self.cancel(a)[0], 200)
+        self.studio.wait([a, b])
+
+
+class UpscaleQueue(UpscaleTest):
+    """An upscale waits while any clip is queued (it closes the models they use); it runs once none is."""
+    load_s, clip_s = 2, 1.5
+
+    def test_clips_first(self):
+        parent = self.clip()
+        a = self.generate(seed=2)                                  # in the loaded session
+        self.until(a, lambda j: j["status"] == "generating")
+        uid = self.upscale(parent["id"])
+        b = self.generate(seed=3)                                  # queued after the upscale: runs before it
+        c = self.generate(seed=4, orientation="portrait")
+        ja, jb, jc, up = self.studio.wait([a, b, c, uid], timeout=60)
+        self.assertEqual([j["status"] for j in (ja, jb, jc, up)], ["done"] * 4)
+        self.assertLess(jc["finished"], up["started"])
+        self.assertFalse(jb.get("includes_model_load") or jc.get("includes_model_load"))   # the session stayed
+        self.assertTrue(Path(jc["output"]).parents[2].joinpath("CLOSED").exists())        # until the upscale
+        self.assertEqual(self.open_pipelines(), [])
+
+
+class UpscaleCancel(UpscaleTest):
+    """Cancel takes a queued upscale out of the queue, or stops its job (SIGTERM to its process group); the card stays,
+    cancelled, and Delete moves its directory."""
+    load_s, clip_s = 1, 3
+    env = {"STUB_UPSCALE_S": "30"}
+
+    def seed(self):
+        self.studio.env.update(self.env, STUB_UPSCALE_LOG=str(self.dir / "upscale-jobs.log"))
+
+    def test_queued(self):
+        parent = self.clip()
+        a = self.generate(seed=2)
+        self.until(a, lambda j: j["status"] == "generating")
+        uid = self.upscale(parent["id"])
+        code, body = self.cancel(uid)
+        self.assertEqual((code, body["job"]["status"]), (200, "cancelled"))
+        self.assertEqual(self.cancel(uid), (409, {"error": "the clip is already cancelled"}))
+        self.assertEqual(self.studio.wait([a])[0]["status"], "done")
+        job = self.studio.job(uid)
+        self.assertEqual(job["status"], "cancelled")
+        for key in ("started", "case_dirs", "error", "output"):
+            self.assertNotIn(key, job)
+        self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
+        self.assertNotIn("an upscale needs the memory", self.studio.log.read_text())   # the models stayed
+
+    def test_running(self):
+        parent = self.clip()
+        uid = self.upscale(parent["id"])
+        pid = self.upscaling(uid)
+        self.assertEqual(worker_groups(self.studio.proc.pid), [pid])        # the job, in a process group of its own
+        st = self.studio.state()                                            # busy for spark-switchboard and the page
+        self.assertNotIn(next(j for j in st["jobs"] if j["id"] == uid)["status"], idle_values())
+        self.assertEqual(self.studio.post("/api/unload"), (409, {"error": "a job is running"}))
+        self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va", "orientation": "landscape",
+                                                                  "seconds": 5})[0], 409)
+        t0 = time.time()
+        code, body = self.cancel(uid)
+        self.assertEqual((code, body["job"]["cancel_requested"]), (200, True))
+        job = self.studio.wait([uid], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertLess(time.time() - t0, 5, "stopped right away")
+        for key in ("error", "output", "published", "cancel_requested", "saving"):
+            self.assertNotIn(key, job)
+        self.assertFalse(alive(pid))
+        self.assertEqual(worker_groups(self.studio.proc.pid), [])
+        receipt = json.loads((self.regen(job) / "receipt.json").read_text())
+        self.assertEqual((receipt["state"], receipt["exit_status"]), ("cancelled", 143))
+        st = self.studio.state()
+        self.assertTrue(all(j["status"] in idle_values() for j in st["jobs"]))
+        self.assertIn(uid, [j["id"] for j in st["jobs"]])                   # the card stays
+        case = Path(job["case_dirs"][0])
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": uid}), (200, {"ok": True}))
+        self.assertFalse(case.exists())
+        self.assertTrue(Path(parent["output"]).is_file())
+
+    def test_while_the_models_close(self):
+        self.studio.stop()
+        self.studio.env["STUB_CLOSE_S"] = "3"
+        self.studio.start()
+        parent = self.clip()
+        uid = self.upscale(parent["id"])
+        self.until(uid, lambda j: j["status"] == "freeing memory")
+        self.assertEqual(self.cancel(uid)[0], 200)
+        job = self.studio.wait([uid], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertNotIn("case_dirs", job)                                  # nothing of its own ran
+        self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
+
+    def test_restart_while_running(self):
+        parent = self.clip()
+        uid = self.upscale(parent["id"])
+        self.upscaling(uid)
+        self.studio.proc.kill()                                             # no clean shutdown
+        self.studio.proc.wait()
+        self.studio.start()
+        job = self.studio.job(uid)
+        self.assertEqual((job["status"], job["error"]), ("failed", "server restarted"))
+        self.assertEqual(self.studio.upscale(uid)[0], 400)
+
+    def test_stop_ends_the_job(self):
+        uid = self.upscale(self.clip()["id"])
+        pid = self.upscaling(uid)
+        self.studio.stop()                                                  # SIGTERM: the server stops its job
+        self.assertFalse(alive(pid))
+        self.assertIn("stopping the running upscale", self.studio.log.read_text())
+        self.studio.start()
+        self.assertEqual(self.studio.job(uid)["status"], "failed")
+
+
+class UpscaleDelete(UpscaleTest):
+    """Delete and Undo of an upscale move only its own files (its directory and publish copy), and the clip's only
+    the clip's; a clip can't be deleted while an upscale of it is queued or running."""
+    env = {"STUB_UPSCALE_S": "1.5"}
+
+    def setUp(self):
+        self.publish = Path(tempfile.mkdtemp(prefix="lf-studio-publish-"))
+        self.env = dict(self.env, LFSTUDIO_PUBLISH_DIR=str(self.publish))
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        shutil.rmtree(self.publish, ignore_errors=True)
+
+    def delete(self, jid, path="/api/delete"):
+        return self.studio.post(path, json_body={"id": jid})
+
+    def test_each_moves_only_its_own(self):
+        parent = self.clip()
+        uid = self.upscale(parent["id"])
+        self.assertEqual(self.delete(parent["id"]), (409, {"error": PARENT_BUSY}))     # queued or running
+        up = self.done(uid)
+        pub = Path(parent["published"])
+        self.assertEqual(Path(up["published"]), self.publish / f"{pub.stem}_2k.mp4")      # next to the clip's
+        clip_files = [Path(parent["output"]).parents[1], pub, pub.with_suffix(".jpg")]
+        up_files = [Path(up["case_dirs"][0]), Path(up["published"]), Path(up["published"]).with_suffix(".jpg")]
+        self.assertTrue(all(p.exists() for p in clip_files + up_files))
+        self.assertEqual(self.delete(uid), (200, {"ok": True}))
+        self.assertEqual([p.exists() for p in clip_files + up_files], [True] * 3 + [False] * 3)
+        self.assertEqual(len(list((self.studio.runtime / "trash" / uid).iterdir())), 3)
+        self.assertEqual(self.studio.get(f"/video/{parent['id']}")[0], 200)
+        self.assertEqual(self.delete(uid, "/api/undelete")[0], 200)
+        self.assertTrue(all(p.exists() for p in clip_files + up_files))
+        self.assertEqual(self.delete(parent["id"]), (200, {"ok": True}))               # done now: allowed
+        self.assertEqual([p.exists() for p in clip_files + up_files], [False] * 3 + [True] * 3)
+        code, headers, data = self.studio.get(f"/video/{uid}")                           # still playable
+        self.assertEqual((code, data[4:8]), (200, b"ftyp"))
+        self.assertEqual(self.studio.upscale(parent["id"]), (404, {"error": "no such clip"}))
+        self.assertEqual(self.delete(parent["id"], "/api/undelete")[0], 200)
+        second = self.done(self.upscale(parent["id"]))
+        self.assertEqual(Path(second["published"]).name, f"{pub.stem}_2k-2.mp4")       # a second one beside it
+
+    def test_clip_without_publish_copy(self):
+        """A clip with no publish copy of its own (made before the setting): the upscale's is named as the clip's
+        would be."""
+        self.studio.stop()
+        self.studio.env.pop("LFSTUDIO_PUBLISH_DIR")
+        self.studio.start()
+        parent = self.clip()
+        self.studio.stop()
+        self.studio.env["LFSTUDIO_PUBLISH_DIR"] = str(self.publish)
+        self.studio.start()
+        up = self.done(self.upscale(parent["id"], resolution="4k"))
+        self.assertRegex(Path(up["published"]).name,
+                         rf"^\d{{8}}-\d{{6}}_t2va_landscape_5s_seed1_{parent['id'][:6]}_4k\.mp4$")
+
+
+class UpscaleWarmUp(UpscaleTest):
+    """Upscales load none of the studio's models: the warm-up at start skips them, and one is done again after an
+    upscale."""
+    preload, load_s = True, 2
+
+    def seed(self):
+        self.write_state([finished_job("1" * 32, created=1),
+                          finished_job("2" * 32, orientation="portrait", created=2),
+                          finished_job("3" * 32, created=3, kind="upscale", parent="1" * 32, resolution="2k")])
+
+    def test_warm_up_skips_upscales(self):
+        s = self.studio.wait_for(lambda s: s["session"].get("loading_key"))["session"]
+        self.assertEqual(s["loading_key"], ["t2va", "portrait", 5])          # the last clip's, not the upscale's
+        self.assertEqual(self.studio.wait_for(lambda s: s["session"]["state"] == "ready")["session"]["key"],
+                         ["t2va", "portrait", 5])
+
+
+class UpscaleWarmUpAfter(UpscaleTest):
+    preload, load_s = True, 2
+
+    def test_warm_up_again_and_an_upscale_stops_it(self):
+        parent = self.clip()
+        self.done(self.upscale(parent["id"]))
+        s = self.studio.wait_for(lambda s: s["session"].get("preloading"))["session"]
+        self.assertEqual(s["loading_key"], ["t2va", "landscape", 5])
+        self.assertIn("again after the upscale", self.studio.log.read_text())
+        self.done(self.upscale(parent["id"]))                                # during that warm-up
+        self.assertIn("aborting preload: an upscale arrived, which needs the memory", self.studio.log.read_text())
+
+
+class UpscaleMemory(UpscaleTest):
+    """The memory floor before the job (LFSTUDIO_UPSCALE_MIN_FREE_GIB, default 110) and the guard while it runs
+    (LFSTUDIO_UPSCALE_GUARD_GIB, default 5), on the stub studio's MemAvailable file."""
+    env = {"STUB_UPSCALE_S": "30"}
+
+    def seed(self):
+        self.studio.env.update(self.env, STUB_UPSCALE_LOG=str(self.dir / "upscale-jobs.log"))
+
+    def test_floor(self):
+        parent = self.clip()
+        self.studio.set_memory(50)
+        job = self.studio.wait([self.upscale(parent["id"])], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", (
+            "UpscaleFailed: not enough free memory for an upscale: 50.0 GiB available with the models closed, 110 GiB "
+            "needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB); close other apps")))
+        self.assertNotIn("case_dirs", job)
+        self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
+        self.assertNotIn("retrying", self.studio.log.read_text())
+
+    def test_guard(self):
+        uid = self.upscale(self.clip()["id"])
+        pid = self.upscaling(uid)
+        self.studio.set_memory(1)
+        t0 = time.time()
+        job = self.studio.wait([uid], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", (
+            "UpscaleFailed: stopped: MemAvailable was below 5 GiB for 3 s (1.0 GiB; LFSTUDIO_UPSCALE_GUARD_GIB)")))
+        self.assertLess(time.time() - t0, 8)
+        self.assertFalse(alive(pid))
+        self.assertEqual(json.loads((self.regen(job) / "receipt.json").read_text())["state"], "cancelled")
+        self.assertIn("upscale: MemAvailable 1.0 GiB, below 5 GiB for 3 s: stopping its job",
+                      self.studio.log.read_text())
+
+
+class UpscaleMemoryChecksOff(UpscaleTest):
+    env = {"LFSTUDIO_UPSCALE_MIN_FREE_GIB": "0", "LFSTUDIO_UPSCALE_GUARD_GIB": "0", "STUB_UPSCALE_S": "4"}
+
+    def test_zero_turns_them_off(self):
+        parent = self.clip()
+        self.studio.set_memory(1)
+        self.assertEqual(self.done(self.upscale(parent["id"]))["status"], "done")
+
+
+class UpscaleFailure(UpscaleTest):
+    env = {"STUB_UPSCALE_FAIL": "1"}
+
+    def test_failed_with_the_jobs_error_and_no_retry(self):
+        parent = self.clip()
+        job = self.studio.wait([self.upscale(parent["id"])], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]),
+                         ("failed", "UpscaleFailed: OutOfMemoryError: CUDA out of memory (STUB_UPSCALE_FAIL)"))
+        self.assertNotIn("first_error", job)
+        self.assertNotIn("output", job)
+        self.assertEqual(job["upscale_phase"], "refine 1/2")                # where it failed
+        self.assertNotIn("retrying job", self.studio.log.read_text())
+        self.assertIn("[lf-studio] error OutOfMemoryError", (self.regen(job) / "worker.log").read_text())
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"]["ok"], True)
+        self.assertNotIn("upscalable", self.studio.job(job["id"]))          # only finished clips have it
+        case = Path(job["case_dirs"][0])
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": job["id"]}), (200, {"ok": True}))
+        self.assertFalse(case.exists())
+
+    def test_no_python(self):
+        python = self.dir / "regen2k" / "no-python"
+        self.studio.env["LFSTUDIO_UPSCALE_PYTHON"] = str(python)
+        self.studio.stop()
+        self.studio.start()
+        job = self.studio.wait([self.upscale(self.clip()["id"])], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", "UpscaleFailed: cannot start the upscale job with "
+                                                                   f"LFSTUDIO_UPSCALE_PYTHON={python} (No such file "
+                                                                   "or directory)"))
+
+
+class UpscaleOff(StudioTest):
+    """LFSTUDIO_UPSCALE=0 (the default outside the tests): /api/upscale answers 404, nothing has "upscalable", and the
+    other upscale settings are not read."""
+
+    def seed(self):
+        self.studio.env.update(LFSTUDIO_UPSCALE="0", LFSTUDIO_UPSCALE_STRENGTH="nonsense")
+
+    def test_off(self):
+        jid = self.generate()
+        self.studio.wait([jid])
+        st = self.studio.state()
+        self.assertIs(st["upscale"], False)
+        self.assertNotIn("upscalable", st["jobs"][0])
+        self.assertEqual(self.studio.upscale(jid), (404, {"error": "the experimental Upscale is off on this studio "
+                                                                   "(LFSTUDIO_UPSCALE=1 turns it on)"}))
+        older = json.loads(self.studio.get(f"/api/jobs?before={time.time() + 60}")[2])["jobs"]
+        self.assertNotIn("upscalable", older[0])
+        self.assertNotIn("upscalable", json.loads(self.studio.get(f"/api/jobs/{jid}")[2]))
+        self.assertNotIn("Upscale", self.studio.log.read_text())
+        self.assertEqual([j["id"] for j in self.studio.state()["jobs"]], [jid])
+
+
+class BadUpscaleSettings(unittest.TestCase):
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        for i, (env, message) in enumerate((
+                ({"LFSTUDIO_UPSCALE": "2"}, "LFSTUDIO_UPSCALE=2: must be 0 (off, the default) or 1 (on) (see "
+                                            "bin/env.example)"),
+                ({"LFSTUDIO_UPSCALE": "on"}, "LFSTUDIO_UPSCALE=on: must be 0 (off, the default) or 1 (on)"),
+                ({"LFSTUDIO_UPSCALE_STRENGTH": "nvidia"},
+                 "LFSTUDIO_UPSCALE_STRENGTH=nvidia: must be faithful, balanced or full (see bin/env.example)"),
+                ({"LFSTUDIO_UPSCALE_AUDIO": "both"}, "LFSTUDIO_UPSCALE_AUDIO=both: must be clip or silence"),
+                ({"LFSTUDIO_UPSCALE_PREREAD": "yes"}, "LFSTUDIO_UPSCALE_PREREAD=yes: must be 0 or 1"),
+                ({"LFSTUDIO_UPSCALE_MIN_FREE_GIB": "-1"}, "LFSTUDIO_UPSCALE_MIN_FREE_GIB=-1: must be a number of GiB, "
+                                                          "0 or more"),
+                ({"LFSTUDIO_UPSCALE_GUARD_GIB": "nan"}, "LFSTUDIO_UPSCALE_GUARD_GIB=nan: must be a number of GiB"),
+                ({"LFSTUDIO_UPSCALE_PKG": "relative/package"},
+                 "LFSTUDIO_UPSCALE_PKG=relative/package: must be an absolute path"),
+                ({"LFSTUDIO_UPSCALE_AUDIO": "both", "LFSTUDIO_UPSCALE_PREREAD": "2"},
+                 "LFSTUDIO_UPSCALE_AUDIO=both: must be clip or silence; LFSTUDIO_UPSCALE_PREREAD=2: must be 0 or 1 "
+                 "(see bin/env.example)"))):
+            with self.assertRaises(RuntimeError) as e:
+                StubStudio(d / str(i), env=env).start(timeout=10)
+            self.assertIn(message, str(e.exception))
+        studio = StubStudio(d / "empty", env={"LFSTUDIO_UPSCALE": ""}).start()      # empty: the default, off
+        try:
+            self.assertIs(studio.state()["upscale"], False)
+        finally:
+            studio.stop()
+
+
+class LauncherUpscale(LauncherSettingsCheck):
+    """bin/lf-studio with LFSTUDIO_UPSCALE: the value, and with 1 the settings (as the server reads them), the
+    Regen-2K Python, NVIDIA's package and the weights, checked by upscale/regen2k_job.py's own code; --kill ends an
+    upscale's job that the server left behind."""
+    test_settings = test_api_setting = test_older_patch = None
+
+    def regen2k(self):
+        """A stand-in Regen-2K install (NVIDIA's package and the weights, as empty files): its settings."""
+        root = self.d / "regen2k"
+        (root / "package" / "open_h3").mkdir(parents=True)
+        (root / "package" / "open_h3" / "pipeline.py").write_text("")
+        for name in ("lora/open_h3_regenerate_2k_lora.safetensors", "lora/sharp_curve_branches.safetensors",
+                     "lora/adaln_t_table.bin",
+                     "latent_upsampler/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors"):
+            (root / "weights" / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / "weights" / name).write_bytes(b"")
+        for part in ("transformer", "vae", "audio_vae"):
+            (root / "base" / part).mkdir(parents=True)
+            for name in ("config.json", "diffusion_pytorch_model.safetensors"):
+                (root / "base" / part / name).write_bytes(b"")
+        return {"LFSTUDIO_UPSCALE": "1", "LFSTUDIO_UPSCALE_PYTHON": sys.executable,
+                "LFSTUDIO_UPSCALE_PKG": str(root / "package"), "LFSTUDIO_UPSCALE_WEIGHTS": str(root / "weights"),
+                "LFSTUDIO_UPSCALE_BASE": str(root / "base")}
+
+    def refused(self, why, **settings):
+        code, out = self.check(**settings)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"REFUSED - {why}", out)
+
+    def test_the_switch(self):
+        for value in ("0", ""):
+            code, out = self.check(LFSTUDIO_UPSCALE=value, LFSTUDIO_UPSCALE_STRENGTH="not read")
+            self.assertEqual(code, 0, out)
+            self.assertNotIn("Upscale", out)
+        for value in ("2", "on", "true"):
+            self.refused(f"LFSTUDIO_UPSCALE={value}: must be 0 (off, the default) or 1 (on) (see bin/env.example)",
+                         LFSTUDIO_UPSCALE=value)
+
+    def test_paths_and_settings(self):
+        settings = self.regen2k()
+        code, out = self.check(**settings)
+        self.assertEqual(code, 0, out)
+        self.assertIn("the experimental Upscale is on (LFSTUDIO_UPSCALE=1): its environment, package and weights "
+                      "are there", out)
+        upscale = "the experimental Upscale (LFSTUDIO_UPSCALE=1): "
+        self.refused("LFSTUDIO_UPSCALE_STRENGTH=max: must be faithful, balanced or full (see bin/env.example)",
+                     **settings, LFSTUDIO_UPSCALE_STRENGTH="max")
+        self.refused("LFSTUDIO_UPSCALE_GUARD_GIB=-5: must be a number of GiB, 0 or more (see bin/env.example)",
+                     **settings, LFSTUDIO_UPSCALE_GUARD_GIB="-5")
+        self.refused("LFSTUDIO_UPSCALE_WEIGHTS=weights: must be an absolute path",
+                     **dict(settings, LFSTUDIO_UPSCALE_WEIGHTS="weights"))
+        self.refused(f"{upscale}no Python at LFSTUDIO_UPSCALE_PYTHON={self.d / 'nothing'} (the "
+                     "Open-H3-Regenerate-2K environment); set it up, or set LFSTUDIO_UPSCALE=0",
+                     **dict(settings, LFSTUDIO_UPSCALE_PYTHON=str(self.d / "nothing")))
+        lora = self.d / "regen2k" / "weights" / "lora" / "open_h3_regenerate_2k_lora.safetensors"
+        lora.unlink()
+        self.refused(f"{upscale}missing weights: {lora}; set it up", **settings)
+        (self.d / "regen2k" / "package" / "open_h3" / "pipeline.py").unlink()
+        self.refused(f"{upscale}LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in {self.d / 'regen2k' / 'package'}",
+                     **settings)
+
+    def test_defaults(self):
+        """The defaults under LFSTUDIO_HOME and LFSTUDIO_CHECKPOINTS, as in bin/env.example."""
+        home, upscale = self.d / "home", "the experimental Upscale (LFSTUDIO_UPSCALE=1): "
+        self.refused(f"{upscale}no Python at LFSTUDIO_UPSCALE_PYTHON={home / 'envs' / 'regen2k' / 'bin' / 'python'}",
+                     LFSTUDIO_UPSCALE="1", LFSTUDIO_HOME=str(home))
+        self.refused(f"{upscale}LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in {home / 'Open-H3-Regenerate-2K'}",
+                     LFSTUDIO_UPSCALE="1", LFSTUDIO_HOME=str(home), LFSTUDIO_UPSCALE_PYTHON=sys.executable)
+        settings = self.regen2k()
+        self.refused(f"{upscale}missing weights: {home / 'checkpoints' / 'Open-H3-Regenerate-2K' / 'lora'}",
+                     LFSTUDIO_UPSCALE="1", LFSTUDIO_HOME=str(home), LFSTUDIO_UPSCALE_PYTHON=sys.executable,
+                     LFSTUDIO_UPSCALE_PKG=settings["LFSTUDIO_UPSCALE_PKG"])
+
+    def test_kill_ends_a_left_over_job(self):
+        """--kill (and the launcher's cleanup) find an upscale's job by its command line: upscale/regen2k_job.py with
+        a job.json under this runtime root's web-UI outputs, not one elsewhere."""
+        script = Path(__file__).resolve().parents[1] / "upscale" / "regen2k_job.py"
+        runtime = self.d / "runtime"
+        sleeper = [sys.executable, "-c", "import time; time.sleep(60)", str(script), "--job"]
+        job = runtime / "outputs" / "webui" / "20261028-000000-upscale-2k" / "up_x" / "regen" / "job.json"
+        mine = subprocess.Popen(sleeper + [str(job)], start_new_session=True)
+        other = subprocess.Popen(sleeper + [str(self.d / "bench" / "job.json")], start_new_session=True)
+        self.addCleanup(lambda: [p.kill() or p.wait() for p in (mine, other) if p.poll() is None])
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "LFSTUDIO_", "SOLH3_"))}
+        # a Sana checkout that is not there: the pattern for the pipeline's workers names only this temp directory
+        env.update(LFSTUDIO_ENV=str(self.d / "no-env-file"), LFSTUDIO_SANA=str(self.d / "no-sana"),
+                   LFSTUDIO_PYTHON=sys.executable, SOL_H3_SPARK_RUNTIME_ROOT=str(runtime),
+                   LFSTUDIO_STATE_DIR=str(self.d / "state"), LFSTUDIO_SERVER=str(self.d / "no-server.py"),
+                   LFSTUDIO_TEST_SKIP_DOCKER="1")
+        run = subprocess.run(["bash", str(Path(__file__).resolve().parents[1] / "bin/lf-studio"), "--kill"], env=env,
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(mine.wait(timeout=10), -signal.SIGKILL)
+        self.assertIsNone(other.poll())
 
 
 if __name__ == "__main__":

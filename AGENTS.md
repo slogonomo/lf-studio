@@ -13,7 +13,9 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   `docs/API.md` documents it and the HTTP API.
 - `upscale/regen2k_job.py`: the experimental Upscale's GPU job, one upscale per process, run in its own env with
   NVIDIA's Open-H3-Regenerate-2K (its docstring says what is NVIDIA's and what it changes). Standard library outside
-  its torch functions, so the server and the tests import it without torch.
+  its torch functions, so the server and the tests import it without torch. The server runs it as a job of its own
+  (`POST /api/upscale`, `run_upscale`; off unless `LFSTUDIO_UPSCALE=1`), and reads the `LFSTUDIO_UPSCALE_*`
+  settings with its `studio_settings`, as `bin/lf-studio --check` does.
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
@@ -53,6 +55,15 @@ gives each run its own runtime root, state directory and port under a temp direc
 `StubStudio` class. It counts as started only once its own server serves the port, and stops with an error (a
 non-zero exit status) if the port is in use or its server stops by itself, so nothing goes to another studio on that
 port. Add a test there for every server change.
+
+The stub studio has the experimental Upscale on (`LFSTUDIO_UPSCALE=1`), with `tests/stub/upscale_job.py` standing
+in for `upscale/regen2k_job.py` (`LFSTUDIO_UPSCALE_SCRIPT`): it prints the job's phase lines over `STUB_UPSCALE_S`,
+ends at once on SIGTERM, writes a small 121-frame MP4 without sound and a receipt, and fails with
+`STUB_UPSCALE_FAIL=1`. The stub runtime writes stand-ins for a clip's working files (`qwen/conditioning.pt`, the
+Stage-1 latent and audio) for it to find, and the server reads MemAvailable from a file the stub studio writes
+(`LFSTUDIO_TEST_MEMINFO`; `StubStudio.set_memory`), so the memory floor and guard are tested without the machine's
+memory. The `Upscale*` classes in `tests/test_server.py` cover the job type (queue, Cancel, Delete and Undo, restart,
+warm-up, memory, failure, the settings, the launcher's checks and `--kill`), `tests/test_api.py` its API record.
 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as

@@ -497,7 +497,7 @@ class Limits(ApiTest):
         self.assertEqual(self.studio.state()["jobs"], [])
 
     def test_small_bodies(self):
-        for path in ("/api/cancel", "/api/delete", "/api/undelete", "/api/load", "/api/unload"):
+        for path in ("/api/cancel", "/api/delete", "/api/undelete", "/api/load", "/api/unload", "/api/upscale"):
             head = f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
             self.assertEqual(raw(self.studio.port, head + f"Content-Length: {64 * 1024 + 1}\r\n\r\n"),
                              (413, {"error": "request body too large (64 KiB max)"}), path)
@@ -549,6 +549,71 @@ class QueueCapDefault(ApiTest):
         self.assertEqual(self.get_job(waiting[-1])[1]["ahead"], 19)
         self.assertEqual(self.submit({"prompt": "x"}),
                          (429, {"error": "the queue is full (20 clips waiting); try again when one has finished"}))
+
+
+class UpscaleRecord(ApiTest):
+    """An upscale (the experimental Upscale, on in the stub studio) through the API: its record while queued and
+    running, ?wait=, /video, and "upscalable" on a finished clip's record."""
+    load_s, clip_s = 2, 2
+
+    def seed(self):
+        self.studio.env["STUB_UPSCALE_S"] = "2"
+
+    def test_record_wait_and_video(self):
+        jid = self.generate()
+        rec = self.get_job(jid, "?wait=30")[1]
+        self.assertEqual(rec["upscalable"], {"ok": True, "draft": True, "clip_audio": True})
+        code, body = self.studio.upscale(jid, resolution="1080p")
+        self.assertEqual(code, 200, body)
+        uid = body["id"]
+        self.assertEqual((body["job"]["kind"], body["job"]["parent"], body["job"]["resolution"]),
+                         ("upscale", jid, "1080p"))
+        rec = self.wait_state(uid, lambda r: r["phase"] == "upscaling")
+        self.assertEqual((rec["state"], rec["status"]), ("running", "upscaling"))
+        self.assertIn(rec["upscale_phase"], ("starting", "encoding", "loading", "refine 1/2", "refine 2/2",
+                                             "decoding", "saving", "adding the sound"))
+        self.assertGreaterEqual(rec["elapsed_s"], 0)
+        self.assertNotIn("upscalable", rec)
+        self.assertEqual(self.get_job(uid, "?wait=0.5", "/video")[0], 202)
+        code, rec = self.get_job(uid, "?wait=30")
+        self.assertEqual((code, rec["state"], rec["phase"]), (200, "done", None))
+        self.assertEqual(rec["urls"], {"video": f"/video/{uid}", "poster": f"/poster/{uid}"})
+        self.assertEqual(rec["upscalable"], {"ok": False, "why": "an upscale can't be upscaled again"})
+        code, headers, data = self.studio.request("GET", f"/api/jobs/{uid}/video?wait=5")
+        self.assertEqual((code, headers["Content-Type"], data[4:8]), (200, "video/mp4", b"ftyp"))
+        self.assertEqual(headers["Content-Disposition"],
+                         f'inline; filename="lf-studio_t2va_5s_seed1_{jid[:6]}_1080p.mp4"')
+
+    def test_clips_run_first(self):
+        """ahead counts the jobs that run before: every clip queued runs before an upscale, even one queued later."""
+        parent = self.generate()
+        self.get_job(parent, "?wait=30")
+        a = self.generate(seed=2)
+        self.wait_state(a, lambda r: r["phase"] == "generating")
+        uid = self.studio.upscale(parent)[1]["id"]
+        b, c = self.generate(seed=3), self.generate(seed=4)
+        second = self.studio.upscale(parent, resolution="4k")[1]["id"]
+        self.assertEqual([self.get_job(j)[1]["ahead"] for j in (uid, b, c, second)], [2, 0, 1, 3])
+        rec = self.wait_state(uid, lambda r: r["state"] == "running", timeout=60)
+        self.assertEqual(self.get_job(c, "?wait=1")[1]["state"], "done")   # the clips were done before it began
+        self.assertEqual(self.get_job(second)[1]["ahead"], 0)
+        self.assertIn(rec["phase"], ("starting", "unloading", "upscaling"))
+        self.studio.wait([second], timeout=60)
+
+
+class UpscaleFailedRecord(ApiTest):
+    def seed(self):
+        self.studio.env["STUB_UPSCALE_FAIL"] = "1"
+
+    def test_failed(self):
+        jid = self.generate()
+        self.get_job(jid, "?wait=30")
+        uid = self.studio.upscale(jid)[1]["id"]
+        code, body = self.get_job(uid, "?wait=30", "/video")
+        self.assertEqual(code, 409)
+        self.assertEqual(body["error"],
+                         "the clip failed: UpscaleFailed: OutOfMemoryError: CUDA out of memory (STUB_UPSCALE_FAIL)")
+        self.assertEqual((body["job"]["state"], body["job"]["upscale_phase"]), ("failed", "refine 1/2"))
 
 
 API_OFF = {"error": "the API for programs is off on this studio (LFSTUDIO_API=0)"}
@@ -632,6 +697,16 @@ class ApiOff(ApiTest):
         c = self.generate(seed=3)
         self.assertEqual(self.studio.post("/api/cancel", json_body={"id": c})[0], 200)
         self.assertEqual(self.studio.wait([c], timeout=30)[0]["status"], "cancelled")
+
+    def test_upscale_is_the_pages(self):
+        """POST /api/upscale is not part of the API for programs (the page's Upscale button uses it), like Cancel."""
+        jid = self.generate()
+        self.studio.wait([jid], timeout=30)
+        self.assertIs(self.studio.state()["jobs"][0]["upscalable"]["ok"], True)
+        code, body = self.studio.upscale(jid)
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.studio.wait([body["id"]], timeout=30)[0]["status"], "done")
+        self.assert_off("GET", f"/api/jobs/{body['id']}")
 
 
 class BadApiSetting(unittest.TestCase):

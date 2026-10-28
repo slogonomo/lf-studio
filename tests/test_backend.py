@@ -238,6 +238,16 @@ class LauncherRtx5090(LauncherTest):
         self.assertEqual(code, 1, out)
         self.assertIn("REFUSED - SOL_H3_PROMPT_TOKENS must be one of", out)
 
+    def test_no_upscale(self):
+        """The experimental Upscale (LFSTUDIO_UPSCALE=1) needs the DGX Spark: refused first; 0 passes."""
+        code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="1", FAKE_VRAM_FREE_MIB="30000")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only, not with "
+                      "LFSTUDIO_BACKEND=rtx5090", out)
+        code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0", LFSTUDIO_MIN_FREE_GIB="0",
+                               FAKE_VRAM_FREE_MIB="30000")
+        self.assertEqual(code, 0, out)
+
 
 class LauncherBackendRefusals(LauncherTest):
     def test_invalid_backend(self):
@@ -353,9 +363,10 @@ class ServerBackend(unittest.TestCase):
             s.stop()
 
     def test_rtx5090(self):
-        s = self.studio("rtx", LFSTUDIO_BACKEND="rtx5090").start()
+        s = self.studio("rtx", LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0").start()   # (the stub turns it on)
         try:
             self.assertEqual(s.state()["backend"], "rtx5090")
+            self.assertIs(s.state()["upscale"], False)
             page = s.get("/")[2].decode()
             self.assertIn('<meta name="lf-studio-backend" content="rtx5090">', page)
             self.assertNotIn('content="spark"', page)
@@ -366,6 +377,18 @@ class ServerBackend(unittest.TestCase):
         with self.assertRaises(RuntimeError) as e:
             self.studio("bad", LFSTUDIO_BACKEND="gb10").start()
         self.assertIn("LFSTUDIO_BACKEND=gb10: must be spark or rtx5090", str(e.exception))
+
+    def test_upscale_refused_on_rtx5090(self):
+        """The experimental Upscale needs the DGX Spark: the server stops with LFSTUDIO_UPSCALE=1 on the RTX 5090."""
+        with self.assertRaises(RuntimeError) as e:
+            self.studio("rtx-upscale", LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="1").start()
+        self.assertIn("LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only, not with "
+                      "LFSTUDIO_BACKEND=rtx5090", str(e.exception))
+        s = self.studio("spark-upscale", LFSTUDIO_UPSCALE="1").start()      # unset backend: the Spark
+        try:
+            self.assertIs(s.state()["upscale"], True)
+        finally:
+            s.stop()
 
 
 PAGE = (REPO / "webui" / "index.html").read_text()
