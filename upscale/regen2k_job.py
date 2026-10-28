@@ -808,17 +808,22 @@ def install_fast_load(adapters, fastload, safetensors_torch, diffusers):
     where they are. Call it before anything loads. Returns the receipt's "load", whose counts grow as files load."""
     stock = safetensors_torch.load_file
     record = {"mode": "fast", "o_direct": bool(fastload.ENABLED and fastload.DIRECT), "files": 0, "fallbacks": 0}
-    inside = threading.local()
+    # diffusers can load from threads (HF_ENABLE_PARALLEL_LOADING, off by default): the counts under a lock
+    inside, counting = threading.local(), threading.Lock()
+
+    def count(key):
+        with counting:
+            record[key] += 1
 
     def load_file(filename, device="cpu"):
         if getattr(inside, "active", False):
             # fastload.load_file's own fallback (no O_DIRECT for this file, or SPARK_FAST_SAFETENSORS=0) calls
             # safetensors.torch.load_file as it is now, this function: the stock loader, to the GPU too
-            record["fallbacks"] += 1
+            count("fallbacks")
             return stock(filename, device="cuda")
         inside.active = True
         try:
-            record["files"] += 1
+            count("files")
             return fastload.load_file(filename, device="cuda")
         finally:
             inside.active = False
@@ -909,6 +914,10 @@ def run(job, files, receipt, trace):
         resolution=job["resolution"], vae="standard", vae_batch=job["vae_batch"]))
     pipe.node.load_model("upscaler", pipe.device, "bf16")    # the node reads its checkpoint on first use: now
     drop_from_page_cache(loaded_files(job))
+    # what the load left in the allocator's cache, the fast load's fp32 LoRA (~11.6 GiB, on the GPU from the start)
+    # above all: back to the system before the refine (the bench did gc.collect here)
+    gc.collect()
+    torch.cuda.empty_cache()
     if job["load"] == "fast":
         say(f"fast load: {receipt['load']['files']} files, {receipt['load']['fallbacks']} of them through mmap")
     receipt["merge"] = {"weights": pipe.merger.merged, "seconds": round(pipe.merger.seconds, 2)}

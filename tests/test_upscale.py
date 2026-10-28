@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -783,8 +784,13 @@ def stand_in_torch(loaded):
     fake.version = types.SimpleNamespace(cuda="13.0")
     fake.backends = types.SimpleNamespace(cudnn=types.SimpleNamespace(version=lambda: 91900))
     nothing = lambda *args, **kwargs: None  # noqa: E731
+    fake.emptied = []                   # each empty_cache: how many calls the stand-in open_h3.pipeline had then
+
+    def empty_cache():
+        pipeline = sys.modules.get("open_h3.pipeline")
+        fake.emptied.append(len(pipeline.CALLS) if pipeline else 0)
     fake.cuda = types.SimpleNamespace(
-        set_device=nothing, synchronize=nothing, reset_peak_memory_stats=nothing, empty_cache=nothing,
+        set_device=nothing, synchronize=nothing, reset_peak_memory_stats=nothing, empty_cache=empty_cache,
         max_memory_allocated=lambda: 81 * 2 ** 30, max_memory_reserved=lambda: 83 * 2 ** 30,
         memory_allocated=lambda: 5 * 2 ** 30, is_available=lambda: True, get_device_name=lambda: "stand-in GPU",
         get_device_capability=lambda: (12, 1))
@@ -994,7 +1000,7 @@ class RunTests(Fixture):
             status = job_module.main(["--job", str(self.write_job(**changes))])
             calls = list(sys.modules["open_h3.pipeline"].CALLS) if "open_h3.pipeline" in sys.modules else []
         phases = [p[1] for p in map(job_module.parse_line, stdout.getvalue().splitlines()) if p and p[0] == "phase"]
-        self.lean = lean
+        self.lean, self.stdout, self.emptied = lean, stdout.getvalue(), fake.emptied
         return status, json.loads((self.out / "receipt.json").read_text()), calls, phases, encode_audio
 
     def expected_loads(self, fast, encodes=True, fallback=()):
@@ -1033,6 +1039,12 @@ class RunTests(Fixture):
         self.assertEqual((receipt["job"]["load"], receipt["load"]),
                          ("fast", {"mode": "fast", "o_direct": True, "files": 7, "fallbacks": 0}))
         self.assert_loaders(fast=True)
+        for line in ("fast load: upscale/fastload.py to the GPU (O_DIRECT on), from_pretrained with device_map cuda",
+                     "fast load: 7 files, 0 of them through mmap"):              # worker.log, TROUBLESHOOTING
+            self.assertRegex(self.stdout, rf"(?m)^\[lf-studio\] \d\d:\d\d:\d\d {re.escape(line)}$")
+        # the allocator's cache given back once everything is loaded (the fast load's LoRA came to the GPU), before
+        # the upscale: right after the upscaler's load_model
+        self.assertIn([c[0] for c in calls].index("load_model") + 1, self.emptied)
         self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
         self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage",
                                                  "refine", "on_step", "on_step", "decode", "encode_mp4"])
@@ -1067,6 +1079,8 @@ class RunTests(Fixture):
         self.assertEqual((receipt["job"]["load"], receipt["load"]), ("standard", {"mode": "standard"}))
         self.assert_loaders(fast=False)
         self.assertNotIn("preread", receipt)
+        self.assertNotIn("fast load", self.stdout)
+        self.assertIn([c[0] for c in calls].index("load_model") + 1, self.emptied)
         self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale", "set_stage",
                                                  "refine", "on_step", "on_step", "decode", "encode_mp4"])
         self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
@@ -1079,6 +1093,8 @@ class RunTests(Fixture):
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
         self.assertEqual(self.loads, self.expected_loads(fast=True, fallback=fallback))
         self.assertEqual(receipt["load"], {"mode": "fast", "o_direct": True, "files": 7, "fallbacks": 2})
+        self.assertRegex(self.stdout, r"(?m)^\[lf-studio\] \d\d:\d\d:\d\d fast load: 7 files, 2 of them through "
+                                      r"mmap$")                          # worker.log, as TROUBLESHOOTING quotes it
 
     def test_draft_with_silence_at_4k(self):
         """No encodes; the standard load with preread (only allowed with it)."""
@@ -1164,6 +1180,31 @@ class FastLoadTests(unittest.TestCase):
         self.assertEqual(loads, [("load_file", "lora/a.safetensors", "cuda"),
                                  ("load_file", "vae/b.safetensors", "cuda")])
         self.assertEqual(record, {"mode": "fast", "o_direct": False, "files": 2, "fallbacks": 2})
+
+    def test_loads_from_threads(self):
+        """diffusers' parallel loading (HF_ENABLE_PARALLEL_LOADING) calls load_file from threads: every file and every
+        fallback counted, and each thread's fallback goes to the stock loader (the re-entry flag is per thread)."""
+        loads = []
+        modules = stand_in_loaders(loads)
+        fallback = {f"t{n}/f{i}.safetensors" for n in range(8) for i in range(0, 300, 3)}
+        record = job_module.install_fast_load(types.SimpleNamespace(), stand_in_fastload(loads, fallback),
+                                              modules["safetensors.torch"], modules["diffusers"])
+        start = threading.Barrier(8)
+
+        def load(n):
+            start.wait()
+            for i in range(300):
+                modules["safetensors.torch"].load_file(f"/w/t{n}/f{i}.safetensors")
+        with mock.patch.dict(sys.modules, modules):
+            threads = [threading.Thread(target=load, args=(n,)) for n in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=60)
+        self.assertEqual(record, {"mode": "fast", "o_direct": True, "files": 2400, "fallbacks": 800})
+        self.assertEqual(sorted(loads), sorted([("load_file", name, "cuda") for name in fallback] +
+                                               [("fastload", f"t{n}/f{i}.safetensors", "cuda") for n in range(8)
+                                                for i in range(300) if f"t{n}/f{i}.safetensors" not in fallback]))
 
     def test_device_map_is_a_default(self):
         loads = []
