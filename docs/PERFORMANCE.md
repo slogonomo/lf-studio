@@ -245,7 +245,7 @@ same NVIDIA code and changes, the studio stopped), with the standard load; and t
 **The fast load, the job's default, has not run in the job itself on the GPU yet**: the job's times below are with the
 standard load, and the page's estimates put the fast load's ~25 s in its place.
 
-**The job itself** (staging studio; 2K, `balanced`: 2 steps from 0.7, source `final`, audio `clip`, the standard load):
+**The job itself** (staging studio; 2K, `balanced`: 2 steps from 0.7, audio `clip`, the standard load):
 
 | Stage | Time |
 |---|---|
@@ -267,7 +267,7 @@ Peak GPU memory allocated 91.08 GiB (in the refine), 4.91 GiB before the decode 
 | | 768p (no upscale; not offered) | 1080p | 2K (2560×1440) | 4K (3840×2160), see below |
 |---|---|---|---|---|
 | Loading the models (once per job) | 445 s | 445 s | 445 s | 501 s (another loader) |
-| Encoding the final clip (source `final`) | 183 s | 183 s | 183 s | 188 s |
+| Encoding the final clip | 183 s | 183 s | 183 s | 188 s |
 | Refine, per step | 48 s | 144 s | 378 s | 1687 s, 1701 s |
 | VAE decode | 49 s | 104 s | 180 s | 399 s |
 | MP4 (x264) | 5 s | 8 s | 16 s | 13 s |
