@@ -183,11 +183,11 @@ class CliTest(unittest.TestCase):
 class Generate(CliTest):
     def test_wait_and_save(self):
         """9.2 #1: generate --wait --out saves the MP4; stdout is its absolute path and nothing else."""
-        p = self.ok("generate", "--prompt", "a test clip", "--seconds", 3, "--wait", "--out", "c.mp4")
+        p = self.ok("generate", "--prompt", "a test clip", "--seconds", 6, "--wait", "--out", "c.mp4")
         out = self.work / "c.mp4"
         self.assertEqual(p.stdout, f"{out}\n")
-        self.assertAlmostEqual(duration(out), 3.04, delta=0.1)
-        self.assertRegex(p.stderr, r"queued [0-9a-f]{8} \(t2va, landscape, 3 s, seed \d+\), next in line")
+        self.assertAlmostEqual(duration(out), 6.04, delta=0.1)
+        self.assertRegex(p.stderr, r"queued [0-9a-f]{8} \(t2va, landscape, 6 s, seed \d+\), next in line")
         self.assertRegex(p.stderr, r"done in 0:0\d")
         self.assertEqual([f.name for f in self.work.iterdir()], ["c.mp4"])     # no .part left behind
 

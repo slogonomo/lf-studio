@@ -343,9 +343,9 @@ class LoadSelectedNow(PageTest):
 
     def test_switch_shows_in_the_status(self):
         self.studio.wait_for(lambda s: s["session"]["state"] == "ready", timeout=30)
-        self.pick("seconds", "3")
+        self.pick("seconds", "6")
         self.page.click("#loadnow")
-        self.page.wait_for_function("document.getElementById('loaded').textContent.startsWith('switching to Text · 16:9 · 3 s')")
+        self.page.wait_for_function("document.getElementById('loaded').textContent.startsWith('switching to Text · 16:9 · 6 s')")
         self.assertFalse(self.page.is_visible("#loadnow"))
         self.assertIn("loads these models first", self.go_text())
         self.page.wait_for_function("document.getElementById('loaded').textContent.includes('warming up')")
@@ -949,12 +949,12 @@ class CancelCards(PageTest):
     def test_focus_stays_on_the_card_when_a_poll_hides_cancel(self):
         """Cancel focused, then the clip finishes, or another tab cancels it: focus moves to Delete or Remix,
         not to the page."""
-        a = self.studio.generate(prompt="finishes by itself", seconds=3)[1]["id"]
+        a = self.studio.generate(prompt="finishes by itself", seconds=6)[1]["id"]
         self.status(a, "loading models + generating")
         self.page.focus(f"{self.card(a)} .cancel")
         self.status(a, "done")
         self.assertEqual(self.page.evaluate("document.activeElement.textContent.trim()"), "Delete")
-        b = self.studio.generate(prompt="cancelled elsewhere", seed=3, seconds=3)[1]["id"]
+        b = self.studio.generate(prompt="cancelled elsewhere", seed=3, seconds=6)[1]["id"]
         self.status(b, "generating")
         self.page.focus(f"{self.card(b)} .cancel")
         self.assertEqual(self.studio.post("/api/cancel", json_body={"id": b})[0], 200)     # another tab

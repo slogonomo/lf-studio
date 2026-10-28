@@ -962,7 +962,7 @@ class ReleaseReview(StudioTest):
         self.assertEqual(self.old.stat().st_size, 600_000)
 
     def warm_up_source(self):
-        jid = self.generate(task="fl2va", seconds=3, files={"first_frame": [("f.png", png())]})
+        jid = self.generate(task="fl2va", seconds=6, files={"first_frame": [("f.png", png())]})
         self.studio.wait([jid])
         self.studio.wait_for(lambda st: st["session"]["state"] == "ready", timeout=30)
         return jid
@@ -989,7 +989,7 @@ class FixReview(ReleaseReview):
     test_delete_during_a_requested_warm_up = None
 
     def clip(self):
-        jid = self.generate(seconds=3)
+        jid = self.generate(seconds=6)
         return self.studio.wait([jid])[0]
 
     def test_pruned_clip_waits_for_its_publish_copy(self):
@@ -1384,10 +1384,10 @@ class LoadDuringClose(StudioTest):
 
     def test_other_settings_clip_cancels_the_request(self):
         self.closing()
-        job = self.studio.wait([self.generate(seconds=3)], timeout=60)[0]
+        job = self.studio.wait([self.generate(seconds=6)], timeout=60)[0]
         self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
         self.no_warm_up_for_the_request()
-        self.assertEqual(self.studio.state()["session"]["key"], ["t2va", "landscape", 3])
+        self.assertEqual(self.studio.state()["session"]["key"], ["t2va", "landscape", 6])
 
     def test_unload_cancels_the_request(self):
         self.closing()
@@ -1400,8 +1400,8 @@ class LoadDuringClose(StudioTest):
 
     def test_newer_request_wins(self):
         self.closing()
-        self.assertEqual(self.load(orientation="landscape", seconds=3)[0], 200)
-        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 3]
+        self.assertEqual(self.load(orientation="landscape", seconds=6)[0], 200)
+        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 6]
                              and st["session"]["state"] == "ready", timeout=30)
         self.no_warm_up_for_the_request()
         self.assertEqual(len(self.open_pipelines()), 1)
@@ -1443,7 +1443,7 @@ class Reshape(StudioTest):
 
     def test_same_task_keeps_the_models(self):
         self.assertTrue(self.studio.state()["reshape"])
-        plan = [("landscape", 5), ("portrait", 10), ("landscape", 5), ("landscape", 3)]
+        plan = [("landscape", 5), ("portrait", 10), ("landscape", 5), ("landscape", 6)]
         jobs = [self.studio.wait([self.generate(orientation=o, seconds=s, seed=n)], timeout=60)[0]
                 for n, (o, s) in enumerate(plan)]
         self.assertEqual([j["status"] for j in jobs], ["done"] * 4)
@@ -1454,18 +1454,18 @@ class Reshape(StudioTest):
             w, h = (336, 192) if orientation == "landscape" else (192, 336)
             self.assertEqual(Path(job["output"]).name, f"refined_{w}x{h}_{seconds * 24 + 1}f.mp4")   # its own shape
         [session] = self.sessions()                                          # one pipeline for all four
-        self.assertEqual([r["to"]["seconds"] for r in self.reshapes(session)], [10, 5, 3])
+        self.assertEqual([r["to"]["seconds"] for r in self.reshapes(session)], [10, 5, 6])
         st = self.studio.state()["session"]
-        self.assertEqual((st["key"], st["state"]), (["t2va", "landscape", 3], "ready"))
+        self.assertEqual((st["key"], st["state"]), (["t2va", "landscape", 6], "ready"))
         log = self.studio.log.read_text()
         self.assertNotIn("closing session", log)
         self.assertIn("reshaping session ('t2va', 'landscape', 5) -> ('t2va', 'portrait', 10)", log)
-        again = self.studio.wait([self.generate(seconds=3, seed=9)], timeout=30)[0]
+        again = self.studio.wait([self.generate(seconds=6, seed=9)], timeout=30)[0]
         self.assertNotIn("reshaped_from", again)                             # the same settings: a warm clip
 
     def test_another_task_reloads(self):
         self.studio.wait([self.generate()], timeout=30)
-        job = self.studio.wait([self.generate(task="fl2va", orientation="portrait", seconds=3,
+        job = self.studio.wait([self.generate(task="fl2va", orientation="portrait", seconds=6,
                                               files={"first_frame": [("f.png", png())]})], timeout=60)[0]
         self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
         self.assertNotIn("reshaped_from", job)
@@ -1635,7 +1635,7 @@ class ReshapeWarmUpLate(ReshapeWarmUp):
     def test_late_waits_and_changes_the_shape(self):
         s = self.warming()
         time.sleep(max(0, s["takeover_until"] - s["since"]) + 0.8)
-        waiting = self.generate(orientation="portrait", seconds=3)            # the warm-up's task: it waits
+        waiting = self.generate(orientation="portrait", seconds=6)            # the warm-up's task: it waits
         other = self.generate(task="fl2va", files={"first_frame": [("f.png", png())]})   # kept for `waiting`
         jw, jo = self.studio.wait([waiting, other], timeout=60)
         self.assertNotIn("aborting preload", self.studio.log.read_text())
@@ -1900,7 +1900,7 @@ class Cancel(CancelTest):
             self.assertEqual({z: [i["name"] for i in v] for z, v in listing["inputs"].items()},
                              {"first_frame": ["first.png"], "last_frame": ["last.png"]})
         old = self.studio.job(a)
-        jid = self.generate(task="fl2va", seconds=3, remix_from=a, keep="first_frame:0,last_frame:0")
+        jid = self.generate(task="fl2va", seconds=6, remix_from=a, keep="first_frame:0,last_frame:0")
         job = self.studio.wait([jid], timeout=30)[0]
         self.assertEqual(job["status"], "done", job.get("error"))
         for key in ("first_frame", "last_frame"):

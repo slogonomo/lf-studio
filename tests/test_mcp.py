@@ -278,7 +278,7 @@ class Tools(McpTest):
         m = self.mcp()
         hello = {"capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}
         m.request("initialize", dict(hello, protocolVersion="2025-03-26"))
-        r = m.call("generate", {"prompt": "x", "seconds": 3, "wait_s": 30})
+        r = m.call("generate", {"prompt": "x", "seconds": 6, "wait_s": 30})
         self.assertFalse(r["isError"], text(r))
         self.assertEqual([c["type"] for c in r["content"]], ["text", "image"])
         jid, url = r["structuredContent"]["id"], r["structuredContent"]["url"]
