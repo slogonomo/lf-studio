@@ -1524,6 +1524,24 @@ class RunTests(Fixture):
         self.assertNotIn("traceback", receipt)
         self.assertEqual((calls, phases, self.loads), ([], [], []))
 
+    def test_portrait_with_the_standard_load(self):
+        """A 9:16 clip with LFSTUDIO_UPSCALE_LOAD=standard (as the measured 16:9 job ran): NVIDIA's own loaders, and
+        the same calls into NVIDIA's code as with the fast load."""
+        self.portrait_clip()
+        for resolution in job_module.SIZES:
+            with self.subTest(resolution=resolution):
+                runs = {}
+                for load in job_module.LOADS:
+                    status, receipt, calls, phases, _ = self.run_job(resolution=resolution, load=load)
+                    self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                     receipt.get("error"))
+                    self.assertEqual(self.loads, self.expected_loads(fast=load == "fast"))
+                    self.assert_loaders(fast=load == "fast")
+                    self.assertEqual((receipt["orientation"], receipt["job"]["load"], receipt["load"]["mode"]),
+                                     ("portrait", load, load))
+                    runs[load] = (calls, phases, list(NARROWED), receipt["upscale_route"], receipt["output"])
+                self.assertEqual(runs["standard"], runs["fast"])
+
     def test_the_standard_load_leaves_nvidia_loaders_alone(self):
         status, receipt, calls, phases, _ = self.run_job(load="standard")
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
