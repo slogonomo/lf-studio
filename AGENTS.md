@@ -64,8 +64,8 @@ The stub studio has the experimental Upscale on (`LFSTUDIO_UPSCALE=1`), with `te
 for `upscale/regen2k_job.py` (`LFSTUDIO_UPSCALE_SCRIPT`): it prints the job's phase lines over `STUB_UPSCALE_S`, ends
 at once on SIGTERM (or ignores it with `STUB_UPSCALE_TERM=ignore`), dies with the server (`--parent`), writes a small
 121-frame MP4 without sound and a receipt (none, or one ffmpeg can't read, with `STUB_UPSCALE_OUTPUT`), and fails
-with `STUB_UPSCALE_FAIL=1`. The stub runtime writes stand-ins for a clip's working files (`qwen/conditioning.pt`, the
-Stage-1 latent and audio) for it to find, and the server reads MemAvailable from a file the stub studio writes
+with `STUB_UPSCALE_FAIL=1`. The stub runtime writes stand-ins for a clip's working files (`qwen/conditioning.pt` and
+the Stage-1 audio) for it to find, and the server reads MemAvailable from a file the stub studio writes
 (`LFSTUDIO_TEST_MEMINFO`; `StubStudio.set_memory`), so the memory floor and guard are tested without the machine's
 memory. The `Upscale*` classes in `tests/test_server.py` cover the job type (queue and its limit, Cancel and its
 SIGKILL, Delete and Undo, a request during a Delete's move, restart, warm-up, memory, failure, the checks at run

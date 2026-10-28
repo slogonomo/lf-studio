@@ -2155,18 +2155,19 @@ class Upscale(UpscaleTest):
         session_root = Path(parent["output"]).parents[2]
         st = self.studio.state()
         self.assertIs(st["upscale"], True)
-        self.assertEqual(st["upscale_defaults"], {"resolution": "2k", "source": "final", "strength": "balanced",
+        self.assertEqual(st["upscale_defaults"], {"resolution": "2k", "strength": "balanced",
                                                   "audio": "clip"})            # the page's choices start there
         self.assertEqual(st["upscale_load"], "fast")                         # the page's times: LFSTUDIO_UPSCALE_LOAD
-        self.assertEqual(st["jobs"][0]["upscalable"], {"ok": True, "draft": True, "clip_audio": True})
+        self.assertEqual(st["jobs"][0]["upscalable"], {"ok": True, "clip_audio": True})
         uid = self.upscale(parent["id"])
         job = self.done(uid)
         self.assertEqual({k: job[k] for k in ("task", "orientation", "seconds", "prompt", "seed")},
                          {k: parent[k] for k in ("task", "orientation", "seconds", "prompt", "seed")})
-        self.assertEqual({k: job[k] for k in ("kind", "parent", "resolution", "source", "strength", "steps",
-                                              "start_sigma", "audio", "refine_seed")},
-                         {"kind": "upscale", "parent": parent["id"], "resolution": "2k", "source": "final",
-                          "strength": "balanced", "steps": 2, "start_sigma": 0.7, "audio": "clip", "refine_seed": 1})
+        self.assertEqual({k: job[k] for k in ("kind", "parent", "resolution", "strength", "steps", "start_sigma",
+                                              "audio", "refine_seed")},
+                         {"kind": "upscale", "parent": parent["id"], "resolution": "2k", "strength": "balanced",
+                          "steps": 2, "start_sigma": 0.7, "audio": "clip", "refine_seed": 1})
+        self.assertNotIn("source", job)                                     # from the clip's MP4, always
         self.assertRegex(job["case_id"], rf"^up_\d{{6}}_{uid[:6]}$")
         case = Path(job["case_dirs"][0])
         self.assertEqual((case.name, case.parent.parent), (job["case_id"], self.studio.runtime / "outputs" / "webui"))
@@ -2212,15 +2213,14 @@ class Upscale(UpscaleTest):
 
     def test_job_json_and_request_fields(self):
         parent = self.clip()
-        uid = self.upscale(parent["id"], resolution="1080p", source="draft", strength="full", audio="silence",
-                           seed=99)
+        uid = self.upscale(parent["id"], resolution="1080p", strength="full", audio="silence", seed=99)
         job = self.done(uid)
         self.assertEqual(Path(job["output"]).name, "regen_1920x1080_121f.mp4")
         self.assertEqual((job["seed"], job["refine_seed"], job["steps"], job["start_sigma"], job["load"]),
                          (1, 99, 3, None, "fast"))                      # LFSTUDIO_UPSCALE_LOAD's default
         data = json.loads((self.regen(job) / "job.json").read_text())
         root = self.dir / "regen2k"                     # tests/stub/studio.py's LFSTUDIO_UPSCALE_PKG and so on
-        self.assertEqual(data, {"version": 1, "case": str(Path(parent["output"]).parents[1]), "source": "draft",
+        self.assertEqual(data, {"version": 1, "case": str(Path(parent["output"]).parents[1]), "source": "final",
                                 "resolution": "1080p", "steps": 3, "start_sigma": None, "seed": 99,
                                 "audio": "silence", "load": "fast", "preread": False,
                                 "paths": {"package": str(root / "package"), "weights": str(root / "weights"),
@@ -2230,8 +2230,7 @@ class Upscale(UpscaleTest):
         job = self.done(uid)
         self.assertEqual(Path(job["output"]).name, "regen_3840x2160_121f.mp4")
         self.assertRegex(Path(job["case_dirs"][0]).parent.name, r"-upscale-4k$")
-        self.assertEqual((job["steps"], job["start_sigma"], job["refine_seed"], job["source"], job["audio"]),
-                         (2, 0.5, 1, "final", "clip"))
+        self.assertEqual((job["steps"], job["start_sigma"], job["refine_seed"], job["audio"]), (2, 0.5, 1, "clip"))
         self.assertEqual(len(self.upscale_dirs()), 2)
 
     def test_progress(self):
@@ -2268,7 +2267,7 @@ class UpscaleSettings(UpscaleTest):
     def test_defaults(self):
         parent = self.clip()
         self.assertEqual(self.studio.state()["upscale_defaults"],
-                         {"resolution": "2k", "source": "final", "strength": "full", "audio": "silence"})
+                         {"resolution": "2k", "strength": "full", "audio": "silence"})
         self.assertEqual(self.studio.state()["upscale_load"], "standard")
         job = self.done(self.upscale(parent["id"]))
         self.assertEqual((job["strength"], job["steps"], job["start_sigma"], job["audio"]),
@@ -2305,17 +2304,17 @@ class UpscaleRefusals(UpscaleTest):
         bad = (({}, "id must be the id of a finished clip"), ({"id": 5}, "id must be the id of a finished clip"),
                ({"id": jid, "resolution": "2K"}, "resolution must be one of 1080p, 2k, 4k"),
                ({"id": jid, "resolution": "768p"}, "resolution must be one of 1080p, 2k, 4k"),
-               ({"id": jid, "source": "upscaled"}, "source must be one of final, draft"),
                ({"id": jid, "strength": "nvidia"}, "strength must be one of faithful, balanced, full"),
                ({"id": jid, "strength": ["full"]}, "strength must be one of faithful, balanced, full"),
                ({"id": jid, "audio": "both"}, "audio must be one of clip, silence"),
-               ({"id": jid, "steps": 3}, 'unknown key "steps" (known: id, resolution, source, strength, audio, seed)'))
+               ({"id": jid, "steps": 3}, 'unknown key "steps" (known: id, resolution, strength, audio, seed)'))
+        bad += tuple(({"id": jid, "source": source}, 'unknown key "source" (known: id, resolution, strength, audio, '
+                      'seed)') for source in ("draft", "final", None))          # no source to pick: the clip's MP4
         bad += tuple(({"id": jid, "seed": seed}, "seed must be a nonnegative 63-bit integer, or null for the clip's")
                      for seed in (-1, 2 ** 63, "5", True, 1.5))
         for body, error in bad:
             self.assertEqual(self.studio.post("/api/upscale", json_body=body), (400, {"error": error}), body)
-        expected = ('expected JSON {"id": ..., "resolution": ..., "source": ..., "strength": ..., "audio": ..., '
-                    '"seed": ...}')
+        expected = 'expected JSON {"id": ..., "resolution": ..., "strength": ..., "audio": ..., "seed": ...}'
         for raw_body in (b"{", b"[1]", b'"x"', b"\xff"):
             code, _, answer = self.studio.request("POST", "/api/upscale", raw_body,
                                                   {"Content-Type": "application/json"})
@@ -2343,13 +2342,9 @@ class UpscaleRefusals(UpscaleTest):
         parent = self.clip()
         case = Path(parent["output"]).parents[1]
         upscalable = lambda: self.studio.job(parent["id"])["upscalable"]        # noqa: E731
-        (case / "stage1" / "h3_normalized_native.pt").unlink()
-        self.assertEqual(upscalable(), {"ok": True, "draft": False, "clip_audio": True})
-        self.assertEqual(self.studio.upscale(parent["id"], source="draft"), (409, {"error": (
-            "the clip has no Stage-1 latent (stage1/h3_normalized_native.pt), so it can be upscaled from its final MP4 "
-            "only (source final)")}))
+        self.assertEqual(upscalable(), {"ok": True, "clip_audio": True})
         (case / "stage1" / "stage1_direct_tensors.pt").unlink()
-        self.assertEqual(upscalable(), {"ok": True, "draft": False, "clip_audio": False})
+        self.assertEqual(upscalable(), {"ok": True, "clip_audio": False})
         no_audio = (409, {"error": "the clip has no Stage-1 audio (stage1/stage1_direct_tensors.pt); ask for audio "
                                    "silence"})
         self.assertEqual(self.studio.upscale(parent["id"]), no_audio)          # audio clip is the default
@@ -2718,11 +2713,11 @@ class UpscaleRunTimeChecks(UpscaleTest):
     def test_files_gone_meanwhile(self):
         parent = self.clip()
         case = Path(parent["output"]).parents[1]
-        a, uid = self.queued_behind_a_clip(parent, source="draft")
-        (case / "stage1" / "h3_normalized_native.pt").unlink()
+        a, uid = self.queued_behind_a_clip(parent)                            # audio clip, the default
+        (case / "stage1" / "stage1_direct_tensors.pt").unlink()
         job = self.studio.wait([a, uid], timeout=60)[1]
-        self.assertEqual((job["status"], job["error"]), ("failed", "UpscaleFailed: the clip's Stage-1 files are gone"))
-        a, uid = self.queued_behind_a_clip(parent)
+        self.assertEqual((job["status"], job["error"]), ("failed", "UpscaleFailed: the clip's Stage-1 audio is gone"))
+        a, uid = self.queued_behind_a_clip(parent, audio="silence")             # no Stage-1 audio any more
         (case / "qwen" / "conditioning.pt").unlink()
         job = self.studio.wait([a, uid], timeout=60)[1]
         self.assertEqual((job["status"], job["error"]),

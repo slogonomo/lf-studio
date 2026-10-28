@@ -562,12 +562,13 @@ class UpscaleRecord(ApiTest):
     def test_record_wait_and_video(self):
         jid = self.generate()
         rec = self.get_job(jid, "?wait=30")[1]
-        self.assertEqual(rec["upscalable"], {"ok": True, "draft": True, "clip_audio": True})
+        self.assertEqual(rec["upscalable"], {"ok": True, "clip_audio": True})
         code, body = self.studio.upscale(jid, resolution="1080p")
         self.assertEqual(code, 200, body)
         uid = body["id"]
         self.assertEqual((body["job"]["kind"], body["job"]["parent"], body["job"]["resolution"]),
                          ("upscale", jid, "1080p"))
+        self.assertNotIn("source", body["job"])                               # always from the clip's MP4
         rec = self.wait_state(uid, lambda r: r["phase"] == "upscaling")
         self.assertEqual((rec["state"], rec["status"]), ("running", "upscaling"))
         self.assertIn(rec["upscale_phase"], ("starting", "encoding", "loading", "refine 1/2", "refine 2/2",

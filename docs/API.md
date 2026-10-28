@@ -449,7 +449,7 @@ call) never cancels the clip.
 ## Upscale (experimental): `POST /api/upscale`
 
 Only on a DGX Spark studio with `LFSTUDIO_UPSCALE=1` (off by default; `bin/env.example`). It upscales a finished
-clip to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regenerate-2K, run as a job of its own
+clip, from its MP4, to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regenerate-2K, run as a job of its own
 (`upscale/regen2k_job.py`, in an environment of its own). For now it takes **5 s 16:9 text clips (t2va)** only:
 NVIDIA's pipeline is fixed at 1344×768 and 121 frames, and fl2va and ref2va clips need a text-only encode of their
 prompt first. Portrait, 10 and 15 s, fl2va and ref2va are follow-ups.
@@ -463,7 +463,6 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 |---|---|
 | `id` | the finished clip (required) |
 | `resolution` | `1080p`, `2k` (default) or `4k` (untested: the studio's 4K path has not been run end to end yet) |
-| `source` | `final` (default: the clip's MP4) or `draft` (its Stage-1 latent, upscaled x2 by the same latent upscaler first) |
 | `strength` | how much it may redraw: `faithful` (start noise 0.5, 2 steps), `balanced` (0.7, 2 steps) or `full` (NVIDIA's release setting, 3 steps from 0.909: sharpest, but it redraws faces). Default `LFSTUDIO_UPSCALE_STRENGTH` (`balanced`). Provisional, until measured |
 | `audio` | what the picture is refined against: `clip` (the clip's own Stage-1 audio) or `silence` (NVIDIA's). Default `LFSTUDIO_UPSCALE_AUDIO` (`clip`). The result gets the clip's sound either way, copied |
 | `seed` | the refine's seed; default (or `null`) the clip's |
@@ -478,12 +477,13 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   done and nothing is queued.
 - 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `unknown key "steps" (...)`, ...), `an upscale can't
   be upscaled again`, `Upscale takes text-to-video (t2va) clips only, for now` or `Upscale needs a 5 s 16:9 clip
-  (...)`.
+  (...)`. Any key not in the table is unknown, `source` too: test builds of the Upscale took `"source": "draft"` (the
+  clip's Stage-1 latent), which redrew the video too much and is gone, so a request with `source` (even `"final"` or
+  `null`) gets 400 `unknown key "source" (known: id, resolution, strength, audio, seed)` and nothing is queued.
 - 404 `no such clip`; with the Upscale off, `the experimental Upscale is off on this studio (LFSTUDIO_UPSCALE=1 turns
   it on)`.
 - 409 for a clip that is not done (`the clip is still queued`, `the clip failed`, ...), is being deleted or restored,
-  or whose files are gone (its session directory; for `source` `draft` its Stage-1 latent, for `audio` `clip` its
-  Stage-1 audio). 429 when the queue is full.
+  or whose files are gone (its session directory; for `audio` `clip` its Stage-1 audio). 429 when the queue is full.
 
 From a program: `lf-cli upscale` ([CLI](#cli-binlf-cli)) or the MCP tool `upscale` ([Tools](#tools)). Behind
 spark-switchboard the POST starts a stopped studio, as a submit does; send `X-Switchboard-Wait` with it.
@@ -499,11 +499,11 @@ models are closed (default 110), or when the memory guard kills it (`LFSTUDIO_UP
 `low_mem_gib` from its job.
 
 With the Upscale on, `/api/state` has `"upscale": true`, `"upscale_defaults"`, what a request without those keys
-gets (`{"resolution": "2k", "source": "final", "strength": <LFSTUDIO_UPSCALE_STRENGTH>, "audio":
-<LFSTUDIO_UPSCALE_AUDIO>}`; `null` with the Upscale off), `"upscale_load"`, how its jobs load their weights (`fast` or
+gets (`{"resolution": "2k", "strength": <LFSTUDIO_UPSCALE_STRENGTH>, "audio": <LFSTUDIO_UPSCALE_AUDIO>}`; `null`
+with the Upscale off), `"upscale_load"`, how its jobs load their weights (`fast` or
 `standard`, `LFSTUDIO_UPSCALE_LOAD`; the page's popover shows its times with it; `null` with the Upscale off), and
-every finished job in `/api/state`, `/api/jobs` and the API record has `upscalable`: `{"ok": true, "draft": <has its
-Stage-1 latent>, "clip_audio": <has its Stage-1 audio>}` or `{"ok": false, "why": "<the 400 or 409 text above>"}`.
+every finished job in `/api/state`, `/api/jobs` and the API record has `upscalable`: `{"ok": true, "clip_audio": <has
+its Stage-1 audio>}` or `{"ok": false, "why": "<the 400 or 409 text above>"}`.
 This endpoint is the page's, like Cancel: it works with `LFSTUDIO_API=0`.
 
 ## Other endpoints
