@@ -456,6 +456,21 @@ class JsonGenerate(ApiTest):
         jid = self.submit_ok({"prompt": "x" * 32768, "seconds": 6})
         self.assertEqual(len(self.studio.job(jid)["prompt"]), 32768)
 
+    def test_lengths_offered(self):
+        """0.5 offers 5, 6, 7, 8, 10, 12 and 15 s. 3 and 4 s (up to 0.4) get 400 with the lengths offered, from JSON
+        and the form alike, and leave nothing behind; every length offered is taken."""
+        offered = "ValueError: duration must be 5, 6, 7, 8, 10, 12 or 15 seconds"
+        for seconds in (3, 4):
+            for answer in (self.submit({"prompt": "x", "seconds": seconds}),
+                           self.studio.post("/api/generate", {"prompt": "x", "seconds": str(seconds)})):
+                self.assertEqual(answer, (400, {"error": f"{offered} (3 and 4 s are no longer offered)"}))
+        self.assertEqual(self.submit({"prompt": "x", "seconds": 9}), (400, {"error": offered}))
+        self.assertEqual((self.studio.state()["jobs"], self.inputs()), ([], []))
+        lengths = [5, 6, 7, 8, 10, 12, 15]
+        jids = [self.submit_ok({"prompt": "x", "seconds": s}) for s in lengths]
+        self.assertEqual([(j["status"], j["seconds"]) for j in self.studio.wait(jids, timeout=60)],
+                         [("done", s) for s in lengths])
+
     def test_form_answer_and_task_inferred(self):
         code, answer = self.studio.generate()
         self.assertEqual((code, answer["job"]["id"], answer["job"]["state"]), (200, answer["id"], "queued"))
