@@ -480,9 +480,10 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   done and nothing is queued.
 - 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `unknown key "steps" (...)`, ...), `an upscale can't
   be upscaled again`, `Upscale takes text-to-video (t2va) clips only, for now` or `Upscale takes 5 s clips only, for
-  now (NVIDIA's pipeline is fixed at 121 frames)`. Any key not in the table is unknown, `source` too: test builds of the Upscale took `"source": "draft"` (the
-  clip's Stage-1 latent), which redrew the video too much and is gone, so a request with `source` (even `"final"` or
-  `null`) gets 400 `unknown key "source" (known: id, resolution, strength, audio, seed)` and nothing is queued.
+  now (NVIDIA's pipeline is fixed at 121 frames)`. Any key not in the table is unknown, `source` too: test builds of
+  the Upscale took `"source": "draft"` (the clip's Stage-1 latent), which redrew the video too much and is gone, so a
+  request with `source` (even `"final"` or `null`) gets 400 `unknown key "source" (known: id, resolution, strength,
+  audio, seed)` and nothing is queued.
 - 404 `no such clip`; with the Upscale off, `the experimental Upscale is off on this studio (LFSTUDIO_UPSCALE=1 turns
   it on)`.
 - 409 for a clip that is not done (`the clip is still queued`, `the clip failed`, ...), is being deleted or restored,
@@ -608,8 +609,8 @@ page) without waiting; a clip still running is exit 4. **`status`** prints one l
 running ones, oldest first, then the newest 5 finished ones; `status ID` one clip. **`cancel ID`** cancels it.
 
 **`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s t2va clip,
-16:9 or 9:16 ([Upscale](#upscale-experimental-post-apiupscale)), and works as `generate` from there: without `--wait`, `--out`
-or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
+16:9 or 9:16 ([Upscale](#upscale-experimental-post-apiupscale)), and works as `generate` from there: without
+`--wait`, `--out` or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
 `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the
 studio's defaults hold for the rest (2K, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the
 clip's seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes about 11 min to 1.6 h in all (4K
