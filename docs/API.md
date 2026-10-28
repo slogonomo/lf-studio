@@ -234,7 +234,7 @@ still sending may see the connection close instead). Base64 adds a third, so JSO
 | `prompt` | the prompt, at most 32,768 characters | required |
 | `task` | `t2va` (text only), `fl2va` (first and/or last frame), `ref2va` (references) | from the files: frames → fl2va, references → ref2va, none → t2va |
 | `orientation` | `landscape` (1344x768) or `portrait` (768x1344) | `landscape` |
-| `seconds` | 3, 4, 5, 6, 7, 8, 10, 12 or 15 | 5 |
+| `seconds` | 5, 6, 7, 8, 10, 12 or 15 (3 and 4 s, offered up to 0.5.0, get 400; clips made at those lengths stay in the history as they are) | 5 |
 | `seed` | an integer, 0 to 2^63 - 1 | empty: a random one |
 | `first_frame`, `last_frame` | one image file each (fl2va) | |
 | `ref_images`, `ref_videos`, `ref_audio` | files, repeated, in order (ref2va) | |
@@ -297,8 +297,8 @@ behind:
 1. Task and orientation (`bad task/orientation`), the task's path manifest (`no path manifest for ...`), the
    prompt (`prompt is empty`, `prompt is too long (N characters; at most 32768)`, and `prompt is not valid text
    ...` for a JSON prompt holding half of a UTF-16 surrogate pair, such as `"\ud83c"` from an emoji cut in two),
-   the length (`duration must be one of (3, 4, 5, 6, 7, 8, 10, 12, 15) seconds`) and the seed (`seed must be a
-   nonnegative 63-bit integer`).
+   the length (`duration must be 5, 6, 7, 8, 10, 12 or 15 seconds`, for 3 or 4 s followed by `(3 and 4 s are no
+   longer offered)`) and the seed (`seed must be a nonnegative 63-bit integer`).
 2. The files. fl2va needs a first frame, a last frame, or both. ref2va takes up to 9 images, 3 videos and 3 audio
    files, 12 in total (`H3 limits: ...`), and at least one image or video. A wrong type gets `unsupported file type
    .gif (allowed: ...)`. Reference videos are converted on arrival (at most 672x384, 24 fps, their first 15 s, sound
@@ -400,7 +400,7 @@ One clip renders at a time. Measured on one DGX Spark ([PERFORMANCE.md](PERFORMA
 
 | | Time |
 |---|---|
-| t2va with the models loaded (the same task as the clip before, at an orientation and length the session has run) | 3 s: 36 s · 5 s: 54-66 s · 10 s: 123 s · 15 s: 191 s |
+| t2va with the models loaded (the same task as the clip before, at an orientation and length the session has run) | 5 s: 54-66 s · 10 s: 123 s · 15 s: 191 s |
 | ref2va with a 5 s reference video, 5 s | 133 s per clip |
 | The first clip at an orientation or length the session hasn't run, same task (the models stay loaded; Stage 2 compiles for the new shape, from the compile cache when that shape ran before) | a clip with the models loaded plus 0.2-10 s (5 → 10 s: 7 s, 10 → 15 s: 10 s in the staging check of 0.4, compile cache warm; fl2va 16:9 → 9:16: 0.2 s in an earlier run; one run each, [PERFORMANCE.md](PERFORMANCE.md#changing-length-or-format)). With `SOL_H3_DYNAMIC_TEXT_LENGTH=0` Stage 1 compiles for it too: 5 → 10 s: 14 s, 5 → 15 s: 27 s when it compiled from scratch |
 | t2va, the first clip after a change of task (the models load first; also after any change with `LFSTUDIO_RESHAPE=0`) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
@@ -462,7 +462,7 @@ Used by the page; stable, but not designed for agents. Each takes a JSON body of
 |---|---|---|
 | `POST /api/delete` | `{"id"}` | moves a finished clip and its files to the trash for `LFSTUDIO_TRASH_DAYS` (default 7); 409 while it is queued or running |
 | `POST /api/undelete` | `{"id"}` | brings it back |
-| `POST /api/load` | `{"task", "orientation", "seconds"}` | loads the models for those settings ahead of a clip ("Load selected now"). With that task loaded, it only changes the session's length and orientation, without a warm-up clip (`reshape` true). 409 while a clip is queued or running |
+| `POST /api/load` | `{"task", "orientation", "seconds"}` | loads the models for those settings ahead of a clip ("Load selected now"). With that task loaded, it only changes the session's length and orientation, without a warm-up clip (`reshape` true). 400 for a length not offered, with a submit's message; 409 while a clip is queued or running |
 | `POST /api/unload` | none | frees the models; 409 while a clip runs |
 
 ## Errors
@@ -500,7 +500,7 @@ new download from the 0.4 address gets only that shim, which says where to get `
 
 ```
 lf-cli generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
-       [--orientation landscape|portrait] [--seconds 3|4|5|6|7|8|10|12|15] [--seed N]
+       [--orientation landscape|portrait] [--seconds 5|6|7|8|10|12|15] [--seed N]
        [--first-frame FILE|URL] [--last-frame FILE|URL] [--ref FILE|URL]...
        [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
 lf-cli wait ID [--out PATH] [--poster] [--timeout S]
@@ -725,7 +725,7 @@ final 1344x768 video uses a fixed prompt of its own.
 - `ref2va`:
   - up to 9 images, 3 videos (2-15 s each) and 3 audio files, 12 files in total;
   - at least one image or video.
-- `seconds`: 3, 4, 5, 6, 7, 8, 10, 12 or 15.
+- `seconds`: 5, 6, 7, 8, 10, 12 or 15.
   - H3 was trained on 4-15 s; NVIDIA validated 5 s.
   - Every time in the prompt must fall inside the clip.
 - `orientation`: landscape (1344x768) or portrait (768x1344; portrait is not quality-validated).

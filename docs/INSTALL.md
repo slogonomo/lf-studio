@@ -220,7 +220,7 @@ pinned) into `~/sol-h3/bin` and GCC 14 from conda-forge into `~/sol-h3/toolchain
 **Start.** `bin/lf-studio` as on the Spark. It skips the Docker checks, and refuses to start below
 `LFSTUDIO_MIN_FREE_GIB` of free RAM (default 42 GiB on the RTX 5090) or `LFSTUDIO_MIN_FREE_VRAM_GIB` of free GPU memory
 (default 25 GiB, from `nvidia-smi`), measured on every mode ([RTX5090.md](RTX5090.md)); 0 turns
-a check off. The page says "on one RTX 5090", with clip times measured there at 3, 5, 10 and 15 s (other lengths
+a check off. The page says "on one RTX 5090", with clip times measured there at 5, 10 and 15 s (other lengths
 interpolated).
 
 Under `~/sol-h3` the RTX 5090 install also has `bin/` (uv, uvx, micromamba), `python/` (uv's CPythons),
@@ -280,6 +280,16 @@ start clean.
 On the RTX 5090 the same: `install/10-sana.sh` (with `LFSTUDIO_BACKEND=rtx5090` in the settings file) finds the earlier
 version of `patches/lf-studio-rtx5090.patch`, reverses it, moves to a new `patches/BASE_COMMIT_RTX5090` if that
 changed, and applies the new one. A new patch file is all an update of the 5090 patch needs.
+
+### After 0.5.0
+
+Clip lengths are 5, 6, 7, 8, 10, 12 and 15 s, on both backends: 3 and 4 s are gone (3 s clips never came out right).
+Nothing needs to change for a working install. Clips you made at 3 or 4 s stay in the history: they play and download
+as before, and Remix loads them at 5 s and says so. A program that asks the studio for 3 or 4 s gets 400 `duration
+must be 5, 6, 7, 8, 10, 12 or 15 seconds (3 and 4 s are no longer offered)`; `lf-cli --seconds 3` stops with a usage
+error (exit 2), and its MCP tool answers `seconds must be one of 5, 6, 7, 8, 10, 12, 15`. A copy of an earlier
+`bin/lf-cli`, or of 0.4's `bin/sol-h3`, on another machine still offers 3 and 4 s; the studio refuses them with the
+400 above (exit 2 from the CLI, a tool error over MCP).
 
 ### From 0.4 to 0.5
 

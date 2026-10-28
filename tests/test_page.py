@@ -343,9 +343,9 @@ class LoadSelectedNow(PageTest):
 
     def test_switch_shows_in_the_status(self):
         self.studio.wait_for(lambda s: s["session"]["state"] == "ready", timeout=30)
-        self.pick("seconds", "3")
+        self.pick("seconds", "6")
         self.page.click("#loadnow")
-        self.page.wait_for_function("document.getElementById('loaded').textContent.startsWith('switching to Text · 16:9 · 3 s')")
+        self.page.wait_for_function("document.getElementById('loaded').textContent.startsWith('switching to Text · 16:9 · 6 s')")
         self.assertFalse(self.page.is_visible("#loadnow"))
         self.assertIn("loads these models first", self.go_text())
         self.page.wait_for_function("document.getElementById('loaded').textContent.includes('warming up')")
@@ -518,6 +518,65 @@ class ReleaseReviewPage(PageTest):
         self.assertEqual(self.page.evaluate("!!document.activeElement.closest('article.job')"), True)
 
 
+class OldLengths(PageTest):
+    """3 and 4 s went after 0.5.0: the page offers 5-15 s, a length kept from 0.5.0 reads 5 s, and clips of 3 and 4 s
+    made before still list and play, and Remix brings them back at 5 s without an error."""
+
+    def seed(self):
+        old = self.dir / "old"
+        old.mkdir()
+        (old / "3.mp4").write_bytes(mp4(3))
+        (old / "4.mp4").write_bytes(mp4(4))
+        (old / "first.png").write_bytes(png())
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([
+            finished_job("3" * 32, seconds=3, output=str(old / "3.mp4"), created=1, prompt="three seconds"),
+            finished_job("4" * 32, task="fl2va", seconds=4, output=str(old / "4.mp4"), created=2,
+                         first_frame=str(old / "first.png"), prompt="four seconds")]))
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def test_lengths_offered(self):
+        offered = self.page.eval_on_selector_all('input[name="seconds"]', "els => els.map(e => e.value)")
+        self.assertEqual(offered, ["5", "6", "7", "8", "10", "12", "15"])
+        self.assertEqual(self.page.eval_on_selector_all(".len label", "els => els.map(e => e.textContent)"), offered)
+        self.page.evaluate("localStorage.setItem('lfstudio.seconds', '3')")       # kept by a 0.5.0 page
+        other = self.ctx.new_page()                                           # (a reload here would cancel a poll)
+        other.goto(self.studio.url + "/")
+        self.assertEqual(other.evaluate("val('seconds')"), "5")
+        self.assertEqual(other.inner_text("#lenout"), "~60 s per clip")
+        other.close()
+
+    def test_old_clips_list_play_and_remix_at_5_s(self):
+        for jid, seconds in (("3" * 32, 3), ("4" * 32, 4)):
+            card = self.card(jid)
+            self.page.wait_for_selector(f"{card} video")
+            self.assertEqual(self.page.eval_on_selector_all(f"{card} .tags .tag", "els => els.map(e => e.textContent)")[2],
+                             f"{seconds} s")
+            self.assertEqual(self.page.get_attribute(f"{card} video", "src"), f"/video/{jid}")
+            self.assertIn(f"_{seconds}s_", self.page.get_attribute(f"{card} a.act", "download"))
+            self.assertEqual(self.page.evaluate("id => fetch('/video/' + id).then(r => r.status)", jid), 200)
+        self.pick("seconds", "10")
+        self.page.click(f"{self.card('3' * 32)} .reuse-all")                   # t2va, 3 s
+        self.page.wait_for_function("document.getElementById('toast').textContent"
+                                    " === 'Settings loaded at 5 s (3 s is no longer offered)'")
+        self.assertEqual(self.page.evaluate("[val('task'), val('seconds'), store.get('seconds')]"), ["t2va", "5", "5"])
+        self.assertEqual(self.page.input_value("#prompt"), "three seconds")
+        self.assertEqual(self.page.inner_text("#err"), "")
+        self.page.click(f"{self.card('4' * 32)} .reuse-all")                   # fl2va, 4 s, with its first frame
+        self.page.wait_for_function("document.querySelectorAll('#fl .thumbs img.kept').length === 1")
+        self.page.wait_for_function("document.getElementById('toast').textContent"
+                                    " === 'Settings and files loaded at 5 s (4 s is no longer offered)'")
+        self.assertEqual(self.page.evaluate("[val('task'), val('seconds')]"), ["fl2va", "5"])
+        self.assertEqual(self.page.inner_text("#err"), "")
+        self.page.click("#go")
+        jobs = self.studio.wait_for(lambda s: len(s["jobs"]) == 3)["jobs"]
+        new = self.studio.wait([next(j["id"] for j in jobs if j["id"] not in ("3" * 32, "4" * 32))])[0]
+        self.assertEqual((new["status"], new["task"], new["seconds"], new["prompt"]), ("done", "fl2va", 5, "four seconds"))
+        self.assertEqual(Path(new["first_frame"]).name, "first.png")
+        self.assertEqual(self.page.inner_text("#err"), "")
+
+
 class RemixSeed(PageTest):
     """#14: Remix loads the clip's seed and leaves "New random seed every run" as it is."""
 
@@ -536,6 +595,7 @@ class RemixSeed(PageTest):
     def test_ticked_stays_ticked_and_draws_a_new_seed(self):
         self.page.check("#autoroll")
         a = self.remix(777)
+        self.page.wait_for_function("document.getElementById('toast').textContent === 'Settings loaded'")  # 5 s: as is
         self.assertTrue(self.page.is_checked("#autoroll"))
         self.assertEqual(self.page.input_value("#seed"), "777")
         new = self.generate_from_page(a)                                    # Remix, then Generate in the same tab
@@ -949,12 +1009,12 @@ class CancelCards(PageTest):
     def test_focus_stays_on_the_card_when_a_poll_hides_cancel(self):
         """Cancel focused, then the clip finishes, or another tab cancels it: focus moves to Delete or Remix,
         not to the page."""
-        a = self.studio.generate(prompt="finishes by itself", seconds=3)[1]["id"]
+        a = self.studio.generate(prompt="finishes by itself", seconds=6)[1]["id"]
         self.status(a, "loading models + generating")
         self.page.focus(f"{self.card(a)} .cancel")
         self.status(a, "done")
         self.assertEqual(self.page.evaluate("document.activeElement.textContent.trim()"), "Delete")
-        b = self.studio.generate(prompt="cancelled elsewhere", seed=3, seconds=3)[1]["id"]
+        b = self.studio.generate(prompt="cancelled elsewhere", seed=3, seconds=6)[1]["id"]
         self.status(b, "generating")
         self.page.focus(f"{self.card(b)} .cancel")
         self.assertEqual(self.studio.post("/api/cancel", json_body={"id": b})[0], 200)     # another tab

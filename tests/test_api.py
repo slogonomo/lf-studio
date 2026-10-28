@@ -299,10 +299,10 @@ class JsonGenerate(ApiTest):
         self.assertNotIn("labels", job)
         code, rec = self.get_job(answer["id"], "?wait=30")
         self.assertEqual(rec["state"], "done")
-        jid = self.submit_ok({"prompt": "x", "task": "t2va", "orientation": "portrait", "seconds": 3, "seed": 0,
+        jid = self.submit_ok({"prompt": "x", "task": "t2va", "orientation": "portrait", "seconds": 6, "seed": 0,
                               "first_frame": None, "ref_images": None})          # null = left out
         job = self.studio.wait([jid], timeout=30)[0]
-        self.assertEqual((job["status"], job["orientation"], job["seconds"], job["seed"]), ("done", "portrait", 3, 0))
+        self.assertEqual((job["status"], job["orientation"], job["seconds"], job["seed"]), ("done", "portrait", 6, 0))
 
     def test_fl2va_object_and_data_uri(self):
         frame = png(40, 30)
@@ -453,8 +453,23 @@ class JsonGenerate(ApiTest):
             self.assertEqual(by_form["error"], by_json["error"])
         self.assertEqual(by_form["error"], "ValueError: prompt is too long (32769 characters; at most 32768)")
         self.assertEqual(self.inputs(), [])
-        jid = self.submit_ok({"prompt": "x" * 32768, "seconds": 3})
+        jid = self.submit_ok({"prompt": "x" * 32768, "seconds": 6})
         self.assertEqual(len(self.studio.job(jid)["prompt"]), 32768)
+
+    def test_lengths_offered(self):
+        """The studio offers 5, 6, 7, 8, 10, 12 and 15 s. 3 and 4 s (up to 0.5.0) get 400 with the lengths offered,
+        from JSON and the form alike, and leave nothing behind; every length offered is taken."""
+        offered = "ValueError: duration must be 5, 6, 7, 8, 10, 12 or 15 seconds"
+        for seconds in (3, 4):
+            for answer in (self.submit({"prompt": "x", "seconds": seconds}),
+                           self.studio.post("/api/generate", {"prompt": "x", "seconds": str(seconds)})):
+                self.assertEqual(answer, (400, {"error": f"{offered} (3 and 4 s are no longer offered)"}))
+        self.assertEqual(self.submit({"prompt": "x", "seconds": 9}), (400, {"error": offered}))
+        self.assertEqual((self.studio.state()["jobs"], self.inputs()), ([], []))
+        lengths = [5, 6, 7, 8, 10, 12, 15]
+        jids = [self.submit_ok({"prompt": "x", "seconds": s}) for s in lengths]
+        self.assertEqual([(j["status"], j["seconds"]) for j in self.studio.wait(jids, timeout=60)],
+                         [("done", s) for s in lengths])
 
     def test_form_answer_and_task_inferred(self):
         code, answer = self.studio.generate()
@@ -560,7 +575,7 @@ class ApiOn(ApiTest):
 
     def test_on_by_default(self):
         self.assertIs(self.studio.state()["api"], True)
-        jid = self.submit_ok({"prompt": "x", "seconds": 3})
+        jid = self.submit_ok({"prompt": "x", "seconds": 6})
         code, _, answer = self.studio.request("POST", "/api/generate", json.dumps({"prompt": "y"}).encode(),
                                               {"Content-Type": "application/json", "X-LFStudio-Client": "lf-cli/0.5.0"})
         self.assertEqual(code, 200, answer)

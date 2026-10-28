@@ -79,7 +79,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .seg input:focus-visible+label{outline:2px solid var(--acc);outline-offset:1px}
 .seg label small{font-weight:500;font-size:11px;color:var(--faint)}
 .aspect{display:block;border:1.8px solid currentColor;border-radius:3px}
-.len{grid-template-columns:repeat(9,minmax(0,1fr));grid-auto-flow:row}
+.len{grid-template-columns:repeat(7,minmax(0,1fr));grid-auto-flow:row}
 .len label{padding:8px 0;font-variant-numeric:tabular-nums;font-size:13px}
 
 /* drop zones (a real file input sits underneath each) */
@@ -249,8 +249,6 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
     <div>
       <div class="lbl">Length <small id="lenout"></small></div>
       <div class="seg len" role="radiogroup" aria-label="Length in seconds">
-        <input type="radio" name="seconds" id="s3" value="3"><label for="s3">3</label>
-        <input type="radio" name="seconds" id="s4" value="4"><label for="s4">4</label>
         <input type="radio" name="seconds" id="s5" value="5"><label for="s5">5</label>
         <input type="radio" name="seconds" id="s6" value="6"><label for="s6">6</label>
         <input type="radio" name="seconds" id="s7" value="7"><label for="s7">7</label>
@@ -338,13 +336,13 @@ const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","n
 // The machine (LFSTUDIO_BACKEND; the server names it in the lf-studio-backend meta tag and in /api/state
 // "backend"): its name in the header, the note on times, and the seconds per clip once the models are loaded (t2va
 // 16:9). The DGX Spark's are measured (clips over 10 s also reload the prompt encoder each time). The RTX 5090's are
-// measured at 3, 5, 10 and 15 s, the other lengths interpolated (docs/RTX5090.md). JSON between the markers:
-// tests/test_backend.py reads it.
+// measured at 5, 10 and 15 s, the other lengths interpolated (docs/RTX5090.md). One per length offered (5-15 s; 3
+// and 4 s went after 0.5.0). JSON between the markers: tests/test_backend.py reads it.
 const MACHINES=/*machines*/{
 "spark":{"name":"one DGX Spark","times":["Times shown are ","measured on a DGX Spark"," with nothing else running."],
-  "eta":{"3":40,"4":45,"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
+  "eta":{"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
 "rtx5090":{"name":"one RTX 5090","times":["Times shown are ","measured on an RTX 5090"," (64 GB RAM, desktop running; text clips)."],
-  "eta":{"3":28,"4":28,"5":28,"6":32,"7":36,"8":40,"10":47,"12":55,"15":66}}
+  "eta":{"5":28,"6":32,"7":36,"8":40,"10":47,"12":55,"15":66}}
 }/*machines*/;
 let ETA=MACHINES.spark.eta,machine='spark';
 function applyMachine(b){const m=MACHINES[b];if(!m||b===machine)return;machine=b;ETA=m.eta;
@@ -373,7 +371,7 @@ function stamp(ts){const d=new Date(ts*1000),n=new Date(),t=d.toLocaleTimeString
   return `${d.toLocaleDateString([],o)}, ${t}`;}
 function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),2200);}
 
-// restore persisted choices (each field on its own)
+// restore persisted choices (each field on its own); a length no longer offered (3 or 4 s, up to 0.5.0) reads 5 s
 setRadio('task',store.get('task','t2va'))||setRadio('task','t2va');
 setRadio('orientation',store.get('orientation','landscape'))||setRadio('orientation','landscape');
 setRadio('seconds',store.get('seconds','5'))||setRadio('seconds','5');
@@ -540,20 +538,22 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
-  // new seed (#14); unticked, it keeps the clip's seed
-  body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
+  // new seed (#14); unticked, it keeps the clip's seed. A clip of a length no longer offered (3 or 4 s, up to
+  // 0.5.0) comes back at 5 s, and the message says so
+  body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);
+    const gone=!setRadio('seconds',j.seconds||5);if(gone)setRadio('seconds','5');const at=gone?` at 5 s (${j.seconds} s is no longer offered)`:'';
     prompt.value=j.prompt;seed.value=j.seed;
-    [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
+    [['task',j.task],['orientation',j.orientation],['seconds',val('seconds')],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
     modeUI();updateGo();showForm(e.detail===0);$('err').textContent='';
     zones.forEach(z=>{z.querySelector('input').value='';z.kept=[];z.show();});remixFrom=null;const my=++remixSeq;
-    if(j.task==='t2va'){toast('Settings loaded');return;}
+    if(j.task==='t2va'){toast('Settings loaded'+at);return;}
     // the clip's input files go back into the form (the server reuses them, nothing is uploaded again); a reply
     // for an earlier Remix click is dropped
     fetch('/api/inputs/'+j.id,{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(x=>{if(my!==remixSeq)return;remixFrom=j.id;
       zones.forEach(z=>{z.kept=x.inputs[z.querySelector('input').name]||[];z.show();});
-      if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
-      toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
-    .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
+      if(x.missing.length)$('err').textContent=`Settings loaded${at}. Gone from the server, attach again: ${x.missing.join(', ')}.`;
+      toast(x.missing.length?`Settings loaded${at}, some files are gone`:'Settings and files loaded'+at);})
+    .catch(()=>{if(my===remixSeq)$('err').textContent=`Settings loaded${at} - the files could not be loaded, attach them again.`;});};
   // detail 0: Enter/Space, not a pointer. Remix, Cancel and Delete ignore detail 2+, the rest of a double-click whose
   // first click changed what is under the pointer: Cancel of a queued clip shows Delete where Cancel was; Delete of a
   // card moves the next card's Delete or Cancel into its place. Undo hides at once and drops the rest of its
