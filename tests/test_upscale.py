@@ -671,7 +671,13 @@ def stand_in_torch(loaded):
     and report fixed memory figures."""
     fake = types.ModuleType("torch")
     fake.__version__, fake.bfloat16, fake.float32 = "0.0+stand-in", "bfloat16", "float32"
-    fake.load = lambda path, map_location=None, weights_only=None: loaded[Path(path).name]
+    def load(path, map_location=None, weights_only=None):
+        # every load in run() reads plain tensors onto the CPU: weights_only=True (no pickled code), map_location cpu
+        if weights_only is not True or map_location != "cpu":
+            raise AssertionError(f"torch.load({Path(path).name}, map_location={map_location!r}, "
+                                 f"weights_only={weights_only!r})")
+        return loaded[Path(path).name]
+    fake.load = load
     fake.isfinite = lambda x: types.SimpleNamespace(all=lambda: True)
     fake.zeros = lambda *shape, **kwargs: StandInTensor(*shape)
     fake.device = lambda kind, *rest: types.SimpleNamespace(type=kind)
