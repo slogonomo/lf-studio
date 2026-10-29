@@ -444,11 +444,12 @@ studio (no keyframe, so it holds for every size and length).
   a small random-weight model); the later 15 s runs, at 576p and 768p, made their 362 frames that way and kept the
   studio's 361 (289 at 768p 12 s). One run each.
 - **Not measured:** 6, 7 and 8 s, 12 s at 576p, Keyframes clips at 768p past 10 s and at 576p past 14 s, and the
-  mirrored end of the sound at 6 and 15 s (8 ms). The studio's estimates (`eta_s`) come from the runs above: the prompt encode (12 s), the process
-  (23 s), 4 steps by the rows, the decode at 0.67 s per frame and megapixel, and 2 s for the poster: 200 s for 5 s at
-  576p and 350 s at 768p, 400 and 820 s for 10 s, 500 s for 12 s at 576p and 1070 s at 768p, 660 and 1440 s for 15 s;
-  within 8 % of every run of the first session (the job's process, plus the measured or the estimated prompt encode,
-  plus the poster's 2 s), and within 2 % of the three longer ones.
+  mirrored end of the sound at 6 and 15 s (8 ms). The studio's estimates (`eta_s`) come from the runs above: the
+  prompt encode (12 s), the process (23 s), 4 steps by the rows, the decode at 0.67 s per frame and megapixel, and 2 s
+  for the poster: 200 s for 5 s at 576p and 350 s at 768p, 400 and 820 s for 10 s, 500 s for 12 s at 576p and 1070 s
+  at 768p, 660 and 1440 s for 15 s; within 8 % of every run of the first session (the job's process, plus the measured
+  or the estimated prompt encode, plus the poster's 2 s), and within 2.2 % of the three longer ones (660 s against
+  646 s at 576p 15 s, 1070 against 1050 at 768p 12 s, 1440 against 1439 at 768p 15 s).
 - **The studio's queue** (a staging studio of this version on the same DGX Spark, 2026-10-29: a second studio with its
   own port and state, driven by `lf-cli`, one clip each). From the prompt encode to the poster: 191-204 s for 5 s at
   576p (Text, a first frame, first + last, a last frame alone; estimate 200 s), 338 s at 768p (350 s), and 399 s for a
