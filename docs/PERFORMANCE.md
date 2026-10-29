@@ -243,13 +243,20 @@ shape.
 
 ## Experimental Upscale (Open-H3-Regenerate-2K)
 
-Measured on one DGX Spark (GB10) on 2026-10-28, 5 s t2va clips (on 2026-10-29 Keyframes, Reference and LightX2V Turbo
-clips, below), NVIDIA's standard forward (BF16, dense attention through cuDNN, about 90 TFLOPS) and its released VAE,
-the LoRA merged once in place (bit-identical to NVIDIA's merge, checked). The numbers come from three kinds of runs,
-kept apart here: the studio's own job (`upscale/regen2k_job.py`) in a staging studio with nothing else loaded, with the
-fast load (its default) and, earlier, with the standard load; the bench wrapper the job was made from (the same NVIDIA
-code and changes, the studio stopped), with the standard load; and that bench wrapper with the fast load. Each has one
-run per resolution and orientation it was measured at.
+Measured on one DGX Spark (GB10) on 2026-10-28 unless marked, 5 s clips, NVIDIA's standard forward (BF16, dense
+attention through cuDNN, about 90 TFLOPS) and its released VAE, the LoRA merged once in place (bit-identical to
+NVIDIA's merge, checked). The numbers come from four kinds of runs, kept apart here:
+
+- the studio's own job (`upscale/regen2k_job.py`) in a staging studio with nothing else loaded, with the fast load (its
+  default) and, earlier, with the standard load: t2va clips, and on 2026-10-29 Keyframes, Reference and LightX2V Turbo
+  clips (below);
+- the bench wrapper the job was made from (the same NVIDIA code and changes, the studio stopped), with the standard
+  load;
+- that bench wrapper with the fast load;
+- research runs: the job on LightX2V Turbo clips in folders built by hand, and the prompt encode on its own ("Measured
+  apart", below).
+
+The first tables have one run per resolution and orientation; the runs through the studio on 2026-10-29 add more.
 
 **The job itself, fast load** (staging studio, with the job as it was just before it took 9:16 clips: its calls into
 NVIDIA's code for a 16:9 clip are unchanged since, which `tests/test_upscale.py` checks; one 16:9 clip (1344×768) to
