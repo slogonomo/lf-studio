@@ -1,0 +1,421 @@
+"""bench/h3turbo_encode.py (H3 Turbo, Phase 0: a clip's prompt conditioning from a transient Qwen worker, as the
+server's encode_prompt will make it) and its wrapper bench/h3turbo-encode.sh, on the CPU: text_only_prompt on every
+form of the keyframe alignment line the studio writes (the prompt guide's examples, read from bin/lf-cli, and the
+page's alignLine(), read from webui/index.html) and on the inline references; the arguments and the environment it
+refuses; --check; and the encodes against a stand-in of the patch's runtime package (its Worker records the recipe it
+got and the calls, and writes conditioning files as the Qwen worker does): the canvas per job, the clip's encode and
+the text-only one, the receipt checks, the worker closed in every case. Standard library only.
+"""
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+SCRIPT = REPO / "bench" / "h3turbo_encode.py"
+WRAPPER = REPO / "bench" / "h3turbo-encode.sh"
+
+
+def load_helper():
+    spec = importlib.util.spec_from_file_location("h3turbo_encode", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+helper = load_helper()
+
+
+def guide_examples():
+    """The prompt guide's fl2va examples (bin/lf-cli GUIDE, the same as docs/API.md's): {title: prompt}."""
+    text = (REPO / "bin" / "lf-cli").read_text()
+    found = dict(re.findall(r"\n(fl2va, [^\n]*):\n\n```text\n(.*?)\n```", text, re.S))
+    assert len(found) == 3, sorted(found)
+    return found
+
+
+def page_example(seconds=5):
+    """The page's fl2va example with its alignLine() for `seconds` (webui/index.html's EX.fl2va and alignLine)."""
+    page = (REPO / "webui" / "index.html").read_text()
+    template = re.search(r"const alignLine=\(\)=>`(.*?)`;", page).group(1)
+    line = template.replace("${(+val('seconds')||5).toFixed(2)}", f"{seconds:.2f}")
+    assert "${" not in line, line
+    example = re.search(r'fl2va:"(ALIGN\\n.*?)",\n', page).group(1)
+    return json.loads(f'"{example}"').replace("ALIGN", line)
+
+
+class TextOnlyTests(unittest.TestCase):
+    def test_the_guide_first_frame_example(self):
+        prompt = guide_examples()["fl2va, first frame only, 5 s"]
+        self.assertTrue(prompt.startswith("For the target video, at 0.00 seconds into the target video, <Picture 1> "
+                                          "(from [Shot 1]) is fully referenced.\n\n"))
+        result = helper.text_only_prompt(prompt)
+        self.assertEqual(result["dropped"], ["alignment line", "1 x ' shown in <Picture N>'"])
+        text = result["prompt"]
+        self.assertTrue(text.startswith("integrated_multimodal_description: [Shot 1] Live-action, cinematic, the scene "
+                                        "opens on the kitchen, keeping the woman's appearance,"), text[:200])
+        self.assertNotIn("Picture", text)
+        self.assertIn("\n\noverall_soundscape: Water pours", text)
+        self.assertTrue(text.endswith("non_diegetic_music: N/A"))
+
+    def test_the_guide_first_and_last_example(self):
+        """The em-dash line, and the body's bare "Picture N" (the guide writes them without angle brackets)."""
+        prompt = guide_examples()["fl2va, first and last frame, 8 s"]
+        self.assertIn("align with the target video — Picture 1 (from Shot 1)", prompt)
+        result = helper.text_only_prompt(prompt)
+        self.assertEqual(result["dropped"], ["alignment line", "2 x ' in/of/from <Picture N>'"])
+        self.assertNotIn("Picture", result["prompt"])
+        self.assertIn("a wide shot begins in the composition, with the small sailboat", result["prompt"])
+        self.assertIn("settles into the position, sail shape and framing at the end of the shot.", result["prompt"])
+        self.assertTrue(result["prompt"].startswith("integrated_multimodal_description:"))
+
+    def test_the_guide_last_frame_example(self):
+        result = helper.text_only_prompt(guide_examples()["fl2va, last frame only, 6 s"])
+        self.assertEqual(result["dropped"], ["alignment line", "1 x ' in/of/from <Picture N>'"])
+        self.assertIn("the table settles into the exact arrangement, lighting and framing.\n", result["prompt"])
+        self.assertNotIn("Picture", result["prompt"])
+
+    def test_the_pages_alignment_line(self):
+        """alignLine(): a hyphen, no angle brackets, "-second mark" without "of the target video"; one newline."""
+        for seconds in (5, 8, 15):
+            prompt = page_example(seconds)
+            self.assertTrue(prompt.startswith("How the reference pictures align with the target video - Picture 1 "
+                                              f"aligns with the 0.00-second mark; Picture 2 aligns with the "
+                                              f"{seconds:.2f}-second mark.\nintegrated_multimodal_description:"))
+            result = helper.text_only_prompt(prompt)
+            self.assertEqual(result, {"prompt": prompt.split("\n", 1)[1], "dropped": ["alignment line"]})
+
+    def test_alignment_lines_in_other_places(self):
+        """In front of the text on the same line, after a blank line, with Windows line ends, or in a form of its
+        own (a line that starts as one): the line goes, the rest stays as it was."""
+        first = guide_examples()["fl2va, first frame only, 5 s"].split("\n", 1)[0]
+        same_line = helper.text_only_prompt(first + " integrated_multimodal_description: [Shot 1] A lake.")
+        self.assertEqual(same_line, {"prompt": "integrated_multimodal_description: [Shot 1] A lake.",
+                                     "dropped": ["alignment line"]})
+        crlf = helper.text_only_prompt(first + "\r\n\r\nintegrated_multimodal_description: A lake.\r\n"
+                                       "overall_soundscape: Wind.\r\n")
+        self.assertEqual(crlf["prompt"], "integrated_multimodal_description: A lake.\r\noverall_soundscape: Wind.")
+        later = helper.text_only_prompt("integrated_multimodal_description: A lake.\n\n" + first + "\n\nmore")
+        self.assertEqual(later["prompt"], "integrated_multimodal_description: A lake.\n\nmore")
+        own = helper.text_only_prompt("How the reference pictures align: first at the start\nintegrated: A lake.")
+        self.assertEqual(own, {"prompt": "integrated: A lake.", "dropped": ["alignment line"]})
+
+    def test_inline_references(self):
+        """The research probe's rewrites, in its order, then any <Picture N> left is dropped; lines without one are kept
+        byte for byte, MiniMax's tokens too."""
+        result = helper.text_only_prompt(
+            "integrated_multimodal_description: [Shot 1] The kitchen shown in <Picture 1> stays, with the "
+            "composition of <Picture 1>; the woman from <Picture 1> walks to <Picture 2> , then on.\n"
+            "overall_soundscape:  She says: <d>[English] Hello.</d>  ")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: [Shot 1] The kitchen stays, with this "
+                                           "composition; the woman walks to, then on.\n"
+                                           "overall_soundscape:  She says: <d>[English] Hello.</d>")
+        self.assertEqual(result["dropped"], ["1 x ' shown in <Picture N>'",
+                                             "1 x 'with the composition of <Picture N> -> with this composition'",
+                                             "1 x ' in/of/from <Picture N>'", "1 x '<Picture N>'"])
+        plain = "integrated_multimodal_description: a picture 1 meter wide.\n\nnon_diegetic_music: N/A"
+        self.assertEqual(helper.text_only_prompt(plain), {"prompt": plain, "dropped": []})
+
+    def test_nothing_left(self):
+        first = guide_examples()["fl2va, first frame only, 5 s"].split("\n", 1)[0]
+        for prompt in (first, first + "\n\n", "<Picture 1>", "  \n"):
+            with self.assertRaisesRegex(ValueError, "nothing is left"):
+                helper.text_only_prompt(prompt)
+
+
+# a stand-in of the patch's runtime package: runtime.config (load_paths, load_recipe, normalize_case,
+# prompt_tokens_mode) and runtime.pipeline.Worker, whose "qwen" run writes conditioning.pt and conditioning.json as the
+# real worker does, for the canvas of the recipe it got (stage1 height and width); every start, call and close goes
+# into $STUB_QWEN_LOG. STUB_QWEN_BAD=canvas: the receipt names another canvas.
+STUB_CONFIG = '''import json, os, re
+from pathlib import Path
+TASKS = ("t2va", "fl2va", "ref2va")
+
+def prompt_tokens_mode(value=None):
+    raw = os.environ.get("SOL_H3_PROMPT_TOKENS", "") if value is None else value
+    mode = str(raw).strip().lower() or "minimax"
+    if mode not in ("plain", "minimax"):
+        raise ValueError(f"SOL_H3_PROMPT_TOKENS must be one of ('plain', 'minimax'), not {raw!r}")
+    return mode
+
+def load_recipe(task="t2va", *, orientation=None, **_):
+    height, width = (384, 672) if (orientation or "landscape") == "landscape" else (672, 384)
+    return {"stage1": {"height": height, "width": width, "task": task, "prompt_tokens": prompt_tokens_mode()},
+            "orientation": orientation}
+
+def load_paths(filename, *, task="t2va"):
+    if task not in TASKS:
+        raise ValueError(f"task must be one of {TASKS}")
+    return json.loads(Path(filename).read_text())
+
+def normalize_case(case, *, base_dir=None, default_task="t2va"):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", case.get("case_id") or ""):
+        raise ValueError("case_id must be a simple file-safe name")
+    result = {k: case[k] for k in ("case_id", "prompt", "seed", "task")}
+    for key in ("first_frame", "last_frame"):
+        if case.get(key) is not None:
+            result[key] = str(Path(case[key]).resolve(strict=True))
+    return result
+'''
+STUB_PIPELINE = '''import hashlib, json, os
+from pathlib import Path
+
+def log(entry):
+    with open(os.environ["STUB_QWEN_LOG"], "a") as handle:
+        handle.write(json.dumps(entry) + "\\n")
+
+class Worker:
+    def __init__(self, name, root, paths, config):
+        self.root = Path(root)
+        self.root.mkdir()
+        self.config = config
+        (self.root / "options.json").write_text(json.dumps({"paths": paths, "config": config}))
+        log({"event": "start", "name": name, "root": str(self.root), "stage1": config["stage1"],
+             "cwd": os.getcwd()})
+
+    def call(self, op="run", case=None, output_root=None):
+        root = Path(output_root)
+        root.mkdir(parents=True, exist_ok=False)
+        height, width = self.config["stage1"]["height"], self.config["stage1"]["width"]
+        if os.environ.get("STUB_QWEN_BAD") == "canvas":
+            height, width = height * 2, width * 2
+        frames = [(a, case[f"{a}_frame"]) for a in ("first", "last") if case.get(f"{a}_frame")]
+        tokens = (width // 32) * (height // 32)
+        text = 40 + len(case["prompt"]) // 10
+        rows = text + len(frames) * (tokens + 2)
+        (root / "conditioning.pt").write_bytes(f"stand-in conditioning {case['prompt']}".encode())
+        receipt = {"status": "PASS", "task": case["task"], "prompt": case["prompt"], "case_id": case["case_id"],
+                   "seed": case["seed"], "shape": [1, rows, 5120], "text_tokens": text,
+                   "prompt_tokens": self.config["stage1"]["prompt_tokens"],
+                   "prepared_media": [{"type": "image", "path": p, "anchor": a, "shape": [height, width, 3]}
+                                      for a, p in frames],
+                   "payload_sha256": hashlib.sha256((root / "conditioning.pt").read_bytes()).hexdigest(),
+                   "request_wall_s": 1.5}
+        (root / "conditioning.json").write_text(json.dumps(receipt))
+        log({"event": "run", "case": case, "output_root": str(root)})
+        return receipt
+
+    def close(self):
+        log({"event": "close"})
+'''
+
+
+class Fixture(unittest.TestCase):
+    """A runtime root with a clip's inputs, the studio's path manifests and a stand-in patched package."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="h3turbo-encode-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.runtime = self.tmp / "runtime"
+        self.inputs = self.runtime / "inputs" / "webui" / ("a" * 32)
+        self.inputs.mkdir(parents=True)
+        self.first = self.inputs / "first.png"
+        self.first.write_bytes(b"first")
+        self.last = self.inputs / "last.png"
+        self.last.write_bytes(b"last")
+        self.case = self.runtime / "outputs" / "bench" / "h3turbo-test" / "lake-first"
+        self.package = self.tmp / "Sana" / "models" / "minimax_h3" / "Sol-H3-Spark"
+        (self.package / "runtime").mkdir(parents=True)
+        (self.package / "runtime" / "__init__.py").write_text("")
+        (self.package / "runtime" / "config.py").write_text(STUB_CONFIG)
+        (self.package / "runtime" / "pipeline.py").write_text(STUB_PIPELINE)
+        for task in ("t2va", "fl2va"):
+            (self.tmp / f"paths-{task}.json").write_text(json.dumps({"qwen_python": "/x/qwen_python.sh"}))
+        self.prompt = self.tmp / "prompt.txt"
+        self.prompt.write_text(guide_examples()["fl2va, first frame only, 5 s"], encoding="utf-8")
+        self.log = self.tmp / "qwen.log"
+        self.env = {"SOL_H3_SPARK_RUNTIME_ROOT": str(self.runtime),
+                    "LFSTUDIO_PATHS": str(self.tmp / "paths-{task}.json"), "STUB_QWEN_LOG": str(self.log)}
+
+    def args(self, *extra, first=True):
+        out = ["--case", str(self.case), "--prompt-file", str(self.prompt), "--orientation", "landscape",
+               "--package", str(self.package)]
+        return out + (["--first", str(self.first)] if first else []) + list(extra)
+
+    def run_helper(self, *args, env=None):
+        environ = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "LFSTUDIO_", "STUB_"))}
+        environ.update(self.env, **(env or {}))
+        return subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), *args], capture_output=True, text=True,
+                              timeout=60, env=environ, cwd=str(self.tmp))
+
+    def events(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+
+class PlanTests(Fixture):
+    def plan(self, *extra, first=True, env=None):
+        args = helper.parse_args(self.args(*extra, first=first))
+        return helper.make_plan(args, dict(self.env, **(env or {})), helper.load_job_module())
+
+    def test_fl2va_at_the_draft_canvas(self):
+        plan = self.plan()
+        self.assertEqual((plan["task"], plan["keyframes"], plan["qwen_canvas"], plan["image_tokens"],
+                          plan["canvas_mode"], plan["case_id"], plan["seed"]),
+                         ("fl2va", ["first"], [672, 384], 252, "draft", "lake-first", 42))
+        self.assertEqual(plan["manifest"], str(self.tmp / "paths-fl2va.json"))
+        self.assertEqual(plan["text_only"]["dropped"], ["alignment line", "1 x ' shown in <Picture N>'"])
+        self.assertEqual(plan["notes"], [])
+
+    def test_the_canvas_per_job(self):
+        for orientation, resolution, canvas, tokens in (("portrait", "576p", [576, 1024], 576),
+                                                        ("landscape", "768p", [1344, 768], 1008),
+                                                        ("portrait", "768p", [384, 672], 252)):
+            mode = "draft" if tokens == 252 else "canvas"
+            plan = self.plan("--orientation", orientation, "--resolution", resolution, "--canvas", mode)
+            self.assertEqual((plan["qwen_canvas"], plan["image_tokens"]), (canvas, tokens))
+
+    def test_t2va_and_a_last_frame_alone(self):
+        plan = self.plan(first=False)
+        self.assertEqual((plan["task"], plan["keyframes"], plan["image_tokens"], plan["manifest"]),
+                         ("t2va", [], 0, str(self.tmp / "paths-t2va.json")))
+        self.assertNotIn("text_only", plan)
+        plan = self.plan("--last", str(self.last), first=False)
+        self.assertEqual((plan["task"], plan["keyframes"]), ("fl2va", ["last"]))
+        self.assertIn("a last frame alone", plan["notes"][0])
+        plan = self.plan("--last", str(self.last), "--no-text-only")
+        self.assertEqual(plan["keyframes"], ["first", "last"])
+        self.assertNotIn("text_only", plan)
+
+    def test_refusals(self):
+        outside = self.tmp / "outside.png"
+        outside.write_bytes(b"x")
+        (self.tmp / "empty.txt").write_text(" \n")
+        (self.tmp / "only-align.txt").write_text(guide_examples()["fl2va, first frame only, 5 s"].split("\n")[0])
+        for extra, env, message in (
+                ((), {"SOL_H3_SPARK_RUNTIME_ROOT": ""}, "SOL_H3_SPARK_RUNTIME_ROOT must be set"),
+                ((), {"SOL_H3_SPARK_RUNTIME_ROOT": "runtime"}, "must be set to an absolute path"),
+                (("--case", str(self.tmp / "case")), {}, "--case .* is not under SOL_H3_SPARK_RUNTIME_ROOT"),
+                (("--first", str(outside)), {}, "--first .* is not under SOL_H3_SPARK_RUNTIME_ROOT"),
+                (("--last", str(self.inputs / "missing.png")), {}, "--last .*: no such file"),
+                (("--prompt-file", str(self.tmp / "empty.txt")), {}, "the prompt is empty"),
+                (("--prompt-file", str(self.tmp / "missing.txt")), {}, "cannot read --prompt-file"),
+                (("--prompt-file", str(self.tmp / "only-align.txt")), {}, "nothing is left .*--no-text-only"),
+                (("--case-id", "qwen-worker"), {}, "case id 'qwen-worker'"),
+                (("--case-id", "a b"), {}, "case id 'a b'"),
+                (("--seed", "-1"), {}, "--seed -1"),
+                ((), {"LFSTUDIO_PATHS": str(self.tmp / "paths.json")}, "must contain {task}"),
+                ((), {"LFSTUDIO_PATHS": str(self.tmp / "none-{task}.json")}, "no path manifest for fl2va"),
+                (("--package", str(self.tmp)), {}, "no runtime/pipeline.py")):
+            with self.subTest(message):
+                with self.assertRaisesRegex(helper.Refused, message):
+                    self.plan(*extra, env=env)
+        plan = self.plan("--no-text-only", "--prompt-file", str(self.tmp / "only-align.txt"))
+        self.assertNotIn("text_only", plan)
+        (self.case / "qwen").mkdir(parents=True)
+        with self.assertRaisesRegex(helper.Refused, "qwen exists: use a new --case"):
+            self.plan()
+
+    def test_the_default_manifest_follows_lfstudio_home(self):
+        home = self.tmp / "home"
+        home.mkdir()
+        (home / "paths-fl2va.json").write_text("{}")
+        plan = self.plan(env={"LFSTUDIO_PATHS": "", "LFSTUDIO_HOME": str(home)})
+        self.assertEqual(plan["manifest"], str(home / "paths-fl2va.json"))
+
+
+class ScriptTests(Fixture):
+    def test_check_starts_nothing_and_writes_nothing(self):
+        result = self.run_helper(*self.args("--canvas", "canvas", "--orientation", "portrait", "--check"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plan = json.loads(result.stdout)
+        self.assertEqual((plan["ok"], plan["task"], plan["qwen_canvas"], plan["image_tokens"]),
+                         (True, "fl2va", [576, 1024], 576))
+        self.assertEqual(plan["recipe_stage1"], {"height": 1024, "width": 576, "prompt_tokens": "minimax"})
+        self.assertNotIn("prompt", plan)
+        self.assertFalse(self.case.exists())
+        self.assertEqual(self.events(), [])
+
+    def test_refusals_exit_2(self):
+        result = self.run_helper(*self.args("--case", str(self.tmp / "elsewhere")))
+        self.assertEqual(result.returncode, 2)
+        self.assertRegex(result.stdout, r"^\[h3turbo-encode\] refused: --case .* is not under")
+        (self.tmp / "speech.txt").write_text(self.prompt.read_text() + " He says: <d>[English] Hi.</d>")
+        result = self.run_helper(*self.args("--prompt-file", str(self.tmp / "speech.txt")),
+                                 env={"SOL_H3_PROMPT_TOKENS": "plain"})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("SOL_H3_PROMPT_TOKENS=plain would split MiniMax's tokens ['<d>', '</d>']", result.stdout)
+        self.assertEqual(self.run_helper(*self.args("--prompt-file", str(self.tmp / "speech.txt")), "--check",
+                                         env={"SOL_H3_PROMPT_TOKENS": "plain"}).returncode, 2)
+        result = self.run_helper("--case", str(self.case))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("required", result.stderr)
+        self.assertEqual(self.events(), [])
+
+    def test_fl2va_with_the_text_only_encode(self):
+        """One worker for both encodes, the recipe's canvas set to the clip's, the text-only prompt as t2va, the
+        receipts checked, the worker closed; the files and encode.json."""
+        result = self.run_helper(*self.args("--canvas", "canvas", "--resolution", "576p", "--seed", "7"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        summary = json.loads(result.stdout)
+        events = self.events()
+        self.assertEqual([e["event"] for e in events], ["start", "run", "run", "close"])
+        self.assertEqual((events[0]["root"], events[0]["stage1"]["height"], events[0]["stage1"]["width"],
+                          events[0]["cwd"]), (str(self.case / "qwen-worker"), 576, 1024, str(self.package)))
+        clip, text = events[1]["case"], events[2]["case"]
+        self.assertEqual((clip["task"], clip["first_frame"], clip["seed"], clip["case_id"], events[1]["output_root"]),
+                         ("fl2va", str(self.first), 7, "lake-first", str(self.case / "qwen")))
+        self.assertEqual(clip["prompt"], self.prompt.read_text())
+        self.assertEqual((text["task"], events[2]["output_root"]), ("t2va", str(self.case / "qwen-text")))
+        self.assertNotIn("first_frame", text)
+        self.assertEqual(text["prompt"], helper.text_only_prompt(clip["prompt"])["prompt"])
+        self.assertEqual((self.case / "qwen-text" / "prompt.txt").read_text(), text["prompt"])
+        dropped = json.loads((self.case / "qwen-text" / "text-only.json").read_text())["dropped"]
+        self.assertEqual(dropped, ["alignment line", "1 x ' shown in <Picture N>'"])
+        saved = json.loads((self.case / "encode.json").read_text())
+        self.assertEqual(saved, summary)
+        self.assertEqual(saved["encodes"]["qwen"]["vision_rows"], 578)
+        self.assertEqual(saved["encodes"]["qwen-text"]["vision_rows"], 0)
+        self.assertEqual(saved["for_job"], {"task": "fl2va", "orientation": "landscape", "resolution": "576p",
+                                            "conditioning": str(self.case / "qwen" / "conditioning.pt"),
+                                            "qwen_canvas": "canvas", "first_frame": str(self.first),
+                                            "last_frame": None})
+        self.assertNotIn("prompt", saved)
+
+    def test_t2va(self):
+        result = self.run_helper(*self.args(first=False))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([e["event"] for e in self.events()], ["start", "run", "close"])
+        self.assertEqual(self.events()[0]["stage1"]["height"], 384)
+        self.assertFalse((self.case / "qwen-text").exists())
+        self.assertEqual(json.loads((self.case / "encode.json").read_text())["for_job"]["task"], "t2va")
+
+    def test_a_receipt_that_does_not_match_fails_and_closes_the_worker(self):
+        result = self.run_helper(*self.args(), env={"STUB_QWEN_BAD": "canvas"})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"failed: the qwen/ encode does not match: \['canvas', 'vision rows 1010, "
+                                        r"want 254'\]")
+        self.assertEqual([e["event"] for e in self.events()], ["start", "run", "close"])
+        self.assertFalse((self.case / "encode.json").exists())
+
+    def test_the_wrapper(self):
+        """bench/h3turbo-encode.sh: the studio's settings (install/env.sh, an empty env file here), the Stage-1 Python
+        ($LFSTUDIO_PYTHON) and the package under $LFSTUDIO_SANA; relative paths are the caller's."""
+        sana = self.tmp / "Sana"
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "LFSTUDIO_", "SOLH3_", "STUB_"))}
+        env.update(self.env, LFSTUDIO_ENV=os.devnull, LFSTUDIO_HOME=str(self.tmp / "home"), LFSTUDIO_SANA=str(sana),
+                   LFSTUDIO_PYTHON=sys.executable, SOL_H3_SECONDS="8")
+        rel_prompt = os.path.relpath(self.prompt, self.tmp)
+        result = subprocess.run(["bash", str(WRAPPER), "--case", str(self.case), "--prompt-file", rel_prompt,
+                                 "--orientation", "portrait", "--first", str(self.first), "--check"],
+                                capture_output=True, text=True, timeout=60, env=env, cwd=str(self.tmp))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plan = json.loads(result.stdout)
+        self.assertEqual((plan["package"], plan["qwen_canvas"]), (str(self.package), [384, 672]))
+        result = subprocess.run(["bash", str(WRAPPER)], capture_output=True, text=True, timeout=60, env=env)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("h3turbo-encode.sh --case DIR", result.stdout)
+        env["LFSTUDIO_SANA"] = str(self.tmp / "nowhere")
+        result = subprocess.run(["bash", str(WRAPPER), "--check"], capture_output=True, text=True, timeout=60,
+                                env=env)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no patched package", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

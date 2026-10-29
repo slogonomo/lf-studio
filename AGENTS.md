@@ -20,6 +20,11 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   --check` does. The page's Upscale button and popover, `lf-cli upscale` and the MCP tool `upscale` use the endpoint;
   `install/65-regen2k.sh` (optional) builds its environment from the hashed lock `install/freeze/regen2k-lock.txt` and
   fetches its weights (`install/regen2k_weights.py`).
+- `jobs/h3turbo_job.py`: the experimental H3 Turbo's GPU job (the full MiniMax-H3 in one stage with a LightX2V turbo
+  LoRA, one clip per process in the Regen-2K environment; its docstring is the spec), not run by the server yet;
+  `bench/h3turbo-encode.sh` (`bench/h3turbo_encode.py`) makes its prompt conditioning with a transient Qwen worker, as
+  the server will. Tests: `tests/test_h3turbo_job.py` (its torch parts with the Regen-2K Python, CUDA hidden) and
+  `tests/test_h3turbo_encode.py`.
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
