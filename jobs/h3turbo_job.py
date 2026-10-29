@@ -104,11 +104,12 @@ frames; fl2va a first frame, first and last, or a last frame alone. qwen_canvas 
 "draft" the studio's 384p draft canvas (672x384 or 384x672: 252 image tokens per keyframe; the studio's default),
 "canvas" the generation canvas (576 tokens at 576p, 1008 at 768p); the conditioning must match it.
 
-The studio's model of a clip (the GPU validation's receipts on one DGX Spark, 2026-10-29: 15 clips, 576p at 5, 10
-and 14 s, 768p at 5 and 10 s, 4 steps; the rest estimated from them): MemAvailable at its lowest is the start minus
+The studio's model of a clip (the GPU validation's receipts on one DGX Spark, 2026-10-28/29: 15 clips, 576p at 5,
+10 and 14 s, 768p at 5 and 10 s, 4 steps; the rest estimated from them): MemAvailable at its lowest is the start minus
 (USE_GIB[0] + USE_GIB[1] per 1000 rows of the packed sequence, layout_rows), within USE_SPREAD_GIB of every clip;
-min_free_for is the floor a clip of a size and length needs to start (the setting's, or more where that would not keep
-the job above its abort_below_gib: long 768p clips). A step takes STEP_S[0] N + STEP_S[1] N^2 seconds (N: rows /
+min_free_for is the floor a clip of a size and length needs to start: the setting's, or more where that would not keep
+the job above its abort_below_gib (long 768p clips at the default 100; every clip with a setting below 90: the
+setting is a minimum, and only 0 turns the check off). A step takes STEP_S[0] N + STEP_S[1] N^2 seconds (N: rows /
 1000), the decode DECODE_S per frame and megapixel; estimate_s adds the prompt encode, the process (imports, load,
 saving) and the poster: what the studio's registry shows until a clip has been measured on the machine.
 
@@ -363,8 +364,9 @@ def sequence_rows(resolution, seconds, keyframes, text_rows):
 def min_free_for(resolution, seconds, floor):
     """The MemAvailable a clip of this size and length needs to start: the studio's floor
     (LFSTUDIO_H3TURBO_MIN_FREE_GIB, MIN_FREE_GIB by default), or more where the model of the docstring says the job
-    would come down below its abort_below_gib (ABORT_BELOW_GIB) plus USE_SPREAD_GIB from it: 768p from 12 s (103 GiB at
-    12 s, 107 at 15 s). A floor of 0 (no check) stays 0."""
+    would come down below its abort_below_gib (ABORT_BELOW_GIB) plus USE_SPREAD_GIB from it: from 100, 768p from 12 s
+    (103 GiB at 12 s, 107 at 15 s); a lower floor is raised to that for every clip (90 GiB at 576p 5 s). A floor of 0
+    (no check) stays 0."""
     if floor <= 0:
         return floor
     use = USE_GIB[0] + USE_GIB[1] * sequence_rows(resolution, seconds, *FLOOR_ROWS) / 1000

@@ -101,7 +101,8 @@ def output_name(job):
 
 
 def min_free_for(resolution, seconds, floor):
-    """As the real job's: the floor, or more where its memory model asks for it (768p from 12 s)."""
+    """As the real job's: the floor, or more where its memory model asks for it (768p from 12 s at 100; every clip
+    with a floor below 90)."""
     if floor <= 0:
         return floor
     width, height = CANVAS[(resolution, "landscape")]

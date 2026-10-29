@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
-from test_server import (BOTH, NOT_REF2VA, TURBO, finished_job, history, mp4, png,  # noqa: E402
+from test_server import (BOTH, NOT_15S, NOT_REF2VA, TURBO, finished_job, history, mp4, png,  # noqa: E402
                          release_server)
 
 try:
@@ -453,7 +453,7 @@ class UiTestScript(unittest.TestCase):
         default, is picked in a new browser)."""
         out = self.run_ui_test("1", models=BOTH)
         for check in (f"PASS fields unchanged after model -> {TURBO}", "PASS fields unchanged after model -> sol-h3",
-                      f"PASS model {TURBO}: what it doesn't make yet is greyed out with the reason (1)",   # Reference
+                      f"PASS model {TURBO}: what it doesn't make yet is greyed out with the reason (2)",  # ref2va, 15 s
                       "PASS a disabled Upscale button says why (2 disabled)",     # its clip and the fl2va one
                       "PASS clips of another model show it in a tag (1: ['LightX2V Turbo 576p'])",
                       "PASS Generate keeps the models when the format differs"):
@@ -1838,7 +1838,7 @@ class ModelRow(ModelPage):
         before = self.fields()
         self.model(TURBO)
         self.assertEqual(self.fields(), before)
-        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA})             # Reference is all it lacks
+        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA, "seconds=15": NOT_15S})   # not before a GPU run
         self.assertFalse(self.page.is_disabled("#go"))
         self.assertIsNone(self.page.get_attribute("#go", "title"))
         self.assertEqual((self.text("#go"), self.text("#err")), ("Generate · LightX2V Turbo · ~6:40 min est.", ""))
@@ -1852,10 +1852,18 @@ class ModelRow(ModelPage):
                                                  "Sol-H3 models first if they are loaded.")
         self.assertEqual(self.text(".brand p"), "LightX2V Turbo (experimental) · 576×1024 video with sound, on one "
                                                 "DGX Spark")
-        # every length has its estimate, per size
-        for seconds, s576, s768 in (("5", "3:20", "5:50"), ("15", "11:00", "24:00")):
-            self.pick("seconds", seconds)
-            self.assertEqual(self.sizes(), [f"576p 576×1024 · ~{s576} min", f"768p 768×1344 · ~{s768} min"])
+        # every length it makes has its estimate, per size; 12 s is 576p's alone (768p greyed, with no time), and
+        # 15 s neither's: picked anyway, Generate says why
+        self.pick("seconds", "5")
+        self.assertEqual(self.sizes(), ["576p 576×1024 · ~3:20 min", "768p 768×1344 · ~5:50 min"])
+        self.pick("seconds", "12")
+        self.assertEqual(self.sizes(), ["576p 576×1024 · ~8:20 min", "768p 768×1344"])
+        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA, "seconds=15": NOT_15S, "resolution=768p": (
+            "LightX2V Turbo does not make clips with task fl2va, seconds 12, orientation portrait, resolution 768p, "
+            "steps 4 together yet")})
+        self.page.click('input[name="seconds"][value="15"] + label', force=True)
+        self.assertEqual((self.checked("seconds"), self.text("#err"), self.page.is_disabled("#go")),
+                         ("15", NOT_15S, True))
         self.pick("seconds", "5")
         self.assertEqual((self.text("#go"), self.text("#lenout")),
                          ("Generate · LightX2V Turbo · ~3:20 min est.", "~3:20 min per clip, estimated"))
@@ -1918,7 +1926,8 @@ class ModelRow(ModelPage):
             route.fulfill(response=response, json=dict(response.json(), models=table))
 
         self.page.route("**/api/state", with_table)
-        self.page.wait_for_function("MODELS.some(m => (m.capabilities.seconds || []).some(c => !c.offered))")
+        self.page.wait_for_function("MODELS.some(m => (m.capabilities.seconds || []).some(c => c.value === 6 && "
+                                    "!c.offered))")                          # the table put in, not the page's
         # a pick LightX2V Turbo doesn't make yet: Keyframes, 9:16, 10 s, with a prompt; picking it changes none of it
         self.pick("task", "fl2va")
         self.pick("orientation", "portrait")

@@ -415,9 +415,9 @@ class GeometryTests(unittest.TestCase):
 
 
 class StudioModelTests(unittest.TestCase):
-    """The studio's model of a clip (the docstring) against the GPU validation's receipts on a DGX Spark (2026-10-29;
-    their numbers, as the receipts recorded them): the lowest MemAvailable, the step times, the decode, the memory floor
-    per size and length, and the registry's estimates."""
+    """The studio's model of a clip (the docstring) against the GPU validation's receipts on a DGX Spark
+    (2026-10-28/29; their numbers, as the receipts recorded them): the lowest MemAvailable, the step times, the
+    decode, the memory floor per size and length, and the registry's estimates."""
     # arm: (resolution, seconds, sequence rows, MemAvailable at the start and its lowest, mean step s, decode s,
     #       process wall s, its prompt encode's s: None where the run took a studio clip's own conditioning)
     VALIDATION = {"576p 5 s first frame (1)": ("576p", 5, 22798, 116.85, 34.71, 28.5, 49.3, 189.7, None),
@@ -460,6 +460,10 @@ class StudioModelTests(unittest.TestCase):
                                                                          ("768p", 15): 107})
         self.assertEqual((job_module.min_free_for("768p", 15, 0), job_module.min_free_for("768p", 15, 110),
                           job_module.min_free_for("576p", 5, 90)), (0, 110, 90))
+        # the setting is a minimum: a lower one does not take a clip below what the model says it needs
+        self.assertEqual({(r, s): job_module.min_free_for(r, s, 80) for r, s in (("576p", 5), ("576p", 12),
+                                                                                  ("768p", 5), ("768p", 10))},
+                         {("576p", 5): 90, ("576p", 12): 96, ("768p", 5): 93, ("768p", 10): 100})
         # measured: 768p 10 s came down 92.2 GiB (116.67 -> 24.47): from 100 it would have stayed 7.8 above 0
         use = job_module.USE_GIB[0] + job_module.USE_GIB[1] * job_module.sequence_rows("768p", 10, 2, 1000) / 1000
         self.assertLess(use + job_module.ABORT_BELOW_GIB + job_module.USE_SPREAD_GIB, 100)

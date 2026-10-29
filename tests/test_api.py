@@ -772,6 +772,10 @@ class ModelRecord(ApiTest):
                             ({"model": TURBO, "steps": 4.0}, "steps must be an integer"),
                             ({"model": TURBO, "steps": "4"}, "steps must be an integer"),
                             ({"model": TURBO, "seconds": 9}, "duration must be 5, 6, 7, 8, 10, 12 or 15 seconds"),
+                            ({"model": TURBO, "seconds": 15}, "LightX2V Turbo makes clips of up to 12 s for now"),
+                            ({"model": TURBO, "seconds": 12, "resolution": "768p"},
+                             "LightX2V Turbo does not make clips with task t2va, seconds 12, orientation landscape, "
+                             "resolution 768p, steps 4 together yet"),
                             ({"model": TURBO, "task": "ref2va", "ref_images": [{"name": "r.png", "data": b64(png())}]},
                              "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now"),
                             ({"resolution": "576p"}, "resolution is an option of lightx2v-turbo; sol-h3 takes none"),

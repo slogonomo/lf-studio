@@ -796,18 +796,20 @@ class Models(CliTest):
         self.assertTrue(lines[0].startswith("sol-h3: Sol-H3 (the default), NVIDIA's Sol two-stage pipeline"), lines)
         self.assertIn("  makes t2va, fl2va or ref2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 "
                       "or 15 s, landscape or portrait", lines)
-        for line in ("  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 or 15 s, "
-                     "landscape or portrait, resolution 576p or 768p, steps 4",
+        for line in ("  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10 or 12 s, "
+                     "landscape or portrait, resolution 576p, steps 4",
+                     "  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8 or 10 s, "
+                     "landscape or portrait, resolution 768p, steps 4",
                      "  option resolution: 576p (the default; 1024x576, 9:16 576x1024), 768p (1344x768, 9:16 768x1344)",
                      "  option steps: 4 (the default)",
                      "  not yet: ref2va: LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not "
                      "Reference (ref2va): use Sol-H3",
+                     "  not yet: 15 s: LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not 15 s: use "
+                     "Sol-H3",
                      "  time per clip, resolution 576p, steps 4: 5 s about 3:20, 6 s about 4:10, 7 s about 4:40, 8 s "
-                     "about 5:10, 10 s about 6:40, 12 s about 8:20, 15 s about 11:00 (estimates until one is measured "
-                     "here)",
+                     "about 5:10, 10 s about 6:40, 12 s about 8:20 (estimates until one is measured here)",
                      "  time per clip, resolution 768p, steps 4: 5 s about 5:50, 6 s about 7:50, 7 s about 8:50, 8 s "
-                     "about 10:00, 10 s about 13:40, 12 s about 17:50, 15 s about 24:00 (estimates until one is "
-                     "measured here)"):
+                     "about 10:00, 10 s about 13:40 (estimates until one is measured here)"):
             self.assertIn(line, lines)
         self.assertTrue(any(x.startswith(f"{TURBO}: LightX2V Turbo (experimental), ") for x in lines), lines)
         table = json.loads(self.ok("models", "--json").stdout)
@@ -815,7 +817,7 @@ class Models(CliTest):
         self.assertEqual(table["models"], self.studio.state()["models"])
         jid = json.loads(self.ok("generate", "--prompt", "x", "--model", TURBO, "--wait", "--json").stdout)["id"]
         self.assertRegex(self.ok("models").stdout, r"  time per clip, resolution 576p, steps 4: 5 s about 0:0\d "
-                                                   r"\(measured here\), 6 s about 4:10, .*, 15 s about 11:00 "
+                                                   r"\(measured here\), 6 s about 4:10, .*, 12 s about 8:20 "
                                                    r"\(estimates where not measured here\)\n")
         self.assertRegex(self.ok("status", jid).stdout, rf"^{jid}  done       t2va, landscape, 5 s, seed \d+, {TURBO} "
                                                         r"576p 4 steps  done in 0:0\d\n$")
@@ -859,6 +861,11 @@ class Models(CliTest):
                                                           "clips for now, not Reference (ref2va): use Sol-H3"),
                 (["--model", TURBO, "--resolution", "1080p"], "resolution must be 576p or 768p for lightx2v-turbo"),
                 (["--model", TURBO, "--steps", 8], "steps must be 4 for lightx2v-turbo"),
+                (["--model", TURBO, "--seconds", 15], "LightX2V Turbo makes clips of up to 12 s for now (10 s at "
+                                                      "768p), not 15 s: use Sol-H3"),
+                (["--model", TURBO, "--resolution", "768p", "--seconds", 12],
+                 "LightX2V Turbo does not make clips with task t2va, seconds 12, orientation landscape, resolution "
+                 "768p, steps 4 together yet"),
                 (["--model", TURBO, "--option", "foo=1"], "foo is not an option of lightx2v-turbo; it takes "
                                                           "resolution, steps"),
                 (["--model", TURBO, "--option", "seconds=5"], "--option seconds: seconds is a field of every clip"),
