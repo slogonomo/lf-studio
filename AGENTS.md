@@ -78,15 +78,16 @@ buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off), 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
 `Sol-H3-RTX5090` with a stand-in `runtime/offload.py`; no Docker; the RAM floor; the GPU memory floor driven by a fake
-`nvidia-smi` on PATH) and with a wrong or mismatched value; the server's `backend` in `/api/state` and its page; the
-page's per-backend texts without a browser (its `MACHINES` table, and its `applyMachine` in node when node is
-installed); and every install script's `--dry-run` under both backends, with fake `uname`, `nvidia-smi`, `gcc`,
-`docker` and `sg` on PATH and everything in a temp directory; on the RTX 5090 also the caches under `$LFSTUDIO_HOME`,
-the GCC 14 toolchain kept on `FORCE=1`, the adoption of a venv whose fake `pip freeze` is the reference freeze, and
-the dated prompt-cache backup. Add a test there for every backend change. It also covers `install/65-regen2k.sh` (its
-dry run, and runs with a fake uv: a failed step stops it and leaves the venv unmarked, #74) and
-`install/regen2k_weights.py` (with a stand-in `huggingface_hub` and a fake Hugging Face for the range reads, which
-must never send a token, also through a redirect).
+`nvidia-smi` on PATH) and with a wrong or mismatched value; `SOL_H3_STAGE2_KEYFRAME`'s default per backend in the
+launcher's and the server's start checks (pin on the Spark, refused with an older patch; off on the RTX 5090); the
+server's `backend` in `/api/state` and its page; the page's per-backend texts without a browser (its `MACHINES` table,
+and its `applyMachine` in node when node is installed); and every install script's `--dry-run` under both backends,
+with fake `uname`, `nvidia-smi`, `gcc`, `docker` and `sg` on PATH and everything in a temp directory; on the RTX 5090
+also the caches under `$LFSTUDIO_HOME`, the GCC 14 toolchain kept on `FORCE=1`, the adoption of a venv whose fake `pip
+freeze` is the reference freeze, and the dated prompt-cache backup. Add a test there for every backend change. It also
+covers `install/65-regen2k.sh` (its dry run, and runs with a fake uv: a failed step stops it and leaves the venv
+unmarked, #74) and `install/regen2k_weights.py` (with a stand-in `huggingface_hub` and a fake Hugging Face for the
+range reads, which must never send a token, also through a redirect).
 
 `tests/test_old_names.py` covers the names up to 0.4 that work until 0.6: the old setting names in the environment
 and the settings file (and that the four `OLD_SETTINGS` lists agree), the old places, the shims, the launcher's check

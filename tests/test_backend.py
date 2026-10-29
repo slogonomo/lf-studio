@@ -86,6 +86,13 @@ def spark_package(sana):
     return package
 
 
+def without_keyframe_setting(package):
+    """The package's patch without SOL_H3_STAGE2_KEYFRAME: the Spark's before 0.5.2, the RTX 5090's so far."""
+    with (Path(package) / "runtime" / "config.py").open("a") as f:
+        f.write("\ndel stage2_keyframe_mode   # a patch without the setting\n")
+    return Path(package)
+
+
 def mem_available_gib():
     for line in Path("/proc/meminfo").read_text().splitlines():
         if line.startswith("MemAvailable:"):
@@ -243,9 +250,9 @@ class LauncherRtx5090(LauncherTest):
 
     def test_stage2_keyframe_is_spark_only(self):
         """SOL_H3_STAGE2_KEYFRAME (#57) is in the Spark patch only so far: with an RTX 5090 patch without it, the
-        default (off) passes, and pin or draft are refused as DGX Spark only, not sent to install/10-sana.sh."""
-        with (self.package / "runtime" / "config.py").open("a") as f:
-            f.write("\ndel stage2_keyframe_mode   # the RTX 5090 patch has no such setting yet\n")
+        default (off on the RTX 5090; pin on the Spark) passes, and pin or draft are refused as DGX Spark only, not
+        sent to install/10-sana.sh."""
+        without_keyframe_setting(self.package)
         settings = dict(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="30000")
         self.assertEqual(self.check(**settings)[0], 0)
         self.assertEqual(self.check(SOL_H3_STAGE2_KEYFRAME="off", **settings)[0], 0)
@@ -398,11 +405,11 @@ class ServerBackend(unittest.TestCase):
 
     def test_stage2_keyframe_is_spark_only(self):
         """SOL_H3_STAGE2_KEYFRAME (#57): a package without the setting, as the RTX 5090 patch is so far, starts with the
-        default; pin stops the server, on the RTX 5090 as DGX Spark only, on the Spark as an older patch."""
+        RTX 5090's default (off); pin stops the server, on the RTX 5090 as DGX Spark only, on the Spark as an older
+        patch."""
         package = self.d / "package"
         shutil.copytree(STUB / "runtime", package / "runtime", ignore=shutil.ignore_patterns("__pycache__"))
-        with (package / "runtime" / "config.py").open("a") as f:
-            f.write("\ndel stage2_keyframe_mode   # a patch without the setting\n")
+        without_keyframe_setting(package)
         s = self.studio("rtx-off", LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0")
         s.package = package
         s.start()
@@ -432,6 +439,110 @@ class ServerBackend(unittest.TestCase):
 
 
 PAGE = (REPO / "webui" / "index.html").read_text()
+
+
+class Stage2KeyframeDefault(LauncherTest):
+    """SOL_H3_STAGE2_KEYFRAME's default (#57) is per backend: pin on the DGX Spark, off on the RTX 5090, whose patch
+    does not have the setting yet. In bin/lf-studio --check and in the server's start check alike: on the Spark the
+    default passes with the current patch; with an older one (no stage2_keyframe_mode) it is refused as needing
+    install/10-sana.sh, naming off as the other way, and off set explicitly starts. On the RTX 5090 the default
+    starts, and pin or draft is refused as DGX Spark only."""
+
+    def setUp(self):
+        super().setUp()
+        self.spark_new = spark_package(self.sana)
+        old = self.d / "sana-old" / "models" / "minimax_h3" / "Sol-H3-Spark"     # a copy: the stub stays as it is
+        shutil.copytree(STUB / "runtime", old / "runtime", ignore=shutil.ignore_patterns("__pycache__"))
+        self.spark_old = without_keyframe_setting(old)
+        self.rtx = without_keyframe_setting(rtx_package(self.d / "sana-rtx"))
+
+    def default_refusal(self, package):
+        return (f"SOL_H3_STAGE2_KEYFRAME=pin (the default since 0.5.2) needs a newer patch than the one applied in "
+                f"{package.resolve()}; run install/10-sana.sh (or set SOL_H3_STAGE2_KEYFRAME=off)")
+
+    def test_the_stubs_default_is_the_patchs(self):
+        """The stub runtime, which stands in for the current patch here, resolves unset and empty to pin."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("stub_config", STUB / "runtime" / "config.py")
+        config = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(config)
+        for value, mode in ((None, "pin"), ("", "pin"), (" ", "pin"), ("OFF", "off"), ("draft", "draft")):
+            with mock.patch.dict(os.environ):
+                os.environ.pop("SOL_H3_STAGE2_KEYFRAME", None)
+                if value is not None:
+                    os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
+                self.assertEqual(config.stage2_keyframe_mode(), mode, value)
+
+    def test_launcher_check(self):
+        spark = dict(LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0")
+        old = dict(spark, LFSTUDIO_SANA=str(self.d / "sana-old"))
+        rtx = dict(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_SANA=str(self.d / "sana-rtx"), LFSTUDIO_MIN_FREE_GIB="0",
+                   FAKE_VRAM_FREE_MIB="30000")
+        for value in (None, "", " "):                    # the Spark, the current patch: pin, the default, passes
+            code, out = self.check(**spark, **({} if value is None else {"SOL_H3_STAGE2_KEYFRAME": value}))
+            self.assertEqual(code, 0, out)
+        for value in (None, ""):                         # an older patch: the default needs install/10-sana.sh
+            code, out = self.check(**old, **({} if value is None else {"SOL_H3_STAGE2_KEYFRAME": value}))
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - {self.default_refusal(self.spark_old)}", out)
+            self.assertNotIn("(see bin/env.example)", out)                  # exit 4, not a bad value's exit 3
+        for value in ("off", " Off "):                   # ... and off, asked for, starts
+            code, out = self.check(**old, SOL_H3_STAGE2_KEYFRAME=value)
+            self.assertEqual(code, 0, out)
+        code, out = self.check(**old, SOL_H3_STAGE2_KEYFRAME="pin")         # pin asked for: no other way named
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - SOL_H3_STAGE2_KEYFRAME=pin needs a newer patch than the one applied in "
+                      f"{self.spark_old.resolve()}; run install/10-sana.sh", out)
+        self.assertNotIn("(or set", out)
+        for value in (None, "", "off"):                  # the RTX 5090: off, the default there, starts
+            code, out = self.check(**rtx, **({} if value is None else {"SOL_H3_STAGE2_KEYFRAME": value}))
+            self.assertEqual(code, 0, out)
+        for value in ("pin", "Draft"):
+            code, out = self.check(**rtx, SOL_H3_STAGE2_KEYFRAME=value)
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - SOL_H3_STAGE2_KEYFRAME={value}: the RTX 5090 patch does not have this setting "
+                          "yet (DGX Spark only) (see bin/env.example)", out)
+            self.assertNotIn("install/10-sana.sh", out)
+
+    def studio(self, name, package, **env):
+        s = StubStudio(self.d / name, load_s=1, clip_s=1, preload=False, package=package)
+        for setting in ("LFSTUDIO_BACKEND", "SOL_H3_STAGE2_KEYFRAME"):
+            s.env.pop(setting, None)
+        s.env.update(env)
+        return s
+
+    def starts(self, name, package, **env):
+        s = self.studio(name, package, **env).start()
+        try:
+            return s.state()["backend"]
+        finally:
+            s.stop()
+
+    def refused(self, name, package, **env):
+        with self.assertRaises(RuntimeError) as e:
+            self.studio(name, package, **env).start()
+        return str(e.exception)
+
+    def test_server_start(self):
+        self.assertEqual(self.starts("spark-new", self.spark_new), "spark")              # pin, the default
+        self.assertEqual(self.starts("spark-new-empty", self.spark_new, SOL_H3_STAGE2_KEYFRAME=""), "spark")
+        message = self.refused("spark-old", self.spark_old)
+        self.assertIn(self.default_refusal(self.spark_old), message)
+        self.assertIn(self.default_refusal(self.spark_old),
+                      self.refused("spark-old-empty", self.spark_old, SOL_H3_STAGE2_KEYFRAME=" "))
+        self.assertEqual(self.starts("spark-old-off", self.spark_old, SOL_H3_STAGE2_KEYFRAME="off"), "spark")
+        message = self.refused("spark-old-pin", self.spark_old, SOL_H3_STAGE2_KEYFRAME="pin")
+        self.assertIn("SOL_H3_STAGE2_KEYFRAME=pin needs a newer patch than the one applied in "
+                      f"{self.spark_old.resolve()}; run install/10-sana.sh", message)
+        self.assertNotIn("(or set", message)
+        rtx = dict(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0")
+        self.assertEqual(self.starts("rtx-unset", self.rtx, **rtx), "rtx5090")           # off, the default there
+        self.assertEqual(self.starts("rtx-empty", self.rtx, SOL_H3_STAGE2_KEYFRAME="", **rtx), "rtx5090")
+        for value in ("pin", "draft"):
+            message = self.refused(f"rtx-{value}", self.rtx, SOL_H3_STAGE2_KEYFRAME=value, **rtx)
+            self.assertIn(f"SOL_H3_STAGE2_KEYFRAME={value}: the RTX 5090 patch does not have this setting yet "
+                          "(DGX Spark only", message)
+            self.assertNotIn("install/10-sana.sh", message)
 
 
 def machines():
