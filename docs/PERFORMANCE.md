@@ -363,7 +363,9 @@ runs above did (128-133 s).
   `device_map` straight to the GPU, as the fast load does) took about 67 min after its load; its attention at 302,534
   rows gave the right result on GB10 (checked against fp32). 9:16 at 4K has not run.
 - The studio needs ~110 GiB free to start an upscale (`LFSTUDIO_UPSCALE_MIN_FREE_GIB`, 117.7 GiB were free on the idle
-  box), and kills it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`).
+  box), and kills it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`). The job's 16:9 runs above took ~101 GiB at 2K
+  (MemAvailable 116.7 → 15.7 GiB) and ~105 GiB at 4K (116.4 → 11.1 GiB): a 4K upscale that starts with just 110 GiB
+  free would come down to ~4.7 GiB, below the guard, so 4K wants ~111 GiB or more free.
 - Quality, so far: at NVIDIA's settings (start noise 0.909, 3 steps: `full`) the result is much sharper but has a
   different-looking face. Lower start noise (0.7 and 0.5 with 2 steps) and refining
   against the clip's own audio instead of NVIDIA's silence are being measured; the defaults (`balanced`, `clip`)

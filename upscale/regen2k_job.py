@@ -171,10 +171,12 @@ DIRECT_LOAD = ("MiniMaxH3Transformer3DModel", "AutoencoderKLMiniMaxH3", "Autoenc
 STRENGTHS = {"faithful": (0.5, 2), "balanced": (0.7, 2), "full": (None, 3)}
 DEFAULT_STRENGTH = "balanced"
 DEFAULT_AUDIO = "clip"
-# The studio's memory floor before a job starts, and its guard while one runs (GiB of MemAvailable). Measured at 2K:
-# MemAvailable 117.7 GiB on the idle box, lowest 15 GiB during the job, so the job takes ~103 GiB; 110 (the launcher's
-# own floor for the studio) keeps the guard's 5 GiB clear. At 4K (the bench run with the lean blocks) the lowest was
-# 13.8 GiB of 117.3, so ~104 GiB.
+# The studio's memory floor before a job starts, and its guard while one runs (GiB of MemAvailable). Measured in this
+# job's runs (fast load, a 16:9 clip; MemAvailable at its start -> its lowest): 116.7 -> 15.7 GiB at 2K, so ~101 GiB
+# used, and 116.4 -> 11.1 GiB at 4K (the lean blocks), so ~105 GiB (the bench's 4K run: 13.8 GiB of 117.3, ~104).
+# 110 (the launcher's own floor for the studio; 117.7 GiB on the idle box) keeps the guard's 5 GiB clear at 2K, not
+# at 4K: a 4K job that starts with just 110 GiB free would come down to ~4.7 GiB, below the guard, which stops it if
+# that lasts 3 s. 4K wants ~111 GiB or more free.
 MIN_FREE_GIB = 110
 GUARD_GIB = 5
 

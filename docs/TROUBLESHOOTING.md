@@ -293,14 +293,15 @@ release needs ~100 GiB of GPU memory.
 
 **`not enough free memory for an upscale: N GiB available with the models closed, 110 GiB needed`.** The studio
 closed its own models, and something else still holds the memory (another app, a container). Close it and try again;
-`LFSTUDIO_UPSCALE_MIN_FREE_GIB` changes the floor (measured at 2K: ~103 GiB used by the job).
+`LFSTUDIO_UPSCALE_MIN_FREE_GIB` changes the floor (measured in the job: ~101 GiB used at 2K, ~105 GiB at 4K).
 
 **`stopped: MemAvailable was below 5 GiB for 3 s`.** The Upscale's own memory guard killed the job (SIGKILL, so its
 `receipt.json` still says `running`) before the machine ran out (on GB10's unified memory that can hang the box), and
-before the launcher's guard would have stopped the whole studio. Usually another app grew meanwhile; at 4K it can be
-the job itself (in its one 4K run so far, a 16:9 clip, MemAvailable came down to 11.1 GiB;
-[PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
-`worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
+before the launcher's guard would have stopped the whole studio. Usually another app grew meanwhile; at 4K it can be the
+job itself (in its one 4K run so far, a 16:9 clip, MemAvailable came down from 116.4 to 11.1 GiB, so ~105 GiB used: a 4K
+upscale that starts with just the floor's 110 GiB free comes down below 5 GiB;
+[PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). At 4K, ~111 GiB or more free at the start
+avoids it. `worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
 
 **It sits at "Upscaling · loading its models" for minutes.** With the fast load (`LFSTUDIO_UPSCALE_LOAD=fast`, the
 default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (21.5-21.9 s in the studio's job, its
