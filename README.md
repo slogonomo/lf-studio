@@ -127,7 +127,8 @@ top of the prompt card, and agents and scripts name the model (`lf-cli generate 
   loads them again. A 768p clip of 12 s or more needs more free memory to start (103 GiB at 12 s, 107 at 15 s,
   against 100). 6, 7 and 8 s, 12 s at 576p, and Keyframes clips longer than 14 s at 576p or 10 s at 768p (only Text
   ran at those lengths) have not run on the GPU: their times and memory floors are estimates from the runs above.
-- **Not yet:** upscaling its clips, keeping its model loaded between clips, and Reference.
+- **Not yet:** upscaling its clips longer than 5 s (its 5 s clips can be upscaled), keeping its model loaded
+  between clips, and Reference.
 
 With the setting off the studio is as it was. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-lightx2v-turbo); the API:
@@ -148,11 +149,13 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   (their cards show the button disabled, with the reason). The job refines against text alone: a Keyframes or
   Reference clip's prompt is encoded first without its pictures (its keyframe line, or its references, taken out;
   ~15 s more). A LightX2V Turbo clip at 576p is stretched to 768p first, and one with a last keyframe (124 frames)
-  gives its first 121. Only the Text clips' and LightX2V Turbo 576p Keyframes clips' route has run on the GPU so far
-  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). NVIDIA's code is written
-  for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA file changed). It has as many
-  tokens as 16:9, and in the one clean run so far (1080p) it took the same time as a 16:9 clip. 2K has run too;
-  **9:16 has not run at 4K yet**, and NVIDIA trained its refiner on 16:9 video.
+  gives its first 121. Only the Text clips' route has run on the GPU through the studio so far, and LightX2V Turbo
+  576p Keyframes clips' in research runs
+  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)); the popover says so for
+  the others, whose times are a Text clip's. NVIDIA's code is written for 16:9: the studio takes a 9:16 clip through
+  it with the shapes turned (no NVIDIA file changed). It has as many tokens as 16:9, and in the one clean run so far
+  (1080p) it took the same time as a 16:9 clip. 2K has run too; **9:16 has not run at 4K yet**, and NVIDIA trained its
+  refiner on 16:9 video.
 - **It is slow.** On one DGX Spark a 2-step upscale takes about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K
   (26 min at 2K with 3 steps): ~2 min reading the clip, the refine (2.5 min per step at 1080p, 6.3 min at 2K, 28 min at
   4K: there most of the time), the decode (2-3 min, 6.6 min at 4K) and the load. The models load in ~22 s with LF

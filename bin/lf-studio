@@ -416,8 +416,9 @@ if problems:
 if not os.access(settings["python"], os.X_OK):
     print("no Python at LFSTUDIO_UPSCALE_PYTHON=%s (the Open-H3-Regenerate-2K environment)" % settings["python"])
     sys.exit(4)
-if not os.path.isfile(os.path.expanduser(sys.argv[2])):
-    print("no prompt encode at %s (it encodes the text of Keyframes and Reference clips)" % os.path.expanduser(sys.argv[2]))
+encode = os.path.expanduser(sys.argv[2])
+if not os.path.isfile(encode):
+    print("no prompt encode at %s (it encodes the text of Keyframes and Reference clips)" % encode)
     sys.exit(4)
 try:
     job.check_weights({k: settings[k] for k in ("package", "weights", "base_model", "load")} | {"output": Path("/")})
