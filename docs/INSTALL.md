@@ -404,6 +404,21 @@ On the RTX 5090 the same: `install/10-sana.sh` (with `LFSTUDIO_BACKEND=rtx5090` 
 version of `patches/lf-studio-rtx5090.patch`, reverses it, moves to a new `patches/BASE_COMMIT_RTX5090` if that
 changed, and applies the new one. A new patch file is all an update of the 5090 patch needs.
 
+### After 0.5.2
+
+Nothing needs to change for a working install. The patch is the same, so `install/10-sana.sh` has nothing to do, and
+so are the Upscale's environment and weights. What is new is off unless you turn it on:
+
+- **The Upscale** (`LFSTUDIO_UPSCALE=1`) now takes every finished 5 s clip: Keyframes and Reference clips too, and
+  LightX2V Turbo's. A Keyframes or Reference clip's prompt is encoded first without its pictures, which needs the t2va
+  path manifest (`paths-t2va.json` from `install/70-manifests.sh`; the default `LFSTUDIO_TASKS` has t2va).
+  `bin/lf-studio --check` also checks that the prompt encode, `bench/h3turbo_encode.py` in this repo, is there.
+- **LightX2V Turbo**, a second model, on the DGX Spark only: run `install/66-h3turbo.sh` and set
+  `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo` ([below](#experimental-lightx2v-turbo)). Without the setting the studio is as
+  it was.
+- A copy of 0.5.2's `bin/lf-cli` on another machine has no `--model` and no `models` command. Copy the new one to make
+  LightX2V Turbo clips from there.
+
 ### After 0.5.1
 
 The patch changed on both backends, so run `install/10-sana.sh` after the pull. Until then the studio refuses to start
