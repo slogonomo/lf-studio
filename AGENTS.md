@@ -78,8 +78,8 @@ buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off), 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
 `Sol-H3-RTX5090` with a stand-in `runtime/offload.py`; no Docker; the RAM floor; the GPU memory floor driven by a fake
-`nvidia-smi` on PATH) and with a wrong or mismatched value; `SOL_H3_STAGE2_KEYFRAME`'s default per backend in the
-launcher's and the server's start checks (pin on the Spark, refused with an older patch; off on the RTX 5090); the
+`nvidia-smi` on PATH) and with a wrong or mismatched value; `SOL_H3_STAGE2_KEYFRAME`'s default on both backends in
+the launcher's and the server's start checks (pin, refused with an older patch; off set explicitly starts); the
 server's `backend` in `/api/state` and its page; the page's per-backend texts without a browser (its `MACHINES` table,
 and its `applyMachine` in node when node is installed); and every install script's `--dry-run` under both backends,
 with fake `uname`, `nvidia-smi`, `gcc`, `docker` and `sg` on PATH and everything in a temp directory; on the RTX 5090
@@ -113,7 +113,7 @@ tests (the merger, the lean block forward against a stock-style block, the tenso
 torch is importable (CPU is enough) and are skipped otherwise.
 
 The patch has its own 156 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
-The RTX 5090 patch has 201 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).
+The RTX 5090 patch has 223 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A second
 studio next to an installed one needs its own env file (`LFSTUDIO_ENV=<file> bin/lf-studio`) with its own

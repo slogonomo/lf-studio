@@ -132,16 +132,14 @@ with one warning. The default state directory is ~/.local/state/sol-h3-studio wh
 
 SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0),
 SOL_H3_DYNAMIC_TEXT_LENGTH (1 or 0; 1, the default since 0.4, compiles Stage 1's body blocks once per session for any
-prompt length, 0 once per prompt length) and SOL_H3_STAGE2_KEYFRAME (pin, off or draft; pin, the default on the DGX
-Spark since 0.5.2, holds a Keyframes clip's uploaded first frame in Stage 2, #57; off, as before, lets Stage 2 repaint
+prompt length, 0 once per prompt length) and SOL_H3_STAGE2_KEYFRAME (pin, off or draft; pin, the default since 0.5.2
+on both backends, holds a Keyframes clip's uploaded first frame in Stage 2, #57; off, as before, lets Stage 2 repaint
 it) are patch settings (see docs/PATCH.md), checked at start: another value stops the server with a message, here and
 not in every Stage-1 load. So does a value, set or the default, that the applied patch is too old to give. 0.3's
 patch has none of SOL_H3_PROMPT_TOKENS, SOL_H3_STATIC_SHAPES and SOL_H3_DYNAMIC_TEXT_LENGTH: it tokenizes as plain and
 compiles as SOL_H3_STATIC_SHAPES=0 and SOL_H3_DYNAMIC_TEXT_LENGTH=0 do, so the defaults stop the server until
-install/10-sana.sh has applied the current patch. Patches before 0.5.2 never pin, so on the DGX Spark the default
-stops the server too, until install/10-sana.sh (or SOL_H3_STAGE2_KEYFRAME=off). SOL_H3_STAGE2_KEYFRAME is DGX Spark
-only so far: with LFSTUDIO_BACKEND=rtx5090 its default is off, and pin and draft stop the server (the RTX 5090 patch
-does not have the setting yet).
+install/10-sana.sh has applied the current patch. Patches before 0.5.2 (DGX Spark or RTX 5090) never pin, so the
+default stops the server too, until install/10-sana.sh (or SOL_H3_STAGE2_KEYFRAME=off).
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
@@ -226,25 +224,18 @@ except ImportError as error:
 
 # the patch's settings: (name, its check in runtime/config.py, default, what a patch without the setting does, the
 # version that added it). A bad value stops the studio here, not every clip. An older patch lacks some of them and
-# would ignore them: any other value, set or the default, stops the studio too. SPARK_ONLY: settings the RTX 5090
-# patch does not have yet, so no install/10-sana.sh brings them there. SOL_H3_STAGE2_KEYFRAME is pin by default on the
-# DGX Spark (#57) and off on the RTX 5090, as that patch does, so only pin or draft stops a studio there. With an
-# older Spark patch the default stops the studio like the 0.4 ones, and the message names off, the way to start
-# without the pin.
-SPARK_ONLY_SETTINGS = ("SOL_H3_STAGE2_KEYFRAME",)
-KEYFRAME_DEFAULT = "off" if BACKEND == "rtx5090" else "pin"
+# would ignore them: any other value, set or the default, stops the studio too. SOL_H3_STAGE2_KEYFRAME is pin by
+# default on both backends (#57); with an older patch the default stops the studio like the 0.4 ones, and the message
+# names off, the way to start without the pin.
 import runtime.config  # noqa: E402
 for setting, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
                                              ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4"),
                                              ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4"),
                                              ("SOL_H3_DYNAMIC_TEXT_LENGTH", "dynamic_text_length", "1", "0", "0.4"),
-                                             ("SOL_H3_STAGE2_KEYFRAME", "stage2_keyframe_mode", KEYFRAME_DEFAULT, "off",
-                                              "0.5.2")):
+                                             ("SOL_H3_STAGE2_KEYFRAME", "stage2_keyframe_mode", "pin", "off", "0.5.2")):
     setting_check, value = getattr(runtime.config, name, None), os.environ.get(setting, "")
     if setting_check is None and (value.strip().lower() or default) != older:
         asked = f"{setting}={value}" if value.strip() else f"{setting}={default} (the default since {since})"
-        if BACKEND == "rtx5090" and setting in SPARK_ONLY_SETTINGS:
-            fail(f"{asked}: the RTX 5090 patch does not have this setting yet (DGX Spark only; see bin/env.example)")
         opt_out = f" (or set {setting}=off)" if setting == "SOL_H3_STAGE2_KEYFRAME" and not value.strip() else ""
         fail(f"{asked} needs a newer patch than the one applied in {PKG}; run install/10-sana.sh{opt_out}")
     try:

@@ -318,28 +318,21 @@ run_checks() {
     fi
     # the patch's own settings checks: (name, check, default, what a patch without the setting does, the version
     # that added it). A bad value exits 3 with the message. An older patch lacks some of them (0.3's has no
-    # SOL_H3_PROMPT_TOKENS, SOL_H3_STATIC_SHAPES or SOL_H3_DYNAMIC_TEXT_LENGTH, 0.5.1's no SOL_H3_STAGE2_KEYFRAME): any
-    # value but what it does, set or the default, exits 4 (the checkout needs the current patch; for the keyframe
-    # pin's default the message also names off, which such a patch does). SOL_H3_STAGE2_KEYFRAME is pin by default on
-    # the DGX Spark and off on the RTX 5090, whose patch does not have the setting yet: there only pin or draft is
-    # refused, with exit 3. Then the patch's check_settings() (the RTX 5090 patch's: its folders, switches and
-    # numbers), whose problems exit 3 too. Any other error exits non-zero with Python's traceback, whose last line
-    # names it
+    # SOL_H3_PROMPT_TOKENS, SOL_H3_STATIC_SHAPES or SOL_H3_DYNAMIC_TEXT_LENGTH, 0.5.1's no SOL_H3_STAGE2_KEYFRAME, on
+    # either backend): any value but what it does, set or the default, exits 4 (the checkout needs the current patch;
+    # for the keyframe pin's default the message also names off, which such a patch does). Then the patch's
+    # check_settings() (the RTX 5090 patch's: its folders, switches and numbers), whose problems exit 3 too. Any other
+    # error exits non-zero with Python's traceback, whose last line names it
     f=$(cd "$PKG" && "$LFSTUDIO_PYTHON" -B -c 'import os, sys
 import runtime.config as config
-rtx5090 = os.environ.get("LFSTUDIO_BACKEND") == "rtx5090"
-keyframe = "off" if rtx5090 else "pin"
 for var, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
                                          ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4"),
                                          ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4"),
                                          ("SOL_H3_DYNAMIC_TEXT_LENGTH", "dynamic_text_length", "1", "0", "0.4"),
-                                         ("SOL_H3_STAGE2_KEYFRAME", "stage2_keyframe_mode", keyframe, "off", "0.5.2")):
+                                         ("SOL_H3_STAGE2_KEYFRAME", "stage2_keyframe_mode", "pin", "off", "0.5.2")):
     check, value = getattr(config, name, None), os.environ.get(var, "")
     if check is None and (value.strip().lower() or default) != older:
         asked = f"{var}={value}" if value.strip() else f"{var}={default} (the default since {since})"
-        if var == "SOL_H3_STAGE2_KEYFRAME" and rtx5090:
-            print(f"{asked}: the RTX 5090 patch does not have this setting yet (DGX Spark only)")
-            sys.exit(3)
         opt_out = f" (or set {var}=off)" if var == "SOL_H3_STAGE2_KEYFRAME" and not value.strip() else ""
         print(f"{asked} needs a newer patch than the one applied in {os.getcwd()}; run install/10-sana.sh{opt_out}")
         sys.exit(4)

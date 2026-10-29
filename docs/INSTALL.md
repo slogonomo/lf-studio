@@ -238,7 +238,7 @@ here):
 |---|---|---|
 | `install/00-check.sh` | Checks x86_64, the RTX 5090, driver 580 or newer, git, curl, tar, sha256sum, ffmpeg, gcc, disk, HF access. | - |
 | `install/05-python.sh` | uv 0.13.4 (the release binary, SHA-256 pinned) into `~/sol-h3/bin`, CPython 3.12.15 and 3.13.16 into `~/sol-h3/python`. | under 1 min, ~270 MB (~230 MB of it the Pythons) |
-| `install/10-sana.sh` | Sana at `patches/BASE_COMMIT_RTX5090` (`801f040`), `patches/lf-studio-rtx5090.patch`, its 201 CPU tests. | - |
+| `install/10-sana.sh` | Sana at `patches/BASE_COMMIT_RTX5090` (`801f040`), `patches/lf-studio-rtx5090.patch`, its 223 CPU tests. | - |
 | `install/20-weights.sh` | The same weights and revisions as the Spark's, without the offline weights (the prompt cache comes from a Spark). | - (or a copy, below) |
 | `install/30-sources.sh` | The same pinned sources (FastVideo, flash-attention, ComfyUI v0.30.0, LTX-2, H3 upscaler). | ~1 min |
 | `install/40-stage1.sh` | Stage1 venv with Python 3.12.15: torch 2.12+cu130, FastVideo, ComfyUI's requirements, comfy-kitchen (the native Qwen encoder), no fastvideo-kernel; the FA4 target. | ~25 min, most of it downloads at ~9 MB/s; ~7.7 GB |
@@ -340,14 +340,16 @@ changed, and applies the new one. A new patch file is all an update of the 5090 
 
 ### After 0.5.1
 
-On the DGX Spark the patch changed, so run `install/10-sana.sh` after the pull. Until then the studio refuses to start
+The patch changed on both backends, so run `install/10-sana.sh` after the pull. Until then the studio refuses to start
 with "SOL_H3_STAGE2_KEYFRAME=pin (the default since 0.5.2) needs a newer patch than the one applied in ...; run
 install/10-sana.sh (or set SOL_H3_STAGE2_KEYFRAME=off)": the old patch never pins. With the new patch, Stage 2 holds a
 Keyframes clip's first frame (the keyframe pin, [PATCH.md](PATCH.md#19-stage-2-keyframe-pin)), so frame 0 matches your
 image much more closely. A Keyframes clip with a first frame made with 0.5.1 or earlier therefore doesn't come back from
 its seed unless you set `SOL_H3_STAGE2_KEYFRAME=off`. Text and Reference clips, and Keyframes clips with only a last
-frame, come out as before. A Keyframes session keeps the LTX-2.5 VAE's encoder loaded (608 MiB); the 110 GiB start floor
-stays. Nothing changes on the RTX 5090: its patch doesn't have the pin yet, and its default is `off`.
+frame, come out as before. A Keyframes session keeps the LTX-2.5 VAE's encoder loaded (608 MiB); the DGX Spark's
+110 GiB start floor stays. On the RTX 5090 the encoder waits in RAM (608 MiB) and is on the GPU only for its one encode
+per clip; the start floors stay (42 GiB of RAM, 25 GiB of GPU memory), and the Stage-1 snapshots and the fused LTX block
+file are not rebuilt (the code they are identified by is unchanged).
 
 ### After 0.5.0
 
