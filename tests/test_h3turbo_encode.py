@@ -311,6 +311,23 @@ class PlanTests(Fixture):
         with self.assertRaisesRegex(helper.Refused, "qwen exists: use a new --case"):
             self.plan()
 
+    def test_the_prompt_of_an_earlier_clip(self):
+        earlier = self.runtime / "outputs" / "webui" / "earlier" / "web_000000_abcdef"
+        (earlier / "qwen").mkdir(parents=True)
+        prompt = guide_examples()["fl2va, first and last frame, 8 s"] + "\r\n"
+        (earlier / "qwen" / "conditioning.json").write_text(json.dumps({"prompt": prompt, "task": "fl2va"}))
+        args = [a for a in self.args() if a not in ("--prompt-file", str(self.prompt))]
+        plan = helper.make_plan(helper.parse_args(args + ["--prompt-from-case", str(earlier)]), self.env,
+                                helper.load_job_module())
+        self.assertEqual(plan["prompt"], prompt)
+        (earlier / "qwen" / "conditioning.json").write_text(json.dumps({"task": "fl2va"}))
+        with self.assertRaisesRegex(helper.Refused, "has no prompt"):
+            helper.make_plan(helper.parse_args(args + ["--prompt-from-case", str(earlier)]), self.env,
+                             helper.load_job_module())
+        with self.assertRaisesRegex(helper.Refused, "cannot read the prompt of --prompt-from-case"):
+            helper.make_plan(helper.parse_args(args + ["--prompt-from-case", str(self.tmp)]), self.env,
+                             helper.load_job_module())
+
     def test_the_default_manifest_follows_lfstudio_home(self):
         home = self.tmp / "home"
         home.mkdir()

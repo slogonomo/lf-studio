@@ -4,8 +4,12 @@ an H3 Turbo clip (its encode_prompt), for jobs/h3turbo_job.py to read. GPU: a tr
 lives); run it with the studio and other GPU apps stopped. bench/h3turbo-encode.sh runs it with the studio's settings
 and the Stage-1 Python, in the patched package, as bin/lf-studio runs the server:
 
-    bench/h3turbo-encode.sh --case DIR --prompt-file FILE --orientation portrait [--first IMG] [--last IMG]
-        [--resolution 576p|768p] [--canvas draft|canvas] [--seed N] [--case-id ID] [--no-text-only] [--check]
+    bench/h3turbo-encode.sh --case DIR --prompt-file FILE|--prompt-from-case DIR --orientation portrait
+        [--first IMG] [--last IMG] [--resolution 576p|768p] [--canvas draft|canvas] [--seed N] [--case-id ID]
+        [--no-text-only] [--check]
+
+--prompt-from-case takes an earlier clip's prompt as it was encoded (its qwen/conditioning.json), e.g. to encode it
+again at the clip's canvas.
 
 How: the patch's own runtime.pipeline.Worker("qwen", <case>/qwen-worker, paths, config), started the way
 Pipeline.start() starts its transient Qwen (the NVFP4 encoder in Docker through qwen_python.sh, JSON lines through
@@ -145,6 +149,8 @@ def parse_args(argv):
     text = parser.add_mutually_exclusive_group(required=True)
     text.add_argument("--prompt-file", type=Path, help="the prompt, as the studio would send it (UTF-8)")
     text.add_argument("--prompt", help="the prompt itself")
+    text.add_argument("--prompt-from-case", type=Path, metavar="CASE_DIR",
+                      help="an earlier clip's prompt, exactly as it was encoded: CASE_DIR/qwen/conditioning.json")
     parser.add_argument("--orientation", required=True, choices=("landscape", "portrait"))
     parser.add_argument("--first", type=Path, help="the first frame (fl2va)")
     parser.add_argument("--last", type=Path, help="the last frame (fl2va)")
@@ -187,6 +193,14 @@ def make_plan(args, environ, job):
             prompt = args.prompt_file.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
             raise Refused(f"cannot read --prompt-file {args.prompt_file}: {error}") from None
+    elif args.prompt_from_case is not None:
+        receipt = args.prompt_from_case / "qwen" / "conditioning.json"
+        try:
+            prompt = json.loads(receipt.read_text(encoding="utf-8")).get("prompt")
+        except (OSError, ValueError, AttributeError) as error:
+            raise Refused(f"cannot read the prompt of --prompt-from-case: {receipt}: {error}") from None
+        if not isinstance(prompt, str):
+            raise Refused(f"{receipt} has no prompt")
     else:
         prompt = args.prompt
     if not prompt or not prompt.strip():

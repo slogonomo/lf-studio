@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# h3turbo-encode.sh --case DIR --prompt-file FILE --orientation O [--first IMG] [--last IMG] [--resolution R]
-#                   [--canvas draft|canvas] [--seed N] [--case-id ID] [--no-text-only] [--check]
+# h3turbo-encode.sh --case DIR --prompt-file FILE|--prompt-from-case DIR --orientation O [--first IMG] [--last IMG]
+#                   [--resolution R] [--canvas draft|canvas] [--seed N] [--case-id ID] [--no-text-only] [--check]
 # H3 Turbo (experimental), Phase 0: a clip's prompt conditioning from a transient Qwen worker, as the studio's server
 # will make it for jobs/h3turbo_job.py (bench/h3turbo_encode.py's docstring says what and where). GPU: ~15 GiB while
 # the worker lives; stop the studio and other GPU apps first (--check starts nothing). Settings: the same env file as
