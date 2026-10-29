@@ -742,15 +742,15 @@ class UpscaleTimes(unittest.TestCase):
         _, eta, standard = self.page_model()
         shortest = min(eta(res, 2) for res in ("1080p", "2k", "4k"))                    # faithful or balanced
         longest = max(eta(res, 3) for res in ("1080p", "2k", "4k"))                     # full
-        self.assertEqual((round(shortest / 60), round(longest / 3600, 1), round(standard / 60)), (10, 1.6, 7))
+        self.assertEqual((round(shortest / 60), round(longest / 3600, 1), round(standard / 60)), (10, 1.6, 8))
         cli = load_cli()
         api = " ".join((REPO / "docs" / "API.md").read_text().split())
         usage = " ".join(cli.__doc__.split())
         self.assertIn("about 10 min to 1.6 h in all, 4K over an hour, with a ~22 s load", usage)
-        self.assertIn("~7 min more with LFSTUDIO_UPSCALE_LOAD=standard", usage)
+        self.assertIn("~8 min more with LFSTUDIO_UPSCALE_LOAD=standard", usage)
         self.assertIn("which takes about 10 min to 1.6 h or more", cli.INSTRUCTIONS)
         self.assertIn("An upscale takes about 10 min to 1.6 h in all", api)
-        self.assertIn("~7 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`", api)
+        self.assertIn("~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`", api)
         self.assertIn("An upscale takes about 10 min to 1.6 h, far longer than any `wait_s`", api)
         tool = next(t for t in cli.TOOLS if t["name"] == "upscale")["description"]
         self.assertIn("about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps", tool)

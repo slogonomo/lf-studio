@@ -308,7 +308,7 @@ job too; 2K, `balanced`, audio `clip`):
 | Refine, per step | 379 s, 380 s |
 | VAE decode | 181 s |
 | MP4 (x264) | 17 s |
-| **From the job's start to the MP4** | **1620.7 s (27 min)** |
+| **From the job's start to the MP4** | **1620.8 s (27 min)** |
 
 Peak GPU memory allocated 91.08 GiB (in the refine), 4.91 GiB before the decode (the DiT freed); lowest MemAvailable
 18.32 GiB (in the refine; 34.13 GiB during the load). Against the fast load's 2K run: 433 s more for the load, 56 s
@@ -346,10 +346,11 @@ runs above did (128-133 s).
   ~40 s for closing the studio's models, which a studio usually has loaded: `base` (everything but the refine) plus
   `step` per refine step, 315 s + 150 s at 1080p, 405 s + 380 s at 2K and 625 s + 1685 s at 4K (`base`: each 16:9
   run's total less its two steps, plus 40 s; `step`: the mean of its two steps; rounded to 5 s). With the standard
-  load 430 s more, its 455 s load against ~22 s (its run above took 498 s more in all: its encode was 56 s slower too,
-  which the estimate leaves out). In all, with 2 steps (`faithful`, `balanced`) about 10 min at 1080p, 19 min at 2K
+  load 500 s more: its run above took 498 s more in all than the fast load's 2K run, 433 s of it the load and 56 s the
+  encode (its VAE loaded through mmap; the bench's encodes too: 183-191 s, against 135-139 s with a fast load), and
+  neither depends on the resolution. In all, with 2 steps (`faithful`, `balanced`) about 10 min at 1080p, 19 min at 2K
   and 1.1 h at 4K; with 3 (`full`) about 13 min, 26 min and 1.6 h. The popover shows the 2-step times with the
-  studio's load (`/api/state` `upscale_load`; with the standard load ~17 min, ~27 min and ~1.2 h), the same for a
+  studio's load (`/api/state` `upscale_load`; with the standard load ~19 min, ~28 min and ~1.2 h), the same for a
   9:16 clip. A run with the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
   page cache first) loaded in 539 s, against 445 s without; the files were cached already, so this says little about
   a cold start.

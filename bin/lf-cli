@@ -15,7 +15,7 @@ One file, standard library only, Python 3.9 or later: copy it to any machine tha
          [--audio clip|silence] [--seed N] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
                                 experimental: a finished 5 s text clip, 16:9 or 9:16, to 1080p, 2K or 4K, on a
                                 studio with LFSTUDIO_UPSCALE=1 (about 10 min to 1.6 h in all, 4K over an hour, with
-                                a ~22 s load; ~7 min more with LFSTUDIO_UPSCALE_LOAD=standard)
+                                a ~22 s load; ~8 min more with LFSTUDIO_UPSCALE_LOAD=standard)
   lf-cli guide                  the prompt guide for H3
   lf-cli mcp                    an MCP server on stdin/stdout (Claude Code, Hermes, Codex, ...)
   common options, before or after the command: --url URL  --json  --quiet

@@ -614,7 +614,7 @@ running ones, oldest first, then the newest 5 finished ones; `status ID` one cli
 `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the
 studio's defaults hold for the rest (2K, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the
 clip's seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes about 10 min to 1.6 h in all (4K
-over an hour), with a ~22 s load (measured in the studio's job; ~7 min more on a studio with
+over an hour), with a ~22 s load (measured in the studio's job; ~8 min more on a studio with
 `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback), so `--timeout` and a later `wait` are the usual way.
 `status` shows it as `2k upscale of <clip id8>, balanced, ...`, `cancel` stops it within about 20 s, and the studio's
 refusals (`Upscale takes 5 s clips only, for now ...`, the Upscale off) are exit 2.

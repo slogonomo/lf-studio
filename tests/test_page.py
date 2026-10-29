@@ -1507,16 +1507,16 @@ class UpscalePage(UpscaleCards, PageTest):
         self.assertNotIn("untested", text)                                   # 4K has run (16:9, docs/PERFORMANCE.md)
         self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
                          ["1920×1080", "2560×1440", "3840×2160"])
-        # the progress bar's expected seconds (docs/PERFORMANCE.md): the fast load, ~7 min more with the standard load
+        # the progress bar's expected seconds (docs/PERFORMANCE.md): the fast load, ~8 min more with the standard load
         # (the record's "load"); a record of an older studio's upscale from the draft counts as any other
         self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, load: 'fast'},
             {resolution: '2k', steps: 3}, {resolution: '1080p', steps: 2},
             {resolution: '2k', steps: 2, load: 'standard'}, {resolution: '4k', steps: 2},
-            {resolution: '1080p', steps: 2, source: 'draft'}].map(upEta)"""), [1165, 1545, 615, 1595, 3995, 615])
+            {resolution: '1080p', steps: 2, source: 'draft'}].map(upEta)"""), [1165, 1545, 615, 1665, 3995, 615])
         # its times are upEta's for 2 steps with the studio's load (/api/state upscale_load), and follow it each time
         # it opens (one evaluate: no poll in between)
         self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
-            upEta({resolution: r, steps: 2, load})))"""), [615, 1045, 1165, 1595, 3995, 4425])
+            upEta({resolution: r, steps: 2, load})))"""), [615, 1115, 1165, 1665, 3995, 4495])
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
         times = self.page.evaluate("""id => {
@@ -1528,7 +1528,7 @@ class UpscalePage(UpscaleCards, PageTest):
             }
             state.upscale_load = 'fast'; return seen;}""", ok)
         fast = ["in all, with a ~22 s load", "~10 min", "~19 min", "~1.1 h"]
-        standard = ["in all, with a ~7.5 min load", "~17 min", "~27 min", "~1.2 h"]
+        standard = ["in all, with a ~7.5 min load", "~19 min", "~28 min", "~1.2 h"]
         self.assertEqual(times, [standard, fast, standard, fast])
         self.page.focus(up)                                                   # the keyboard: Enter opens it, focus
         self.page.keyboard.press("Enter")                                     # on the resolution; Escape returns
@@ -1663,7 +1663,7 @@ class UpscaleRunning(UpscaleCards, PageTest):
 
 class UpscaleDefaults(UpscaleCards, PageTest):
     """The popover starts at the server's defaults (/api/state upscale_defaults: LFSTUDIO_UPSCALE_STRENGTH) and shows
-    the times with its load (upscale_load: LFSTUDIO_UPSCALE_LOAD=standard, ~7 min more)."""
+    the times with its load (upscale_load: LFSTUDIO_UPSCALE_LOAD=standard, ~8 min more)."""
 
     def seed(self):
         self.studio.env.update(LFSTUDIO_UPSCALE_STRENGTH="full", LFSTUDIO_UPSCALE_LOAD="standard")
@@ -1673,7 +1673,7 @@ class UpscaleDefaults(UpscaleCards, PageTest):
         self.open_popover(ok)
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "full"])
         text = self.page.inner_text("#uppop")
-        for words in ("1080p\n~17 min", "2K\n~27 min", "4K\n~1.2 h", "in all, with a ~7.5 min load"):
+        for words in ("1080p\n~19 min", "2K\n~28 min", "4K\n~1.2 h", "in all, with a ~7.5 min load"):
             self.assertIn(words, text)
 
 
