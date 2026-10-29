@@ -3145,6 +3145,27 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
         self.assertEqual(self.studio.job(parent["id"])["upscalable"], {"ok": False, "why": why})
         self.assertEqual(self.studio.upscale(parent["id"]), (400, {"error": why}))
 
+    def test_reference_prompts_with_chains_of_definitions(self):
+        """A chain of 1000 subject definitions (<Subject 1> is <Subject 2>, ...), which a recursive rewrite could
+        not resolve, and one that doubles at each link: /api/state, /api/jobs, the record and /api/upscale answer
+        (they ask for the rewrite of every finished clip), the first upscalable, the second refused as too long."""
+        def prompt(n, ref):
+            lines = [f"<Subject {i}> is {ref.format(i + 1)}" for i in range(1, n)] + [f"<Subject {n}> is a dog"]
+            return "subject_definitions:\n" + "\n".join(lines) + "\n\ndetailed_description: <Subject 1> runs."
+        long = self.clip(task="ref2va", prompt=prompt(1000, "<Subject {}>"), files={"ref_images": [("r.png", png())]})
+        wide = self.clip(task="ref2va", prompt=prompt(40, "<Subject {0}> and <Subject {0}>"),
+                         files={"ref_images": [("r.png", png())]})
+        too_long = {"ok": False, "why": "the prompt is too long as text alone: with its subjects written out it has "
+                                        "more than 32768 characters"}
+        for jobs in (self.studio.state()["jobs"], json.loads(self.studio.get("/api/jobs")[2])["jobs"]):
+            found = {j["id"]: j.get("upscalable") for j in jobs}
+            self.assertEqual((found[long["id"]], found[wide["id"]]),
+                             ({"ok": True, "clip_audio": True, "text": "encode"}, too_long))
+        self.assertEqual(self.studio.upscale(wide["id"]), (400, {"error": too_long["why"]}))
+        job = self.done(self.upscale(long["id"]))
+        self.assertEqual(job["text"]["prompt"], "integrated_multimodal_description: A dog runs.")
+        self.assertNotIn("Traceback", self.studio.log.read_text())
+
     def test_a_text_clip_reads_its_own_folder_too(self):
         """A Sol-H3 Text clip: no encode, its own qwen/ linked into the input folder."""
         parent = self.clip()

@@ -539,7 +539,9 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 - 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `unknown key "steps" (...)`, ...), `an upscale can't
   be upscaled again`, `Upscale takes 5 s clips for now: other lengths not yet (NVIDIA's pipeline is fixed at 121
   frames)`, `nothing is left of the prompt without its keyframe line: the Upscale needs text` (or `... without its
-  references ...` for a Reference clip). Any key not in the table is unknown, `source` too: test builds of
+  references ...` for a Reference clip), `the prompt is too long as text alone: with its subjects written out it has
+  more than 32768 characters` (a Reference prompt whose subject definitions, written out where they are used, pass
+  the prompt encode's limit). Any key not in the table is unknown, `source` too: test builds of
   the Upscale took `"source": "draft"` (the clip's Stage-1 latent), which redrew the video too much and is gone, so a
   request with `source` (even `"final"` or `null`) gets 400 `unknown key "source" (known: id, resolution, strength,
   audio, seed)` and nothing is queued.

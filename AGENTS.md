@@ -92,8 +92,9 @@ memory. The `Upscale*` classes in `tests/test_server.py` cover the job type (que
 SIGKILL, Delete and Undo, a request during a Delete's move, restart, warm-up, memory, failure, the checks at run time,
 the settings, the launcher's checks and `--kill`; `UpscaleEveryClip` and `UpscaleEncode` every Sol-H3 clip kind:
 Keyframes with each set of keyframes (also a prompt with the page's CRLF line breaks) and Reference with their text
-encoded first, the input folder and source.json, the statuses in order, the clip deleted afterwards (the upscale still
-plays), no t2va manifest, Cancel during the encode, a failed encode, the server's own checks of its receipt
+encoded first (also prompts whose subject definitions chain or are too long as text alone), the input folder and
+source.json, the statuses in order, the clip deleted afterwards (the upscale still plays), no t2va manifest, Cancel
+during the encode, a failed encode, the server's own checks of its receipt
 (`STUB_QWEN_FAIL` `no-conditioning`, `other-prompt`, `other-task`), the memory floor again after it;
 `BadUpscaleSettings` the start's refusals, the prompt encode and its rewrites too), `TurboUpscale` LightX2V Turbo's
 clips (576p stretched, its sound as it is; 768p linked, a last keyframe cut to 121 frames, qwen-text/ or an encode, the
@@ -200,10 +201,10 @@ docstring; about 2.5 min, ~6.5 GB of memory: on a DGX Spark where a GPU job runs
 MemoryMax=14G` keeps them from taking its memory). `tests/test_h3turbo_encode.py` covers `bench/h3turbo_encode.py` and
 its wrapper, standard library only: the text-only rewrite on every alignment-line form the guide and the page write, the
 Upscale's rewrite of a Reference prompt (`ref_text_only_prompt`: the guide's and the page's examples, the other forms of
-a definition, one through another subject, a reference opening a sentence) and its `--upscale` encode, the prompt as the
-server takes it, the refusals, `--check`, and the encodes against a stand-in of the patch's `runtime` package kept in
-the test file itself (`TurboEncodeSeam` in `tests/test_server.py` runs it with the server's arguments, the Upscale's
-too).
+a definition, one through another subject, a chain of 1000 of them, one too long as text alone, a reference opening a
+sentence) and its `--upscale` encode, the prompt as the server takes it, the refusals, `--check`, and the encodes
+against a stand-in of the patch's `runtime` package kept in the test file itself (`TurboEncodeSeam` in
+`tests/test_server.py` runs it with the server's arguments, the Upscale's too).
 
 The patch has its own 156 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 The RTX 5090 patch has 223 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).

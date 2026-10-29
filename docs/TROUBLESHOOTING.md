@@ -308,7 +308,10 @@ lengths not yet ...`). It reads the clip's working files, which clips made befor
 folder was removed, no longer have (`the clip's working files (its session directory) are gone`). A Keyframes clip
 whose prompt is only its keyframe line (or a Reference prompt of references alone) has no text to refine against
 (`nothing is left of the prompt without its keyframe line: the Upscale needs text`): make the clip again with a few
-words of what happens in it.
+words of what happens in it. A Reference prompt whose subjects, written out where they are used, would pass 32768
+characters (`the prompt is too long as text alone ...`) can't be encoded as text either: define each subject in its own
+words rather than through others. `the Upscale can't write this clip's prompt as text alone` means the rewrite itself
+failed: the studio's log has the error.
 
 **An upscale of a Keyframes or Reference clip sits at "Encoding the prompt" or fails there.** Such a clip's prompt is
 encoded first without its pictures (a transient Qwen worker, 9-18 s, 9.1-9.2 s in the Upscale's GPU runs, ~15 GiB), the

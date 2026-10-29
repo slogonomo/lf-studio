@@ -1615,6 +1615,7 @@ UPSCALE_NO_T2VA = ("the Upscale encodes this clip's prompt as text alone first, 
                    "(run install/70-manifests.sh)")
 NOTHING_LEFT = {"fl2va": "nothing is left of the prompt without its keyframe line: the Upscale needs text",
                 "ref2va": "nothing is left of the prompt without its references: the Upscale needs text"}
+UNREADABLE = "the Upscale can't write this clip's prompt as text alone (the studio's log has why)"
 
 
 @functools.lru_cache(maxsize=256)
@@ -1626,8 +1627,13 @@ def text_rewrite(task, prompt):
     rewrite = TEXT_REWRITES.text_only_prompt if task == "fl2va" else TEXT_REWRITES.ref_text_only_prompt
     try:
         result = rewrite(prompt)
+    except TEXT_REWRITES.TooLong as error:
+        return json.dumps({"error": str(error)})
     except ValueError:
         return json.dumps({"error": NOTHING_LEFT[task]})
+    except Exception as error:      # never a reason for /api/state, /api/jobs or a record to fail (with_upscalable)
+        log(f"the Upscale's rewrite of a {task} prompt failed: {type(error).__name__}: {str(error)[:200]}")
+        return json.dumps({"error": UNREADABLE})
     result["prompt"] = re.sub(r"\r\n?", "\n", result["prompt"])
     return json.dumps({k: result[k] for k in ("prompt", "dropped", "notes")})
 
@@ -1636,7 +1642,8 @@ def upscale_text(job):
     """A Keyframes (fl2va) or Reference (ref2va) clip's prompt as text alone, what the Upscale's encode reads in place
     of the pictures (bench/h3turbo_encode.py: text_only_prompt drops the keyframe line and the picture references,
     ref_text_only_prompt writes a Reference prompt as t2va's three fields): {"prompt", "dropped", "notes"}, or
-    {"error"} when nothing is left; None for a t2va clip."""
+    {"error"} when nothing is left, when it would be longer than the encode takes, or when the rewrite fails; None
+    for a t2va clip."""
     if job.get("task") not in NOTHING_LEFT:
         return None
     return json.loads(text_rewrite(job["task"], job.get("prompt") or ""))
@@ -1661,8 +1668,9 @@ def upscalable(job):
     5 s clip of the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's Text and
     Keyframes clips at either size), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes
     turned): not yet the other lengths (NVIDIA's pipeline is fixed at 121 frames), and not a Keyframes or Reference
-    clip with nothing left of its prompt without its pictures, nor one whose text must be encoded while the studio has
-    no t2va path manifest (the encode's). Looks at the clip's files: call it without `lock`, with a copy of the job."""
+    clip with nothing left of its prompt without its pictures (or a text alone too long), nor one whose text must be
+    encoded while the studio has no t2va path manifest (the encode's). Looks at the clip's files: call it without
+    `lock`, with a copy of the job."""
     if is_upscale(job):
         return 400, "an upscale can't be upscaled again"
     model = job_model(job)

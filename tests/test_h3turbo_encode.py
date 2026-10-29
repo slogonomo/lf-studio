@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -326,6 +327,45 @@ class RefTextOnlyTests(unittest.TestCase):
         self.assertEqual(result["prompt"], "integrated_multimodal_description: The dog of subject 1 sits.")
         self.assertEqual(result["notes"], ["<Subject 1>'s definition leads back to itself: it reads 'subject 1' "
                                            "there"])
+
+    def test_a_long_chain_of_definitions(self):
+        """<Subject 1> is <Subject 2>, ... up to the longest chain a prompt has room for: resolved without recursion
+        (a recursive walk passed Python's recursion limit at about 330 links), in a thread as the server's requests
+        run."""
+        lines = [f"<Subject {i}> is <Subject {i + 1}>" for i in range(1, 1000)] + ["<Subject 1000> is a dog"]
+        prompt = ("subject_definitions:\n" + "\n".join(lines) + "\n\ndetailed_description: <Subject 1> runs in "
+                  "<Picture 1>.")
+        self.assertLessEqual(len(prompt), helper.PROMPT_MAX)
+        results = []
+        thread = threading.Thread(target=lambda: results.append(helper.ref_text_only_prompt(prompt)))
+        thread.start()
+        thread.join()
+        self.assertEqual(results[0]["prompt"], "integrated_multimodal_description: A dog runs.")
+        self.assertEqual(results[0]["notes"], [])
+
+    def test_too_long_as_text_alone(self):
+        """A definition that names the next subject twice doubles the text at each link: refused (TooLong, a
+        ValueError) as soon as it passes the limit, not written out; one long definition used often, the same."""
+        def chain(n):
+            lines = [f"<Subject {i}> is <Subject {i + 1}> and <Subject {i + 1}>" for i in range(1, n)]
+            return ("subject_definitions:\n" + "\n".join(lines + [f"<Subject {n}> is a dog"]) +
+                    "\n\ndetailed_description: <Subject 1> runs.")
+        self.assertEqual(helper.ref_text_only_prompt(chain(8))["prompt"],          # 2 ** 7 dogs: written out
+                         "integrated_multimodal_description: " + " and ".join(["A dog"] + ["a dog"] * 127) + " runs.")
+        for prompt in (chain(16), chain(60), "subject_definitions:\n<Subject 1> is " + "a" * 16000 +
+                       "\n\ndetailed_description: " + "<Subject 1> " * 1300):
+            with self.assertRaises(helper.TooLong) as caught:
+                helper.ref_text_only_prompt(prompt)
+            self.assertIsInstance(caught.exception, ValueError)
+            self.assertEqual(str(caught.exception), "the prompt is too long as text alone: with its subjects "
+                                                    "written out it has more than 32768 characters")
+        # at the limit: a text alone of 32768 characters is taken, one more is not
+        head = "subject_definitions:\n<Subject 1> is a dog\n\ndetailed_description: "
+        size = len(helper.ref_text_only_prompt(head + "x")["prompt"]) - 1
+        self.assertEqual(len(helper.ref_text_only_prompt(head + "x" * (helper.PROMPT_MAX - size))["prompt"]),
+                         helper.PROMPT_MAX)
+        with self.assertRaises(helper.TooLong):
+            helper.ref_text_only_prompt(head + "x" * (helper.PROMPT_MAX - size + 1))
 
     def test_other_forms_of_a_definition(self):
         """"<Subject N>: ..." and "<Subject N> - ..." define a subject too."""

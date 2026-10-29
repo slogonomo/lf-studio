@@ -53,7 +53,8 @@ subject_definitions, retention_analysis and the task tags go, and so do the medi
 a sentence, " in the voice timbre of <Audio N>", " referenced from <Video N>", " in/of/from <Picture N>", then any
 <Picture|Video|Audio N> left; one that is a sentence's subject reads "The scene", or "The sound" for <Audio N>). A
 prompt without those sections is free text: only the labels go. Dialogue is never changed: labels in it stay, and
-the notes count them.
+the notes count them. A prompt that would pass PROMPT_MAX characters as text alone, its definitions written out where
+they are used, is refused (TooLong); so is one whose definitions written out inside each other pass four times that.
 
 Output in --case (a new or empty directory under $SOL_H3_SPARK_RUNTIME_ROOT, which is all the Qwen container sees; the
 frames must be under it too): qwen/conditioning.{pt,json} (the clip's), for fl2va qwen-text/conditioning.{pt,json},
@@ -302,31 +303,73 @@ def _labels_in_dialogue(text):
     return counts
 
 
+class TooLong(ValueError):
+    """A Reference prompt that would be too long as text alone (ref_text_only_prompt)."""
+
+    def __init__(self):
+        super().__init__(f"the prompt is too long as text alone: with its subjects written out it has more than "
+                         f"{PROMPT_MAX} characters")
+
+
 def _resolve_definitions(raw, name, notes):
     """The subjects' {n: (full, short)} with each <Subject M> inside a definition written as M's short form, itself
     resolved (name(M) for a subject without a definition, or one whose definition leads back to the one being
-    resolved: noted)."""
-    resolved = {}
+    resolved: noted). Without recursion: a chain of definitions (<Subject 1> is <Subject 2>, ...) of any length is
+    resolved in the same order a recursive walk takes, with each subject being resolved on a list of its own. TooLong
+    when the forms written out pass 4 x PROMPT_MAX characters together: a definition that names another twice doubles
+    it at each step of such a chain."""
+    resolved, open_, size = {}, set(), [0]
 
-    def form(n, stack):
-        if n not in resolved:
-            def sub(m):
+    def form(n):
+        """n's forms, built in place: yields each subject that must be resolved first (open_ holds the subjects being
+        resolved, n's own definition's chain back to the first)."""
+        texts = []
+        for text in raw[n]:
+            out, pos = [], 0
+            for m in SUBJECT.finditer(text):
                 k = m.group(1)
-                if k in stack:
+                if k in open_:
                     note = f"<Subject {k}>'s definition leads back to itself: it reads '{name(k)}' there"
                     if note not in notes:
                         notes.append(note)
-                    return name(k)
-                return form(k, stack | {k})[1] if k in raw else name(k)
-            resolved[n] = tuple(SUBJECT.sub(sub, text) for text in raw[n])
-        return resolved[n]
-    return {n: form(n, {n}) for n in raw}
+                    words = name(k)
+                elif k in raw:
+                    if k not in resolved:
+                        yield k
+                    words = resolved[k][1]
+                else:
+                    words = name(k)
+                out += [text[pos:m.start()], words]
+                size[0] += m.start() - pos + len(words)
+                if size[0] > 4 * PROMPT_MAX:
+                    raise TooLong()
+                pos = m.end()
+            out.append(text[pos:])
+            size[0] += len(text) - pos
+            texts.append("".join(out))
+        resolved[n] = tuple(texts)
+
+    for first in raw:
+        if first in resolved:
+            continue
+        open_.add(first)
+        walk = [(first, form(first))]
+        while walk:
+            try:
+                k = next(walk[-1][1])
+            except StopIteration:
+                open_.discard(walk.pop()[0])
+                continue
+            open_.add(k)
+            walk.append((k, form(k)))
+    return {n: resolved[n] for n in raw}
 
 
 def ref_text_only_prompt(prompt):
     """A ref2va prompt as text alone, in t2va's three fields, for the Upscale's t2va encode (the docstring): {"prompt":
     text, "form": "detailed" | "summary" | "fields" | "free", "dropped": [what went], "notes": [what stayed that looks
-    like a label]}. Dialogue is never changed. ValueError when nothing is left of the description."""
+    like a label]}. Dialogue is never changed. ValueError when nothing is left of the description; TooLong (one) when
+    the text would have more than PROMPT_MAX characters, which the encode takes at most."""
     counts, notes, dropped = {}, [], []
     preamble, parts = _sections(prompt)
     if not any(name in parts for name in REF_ONLY):
@@ -365,7 +408,7 @@ def ref_text_only_prompt(prompt):
         unnamed = {n: "the subject" if len(undefined) == 1 else f"subject {n}" for n in undefined}
         subjects = _resolve_definitions(raw, lambda n: unnamed.get(n) or f"subject {n}", notes)
         subjects.update({n: (name,) * 2 for n, name in unnamed.items()})
-    used = set()
+    used, grown = set(), [0]
 
     def subject(m, before):
         n = m.group(1)
@@ -377,6 +420,9 @@ def ref_text_only_prompt(prompt):
         else:
             words = short
         used.add(n)
+        grown[0] += len(words) - len(m.group(0))
+        if grown[0] > PROMPT_MAX:          # the subjects written out so far add more than the encode takes: stop
+            raise TooLong()
         return words[:1].upper() + words[1:] if _sentence_start(before) else words
 
     def edit(piece, before):
@@ -401,6 +447,8 @@ def ref_text_only_prompt(prompt):
     description = text if form == "free" else _sections(text)[1].get(DESCRIPTION, "")
     if not re.sub(r"\[Shot \d+\]", "", description).strip():
         raise ValueError("nothing is left of the prompt without its references")
+    if len(text) > PROMPT_MAX:
+        raise TooLong()
     return {"prompt": text, "form": form, "dropped": dropped, "notes": notes}
 
 
