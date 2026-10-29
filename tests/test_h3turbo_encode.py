@@ -1,11 +1,14 @@
 """bench/h3turbo_encode.py (H3 Turbo, Phase 0: a clip's prompt conditioning from a transient Qwen worker, as the
 server's encode_prompt will make it) and its wrapper bench/h3turbo-encode.sh, on the CPU: text_only_prompt on every
 form of the keyframe alignment line the studio writes (the prompt guide's examples, read from bin/lf-cli, and the
-page's alignLine(), read from webui/index.html) and on the inline references; the arguments and the environment it
-refuses; --check; and the encodes against a stand-in of the patch's runtime package (its Worker records the recipe it
-got and the calls, and writes conditioning files as the Qwen worker does): the canvas per job, the clip's encode and
-the text-only one, the receipt checks, the worker closed in every case. Standard library only.
+page's alignLine(), read from webui/index.html), on the inline references, on lines that only start like an
+alignment line and on dialogue (never changed); the prompt as the server takes it (stripped, its length limit); the
+arguments and the environment it refuses; --check; and the encodes against a stand-in of the patch's runtime
+package (its Worker records the recipe it got and the calls, and writes conditioning files as the Qwen worker does):
+the canvas per job, the clip's encode and the text-only one, the receipt checks, the worker closed in every case.
+Standard library only. (The server's tests will get a stand-in Worker in tests/stub/runtime once the server encodes.)
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -89,22 +92,41 @@ class TextOnlyTests(unittest.TestCase):
                                               f"aligns with the 0.00-second mark; Picture 2 aligns with the "
                                               f"{seconds:.2f}-second mark.\nintegrated_multimodal_description:"))
             result = helper.text_only_prompt(prompt)
-            self.assertEqual(result, {"prompt": prompt.split("\n", 1)[1], "dropped": ["alignment line"]})
+            self.assertEqual(result, {"prompt": prompt.split("\n", 1)[1], "dropped": ["alignment line"], "notes": []})
 
     def test_alignment_lines_in_other_places(self):
-        """In front of the text on the same line, after a blank line, with Windows line ends, or in a form of its
-        own (a line that starts as one): the line goes, the rest stays as it was."""
+        """In front of the text on the same line (dialogue after it unchanged), after a blank line, with Windows line
+        ends, or in a form of its own (a line that starts as one and names a picture or a time): the line goes, the
+        rest stays as it was."""
         first = guide_examples()["fl2va, first frame only, 5 s"].split("\n", 1)[0]
         same_line = helper.text_only_prompt(first + " integrated_multimodal_description: [Shot 1] A lake.")
         self.assertEqual(same_line, {"prompt": "integrated_multimodal_description: [Shot 1] A lake.",
-                                     "dropped": ["alignment line"]})
+                                     "dropped": ["alignment line"], "notes": []})
+        spoken = helper.text_only_prompt(first + " She says <d>[English] Hi,  you.</d>")
+        self.assertEqual(spoken["prompt"], "She says <d>[English] Hi,  you.</d>")
         crlf = helper.text_only_prompt(first + "\r\n\r\nintegrated_multimodal_description: A lake.\r\n"
                                        "overall_soundscape: Wind.\r\n")
         self.assertEqual(crlf["prompt"], "integrated_multimodal_description: A lake.\r\noverall_soundscape: Wind.")
         later = helper.text_only_prompt("integrated_multimodal_description: A lake.\n\n" + first + "\n\nmore")
         self.assertEqual(later["prompt"], "integrated_multimodal_description: A lake.\n\nmore")
-        own = helper.text_only_prompt("How the reference pictures align: first at the start\nintegrated: A lake.")
-        self.assertEqual(own, {"prompt": "integrated: A lake.", "dropped": ["alignment line"]})
+        for line in ("How the reference pictures align with the target video: Picture 1 at the start, Picture 2 at "
+                     "the end.", "For the target video, at 0.00 seconds into the target video, the first image is "
+                     "fully referenced.", "How the reference pictures align - the image aligns with the 5-second "
+                     "mark."):
+            own = helper.text_only_prompt(line + "\nintegrated: A lake.")
+            self.assertEqual(own, {"prompt": "integrated: A lake.", "dropped": ["alignment line"], "notes": []})
+
+    def test_lines_that_only_start_like_an_alignment_line_stay(self):
+        """A line that starts with an alignment line's opening but names no picture or time is text: kept, with a
+        note."""
+        for prompt in ("integrated_multimodal_description: A lake at dawn.\nFor the target video, the mood is calm.",
+                       "For the target video, keep the camera locked off and the light soft.\nintegrated: A lake.",
+                       "How the reference pictures align: first at the start\nintegrated: A lake."):
+            result = helper.text_only_prompt(prompt)
+            self.assertEqual((result["prompt"], result["dropped"]), (prompt, []))
+            self.assertEqual(len(result["notes"]), 1)
+            self.assertTrue(result["notes"][0].startswith("kept a line that starts like an alignment line: '"),
+                            result["notes"])
 
     def test_inline_references(self):
         """The research probe's rewrites, in its order, then any <Picture N> left is dropped; lines without one are kept
@@ -120,7 +142,30 @@ class TextOnlyTests(unittest.TestCase):
                                              "1 x 'with the composition of <Picture N> -> with this composition'",
                                              "1 x ' in/of/from <Picture N>'", "1 x '<Picture N>'"])
         plain = "integrated_multimodal_description: a picture 1 meter wide.\n\nnon_diegetic_music: N/A"
-        self.assertEqual(helper.text_only_prompt(plain), {"prompt": plain, "dropped": []})
+        self.assertEqual(helper.text_only_prompt(plain), {"prompt": plain, "dropped": [], "notes": []})
+
+    def test_the_guides_suffix_and_empty_parentheses(self):
+        result = helper.text_only_prompt("the woman in <Picture 1> (from [Shot 1]) walks; the dog of Picture 2 (from "
+                                         "Shot 2) runs; a man (<Picture 3>) waits, then <Picture 1> (from [Shot 1]).")
+        self.assertEqual(result, {"prompt": "the woman walks; the dog runs; a man waits, then.",
+                                  "dropped": ["2 x ' in/of/from <Picture N>'", "2 x '<Picture N>'"], "notes": []})
+
+    def test_dialogue_is_never_changed(self):
+        """<d>...</d> is what the model speaks: no rule touches it, also over several lines; a bare "Picture N" outside
+        the inline rules stays too, and the notes count what stayed."""
+        result = helper.text_only_prompt("<d>Look at Picture 1, it is us.</d> The man points at <Picture 2>.")
+        self.assertEqual((result["prompt"], result["dropped"]),
+                         ("<d>Look at Picture 1, it is us.</d> The man points at.", ["1 x '<Picture N>'"]))
+        self.assertEqual(result["notes"], ["1 x 'Picture N' left as written (in dialogue, or outside the references "
+                                           "the rules know)"])
+        result = helper.text_only_prompt("She says <d>See <Picture 1>  now,\nin <Picture 2> .</d>  The dog of "
+                                         "<Picture 3> runs. Picture 4 is a lake.")
+        self.assertEqual(result["prompt"], "She says <d>See <Picture 1>  now,\nin <Picture 2> .</d> The dog runs. "
+                                           "Picture 4 is a lake.")
+        self.assertEqual(result["dropped"], ["1 x ' in/of/from <Picture N>'"])
+        self.assertIn("3 x 'Picture N' left as written", result["notes"][0])
+        result = helper.text_only_prompt("The dog of <Picture 1> barks: <d>Hey,  \n  you there </d> it ends.")
+        self.assertEqual(result["prompt"], "The dog barks: <d>Hey,  \n  you there </d> it ends.")
 
     def test_nothing_left(self):
         first = guide_examples()["fl2va, first frame only, 5 s"].split("\n", 1)[0]
@@ -311,6 +356,40 @@ class PlanTests(Fixture):
         with self.assertRaisesRegex(helper.Refused, "qwen exists: use a new --case"):
             self.plan()
 
+    def test_the_prompt_as_the_server_takes_it(self):
+        """--prompt-file and --prompt lose their leading and trailing whitespace (a file's last newline too), as
+        webui/server.py's check_fields strips a prompt; its length limit and the text check are the server's."""
+        text = self.prompt.read_text()
+        (self.tmp / "newline.txt").write_text("  " + text + "\n", encoding="utf-8")
+        plan = self.plan("--prompt-file", str(self.tmp / "newline.txt"))
+        self.assertEqual(plan["prompt"], text)
+        self.assertEqual(plan["prompt_sha256"], hashlib.sha256(text.encode()).hexdigest())
+        self.assertEqual(plan["notes"], ["the prompt's leading and trailing whitespace (3 characters) is dropped, as "
+                                         "the server drops it"])
+        args = [a for a in self.args() if a not in ("--prompt-file", str(self.prompt))]
+        plan = helper.make_plan(helper.parse_args(args + ["--prompt", "\tA lake.\r\n"]), self.env,
+                                helper.load_job_module())
+        self.assertEqual(plan["prompt"], "A lake.")
+        server = (REPO / "webui" / "server.py").read_text()
+        self.assertEqual(int(re.search(r"(?m)^PROMPT_MAX = (\d+)", server).group(1)), helper.PROMPT_MAX)
+        self.assertIn('prompt = fields.get("prompt", "").strip()', server)
+        for prompt, message in (("x" * (helper.PROMPT_MAX + 1), f"too long \\({helper.PROMPT_MAX + 1} characters"),
+                                ("A lake \ud83c.", "not valid text"), (" \n ", "the prompt is empty")):
+            with self.subTest(message):
+                with self.assertRaisesRegex(helper.Refused, message):
+                    helper.make_plan(helper.parse_args(args + ["--prompt", prompt]), self.env,
+                                     helper.load_job_module())
+        plan = helper.make_plan(helper.parse_args(args + ["--prompt", "x" * helper.PROMPT_MAX]), self.env,
+                                helper.load_job_module())
+        self.assertEqual(len(plan["prompt"]), helper.PROMPT_MAX)
+
+    def test_the_code_is_recorded(self):
+        plan = self.plan()
+        self.assertEqual(plan["code_sha256"], {
+            "helper": hashlib.sha256(SCRIPT.read_bytes()).hexdigest(),
+            "wrapper": hashlib.sha256(WRAPPER.read_bytes()).hexdigest(),
+            "job": hashlib.sha256((REPO / "jobs" / "h3turbo_job.py").read_bytes()).hexdigest()})
+
     def test_the_prompt_of_an_earlier_clip(self):
         earlier = self.runtime / "outputs" / "webui" / "earlier" / "web_000000_abcdef"
         (earlier / "qwen").mkdir(parents=True)
@@ -319,7 +398,8 @@ class PlanTests(Fixture):
         args = [a for a in self.args() if a not in ("--prompt-file", str(self.prompt))]
         plan = helper.make_plan(helper.parse_args(args + ["--prompt-from-case", str(earlier)]), self.env,
                                 helper.load_job_module())
-        self.assertEqual(plan["prompt"], prompt)
+        self.assertEqual(plan["prompt"], prompt)                 # exactly as it was encoded: nothing stripped
+        self.assertEqual(plan["notes"], [])
         (earlier / "qwen" / "conditioning.json").write_text(json.dumps({"task": "fl2va"}))
         with self.assertRaisesRegex(helper.Refused, "has no prompt"):
             helper.make_plan(helper.parse_args(args + ["--prompt-from-case", str(earlier)]), self.env,
@@ -382,10 +462,13 @@ class ScriptTests(Fixture):
         self.assertNotIn("first_frame", text)
         self.assertEqual(text["prompt"], helper.text_only_prompt(clip["prompt"])["prompt"])
         self.assertEqual((self.case / "qwen-text" / "prompt.txt").read_text(), text["prompt"])
-        dropped = json.loads((self.case / "qwen-text" / "text-only.json").read_text())["dropped"]
-        self.assertEqual(dropped, ["alignment line", "1 x ' shown in <Picture N>'"])
+        text_only = json.loads((self.case / "qwen-text" / "text-only.json").read_text())
+        self.assertEqual((text_only["dropped"], text_only["notes"]), (["alignment line", "1 x ' shown in <Picture N>'"],
+                                                                      []))
         saved = json.loads((self.case / "encode.json").read_text())
         self.assertEqual(saved, summary)
+        self.assertEqual(saved["code_sha256"]["helper"], hashlib.sha256(SCRIPT.read_bytes()).hexdigest())
+        self.assertEqual(saved["text_only"]["notes"], [])
         self.assertEqual(saved["encodes"]["qwen"]["vision_rows"], 578)
         self.assertEqual(saved["encodes"]["qwen-text"]["vision_rows"], 0)
         self.assertEqual(saved["for_job"], {"task": "fl2va", "orientation": "landscape", "resolution": "576p",

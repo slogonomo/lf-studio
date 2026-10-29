@@ -8,8 +8,9 @@ and the Stage-1 Python, in the patched package, as bin/lf-studio runs the server
         [--first IMG] [--last IMG] [--resolution 576p|768p] [--canvas draft|canvas] [--seed N] [--case-id ID]
         [--no-text-only] [--check]
 
---prompt-from-case takes an earlier clip's prompt as it was encoded (its qwen/conditioning.json), e.g. to encode it
-again at the clip's canvas.
+The prompt is taken as the server takes one: --prompt and --prompt-file without leading or trailing whitespace (a
+file's last newline too), at most PROMPT_MAX characters, valid text; --prompt-from-case takes an earlier clip's prompt
+exactly as it was encoded (its qwen/conditioning.json), e.g. to encode it again at the clip's canvas.
 
 How: the patch's own runtime.pipeline.Worker("qwen", <case>/qwen-worker, paths, config), started the way
 Pipeline.start() starts its transient Qwen (the NVFP4 encoder in Docker through qwen_python.sh, JSON lines through
@@ -20,23 +21,27 @@ worker starts): --canvas draft keeps the 384p draft canvas every probe number wa
 252 image tokens per keyframe), --canvas canvas sets it to the generation canvas of --resolution (576 tokens at 576p,
 1008 at 768p). The recipe goes to this Qwen worker only, never to a Stage 1. One worker, then:
 1. the clip's encode: t2va without frames, fl2va with --first and/or --last (a last frame alone is not offered by the
-   studio yet: the patch's Qwen stretches the first existing keyframe, diffusers cover-crops a lone last image);
+   studio yet; the patch's Qwen, like diffusers, stretches it as the first keyframe given);
 2. for fl2va, unless --no-text-only, a t2va encode of text_only_prompt(prompt), the Upscale's text-only input;
 then the worker closes (also on SIGTERM).
 
 text_only_prompt drops what refers to the keyframes: the alignment line in each form the studio writes (the prompt
 guide's first-frame line, its first + last line and last-only line with an em dash, the page's alignLine() with a
-hyphen; on a line of its own or in front of the text), the inline references the research probe's rewrite took out
-(" shown in <Picture N>", "with the composition of <Picture N>", " in/of/from <Picture N>"), and any <Picture N> left
-after them. The guide's own examples name the pictures without angle brackets too ("the composition of Picture 1"):
-those go the same way.
+hyphen; on a line of its own or in front of the text; a line that starts as one and names a picture or a time is
+taken as one too), the inline references the research probe's rewrite took out (" shown in <Picture N>", "with the
+composition of <Picture N>", " in/of/from <Picture N>", each with the guide's "(from [Shot N])" after it), and any
+<Picture N> left after them, with the parentheses it leaves empty. The guide's own examples name the pictures without
+angle brackets too ("the composition of Picture 1"): the inline references take those as well, but a bare "Picture
+N" anywhere else stays, and dialogue (<d>...</d>, what the model speaks) is never changed. What it kept that looks
+like a reference is listed in its notes.
 
 Output in --case (a new or empty directory under $SOL_H3_SPARK_RUNTIME_ROOT, which is all the Qwen container sees;
 the frames must be under it too): qwen/conditioning.{pt,json} (the clip's), for fl2va qwen-text/conditioning.{pt,json},
-qwen-text/prompt.txt and qwen-text/text-only.json (what was dropped), qwen-worker/ (the worker's log) and encode.json
-(the canvas, the rows, the times, and the job.json fields that go with it). Each encode's receipt is checked: its task,
-prompt, shape, payload sha256, the canvas of its images and its vision rows (rows - text_tokens = keyframes x (image
-tokens + 2)). --check validates everything, prints the plan and starts nothing, writes nothing.
+qwen-text/prompt.txt and qwen-text/text-only.json (what was dropped, and the notes), qwen-worker/ (the worker's log)
+and encode.json (the canvas, the rows, the times, the sha256 of this helper, its wrapper and the job, and the job.json
+fields that go with it). Each encode's receipt is checked: its task, prompt, shape, payload sha256, the canvas of its
+images and its vision rows (rows - text_tokens = keyframes x (image tokens + 2)). --check validates everything,
+prints the plan and starts nothing, writes nothing.
 Exit status: 0 done, 1 an encode failed or its receipt does not match, 2 refused (nothing started), 143 SIGTERM.
 """
 import argparse
@@ -52,9 +57,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 JOB_SCRIPT = REPO / "jobs" / "h3turbo_job.py"
+WRAPPER = REPO / "bench" / "h3turbo-encode.sh"
 TAG = "[h3turbo-encode]"
 EXIT_FAILED, EXIT_REFUSED = 1, 2
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$")
+PROMPT_MAX = 32768          # characters: the server's limit (webui/server.py PROMPT_MAX)
 
 # ---------------------------------------------------------------- the text-only prompt (standard library only)
 
@@ -62,62 +69,115 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$")
 # write it: first frame; first + last and last only (an em dash in the guide, a hyphen on the page; "Picture N" with
 # or without angle brackets, "(from [Shot N])" or "(from Shot N)" or nothing)
 PICTURE = r"(?:<Picture \d+>|\bPicture \d+\b)"
+SHOT = r"(?: \(from \[?Shot \d+\]?\))?"           # the guide's suffix after a reference
 ALIGNMENT = (
-    re.compile(r"For the target video, at [\d.]+ seconds into the target video, " + PICTURE +
-               r"(?: \(from \[?Shot \d+\]?\))? is fully referenced\.?"),
+    re.compile(r"For the target video, at [\d.]+ seconds into the target video, " + PICTURE + SHOT +
+               r" is fully referenced\.?"),
     re.compile(r"How the reference pictures align with the target video\s*[—–:-]\s*.*?\bmark"
                r"(?: of the target video)?\.(?=\s|$)"))
+# a line that starts like an alignment line is one, all of it, when it also names a picture or a time the way the
+# guide and the page do; otherwise it stays (with a note): "For the target video, keep the camera still." is text
 OPENINGS = ("For the target video", "How the reference pictures align")
-# the inline references, in this order (the research probe's rules), then anything left
-INLINE = ((re.compile(r" shown in " + PICTURE), "", " shown in <Picture N>"),
-          (re.compile(r"with the composition of " + PICTURE), "with this composition",
+ALIGNMENT_WORDS = re.compile(PICTURE + r"|seconds into the target video|\baligns with\b|-second mark|"
+                             r"(?:referenced|mark)\.\s*$")
+# the inline references, in this order (the research probe's rules), then any <Picture N> left (bare "Picture N" only
+# through the rules before it)
+INLINE = ((re.compile(r" shown in " + PICTURE + SHOT), "", " shown in <Picture N>"),
+          (re.compile(r"with the composition of " + PICTURE + SHOT), "with this composition",
            "with the composition of <Picture N> -> with this composition"),
-          (re.compile(r" (?:in|of|from) " + PICTURE), "", " in/of/from <Picture N>"),
-          (re.compile(PICTURE), "", "<Picture N>"))
+          (re.compile(r" (?:in|of|from) " + PICTURE + SHOT), "", " in/of/from <Picture N>"),
+          (re.compile(r"<Picture \d+>" + SHOT), "", "<Picture N>"))
+BARE = re.compile(r"\bPicture \d+\b")
+DIALOGUE_OPEN, DIALOGUE_CLOSE = "<d>", "</d>"
 
 
-def _tidy(line):
-    """A line a reference was cut out of: no double spaces, no space before punctuation, nothing trailing."""
-    body = line.rstrip("\r\n")
-    ending = line[len(body):]
-    body = re.sub(r"[ \t]{2,}", " ", body)
-    body = re.sub(r" +([,.;:!?)])", r"\1", body)
-    return body.rstrip() + ending
+def _pieces(line, inside):
+    """A line cut into (text, in dialogue) pieces at <d> and </d> (the dialogue piece holds both); `inside`: a <d> is
+    open where the line starts. Returns (pieces, whether one is open where it ends)."""
+    pieces, pos = [], 0
+    while pos < len(line):
+        mark = DIALOGUE_CLOSE if inside else DIALOGUE_OPEN
+        at = line.find(mark, pos)
+        if at < 0:
+            pieces.append((line[pos:], inside))
+            break
+        end = at + len(mark) if inside else at
+        if end > pos:
+            pieces.append((line[pos:end], inside))
+        pos, inside = end, not inside
+    return pieces, inside
+
+
+def _tidy(text):
+    """Text a reference was cut out of: no empty parentheses, no double spaces, no space before punctuation."""
+    text = re.sub(r"[ \t]*\([ \t]*\)", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return re.sub(r" +([,.;:!?)])", r"\1", text)
 
 
 def text_only_prompt(prompt):
     """An fl2va prompt without its keyframe references, for a t2va (text-only) encode: {"prompt": text, "dropped":
-    [what went]}. Lines keep their own line endings, and lines with nothing to drop stay as they are; a dropped
-    alignment line takes the blank line after it. ValueError when nothing is left."""
-    dropped, counts, kept, after_alignment = [], {}, [], False
+    [what went], "notes": [what stayed that looks like a reference]}. Lines keep their own line endings, lines with
+    nothing to drop stay as they are, and dialogue is never changed; a dropped alignment line takes the blank line
+    after it. ValueError when nothing is left."""
+    dropped, counts, notes, kept, after_alignment, inside = [], {}, [], [], False, False
     for line in prompt.splitlines(keepends=True):
         if after_alignment and not line.strip():
             after_alignment = False
             continue                                    # the blank line after a dropped alignment line
         after_alignment = False
-        body, aligned = line, 0
-        for pattern in ALIGNMENT:
-            body, n = pattern.subn("", body)
-            aligned += n
-        if body.lstrip().startswith(OPENINGS):          # an alignment line in a form of its own: all of it
-            body, aligned = "", aligned + 1
+        body = line.rstrip("\r\n")
+        ending = line[len(body):]
+        pieces, inside_after = _pieces(body, inside)
+        aligned, has_dialogue = 0, any(in_d for _, in_d in pieces)
+        for i, (text, in_d) in enumerate(pieces):
+            if not in_d:
+                for pattern in ALIGNMENT:
+                    text, n = pattern.subn("", text)
+                    aligned += n
+                pieces[i] = (text, in_d)
+        rest = "".join(text for text, _ in pieces)
+        if not inside and rest.lstrip().startswith(OPENINGS):
+            if ALIGNMENT_WORDS.search(rest) and not has_dialogue:
+                pieces, aligned = [], aligned + 1       # an alignment line in a form of its own: all of it
+            else:
+                notes.append(f"kept a line that starts like an alignment line: {one_line(rest)!r}")
+        inside = inside_after
         dropped += ["alignment line"] * aligned
-        if aligned and not body.strip():
+        if aligned and not "".join(text for text, _ in pieces).strip():
             after_alignment = True
             continue
-        if aligned:
-            body = body.lstrip()
         edited = bool(aligned)
-        for pattern, replacement, label in INLINE:
-            body, n = pattern.subn(replacement, body)
-            if n:
-                counts[label] = counts.get(label, 0) + n
-                edited = True
-        kept.append(_tidy(body) if edited else line)
+        out = []
+        for text, in_d in pieces:
+            if not in_d:
+                before = text
+                for pattern, replacement, label in INLINE:
+                    text, n = pattern.subn(replacement, text)
+                    if n:
+                        counts[label] = counts.get(label, 0) + n
+                if text != before or aligned:
+                    text, edited = _tidy(text), True
+            out.append(text)
+        if not edited:
+            kept.append(line)
+            continue
+        body = "".join(out)
+        if aligned and not pieces[0][1]:
+            body = body.lstrip()
+        kept.append(body if pieces[-1][1] else body.rstrip())      # a line ending inside dialogue keeps its end
+        kept[-1] += ending
     text = "".join(kept).strip()
     if not text:
         raise ValueError("nothing is left of the prompt without its keyframe references")
-    return {"prompt": text, "dropped": dropped + [f"{n} x '{label}'" for label, n in counts.items()]}
+    bare = len(BARE.findall(text))
+    if bare:
+        notes.append(f"{bare} x 'Picture N' left as written (in dialogue, or outside the references the rules know)")
+    return {"prompt": text, "dropped": dropped + [f"{n} x '{label}'" for label, n in counts.items()], "notes": notes}
+
+
+def one_line(text, limit=120):
+    return " ".join(str(text).split())[:limit]
 
 
 # ---------------------------------------------------------------- the plan (standard library only)
@@ -132,6 +192,13 @@ class Failed(RuntimeError):
 
 def say(message):
     print(f"{TAG} {time.strftime('%H:%M:%S')} {message}", file=sys.stderr, flush=True)
+
+
+def file_sha256(path):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def load_job_module(path=JOB_SCRIPT):
@@ -188,12 +255,8 @@ def make_plan(args, environ, job):
     for sub in ("qwen", "qwen-text", "qwen-worker"):
         if (case / sub).exists():
             raise Refused(f"{case / sub} exists: use a new --case")
-    if args.prompt_file is not None:
-        try:
-            prompt = args.prompt_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as error:
-            raise Refused(f"cannot read --prompt-file {args.prompt_file}: {error}") from None
-    elif args.prompt_from_case is not None:
+    notes = []
+    if args.prompt_from_case is not None:
         receipt = args.prompt_from_case / "qwen" / "conditioning.json"
         try:
             prompt = json.loads(receipt.read_text(encoding="utf-8")).get("prompt")
@@ -202,9 +265,26 @@ def make_plan(args, environ, job):
         if not isinstance(prompt, str):
             raise Refused(f"{receipt} has no prompt")
     else:
-        prompt = args.prompt
+        if args.prompt_file is not None:
+            try:
+                raw = args.prompt_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                raise Refused(f"cannot read --prompt-file {args.prompt_file}: {error}") from None
+        else:
+            raw = args.prompt
+        prompt = raw.strip()                    # as the server takes a prompt (webui/server.py check_fields)
+        if prompt and prompt != raw:
+            notes.append(f"the prompt's leading and trailing whitespace ({len(raw) - len(prompt)} characters) is "
+                         "dropped, as the server drops it")
     if not prompt or not prompt.strip():
         raise Refused("the prompt is empty")
+    if len(prompt) > PROMPT_MAX:
+        raise Refused(f"the prompt is too long ({len(prompt)} characters; the studio takes at most {PROMPT_MAX})")
+    try:
+        prompt.encode("utf-8")
+    except UnicodeEncodeError:
+        raise Refused("the prompt is not valid text (an unpaired UTF-16 surrogate, or bytes that are not UTF-8 in "
+                      "--prompt)") from None
     frames = {}
     for anchor, path in (("first", args.first), ("last", args.last)):
         if path is not None:
@@ -234,10 +314,11 @@ def make_plan(args, environ, job):
             "image_tokens": job.image_tokens(width, height) if frames else 0, "keyframes": list(frames),
             "frames": {anchor: str(path) for anchor, path in frames.items()}, "manifest": str(manifest),
             "package": str(package), "runtime_root": str(runtime), "prompt": prompt,
-            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "notes": []}
+            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "notes": notes,
+            "code_sha256": {"helper": file_sha256(__file__), "wrapper": file_sha256(WRAPPER),
+                            "job": file_sha256(JOB_SCRIPT)}}
     if frames and "first" not in frames:
-        plan["notes"].append("a last frame alone: the studio does not offer it yet (Qwen stretches it, diffusers "
-                             "cover-crops it)")
+        plan["notes"].append("a last frame alone: the studio does not offer it yet")
     if task == "fl2va" and not args.no_text_only:
         try:
             plan["text_only"] = text_only_prompt(prompt)
@@ -325,10 +406,11 @@ def encode(plan, Worker, paths, config, case):
                                         "prompt": text}, output_root=str(root / "qwen-text"))
             (root / "qwen-text" / "prompt.txt").write_text(text, encoding="utf-8")
             (root / "qwen-text" / "text-only.json").write_text(json.dumps(
-                {"dropped": plan["text_only"]["dropped"], "chars": len(text),
+                {"dropped": plan["text_only"]["dropped"], "notes": plan["text_only"]["notes"], "chars": len(text),
                  "prompt_sha256": hashlib.sha256(text.encode()).hexdigest()}, indent=1) + "\n")
             summary["encodes"]["qwen-text"] = check_receipt(receipt, root / "qwen-text", plan, "t2va", text, [])
-            summary["text_only"] = {"dropped": plan["text_only"]["dropped"], "chars": len(text)}
+            summary["text_only"] = {"dropped": plan["text_only"]["dropped"], "notes": plan["text_only"]["notes"],
+                                    "chars": len(text)}
             say(f"qwen-text/: {summary['encodes']['qwen-text']['rows']} rows")
     finally:
         worker.close()                                          # the close op, then TERM/KILL of its group
