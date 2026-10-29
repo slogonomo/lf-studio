@@ -57,6 +57,8 @@ win over the file.
   sources/sana-6e4a440/  NVIDIA's Open-H3-Regenerate-2K and Sol-Attn, extracted at the pinned commit
   Open-H3-Regenerate-2K  a link into it (LFSTUDIO_UPSCALE_PKG)
   checkpoints/Open-H3-Regenerate-2K/   its weights (LFSTUDIO_UPSCALE_WEIGHTS), files or links
+  # only with the optional step 66 (the experimental LightX2V Turbo; envs/regen2k from step 65 or 65 --env-only):
+  checkpoints/Minimax-h3-Turbo/        LightX2V's turbo LoRA files (LFSTUDIO_H3TURBO_LORAS)
   applied.patch          up to 0.2: the patch install/10-sana.sh applied last (now kept in the checkout's git directory)
 ```
 
@@ -97,12 +99,14 @@ for a mode whose weights were not downloaded.
 | `install/40-stage1.sh` | Stage1 venv (torch 2.12+cu130, FastVideo, fastvideo-kernel built for SM121, cuDNN 9.20) and the isolated FA4 target. | 5-22 min (5.5 min on a fast connection, 22 min in the first install), ~7.6 GB with FA4 |
 | `install/50-stage2.sh` | Stage2 venv (torch 2.13+cu132, LTX-2, ltx-kernels built for SM120/121), the torchaudio CUDA-check fix, the offline-context target. | ~6 min, ~6.2 GB |
 | `install/60-qwen-image.sh` | Docker: NVIDIA's `Dockerfile.qwen` as `sol-h3-spark-qwen:base`, then this repo's `qwen-image/` layer as `sol-h3-spark-qwen`. | ~20 min (mostly pulling NGC PyTorch 25.11), ~21 GB |
-| `install/65-regen2k.sh` | Optional: only for the [experimental Upscale](#experimental-upscale). Its own venv from a hashed lock, NVIDIA's Open-H3-Regenerate-2K, its weights. Nothing to do on the RTX 5090. | -, about 3.2 GB of packages and up to 14.4 GB of weights (est.) |
+| `install/65-regen2k.sh` | Optional: only for the [experimental Upscale](#experimental-upscale). Its own venv from a hashed lock, NVIDIA's Open-H3-Regenerate-2K, its weights. `--env-only`: the venv alone, without the weights. Nothing to do on the RTX 5090. | -, about 3.2 GB of packages and up to 14.4 GB of weights (est.) |
+| `install/66-h3turbo.sh` | Optional: only for the [experimental LightX2V Turbo](#experimental-lightx2v-turbo). Checks the base model, uses the Upscale's venv (or has 65 build it with `--env-only`), fetches LightX2V's turbo LoRA files, runs the job's check. Nothing to do on the RTX 5090. | -, 2.8 GB of LoRA files |
 | `install/70-manifests.sh` | `prepare.py` once per mode in `LFSTUDIO_TASKS`, writing `paths-<task>.json` with `qwen_python` in the patched checkout. Also applies NVIDIA's FastVideo loader patch. | - |
 | `install/80-prompt-cache.sh` | One-time Stage2 prompt cache (`fixed-prompt.pt`) with NVIDIA's `runtime.cache_builder`. Reads ~37 GB of INT8 weights and uses the GPU for ~20 s. | 16.7 s, 12.6 MB |
 | `install/90-env.sh` | Writes `~/.config/lf-studio/env` and runs `bin/lf-studio --check`. | - |
 
-Run them in order, and skip 65 unless you want the [experimental Upscale](#experimental-upscale). Don't run 40 and
+Run them in order, and skip 65 and 66 unless you want the [experimental Upscale](#experimental-upscale) or the
+[experimental LightX2V Turbo](#experimental-lightx2v-turbo). Don't run 40 and
 50 at the same time: two `nvcc` builds at once can run the box out of memory.
 After 40, run `install/10-sana.sh` again to run the CPU tests with the new env.
 
@@ -203,6 +207,53 @@ to end on a fresh box yet. The Upscale's settings (strength, audio, load, prerea
 To remove it: set `LFSTUDIO_UPSCALE=0` (or delete the line), then remove `envs/regen2k`, `sources/sana-6e4a440`, the
 `Open-H3-Regenerate-2K` link and `checkpoints/Open-H3-Regenerate-2K` under `$LFSTUDIO_HOME`. Files it linked from the
 Hugging Face cache stay there.
+
+## Experimental: LightX2V Turbo
+
+LightX2V Turbo ([README](../README.md#models)) is a second model next to Sol-H3: the full MiniMax-H3 in one stage with
+LightX2V's turbo LoRA. It is off unless `LFSTUDIO_MODELS` lists it, and runs on the DGX Spark only. It needs one more
+step after the others (20 for the MiniMax-H3 base model, and 10 for the Sana clone when the Upscale's environment is
+not there yet):
+
+```bash
+install/66-h3turbo.sh --dry-run     # what it would do
+install/66-h3turbo.sh
+echo LFSTUDIO_MODELS=sol-h3,lightx2v-turbo >> ~/.config/lf-studio/env
+bin/lf-studio --check               # checks its settings, environment, base model and LoRA files too
+```
+
+Then restart the studio. What the step does:
+
+1. **The base model**, `$LFSTUDIO_CHECKPOINTS/MiniMax-H3` (`LFSTUDIO_H3TURBO_BASE`, the studio's own, from
+   `install/20-weights.sh`), checked by name only: `transformer/`, `vae/` and `audio_vae/` with their configs and
+   weights, `scheduler/` and `audio_scheduler/`. NVIDIA's download for t2va alone has `vae/config.json` without the
+   VAE's weights, which come with fl2va or ref2va: such a base is refused before anything else runs ("run
+   install/20-weights.sh with fl2va in LFSTUDIO_TASKS"; the default `LFSTUDIO_TASKS` has it). No new base weights are
+   needed.
+2. **Its Python**: the Upscale's venv, `$LFSTUDIO_HOME/envs/regen2k` (torch 2.11.0+cu130 and diffusers 0.40.0, from
+   `install/freeze/regen2k-lock.txt`). When step 65 has marked it done with this lock it is used as it is; else 66 runs
+   `install/65-regen2k.sh --env-only`, which builds it (steps 1-3 of [the Upscale's step](#experimental-upscale))
+   without the Upscale's 14.4 GB of weights. 66 itself never builds, copies or changes a venv. Both models use the
+   one environment, so a new lock moves them together; the job's check (4) says when its packages don't fit. An
+   environment of your own can be named with `LFSTUDIO_H3TURBO_PYTHON`; it is then used as it is.
+3. **LightX2V's turbo LoRA files** from `lightx2v/Minimax-h3-Turbo` at revision `30f485ed` into
+   `$LFSTUDIO_CHECKPOINTS/Minimax-h3-Turbo` (`LFSTUDIO_H3TURBO_LORAS`, the folder of NVIDIA's ref2va LoRA from step 20):
+   `minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors`, the one the studio runs, and
+   `minimax_h3_fl2v_turbo_8step_v1.1_768p_bf16.safetensors` (8 steps, not offered yet), 1,383,677,808 bytes each.
+   `install/h3turbo_weights.py` pins each file's size and SHA-256 and looks nothing up at install time. A file already
+   there with its SHA-256 is kept; a download goes to `<name>.partial`, goes on from there when the step runs again,
+   and is renamed only once its size and SHA-256 match. No Hugging Face token is ever sent (the repository is public,
+   and a redirect to Hugging Face's CDN would take it along).
+4. **The job's own check**, `jobs/h3turbo_job.py --check-install`, in that Python without the GPU (and without reading
+   weights): its packages, the base model and the LoRA files.
+
+Every step stops the script when it fails, and a run again goes on where it stopped. The step has not been run end to
+end on a fresh box yet. LightX2V Turbo's settings (its Python, base model, LoRA folder, the prompt encoder's canvas,
+the memory floor and guard) are in [bin/env.example](../bin/env.example).
+
+To remove it: take `lightx2v-turbo` out of `LFSTUDIO_MODELS` (or delete the line), then delete the two files above
+from `checkpoints/Minimax-h3-Turbo` (not NVIDIA's ref2va LoRA next to them) and, if the Upscale doesn't use it,
+`envs/regen2k` as described for the Upscale. Its clips stay in the history; Remix brings them back as Sol-H3 clips.
 
 ## RTX 5090
 

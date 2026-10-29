@@ -22,6 +22,14 @@
 # Needs 10-sana.sh (the clone) and 20-weights.sh (MiniMax-H3) first. Every step stops the script when it fails (#74).
 # Idempotent: what is in place is kept. FORCE=1 builds the venv again (the old one is moved aside, not deleted); a
 # venv this script did not make is never touched.
+# --env-only: steps 1-3 alone, the environment without the Upscale's weights. The experimental LightX2V Turbo
+# (66-h3turbo.sh, which runs this when the environment is not there yet) uses the same environment.
+ENV_ONLY=0
+args=()
+for arg in "$@"; do
+    if [[ "$arg" == --env-only ]]; then ENV_ONLY=1; else args+=("$arg"); fi
+done
+set -- "${args[@]}"                                    # (source without arguments would pass on the script's own)
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
 if [[ "$LFSTUDIO_BACKEND" != spark ]]; then
     say "LFSTUDIO_BACKEND=$LFSTUDIO_BACKEND: nothing to do (the experimental Upscale runs on the DGX Spark only)"
@@ -162,6 +170,11 @@ assert torch.__version__ == "2.11.0+cu130" and diffusers.__version__ == "0.40.0"
     else
         echo "done $LOCK_SHA" > "$MARK" || die "cannot write $MARK"
     fi
+fi
+
+if [[ "$ENV_ONLY" == 1 ]]; then
+    say "done: the environment $VENV (--env-only: the Upscale's weights and check left out; run this again without it for the Upscale)"
+    exit 0
 fi
 
 step "weights -> $WEIGHTS (Efficient-Large-Model/Open-H3-Regenerate-2K at 5809c33, and the AdaLN table)"

@@ -562,7 +562,7 @@ class InstallDryRun(unittest.TestCase):
     def test_scripts(self):
         self.assertEqual(INSTALL, ["00-check.sh", "05-python.sh", "10-sana.sh", "20-weights.sh", "30-sources.sh",
                                    "40-stage1.sh", "50-stage2.sh", "60-qwen-image.sh", "65-regen2k.sh",
-                                   "70-manifests.sh", "80-prompt-cache.sh", "90-env.sh"])
+                                   "66-h3turbo.sh", "70-manifests.sh", "80-prompt-cache.sh", "90-env.sh"])
 
     def test_spark(self):
         out = self.spark()
@@ -583,6 +583,8 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("--include-offline", out["20-weights.sh"][1])
         self.assertIn("python3.12 prepare.py --fetch-sources", out["30-sources.sh"][1])
         self.assertIn("uv-aarch64-unknown-linux-gnu.tar.gz", out["65-regen2k.sh"][1])        # InstallRegen2k: more
+        self.assertIn("65-regen2k.sh --env-only", out["66-h3turbo.sh"][1])                    # InstallH3Turbo: more
+        self.assertIn("h3turbo_weights.py --loras", out["66-h3turbo.sh"][1])
         code, text = out["40-stage1.sh"]
         if code == 0:                                       # needs /usr/local/cuda, as before
             self.assertIn("fastvideo-kernel", text)
@@ -659,6 +661,9 @@ class InstallDryRun(unittest.TestCase):
         self.assertNotIn("docker build", out["60-qwen-image.sh"][1])
         self.assertIn("nothing to do (the experimental Upscale runs on the DGX Spark only)", out["65-regen2k.sh"][1])
         self.assertNotIn("+ ", out["65-regen2k.sh"][1])
+        self.assertIn("nothing to do (the experimental LightX2V Turbo runs on the DGX Spark only)",
+                      out["66-h3turbo.sh"][1])
+        self.assertNotIn("+ ", out["66-h3turbo.sh"][1])
         text = out["70-manifests.sh"][1]
         self.assertIn(f"--python-qwen {self.d}/home/sol-h3/envs/stage1/bin/python", text)
         self.assertNotIn("qwen_python.sh", text)
@@ -1282,6 +1287,354 @@ class Regen2kWeights(unittest.TestCase):
         self.assertEqual((weights / "lora" / "adaln_t_table.bin").read_bytes(), table)
         self.assertEqual(len(cdn_seen), 3)                                  # header length, header, the tensor
         self.assertEqual((hub_auth, cdn_auth), ([None] * 3, [None] * 3))
+
+
+# The python of the environment install/66-h3turbo.sh uses (a venv 65 marked done): it logs each call with the
+# settings the job's check reads, and exits FAKE_WEIGHTS_RC for the LoRA step and FAKE_CHECK_RC for the job's check
+FAKE_TURBO_PYTHON = r"""#!/bin/bash
+d=$(dirname "$0")
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-unset} BASE=${LFSTUDIO_H3TURBO_BASE:-} LORAS=${LFSTUDIO_H3TURBO_LORAS:-} $*" >> "$d/python.log"
+case "$*" in
+    *h3turbo_weights.py*) exit ${FAKE_WEIGHTS_RC:-0} ;;
+    *--check-install*) exit ${FAKE_CHECK_RC:-0} ;;
+    *) exit 3 ;;
+esac
+"""
+
+
+def base_model(root, vae_weights=True):
+    """A MiniMax-H3 base model's layout with empty files: what install/66-h3turbo.sh checks (names only)."""
+    root = Path(root)
+    for part in ("transformer", "vae", "audio_vae"):
+        (root / part).mkdir(parents=True)
+        (root / part / "config.json").write_text("{}")
+        if part != "vae" or vae_weights:
+            (root / part / "diffusion_pytorch_model.safetensors").write_bytes(b"")
+    for part in ("scheduler", "audio_scheduler"):
+        (root / part).mkdir()
+        (root / part / "scheduler_config.json").write_text("{}")
+    return root
+
+
+class InstallH3Turbo(unittest.TestCase):
+    """install/66-h3turbo.sh, the experimental LightX2V Turbo's optional step (DGX Spark only): its --dry-run, the
+    base-model check (a t2va-only download, without the VAE's weights, is refused), the Upscale's environment reused
+    (or built by 65-regen2k.sh --env-only, never touched here), the LoRA step and the job's own check, with fakes
+    for the venv's python and uv. Nothing is downloaded; everything is in a temp directory."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="lf-studio-h3turbo-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.fake = fake_bin(self.d / "fake")
+        self.home = self.d / "home" / "sol-h3"
+        self.home.mkdir(parents=True)
+        (self.d / "tmp").mkdir()
+        self.base = self.home / "checkpoints" / "MiniMax-H3"
+        self.loras = self.home / "checkpoints" / "Minimax-h3-Turbo"
+        self.venv = self.home / "envs" / "regen2k"
+        self.job = STUB / "h3turbo_job.py"
+        lock = REPO / "install" / "freeze" / "regen2k-lock.txt"
+        self.lock_sha = subprocess.run(["sha256sum", str(lock)], capture_output=True, text=True,
+                                       check=True).stdout.split()[0]
+
+    def run_script(self, name, *args, **settings):
+        env = clean_env(HOME=str(self.d / "home"), TMPDIR=str(self.d / "tmp"), LFSTUDIO_ENV=str(self.d / "no-env-file"),
+                        LFSTUDIO_HOME=str(self.home), PATH=f"{self.fake}{os.pathsep}{os.environ['PATH']}",
+                        FAKE_ARCH="aarch64", FAKE_GPU="NVIDIA GB10", LFSTUDIO_H3TURBO_SCRIPT=str(self.job))
+        env.update(settings)
+        run = subprocess.run(["bash", str(REPO / "install" / name), *args], env=env, capture_output=True, text=True,
+                             timeout=120)
+        return run.returncode, run.stdout + run.stderr
+
+    def env_done(self):
+        """The Upscale's environment as 65-regen2k.sh leaves it: marked done with this lock."""
+        (self.venv / "bin").mkdir(parents=True)
+        (self.venv / "bin" / "python").write_text(FAKE_TURBO_PYTHON)
+        (self.venv / "bin" / "python").chmod(0o755)
+        (self.venv / "lf-studio-install.txt").write_text(f"done {self.lock_sha}\n")
+
+    def calls(self):
+        log = self.venv / "bin" / "python.log"
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_dry_run(self):
+        """Without an environment: 65-regen2k.sh --env-only, then the LoRA step and the job's check, printed; a
+        missing base model is a warning in a dry run; nothing is written."""
+        code, text = self.run_script("66-h3turbo.sh", "--dry-run")
+        self.assertEqual(code, 0, text)
+        h = str(self.home)
+        self.assertIn(f"WARNING: no base model at {h}/checkpoints/MiniMax-H3 (LFSTUDIO_H3TURBO_BASE): run "
+                      "install/20-weights.sh first (dry run: going on)", text)
+        for line in (f"+ env FORCE=0 bash {REPO}/install/65-regen2k.sh --env-only\n",
+                     f"+ {h}/envs/regen2k/bin/python -I -B {REPO}/install/h3turbo_weights.py --loras "
+                     f"{h}/checkpoints/Minimax-h3-Turbo\n",
+                     f"+ env CUDA_VISIBLE_DEVICES= LFSTUDIO_H3TURBO_BASE={h}/checkpoints/MiniMax-H3 "
+                     f"LFSTUDIO_H3TURBO_LORAS={h}/checkpoints/Minimax-h3-Turbo LFSTUDIO_H3TURBO_PYTHON="
+                     f"{h}/envs/regen2k/bin/python {h}/envs/regen2k/bin/python -I -B {self.job} --check-install\n"):
+            self.assertIn(line, text)
+        order = [text.index(x) for x in ("=== 66-h3turbo.sh: base model", "65-regen2k.sh --env-only",
+                                         "h3turbo_weights.py", "--check-install")]
+        self.assertEqual(order, sorted(order))
+        self.assertFalse(any(self.home.iterdir()), "a dry run writes nothing")
+        base_model(self.base, vae_weights=False)
+        self.env_done()
+        code, text = self.run_script("66-h3turbo.sh", "--dry-run", LFSTUDIO_H3TURBO_LORAS=str(self.d / "loras"))
+        self.assertEqual(code, 0, text)
+        self.assertIn("no VAE weights in vae/ (a t2va-only download has vae/config.json only): run "
+                      "install/20-weights.sh with fl2va in LFSTUDIO_TASKS (dry run: going on)", text)
+        self.assertIn("used as it is", text)
+        self.assertNotIn("65-regen2k.sh", text)
+        self.assertIn(f"h3turbo_weights.py --loras {self.d}/loras\n", text)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_base_without_vae_weights_is_refused(self):
+        """NVIDIA's t2va-only download has vae/config.json only: refused before anything is built or downloaded."""
+        base_model(self.base, vae_weights=False)
+        code, text = self.run_script("66-h3turbo.sh")
+        self.assertEqual(code, 1, text)
+        self.assertIn(f"ERROR: the base model {self.base} has no VAE weights in vae/ (a t2va-only download has "
+                      "vae/config.json only): run install/20-weights.sh with fl2va in LFSTUDIO_TASKS", text)
+        self.assertNotIn("=== 66-h3turbo.sh: Python", text)
+        self.assertFalse((self.home / "envs").exists())
+        for missing, words in (("audio_vae/config.json", "has no audio_vae/config.json"),
+                               ("scheduler/scheduler_config.json", "has no scheduler/scheduler_config.json")):
+            shutil.rmtree(self.base)
+            base_model(self.base)
+            (self.base / missing).unlink()
+            code, text = self.run_script("66-h3turbo.sh")
+            self.assertEqual(code, 1, text)
+            self.assertIn(words, text)
+
+    def test_with_the_upscales_environment(self):
+        """The environment 65 marked done is used as it is (never changed); the LoRA step and the job's check run
+        in it, the check without the GPU and with the settings; a failed step stops the script (#74)."""
+        base_model(self.base)
+        self.env_done()
+        before = sorted(p.name for p in self.venv.rglob("*"))
+        code, text = self.run_script("66-h3turbo.sh", FAKE_WEIGHTS_RC="1")
+        self.assertEqual(code, 1, text)
+        self.assertIn("ERROR: the LoRA files are not complete (above); run this again to go on", text)
+        self.assertEqual(len(self.calls()), 1)
+        code, text = self.run_script("66-h3turbo.sh")
+        self.assertEqual(code, 0, text)
+        self.assertIn("set LFSTUDIO_MODELS=sol-h3,lightx2v-turbo in", text)
+        weights, check = self.calls()[1:]
+        self.assertTrue(weights.endswith(f"-I -B {REPO}/install/h3turbo_weights.py --loras {self.loras}"), weights)
+        self.assertEqual(check, f"CUDA_VISIBLE_DEVICES= BASE={self.base} LORAS={self.loras} -I -B {self.job} "
+                                "--check-install")
+        code, text = self.run_script("66-h3turbo.sh", FAKE_CHECK_RC="2")
+        self.assertEqual(code, 1, text)
+        self.assertIn("ERROR: LightX2V Turbo's files or environment are not complete (above)", text)
+        self.assertEqual((self.venv / "lf-studio-install.txt").read_text(), f"done {self.lock_sha}\n")
+        self.assertEqual(sorted(p.name for p in self.venv.rglob("*")), before + ["python.log"])
+        code, text = self.run_script("66-h3turbo.sh", LFSTUDIO_H3TURBO_SCRIPT=str(self.d / "no-job.py"))
+        self.assertEqual(code, 1, text)
+        self.assertIn(f"no {self.d}/no-job.py: this copy of LF Studio has no LightX2V Turbo job", text)
+
+    def test_an_environment_of_your_own(self):
+        """LFSTUDIO_H3TURBO_PYTHON: used as it is, without 65; it must be an executable."""
+        base_model(self.base)
+        own = self.d / "own" / "bin" / "python"
+        own.parent.mkdir(parents=True)
+        code, text = self.run_script("66-h3turbo.sh", LFSTUDIO_H3TURBO_PYTHON=str(own))
+        self.assertEqual(code, 1, text)
+        self.assertIn(f"LFSTUDIO_H3TURBO_PYTHON={own} is not an executable Python", text)
+        own.write_text(FAKE_TURBO_PYTHON)
+        own.chmod(0o755)
+        code, text = self.run_script("66-h3turbo.sh", LFSTUDIO_H3TURBO_PYTHON=str(own))
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("65-regen2k.sh", text)
+        self.assertEqual(len((own.parent / "python.log").read_text().splitlines()), 2)
+        self.assertFalse((self.home / "envs").exists())
+
+    def test_the_environment_is_built_by_65_env_only(self):
+        """No environment yet: 65-regen2k.sh --env-only builds and marks it (with a fake uv; never the Upscale's
+        weights), then the LoRA step and the check run in it."""
+        base_model(self.base)
+        uv = self.home / "bin" / "uv"
+        uv.parent.mkdir(parents=True)
+        uv.write_text(FAKE_UV)
+        uv.chmod(0o755)
+        src = self.home / "sources" / "sana-6e4a440"                       # the extract, as if made before
+        (src / "models" / "Open-H3-Regenerate-2K").mkdir(parents=True)
+        (src / ".lf-studio-commit").write_text(SANA_REV + "\n")
+        code, text = self.run_script("66-h3turbo.sh", FAKE_PY_RC="0")
+        self.assertEqual(code, 0, text)
+        self.assertIn("(--env-only: the Upscale's weights and check left out", text)
+        self.assertEqual((self.venv / "lf-studio-install.txt").read_text(), f"done {self.lock_sha}\n")
+        calls = (self.venv / "bin" / "python.log").read_text()
+        self.assertNotIn("regen2k_weights.py", calls)
+        self.assertNotIn("regen2k_job.py", calls)
+        self.assertIn(f"-I -B {REPO}/install/h3turbo_weights.py --loras {self.loras}", calls)
+        self.assertIn(f"-I -B {self.job} --check-install", calls)
+        self.assertFalse((self.home / "checkpoints" / "Open-H3-Regenerate-2K").exists())
+
+    def test_65_env_only(self):
+        code, text = self.run_script("65-regen2k.sh", "--env-only", "--dry-run")
+        self.assertEqual(code, 0, text)
+        self.assertIn(f"venv --python 3.11.17 {self.venv}\n", text)
+        self.assertIn("echo done", text)
+        self.assertNotIn("regen2k_weights.py", text)
+        self.assertNotIn("=== 65-regen2k.sh: check", text)
+        code, text = self.run_script("65-regen2k.sh", "--env-only", "--nonsense")
+        self.assertEqual(code, 2, text)
+        self.assertIn("unknown argument: --nonsense", text)
+
+
+class H3TurboWeights(unittest.TestCase):
+    """install/h3turbo_weights.py: LightX2V's turbo LoRA files kept, resumed or downloaded and checked against their
+    pinned size and SHA-256, from a fake Hugging Face (HF_ENDPOINT) that redirects to a fake CDN on another host
+    name: no token ever goes along."""
+
+    def setUp(self):
+        import hashlib
+        import importlib.util
+        self.d = Path(tempfile.mkdtemp(prefix="lf-studio-h3turbo-weights-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        spec = importlib.util.spec_from_file_location("h3turbo_weights", REPO / "install" / "h3turbo_weights.py")
+        self.w = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.w)
+        self.w.say = lambda text: None
+        self.w.MARGIN = 0
+        self.data = {name: (f"bytes of {name} ".encode() * 40)[:999] for name in self.w.FILES}
+        self.w.FILES = {name: (len(b), hashlib.sha256(b).hexdigest()) for name, b in self.data.items()}
+        self.served = dict(self.data)
+        self.seen = []                                    # (host, path, Range, Authorization)
+        self.ranges = True
+
+    def test_pinned(self):
+        """The files the studio's LoRA presets name, at revision 30f485ed, with the sizes and SHA-256 of the Hugging
+        Face listing (and of the research probe's runs)."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pinned", REPO / "install" / "h3turbo_weights.py")
+        w = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(w)
+        self.assertEqual((w.REPO, w.REVISION), ("lightx2v/Minimax-h3-Turbo",
+                                                "30f485ed874aa44c8183348ad361c5eabad318da"))
+        self.assertEqual(w.FILES, {
+            "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors":
+                (1383677808, "97b775707bb5732e01dba0cf3833d3fe2947c953859d4d05ea3bd74894c43d2b"),
+            "minimax_h3_fl2v_turbo_8step_v1.1_768p_bf16.safetensors":
+                (1383677808, "fb41185df94bf01f9ac1aeedc2f07e5f748da3b237d18a16f5b3f5960839fdab")})
+        stub = (STUB / "h3turbo_job.py").read_text()               # the job's presets, as the stub has them
+        for name, (size, digest) in w.FILES.items():
+            self.assertIn(f'"file": "{name}", "bytes": {size},\n        "sha256": "{digest}"', stub)
+
+    def serve(self, redirect=None):
+        """A fake Hugging Face (or CDN) for the pinned files: Range requests get 206 unless self.ranges is false."""
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                test.seen.append((self.headers.get("Host"), self.path, self.headers.get("Range"),
+                                  self.headers.get("Authorization")))
+                if redirect:
+                    self.send_response(302)
+                    self.send_header("Location", redirect + self.path)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                prefix = f"/{test.w.REPO}/resolve/{test.w.REVISION}/"
+                name = self.path[len(prefix):] if self.path.startswith(prefix) else None
+                if name not in test.served:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                body = test.served[name]
+                m = re.fullmatch(r"bytes=(\d+)-", self.headers.get("Range") or "")
+                if m and test.ranges:
+                    if int(m.group(1)) >= len(body):
+                        self.send_response(416)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    body = body[int(m.group(1)):]
+                    self.send_response(206)
+                else:
+                    self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def main(self, loras):
+        cdn = self.serve()
+        hub = self.serve(redirect=cdn.replace("127.0.0.1", "localhost"))    # another host name, as Hugging Face's CDN
+        with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_secret", "HUGGING_FACE_HUB_TOKEN": "hf_secret",
+                                          "HF_ENDPOINT": hub}), contextlib.redirect_stderr(io.StringIO()) as err:
+            code = self.w.main(["--loras", str(loras)])
+        return code, err.getvalue()
+
+    def test_download_resume_and_keep(self):
+        """The first file goes on from its .partial (a Range request), the second comes whole; both are checked
+        and renamed into place, and kept as they are on the next run (no request). No Authorization header ever."""
+        loras = self.d / "loras"
+        loras.mkdir()
+        first, second = list(self.data)
+        (loras / f"{first}.partial").write_bytes(self.data[first][:300])
+        self.assertEqual(self.main(loras)[0], 0)
+        for name in self.data:
+            self.assertEqual((loras / name).read_bytes(), self.data[name])
+        self.assertEqual(sorted(p.name for p in loras.iterdir()), sorted(self.data))
+        self.assertEqual([r[2] for r in self.seen if r[1].endswith(first)], ["bytes=300-", "bytes=300-"])
+        self.assertEqual([r[2] for r in self.seen if r[1].endswith(second)], [None, None])
+        self.assertEqual({r[0].split(":")[0] for r in self.seen}, {"127.0.0.1", "localhost"})   # hub, then CDN
+        self.assertEqual({r[3] for r in self.seen}, {None})
+        self.seen.clear()
+        before = sorted(p.stat().st_mtime_ns for p in loras.iterdir())
+        self.assertEqual(self.main(loras)[0], 0)
+        self.assertEqual(self.seen, [])
+        self.assertEqual(sorted(p.stat().st_mtime_ns for p in loras.iterdir()), before)
+
+    def test_without_ranges_and_a_complete_partial(self):
+        """A server that ignores Range sends the whole file: it starts over. A .partial that is complete already
+        (416 for the rest) is checked and renamed."""
+        loras = self.d / "loras"
+        loras.mkdir()
+        first, second = list(self.data)
+        (loras / f"{first}.partial").write_bytes(b"junk" * 50)
+        (loras / f"{second}.partial").write_bytes(self.data[second])
+        self.ranges = False
+        self.assertEqual(self.main(loras)[0], 0)
+        self.assertEqual((loras / first).read_bytes(), self.data[first])
+        self.ranges = True
+        (loras / second).unlink()
+        (loras / f"{second}.partial").write_bytes(self.data[second])
+        self.assertEqual(self.main(loras)[0], 0)
+        self.assertEqual((loras / second).read_bytes(), self.data[second])
+
+    def test_bad_files(self):
+        """A download without the pinned SHA-256 is kept as .partial.bad and fails; a wrong file in place is set
+        aside as .bad and downloaded again; a server that sends more than the pinned size is refused."""
+        loras = self.d / "loras"
+        loras.mkdir()
+        first, second = list(self.data)
+        self.served[first] = bytes(len(self.data[first]))
+        code, err = self.main(loras)
+        self.assertEqual(code, 1)
+        self.assertIn(f"{first} does not have the pinned size", err)
+        self.assertEqual(sorted(p.name for p in loras.iterdir()), [f"{first}.partial.bad"])
+        self.served[first] = self.data[first]
+        (loras / first).write_bytes(b"an older file")
+        self.assertEqual(self.main(loras)[0], 0)
+        self.assertEqual((loras / first).read_bytes(), self.data[first])
+        self.assertEqual((loras / f"{first}.bad").read_bytes(), b"an older file")
+        (loras / second).unlink()
+        self.served[second] = self.data[second] + b"more"
+        code, err = self.main(loras)
+        self.assertEqual(code, 1)
+        self.assertIn("is larger than the pinned", err)
+        self.assertFalse((loras / second).exists())
 
 
 # A venv's python for pillow_update: `pip show -q`, `pip uninstall -y` and `pip install` act on the package names in
