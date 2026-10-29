@@ -41,32 +41,35 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   expected times); with it on, every finished job in /api/state, /api/jobs and the API record has "upscalable": {"ok":
   true, "clip_audio": bool} or {"ok": false, "why": "..."}.
 - The model of a clip ("model" in POST /api/generate, the form and JSON): sol-h3 (Sol-H3, NVIDIA's two-stage
-  pipeline above; the default: a request without a model and a record without one mean sol-h3) or, experimental and
-  on the DGX Spark only with LFSTUDIO_MODELS=sol-h3,lightx2v-turbo, lightx2v-turbo (LightX2V Turbo: the full
-  MiniMax-H3 in one stage with LightX2V's turbo LoRA). MODELS is the registry: per model its name, how it runs, its
-  options (lightx2v-turbo: "resolution" 576p, the default, or 768p; "steps" 4) and its capability table: the rows of
-  what it makes now, and why not yet for the rest of what every model is meant to make (END_STATE, Sol-H3's tasks,
-  keyframes, lengths and formats). lightx2v-turbo makes t2va, and fl2va with a first frame or a first and a last
-  frame, at 5 s, 16:9 or 9:16, now. A model that is off or unknown, an option of another model, a value of an option
-  it does not have, or a clip outside its table gets 400 with the reason; so does a prompt with MiniMax's tokens for
-  lightx2v-turbo with SOL_H3_PROMPT_TOKENS=plain. With more than one model on, /api/state has "models"
-  (public_models: the enabled models' tables, options and expected times) and "session" "model", the page gets the
-  same table in a <script id="lf-models">, and the records in /api/state, /api/jobs and the API have "model" and
-  "file_name" (the name /video/<id> downloads as). POST /api/load takes "model": a LightX2V Turbo clip loads its model
-  itself (409). A LightX2V Turbo clip is a job of its own in the same queue, in order with every other clip
-  (run_model_job): it closes the Sol-H3 session and stops a warm-up (status "freeing memory"), refuses to start below
-  LFSTUDIO_H3TURBO_MIN_FREE_GIB, encodes the prompt with a transient Qwen worker (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, status
-  "encoding the prompt"; for fl2va also the prompt without its keyframe references, "text_only", for a later Upscale:
-  null when nothing is left of it, a prompt of keyframe lines alone), then runs its job (LFSTUDIO_H3TURBO_SCRIPT with
-  LFSTUDIO_H3TURBO_PYTHON; status "loading models + generating", "generating" from its first step, "job_phase" from its
-  "[lf-studio] phase" lines) in a process group of its own, both under one pipeline_call, so Cancel stops either;
-  LFSTUDIO_H3TURBO_GUARD_GIB guards it. No retry, no warm-up afterwards (nor at start after one). Its record has
-  "model", "model_opts" (the options, the size, the LoRA, the Qwen canvas and its image tokens) and the job's times and
-  memory; its files go into <session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case_id>/ (qwen/,
-  qwen-text/, turbo/), its name has the model and the options:
-  lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. It can't be upscaled yet. With LFSTUDIO_MODELS
-  unset (sol-h3 only) everything is as before: no "models", no new keys in the records or the session, the page as it
-  is; "model": "sol-h3" is taken, another model is refused.
+  pipeline above; the default: a request without a model and a record without one mean sol-h3) or, experimental and on
+  the DGX Spark only with LFSTUDIO_MODELS=sol-h3,lightx2v-turbo, lightx2v-turbo (LightX2V Turbo: the full MiniMax-H3 in
+  one stage with LightX2V's turbo LoRA). MODELS is the registry: per model its name, how it runs, its options
+  (lightx2v-turbo: "resolution" 576p, the default, or 768p; "steps" 4) and its capability table: the rows of what it
+  makes now, and why not yet for the rest of what every model is meant to make (END_STATE, Sol-H3's tasks, keyframes,
+  lengths and formats). lightx2v-turbo makes t2va, and fl2va with a first frame, a last frame or both, at 5, 6, 7, 8,
+  10, 12 or 15 s, 16:9 or 9:16, now (not ref2va). Its clip with a last frame keeps every frame its job makes, so that it
+  ends on the frame the last keyframe is anchored to (124 frames at 5 s, 5.17 s; the studio's 121 otherwise). A 15 s
+  clip is 362 frames made, past diffusers 0.40's 15.0 s: its job raises that limit for that clip (jobs/h3turbo_job.py,
+  "Lengths"). A model that is off or unknown, an option of another model, a value of an option it does not have, or a
+  clip outside its table gets 400 with the reason; so does a prompt with MiniMax's tokens for lightx2v-turbo with
+  SOL_H3_PROMPT_TOKENS=plain. With more than one model on, /api/state has "models" (public_models: the enabled models'
+  tables, options and expected times) and "session" "model", the page gets the same table in a <script id="lf-models">,
+  and the records in /api/state, /api/jobs and the API have "model" and "file_name" (the name /video/<id> downloads as).
+  POST /api/load takes "model": a LightX2V Turbo clip loads its model itself (409). A LightX2V Turbo clip is a job of
+  its own in the same queue, in order with every other clip (run_model_job): it closes the Sol-H3 session and stops a
+  warm-up (status "freeing memory"), refuses to start below LFSTUDIO_H3TURBO_MIN_FREE_GIB, or the more its job's
+  min_free_for asks for at its size and length (768p from 12 s: 103 GiB at 12 s, 107 at 15 s with the default 100),
+  encodes the prompt with a transient Qwen worker (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, status "encoding the prompt"; for
+  fl2va also the prompt without its keyframe references, "text_only", for a later Upscale: null when nothing is left of
+  it, a prompt of keyframe lines alone), then runs its job (LFSTUDIO_H3TURBO_SCRIPT with LFSTUDIO_H3TURBO_PYTHON; status
+  "loading models + generating", "generating" from its first step, "job_phase" from its "[lf-studio] phase" lines) in a
+  process group of its own, both under one pipeline_call, so Cancel stops either; LFSTUDIO_H3TURBO_GUARD_GIB guards it.
+  No retry, no warm-up afterwards (nor at start after one). Its record has "model", "model_opts" (the options, the size,
+  the LoRA, the Qwen canvas and its image tokens) and the job's times and memory; its files go into
+  <session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case_id>/ (qwen/, qwen-text/, turbo/), its name has
+  the model and the options: lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. It can't be upscaled
+  yet. With LFSTUDIO_MODELS unset (sol-h3 only) everything is as before: no "models", no new keys in the records or the
+  session, the page as it is; "model": "sol-h3" is taken, another model is refused.
 
 For agents and scripts (#29; docs/API.md):
 - POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
@@ -161,16 +164,17 @@ Environment:
   LFSTUDIO_H3TURBO_LORAS     the folder of LightX2V's turbo LoRA files (default
                              $LFSTUDIO_CHECKPOINTS/Minimax-h3-Turbo)
   LFSTUDIO_H3TURBO_QWEN_CANVAS  where the prompt encoder sees the keyframes: draft (the default: the 384p draft canvas,
-                             252 image tokens per keyframe, as every measured LightX2V Turbo clip) or canvas (the
-                             clip's own canvas)
+                             252 image tokens per keyframe) or canvas (the clip's own canvas: 576 or 1008 tokens,
+                             ~2-3 % longer steps; the GPU validation found its frame 0 the same as draft's)
   LFSTUDIO_H3TURBO_MIN_FREE_GIB  MemAvailable a LightX2V Turbo clip needs once the Sol-H3 session is closed (default
-                             100; 0 = no check)
+                             100; more for 768p clips from 12 s: its job's min_free_for, 103 GiB at 12 s and 107 at
+                             15 s; 0 = no check)
   LFSTUDIO_H3TURBO_GUARD_GIB stop its job when MemAvailable stays below this for 3 s (default 5; 0 = no guard)
   Test hooks: LFSTUDIO_UPSCALE_SCRIPT (the job script, default upscale/regen2k_job.py), LFSTUDIO_H3TURBO_SCRIPT
-  (LightX2V Turbo's job, which the server loads, for its settings, presets and job.json check, and runs; default
-  jobs/h3turbo_job.py), LFSTUDIO_H3TURBO_ENCODE_SCRIPT (its prompt encode, run with this server's Python in the
-  package; default bench/h3turbo_encode.py) and LFSTUDIO_TEST_MEMINFO (a file read for MemAvailable instead of
-  /proc/meminfo; with the Upscale or LightX2V Turbo on, the start log warns when it is set).
+  (LightX2V Turbo's job, which the server loads, for its model id, settings, presets, memory floor and job.json check,
+  and runs; default jobs/h3turbo_job.py), LFSTUDIO_H3TURBO_ENCODE_SCRIPT (its prompt encode, run with this server's
+  Python in the package; default bench/h3turbo_encode.py) and LFSTUDIO_TEST_MEMINFO (a file read for MemAvailable
+  instead of /proc/meminfo; with the Upscale or LightX2V Turbo on, the start log warns when it is set).
 Until 0.6 these settings may also have their names up to 0.4 (SOLH3_HOST for LFSTUDIO_HOST, and so on; not
 LFSTUDIO_LAUNCHER_PID, LFSTUDIO_MODELS or the LFSTUDIO_UPSCALE and LFSTUDIO_H3TURBO ones, which are new): an old name
 counts where the new one is not set, with one warning. The default state directory is
@@ -419,17 +423,23 @@ MODELS = {
                          {"value": "768p", "size": {"landscape": [1344, 768], "portrait": [768, 1344]}})},
             {"name": "steps", "label": "Steps", "type": "integer", "default": 4, "unit": "step",
              "choices": ({"value": 4},)}),
-        "offers": ({"task": ("t2va", "fl2va"), "frames": ("first", "first+last"), "seconds": (5,),
+        # The GPU validation on a DGX Spark (2026-10-29) ran t2va, a first frame, a last frame alone and first + last,
+        # at 576p (5, 10 and 14 s) and 768p (5 and 10 s); the other lengths follow its model of a clip (the job's
+        # min_free_for and estimate_s). 15 s is the studio's 362 frames, past diffusers 0.40's stock 15.0 s: the job
+        # raises that for its clip (its docstring, "Lengths").
+        "offers": ({"task": ("t2va", "fl2va"), "frames": FRAME_SETS, "seconds": DURATIONS,
                     "orientation": ("landscape", "portrait"), "resolution": ("576p", "768p"), "steps": (4,)},),
         "not_yet": (
             {"task": ("ref2va",), "why": "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not "
-                                        "Reference (ref2va): use Sol-H3"},
-            {"frames": ("last",), "why": "LightX2V Turbo needs a first frame for now (a last frame alone: use Sol-H3)"},
-            {"seconds": (6, 7, 8, 10, 12, 15), "why": "LightX2V Turbo makes 5 s clips for now"}),
-        # seconds a clip takes, by its options and length, until one has been measured here (remember_job_time):
-        # estimates from measured parts (the job's 160 s at 576p and 320 s at 768p with the model loaded, plus ~25 s
-        # to start it and load, ~15 s of prompt encode); +~40 s when the Sol-H3 session must close first
-        "estimates_s": {"576p/4/5": 200, "768p/4/5": 360}},
+                                        "Reference (ref2va): use Sol-H3"},),
+        # seconds a clip takes, by its options and length, until one has been measured here (remember_job_time): the
+        # job's estimate_s (the GPU validation's receipts: the prompt encode, the process and its load, 4 steps by the
+        # rows of the clip's sequence, the decode by its frames and pixels; measured at 576p 5, 10 and 14 s and 768p 5
+        # and 10 s, the rest estimated), to 10 s; +~40 s when the Sol-H3 session must close first. tests/test_server.py
+        # TurboSeam checks them against the job.
+        "estimates_s": {"576p/4/5": 200, "576p/4/6": 250, "576p/4/7": 280, "576p/4/8": 310, "576p/4/10": 400,
+                        "576p/4/12": 500, "576p/4/15": 660, "768p/4/5": 350, "768p/4/6": 470, "768p/4/7": 530,
+                        "768p/4/8": 600, "768p/4/10": 820, "768p/4/12": 1070, "768p/4/15": 1440}},
 }
 
 
@@ -499,12 +509,13 @@ if problem:
 MULTI = len(ENABLED) > 1         # the model choice is on: /api/state "models", "model" in the records, the page's table
 # the request fields of the enabled models' options (POST /api/generate), and their JSON types
 OPTION_TYPES = {o["name"]: o["type"] for mid in ENABLED for o in MODELS[mid]["options"]}
-# LightX2V Turbo (the docstring). Its job (jobs/h3turbo_job.py) and its prompt encode (bench/h3turbo_encode.py) come
-# from the h3-turbo work; LFSTUDIO_H3TURBO_SCRIPT and LFSTUDIO_H3TURBO_ENCODE_SCRIPT (test hooks:
-# tests/stub/h3turbo_job.py and tests/stub/h3turbo_encode.py) put others in their place. The job is loaded as the
-# Upscale's is, for its standard-library part: JOB_VERSION, PRESETS (steps -> LoRA file and shifts), RECEIPT,
-# MINIMAX_PROMPT_TOKENS, studio_settings, parse_job, output_name, worker_command, worker_environment, parse_line and
-# write_json (bin/lf-studio --check also calls its check_install).
+# LightX2V Turbo (the docstring): its job, jobs/h3turbo_job.py, and its prompt encode, bench/h3turbo_encode.py;
+# LFSTUDIO_H3TURBO_SCRIPT and LFSTUDIO_H3TURBO_ENCODE_SCRIPT (test hooks: tests/stub/h3turbo_job.py and
+# tests/stub/h3turbo_encode.py) put others in their place. The job is loaded as the Upscale's is, for its
+# standard-library part: MODEL (this registry's id), JOB_VERSION, PRESETS (steps -> LoRA file and shifts), RECEIPT,
+# MINIMAX_PROMPT_TOKENS, studio_settings, min_free_for (the memory floor per size and length), parse_job,
+# output_name, worker_command, worker_environment, parse_line and write_json (bin/lf-studio --check also calls its
+# check_install).
 REPO_ROOT = Path(__file__).resolve().parents[1]
 H3TURBO_SCRIPT = Path(os.environ.get("LFSTUDIO_H3TURBO_SCRIPT") or REPO_ROOT / "jobs" / "h3turbo_job.py").expanduser()
 H3TURBO_ENCODE = Path(os.environ.get("LFSTUDIO_H3TURBO_ENCODE_SCRIPT")
@@ -519,6 +530,8 @@ if TURBO in ENABLED:
         spec.loader.exec_module(JOB_MODULES[TURBO])
     except (OSError, ImportError, SyntaxError) as error:
         fail(f"LFSTUDIO_MODELS has {TURBO}: cannot read its job {H3TURBO_SCRIPT} ({error})")
+    if getattr(JOB_MODULES[TURBO], "MODEL", None) != TURBO:
+        fail(f"{H3TURBO_SCRIPT} is the job of {getattr(JOB_MODULES[TURBO], 'MODEL', None)!r}, not of {TURBO}")
     MODEL_CONF[TURBO], problems = JOB_MODULES[TURBO].studio_settings(os.environ)
     if problems:
         fail("; ".join(problems) + " (see bin/env.example)")
@@ -1944,8 +1957,8 @@ def model_eta(model):
 
 
 def encode_prompt(job, case, conf):
-    """A LightX2V Turbo clip's prompt conditioning: its prompt encode (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, by default the
-    h3-turbo work's bench/h3turbo_encode.py) with this server's Python in the patched package, as a GPU process of its
+    """A LightX2V Turbo clip's prompt conditioning: its prompt encode (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, by default
+    bench/h3turbo_encode.py) with this server's Python in the patched package, as a GPU process of its
     own (gpu_process: Cancel and shutdown stop it, and it stops its transient Qwen worker): the prompt and the
     keyframes, seen at the LFSTUDIO_H3TURBO_QWEN_CANVAS canvas, into <case>/qwen/, and for fl2va the prompt without its
     keyframe references into <case>/qwen-text/ (the input of a later Upscale; job["text_only"]). A prompt that is
@@ -2080,13 +2093,16 @@ def run_model_job(job):
     close_session(f"{name} needs the memory")
     if job.get("cancel_requested"):        # cancelled while the models were closed: nothing of its own ran
         raise Cancelled("cancelled before it started")
-    floor = conf["min_free_gib"]
+    floor = module.min_free_for(opts["resolution"], job["seconds"], conf["min_free_gib"])
     available = enough_memory(floor)
     if available is None and floor > 0:
         log(f"{name}: cannot read MemAvailable from {MEMINFO}; starting without the memory check")
     if available is not None and available < floor:
+        extra = "" if floor == conf["min_free_gib"] else \
+            f", {floor - conf['min_free_gib']:g} more at {opts['resolution']} {job['seconds']} s"
         raise ModelJobFailed(f"not enough free memory for a {name} clip: {available:.1f} GiB available with the "
-                             f"models closed, {floor:g} GiB needed ({setting}_MIN_FREE_GIB); close other apps")
+                             f"models closed, {floor:g} GiB needed ({setting}_MIN_FREE_GIB{extra}); close other "
+                             "apps")
     case = new_session_dir(f"{model}-{opts['resolution']}-{job['task']}-{job['orientation']}-{job['seconds']}s") \
         / job["case_id"]
     out = case / "turbo"

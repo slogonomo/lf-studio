@@ -1519,6 +1519,11 @@ class H3TurboWeights(unittest.TestCase):
         stub = (STUB / "h3turbo_job.py").read_text()               # the job's presets, as the stub has them
         for name, (size, digest) in w.FILES.items():
             self.assertIn(f'"file": "{name}", "bytes": {size},\n        "sha256": "{digest}"', stub)
+        spec = importlib.util.spec_from_file_location("h3turbo_job", REPO / "jobs" / "h3turbo_job.py")
+        job = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(job)                                # and as the job itself has them
+        self.assertEqual((job.LORA_REPO, job.LORA_REVISION), (w.REPO, w.REVISION))
+        self.assertEqual({p["file"]: (p["bytes"], p["sha256"]) for p in job.PRESETS.values()}, w.FILES)
 
     def serve(self, redirect=None):
         """A fake Hugging Face (or CDN) for the pinned files: Range requests get 206 unless self.ranges is false."""

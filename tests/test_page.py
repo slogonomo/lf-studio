@@ -4,6 +4,7 @@ Needs Playwright with WebKit (pip install playwright && playwright install webki
 python3 -m unittest tests.test_page -v      (or with the rest: python3 -m unittest discover -s tests)
 """
 import base64
+import copy
 import json
 import re
 import shutil
@@ -17,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
-from test_server import (BOTH, NOT_LAST, NOT_LONGER, NOT_REF2VA, TURBO, finished_job, history, mp4, png,  # noqa: E402
+from test_server import (BOTH, NOT_REF2VA, TURBO, finished_job, history, mp4, png,  # noqa: E402
                          release_server)
 
 try:
@@ -452,7 +453,7 @@ class UiTestScript(unittest.TestCase):
         default, is picked in a new browser)."""
         out = self.run_ui_test("1", models=BOTH)
         for check in (f"PASS fields unchanged after model -> {TURBO}", "PASS fields unchanged after model -> sol-h3",
-                      f"PASS model {TURBO}: what it doesn't make yet is greyed out with the reason (7)",
+                      f"PASS model {TURBO}: what it doesn't make yet is greyed out with the reason (1)",   # Reference
                       "PASS a disabled Upscale button says why (2 disabled)",     # its clip and the fl2va one
                       "PASS clips of another model show it in a tag (1: ['LightX2V Turbo 576p'])",
                       "PASS Generate keeps the models when the format differs"):
@@ -1742,6 +1743,30 @@ def models_table():
     return _TABLE[0]
 
 
+# what LightX2V Turbo did not make before its GPU validation, as a table of a later model may hold such reasons
+# (not_yet_table)
+NOT_LAST = "LightX2V Turbo needs a first frame for now (a last frame alone: use Sol-H3)"
+NOT_LONGER = "LightX2V Turbo makes 5 s clips for now"
+
+
+def not_yet_table():
+    """The models' table with LightX2V Turbo as it was before its GPU validation cleared its lengths and a last frame
+    alone: 5 s and a first frame (or both) only, with their reasons, and its times at 5 s only. The page must still grey
+    out such picks for a model that has them: the tests put this table into /api/state."""
+    table = copy.deepcopy(models_table())
+    turbo = next(m for m in table if m["id"] == TURBO)
+    for c in turbo["capabilities"]["frames"]:
+        if c["value"] == "last":
+            c.update(offered=False, why=NOT_LAST)
+    for c in turbo["capabilities"]["seconds"]:
+        if c["value"] != 5:
+            c.update(offered=False, why=NOT_LONGER)
+    for row in turbo["combinations"]:
+        row.update(frames=["first", "first+last"], seconds=[5])
+    turbo["eta_s"] = {k: v for k, v in turbo["eta_s"].items() if k.endswith("/5")}
+    return table
+
+
 class ModelPage(PageTest):
     """For the page tests of the model choice: LightX2V Turbo on (LFSTUDIO_MODELS=sol-h3,lightx2v-turbo), with
     tests/stub/h3turbo_job.py and tests/stub/h3turbo_encode.py standing in for its job and prompt encode."""
@@ -1804,6 +1829,96 @@ class ModelRow(ModelPage):
         self.assertEqual((self.greyed(), self.sizes()), ({}, None))          # Sol-H3 makes everything; no options
         self.assertEqual(self.text(".brand p"), "MiniMax H3 draft → LTX-2.5 refine · 1344×768 video with sound, on "
                                                 "one DGX Spark")
+        # Keyframes, 9:16, 10 s, with a prompt: LightX2V Turbo makes it too (its GPU validation), and picking it
+        # changes none of it
+        self.pick("task", "fl2va")
+        self.pick("orientation", "portrait")
+        self.pick("seconds", "10")
+        self.page.fill("#prompt", "keep me")
+        before = self.fields()
+        self.model(TURBO)
+        self.assertEqual(self.fields(), before)
+        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA})             # Reference is all it lacks
+        self.assertFalse(self.page.is_disabled("#go"))
+        self.assertIsNone(self.page.get_attribute("#go", "title"))
+        self.assertEqual((self.text("#go"), self.text("#err")), ("Generate · LightX2V Turbo · ~6:40 min est.", ""))
+        self.assertEqual((self.text("#lenout"), self.page.is_hidden("#reloadnote")),
+                         ("~6:40 min per clip, estimated", True))
+        self.assertEqual(self.sizes(), ["576p 576×1024 · ~6:40 min", "768p 768×1344 · ~13:40 min"])
+        self.assertEqual(self.text("#mabout"), "The full MiniMax-H3 in one stage with LightX2V's turbo LoRA: keeps "
+                                               "the look of your keyframe")
+        self.assertEqual(self.text("#fl .lbl small"), "one or both")            # a last frame alone too
+        self.assertEqual(self.text("#loadrule"), "Each LightX2V Turbo clip loads its model itself, and closes the "
+                                                 "Sol-H3 models first if they are loaded.")
+        self.assertEqual(self.text(".brand p"), "LightX2V Turbo (experimental) · 576×1024 video with sound, on one "
+                                                "DGX Spark")
+        # every length has its estimate, per size
+        for seconds, s576, s768 in (("5", "3:20", "5:50"), ("15", "11:00", "24:00")):
+            self.pick("seconds", seconds)
+            self.assertEqual(self.sizes(), [f"576p 576×1024 · ~{s576} min", f"768p 768×1344 · ~{s768} min"])
+        self.pick("seconds", "5")
+        self.assertEqual((self.text("#go"), self.text("#lenout")),
+                         ("Generate · LightX2V Turbo · ~3:20 min est.", "~3:20 min per clip, estimated"))
+        self.assertEqual(self.checked(f"opt:{TURBO}:resolution"), "576p")
+        self.size("768p")
+        self.assertEqual((self.text("#go"), self.text("#res")),
+                         ("Generate · LightX2V Turbo · ~5:50 min est.", "768×1344"))
+        self.pick("orientation", "landscape")
+        self.assertEqual((self.text("#res"), self.sizes()), ("1344×768", ["576p 1024×576 · ~3:20 min",
+                                                                          "768p 1344×768 · ~5:50 min"]))
+        self.assertEqual(self.fields(), ["fl2va", "landscape", "5", "keep me", "42"])
+        # Reference: greyed, picked anyway (it stays picked: no field changes another), Generate says why
+        self.page.click('input[name="task"][value="ref2va"] + label', force=True)
+        self.assertEqual((self.checked("task"), self.text("#err"), self.page.is_disabled("#go")),
+                         ("ref2va", NOT_REF2VA, True))
+        self.assertEqual(self.page.get_attribute('input[name="task"][value="ref2va"] + label', "title"), NOT_REF2VA)
+        self.pick("task", "fl2va")
+        self.assertEqual((self.text("#err"), self.page.is_disabled("#go")), ("", False))
+        # Keyframes: a last frame alone runs (its GPU validation), and so do both
+        self.page.set_input_files('input[name="last_frame"]', files=[{"name": "last.png", "mimeType": "image/png",
+                                                                       "buffer": png()}])
+        self.page.wait_for_timeout(300)
+        self.assertEqual((self.text("#err"), self.page.is_disabled("#go")), ("", False))
+        self.page.set_input_files('input[name="first_frame"]', files=[{"name": "first.png", "mimeType": "image/png",
+                                                                        "buffer": png()}])
+        self.page.wait_for_timeout(300)
+        self.assertEqual((self.text("#err"), self.page.is_disabled("#go")), ("", False))
+        # kept by this browser: the model and its size (each field on its own)
+        self.page.reload()
+        self.page.wait_for_timeout(500)
+        self.assertEqual((self.checked("model"), self.checked(f"opt:{TURBO}:resolution"), self.text("#res")),
+                         (TURBO, "768p", "1344×768"))
+        self.assertEqual(self.page.evaluate("[localStorage['lfstudio.model'], "
+                                            f"localStorage['lfstudio.opt.{TURBO}.resolution']]"), [TURBO, "768p"])
+        self.assertEqual(self.fields(), ["fl2va", "landscape", "5", "keep me", "42"])
+        # back to Sol-H3: nothing greyed, no Size row, its header and times; the Model row has both times at 10 s
+        self.model("sol-h3")
+        self.pick("seconds", "10")
+        self.assertEqual((self.greyed(), self.sizes(), self.text("#err"), self.page.is_disabled("#go")),
+                         ({}, None, "", False))
+        self.assertEqual(self.text(".brand p"), "MiniMax H3 draft → LTX-2.5 refine · 1344×768 video with sound, on "
+                                                "one DGX Spark")
+        self.assertEqual((self.text("#go"), self.text("#lenout")), ("Generate · loads the models first",
+                                                                    "~2:05 min per clip"))
+        self.assertEqual(self.text("#fl .lbl small"), "one or both")
+        self.assertEqual(self.page.eval_on_selector_all("#mseg label", "els => els.map(e => e.innerText.split(/\\s+/)"
+                                                                       ".join(' '))"),
+                         ["Sol-H3 ~2:05 min", "LightX2V Turbo experimental · ~13:40 min"])    # its 768p, at 10 s
+        self.assertTrue(self.page.evaluate("document.getElementById('loadrule').textContent.startsWith('If the mode')"))
+        self.assertEqual(self.page.evaluate("localStorage['lfstudio.model']"), "sol-h3")
+
+    def test_what_a_model_does_not_make_yet(self):
+        """A model's table with lengths and keyframes it doesn't make yet (LightX2V Turbo's before its GPU validation,
+        put into /api/state: not_yet_table): those are greyed out with the reason, no field changes another, a pick it
+        can't make disables Generate, which says why, and no time shows where the table has none."""
+        table = not_yet_table()
+
+        def with_table(route):
+            response = route.fetch()
+            route.fulfill(response=response, json=dict(response.json(), models=table))
+
+        self.page.route("**/api/state", with_table)
+        self.page.wait_for_function("MODELS.some(m => (m.capabilities.seconds || []).some(c => !c.offered))")
         # a pick LightX2V Turbo doesn't make yet: Keyframes, 9:16, 10 s, with a prompt; picking it changes none of it
         self.pick("task", "fl2va")
         self.pick("orientation", "portrait")
@@ -1832,14 +1947,14 @@ class ModelRow(ModelPage):
         self.assertEqual(self.text("#lenout"), "~3:20 min per clip, estimated")
         self.assertEqual(self.text(".brand p"), "LightX2V Turbo (experimental) · 576×1024 video with sound, on one "
                                                 "DGX Spark")
-        self.assertEqual(self.sizes(), ["576p 576×1024 · ~3:20 min", "768p 768×1344 · ~6:00 min"])
+        self.assertEqual(self.sizes(), ["576p 576×1024 · ~3:20 min", "768p 768×1344 · ~5:50 min"])
         self.assertEqual(self.checked(f"opt:{TURBO}:resolution"), "576p")
         self.size("768p")
         self.assertEqual((self.text("#go"), self.text("#res")),
-                         ("Generate · LightX2V Turbo · ~6:00 min est.", "768×1344"))
+                         ("Generate · LightX2V Turbo · ~5:50 min est.", "768×1344"))
         self.pick("orientation", "landscape")
         self.assertEqual((self.text("#res"), self.sizes()), ("1344×768", ["576p 1024×576 · ~3:20 min",
-                                                                          "768p 1344×768 · ~6:00 min"]))
+                                                                          "768p 1344×768 · ~5:50 min"]))
         self.assertEqual(self.fields(), ["fl2va", "landscape", "5", "keep me", "42"])
         # Reference: greyed, picked anyway (it stays picked: no field changes another), Generate says why
         self.page.click('input[name="task"][value="ref2va"] + label', force=True)
@@ -1857,29 +1972,15 @@ class ModelRow(ModelPage):
                                                                         "buffer": png()}])
         self.page.wait_for_function("document.getElementById('err').textContent === ''")
         self.assertFalse(self.page.is_disabled("#go"))
-        # kept by this browser: the model and its size (each field on its own)
-        self.page.reload()
-        self.page.wait_for_timeout(500)
-        self.assertEqual((self.checked("model"), self.checked(f"opt:{TURBO}:resolution"), self.text("#res")),
-                         (TURBO, "768p", "1344×768"))
-        self.assertEqual(self.page.evaluate("[localStorage['lfstudio.model'], "
-                                            f"localStorage['lfstudio.opt.{TURBO}.resolution']]"), [TURBO, "768p"])
-        self.assertEqual(self.fields(), ["fl2va", "landscape", "5", "keep me", "42"])
-        # back to Sol-H3: nothing greyed, no Size row, its header and times; a length LightX2V Turbo lacks is fine
+        # back to Sol-H3: a length LightX2V Turbo lacks is fine there, and it shows no time for it
         self.model("sol-h3")
         self.pick("seconds", "10")
         self.assertEqual((self.greyed(), self.sizes(), self.text("#err"), self.page.is_disabled("#go")),
                          ({}, None, "", False))
-        self.assertEqual(self.text(".brand p"), "MiniMax H3 draft → LTX-2.5 refine · 1344×768 video with sound, on "
-                                                "one DGX Spark")
-        self.assertEqual((self.text("#go"), self.text("#lenout")), ("Generate · loads the models first",
-                                                                    "~2:05 min per clip"))
         self.assertEqual(self.text("#fl .lbl small"), "one or both")
         self.assertEqual(self.page.eval_on_selector_all("#mseg label", "els => els.map(e => e.innerText.split(/\\s+/)"
                                                                        ".join(' '))"),
                          ["Sol-H3 ~2:05 min", "LightX2V Turbo experimental"])       # no LightX2V Turbo time at 10 s
-        self.assertTrue(self.page.evaluate("document.getElementById('loadrule').textContent.startsWith('If the mode')"))
-        self.assertEqual(self.page.evaluate("localStorage['lfstudio.model']"), "sol-h3")
 
     def test_generate_sends_the_model_and_its_options(self):
         self.model(TURBO)
@@ -1910,14 +2011,14 @@ class ModelRow(ModelPage):
     def test_ctrl_enter_on_a_pick_it_cant_make(self):
         """Ctrl+Enter submits the form without Generate: a pick the model can't make is not sent either."""
         self.model(TURBO)
-        self.page.click('input[name="seconds"][value="8"] + label', force=True)
-        self.page.fill("#prompt", "too long")
+        self.page.click('input[name="task"][value="ref2va"] + label', force=True)
+        self.page.fill("#prompt", "a reference clip")
         self.page.evaluate("document.getElementById('err').textContent = ''")
         requests = []
         self.page.on("request", lambda r: requests.append(r.url) if "/api/generate" in r.url else None)
         self.page.focus("#prompt")
         self.page.keyboard.press("Control+Enter")
-        self.page.wait_for_function("t => document.getElementById('err').textContent === t", arg=NOT_LONGER)
+        self.page.wait_for_function("t => document.getElementById('err').textContent === t", arg=NOT_REF2VA)
         self.page.wait_for_timeout(300)
         self.assertEqual(requests, [])
 
@@ -2240,7 +2341,7 @@ class MachineTexts(PageTest):
         for seconds in ("5", "10"):
             self.pick("seconds", seconds)
             self.assertEqual(small("sol-h3"), "~" + self.page.evaluate(f"fmtS({m['eta'][seconds]})"))
-            self.assertEqual(small(TURBO), "experimental" + (" · ~3:20 min" if seconds == "5" else ""))
+            self.assertEqual(small(TURBO), "experimental · ~" + {"5": "3:20", "10": "6:40"}[seconds] + " min")
         self.assertEqual(self.page.inner_text("#machine"), m["name"])
 
 

@@ -660,7 +660,11 @@ class Models(McpTest):
         self.assertEqual(r["structuredContent"], {"model_choice": True, "models": self.studio.state()["models"]})
         lines = text(r).split("\n\n")[0].splitlines()
         self.assertTrue(lines[0].startswith("sol-h3: Sol-H3 (the default), "), lines)
-        self.assertIn("  not yet: 6, 7, 8, 10, 12 or 15 s: LightX2V Turbo makes 5 s clips for now", lines)
+        self.assertIn("  not yet: ref2va: LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not "
+                      "Reference (ref2va): use Sol-H3", lines)
+        self.assertIn("  time per clip, resolution 576p, steps 4: 5 s about 3:20, 6 s about 4:10, 7 s about 4:40, 8 s "
+                      "about 5:10, 10 s about 6:40, 12 s about 8:20, 15 s about 11:00 (estimates until one is measured "
+                      "here)", lines)
         self.assertIn("  option resolution: 576p (the default; 1024x576, 9:16 576x1024), 768p (1344x768, 9:16 "
                       "768x1344)", lines)
 
@@ -695,13 +699,22 @@ class Models(McpTest):
         self.assertIn(f"Already submitted as {big}", text(r))
         self.assertEqual(len(self.studio.state()["jobs"]), 3)
 
+    def test_a_last_frame_alone_at_8_s(self):
+        """What the GPU validation cleared: a last frame alone, and lengths past 5 s, as LightX2V Turbo clips."""
+        r = self.mcp().call("generate", {"prompt": "x", "model": TURBO, "seconds": 8, "last_frame": self.frame(),
+                                         "wait_s": 30})
+        self.assertFalse(r["isError"], text(r))
+        rec = r["structuredContent"]
+        self.assertEqual((rec["model"], rec["task"], rec["seconds"], rec["state"]), (TURBO, "fl2va", 8, "done"))
+
     def test_refusals(self):
         """What the model doesn't make yet, an unknown model or option, a value it lacks, a core field among the
         options: a tool error with the reason, and nothing reaches the studio."""
         m = self.mcp()
         for args, words in [
-                ({"model": TURBO, "seconds": 8}, "LightX2V Turbo makes 5 s clips for now. Nothing was submitted."),
-                ({"model": TURBO, "last_frame": self.frame()}, "LightX2V Turbo needs a first frame for now"),
+                ({"model": TURBO, "references": [self.frame()]},
+                 "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use "
+                 "Sol-H3. Nothing was submitted."),
                 ({"model": TURBO, "resolution": "4k"}, "resolution must be 576p or 768p for lightx2v-turbo"),
                 ({"model": TURBO, "options": {"steps": "8"}}, "steps must be 4 for lightx2v-turbo"),
                 ({"model": TURBO, "options": {"seconds": 5}}, "options seconds: seconds is a field of every clip"),

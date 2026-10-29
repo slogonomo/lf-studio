@@ -771,11 +771,9 @@ class ModelRecord(ApiTest):
                             ({"model": TURBO, "resolution": 768}, "resolution must be a string"),
                             ({"model": TURBO, "steps": 4.0}, "steps must be an integer"),
                             ({"model": TURBO, "steps": "4"}, "steps must be an integer"),
-                            ({"model": TURBO, "seconds": 8}, "LightX2V Turbo makes 5 s clips for now"),
+                            ({"model": TURBO, "seconds": 9}, "duration must be 5, 6, 7, 8, 10, 12 or 15 seconds"),
                             ({"model": TURBO, "task": "ref2va", "ref_images": [{"name": "r.png", "data": b64(png())}]},
                              "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now"),
-                            ({"model": TURBO, "last_frame": {"name": "f.png", "data": b64(png())}},
-                             "LightX2V Turbo needs a first frame for now"),
                             ({"resolution": "576p"}, "resolution is an option of lightx2v-turbo; sol-h3 takes none"),
                             ({"model": "flux"}, "model must be one of sol-h3, lightx2v-turbo")):
             code, answer = self.submit(dict({"prompt": "x"}, **body))
@@ -787,6 +785,10 @@ class ModelRecord(ApiTest):
         rec = self.get_job(jid, "?wait=60")[1]
         self.assertEqual((rec["state"], rec["task"], rec["model_opts"]["resolution"], rec["model_opts"]["steps"]),
                          ("done", "fl2va", "576p", 4))
+        jid = self.submit_ok({"prompt": "x", "model": TURBO, "seconds": 8, "seed": 3,
+                              "last_frame": {"name": "f.png", "data": b64(png())}})   # a last frame alone, 8 s
+        rec = self.get_job(jid, "?wait=60")[1]
+        self.assertEqual((rec["state"], rec["task"], rec["seconds"], rec["model"]), ("done", "fl2va", 8, TURBO))
 
 
 class ModelOff(ApiTest):

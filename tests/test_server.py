@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import itertools
 import json
 import os
 import re
@@ -3096,8 +3097,10 @@ TURBO, BOTH = "lightx2v-turbo", "sol-h3,lightx2v-turbo"
 LORA4 = "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors"
 NOT_REF2VA = ("LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use "
               "Sol-H3")
-NOT_LAST = "LightX2V Turbo needs a first frame for now (a last frame alone: use Sol-H3)"
-NOT_LONGER = "LightX2V Turbo makes 5 s clips for now"
+# the registry's estimates (the job's estimate_s, to 10 s): its eta_s until a clip has been measured
+TURBO_ETA = {"576p/4/5": 200, "576p/4/6": 250, "576p/4/7": 280, "576p/4/8": 310, "576p/4/10": 400, "576p/4/12": 500,
+             "576p/4/15": 660, "768p/4/5": 350, "768p/4/6": 470, "768p/4/7": 530, "768p/4/8": 600, "768p/4/10": 820,
+             "768p/4/12": 1070, "768p/4/15": 1440}
 REPO_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -3441,8 +3444,8 @@ class TurboRegistry(TurboTest):
         self.assertEqual((sol["options"], sol["eta_s"]), ([], {}))
         self.assertEqual(offered(turbo["capabilities"]), {
             "task": {"t2va": True, "fl2va": True, "ref2va": NOT_REF2VA},
-            "frames": {"first": True, "last": NOT_LAST, "first+last": True},
-            "seconds": {5: True, **{s: NOT_LONGER for s in (6, 7, 8, 10, 12, 15)}},
+            "frames": {"first": True, "last": True, "first+last": True},
+            "seconds": {s: True for s in (5, 6, 7, 8, 10, 12, 15)},
             "orientation": {"landscape": True, "portrait": True}})
         self.assertEqual(turbo["options"], [
             {"name": "resolution", "label": "Size", "type": "string", "default": "576p",
@@ -3453,10 +3456,9 @@ class TurboRegistry(TurboTest):
             {"name": "steps", "label": "Steps", "type": "integer", "default": 4,
              "choices": [{"value": 4, "offered": True}]}])
         self.assertEqual(turbo["combinations"], [
-            {"task": ["t2va", "fl2va"], "frames": ["first", "first+last"], "seconds": [5],
+            {"task": ["t2va", "fl2va"], "frames": ["first", "last", "first+last"], "seconds": [5, 6, 7, 8, 10, 12, 15],
              "orientation": ["landscape", "portrait"], "resolution": ["576p", "768p"], "steps": [4]}])
-        self.assertEqual(turbo["eta_s"], {"576p/4/5": {"s": 200, "measured": False},
-                                          "768p/4/5": {"s": 360, "measured": False}})
+        self.assertEqual(turbo["eta_s"], {key: {"s": s, "measured": False} for key, s in TURBO_ETA.items()})
         self.assertIsNone(st["session"]["model"])
         page = self.studio.get("/")[2].decode()
         table = re.search(r'<meta name="lf-studio-backend" content="spark">\n'
@@ -3553,6 +3555,26 @@ class TurboRun(TurboTest):
         self.assertEqual((st["session"]["state"], st["session"]["key"], st["session"]["model"]), ("idle", None, None))
         self.assertTrue(self.clip(seed=2)["includes_model_load"])              # Sol-H3 loads its models again
 
+    def test_a_last_frame_alone_and_the_lengths(self):
+        """A last frame alone at 6 s: its job keeps every frame it makes (158), so the clip ends on the frame the last
+        keyframe is anchored to; a 15 s t2va clip keeps the studio's 361 of the 362 made (its job raises diffusers'
+        15.0 s for it). Each length's time is remembered under its own key."""
+        last = self.done(self.turbo(task="fl2va", seconds=6, files={"last_frame": [("b.png", png())]}))
+        t2va = self.done(self.turbo(seconds=15, seed=2))
+        for job, frames in ((last, 158), (t2va, 361)):
+            self.assertEqual((job["status"], Path(job["output"]).name), ("done", f"clip_1024x576_{frames}f.mp4"))
+            self.assertEqual(probe(job["output"])["video"]["nb_frames"], str(frames))
+        data = json.loads((Path(last["output"]).parent / "job.json").read_text())
+        self.assertEqual((data["task"], data["seconds"], data["first_frame"]), ("fl2va", 6, None))
+        self.assertEqual(data["last_frame"], last["last_frame"])
+        self.assertRegex(Path(last["case_dirs"][0]).parent.name, rf"-{TURBO}-576p-fl2va-landscape-6s$")
+        encode = next(r for r in self.runs("encodes.log") if last["case_id"] in r["argv"])
+        self.assertEqual(encode["argv"][encode["argv"].index("--last") + 1], last["last_frame"])
+        self.assertNotIn("--first", encode["argv"])
+        times = json.loads((self.studio.state_dir / "load-times.json").read_text())
+        self.assertEqual((times[f"job/{TURBO}/576p/4/6"], times[f"job/{TURBO}/576p/4/15"]),
+                         (last["e2e_s"], t2va["e2e_s"]))
+
     def test_fl2va_first_and_last_portrait_768p(self):
         prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second "
                   "mark; Picture 2 aligns with the 5.00-second mark.\nA dancer shown in <Picture 1> turns slowly.")
@@ -3563,8 +3585,9 @@ class TurboRun(TurboTest):
                                              "qwen_canvas": "draft", "image_tokens": 252})
         case = Path(job["case_dirs"][0])
         self.assertRegex(case.parent.name, rf"-{TURBO}-768p-fl2va-portrait-5s$")
-        self.assertEqual(Path(job["output"]).name, "clip_768x1344_121f.mp4")
-        self.assertEqual((probe(job["output"])["video"]["width"], probe(job["output"])["video"]["height"]), (768, 1344))
+        self.assertEqual(Path(job["output"]).name, "clip_768x1344_124f.mp4")     # every frame made: it ends on the last
+        video = probe(job["output"])["video"]
+        self.assertEqual((video["width"], video["height"], video["nb_frames"]), (768, 1344, "124"))
         data = json.loads((case / "turbo" / "job.json").read_text())
         self.assertEqual((data["first_frame"], data["last_frame"], data["resolution"], data["orientation"]),
                          (job["first_frame"], job["last_frame"], "768p", "portrait"))
@@ -3681,10 +3704,8 @@ class TurboRefusals(TurboTest):
             ({"model": "flux"}, None, {"model": "flux"}, "model must be one of sol-h3, lightx2v-turbo"),
             ({"model": TURBO, "task": "ref2va"}, frame("ref_images"),
              {"model": TURBO, "ref_images": [{"name": "r.png", "data": b64()}]}, NOT_REF2VA),
-            ({"model": TURBO, "seconds": "6"}, None, {"model": TURBO, "seconds": 6}, NOT_LONGER),
-            ({"model": TURBO, "seconds": "15"}, None, {"model": TURBO, "seconds": 15}, NOT_LONGER),
-            ({"model": TURBO, "task": "fl2va"}, frame("last_frame"),
-             {"model": TURBO, "last_frame": {"name": "f.png", "data": b64()}}, NOT_LAST),
+            ({"model": TURBO, "seconds": "9"}, None, {"model": TURBO, "seconds": 9},
+             "duration must be 5, 6, 7, 8, 10, 12 or 15 seconds"),
             ({"model": TURBO, "resolution": "1080p"}, None, {"model": TURBO, "resolution": "1080p"},
              "resolution must be 576p or 768p for lightx2v-turbo"),
             ({"model": TURBO, "steps": "8"}, None, {"model": TURBO, "steps": 8}, "steps must be 4 for lightx2v-turbo"),
@@ -3721,14 +3742,22 @@ class TurboRefusals(TurboTest):
                          [("done", "sol-h3"), ("done", "sol-h3"), ("done", TURBO), ("done", TURBO)])
 
     def test_remix(self):
-        """A Remix of a first + last clip as LightX2V Turbo keeps both frames; keeping only the last is refused."""
+        """A Remix of a first + last clip as LightX2V Turbo keeps both frames, or the last one alone; a Remix of a
+        Reference clip as LightX2V Turbo is refused."""
         src = self.clip(task="fl2va", files={"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]})
         code, body = self.studio.turbo(task="fl2va", remix_from=src["id"], keep="first_frame:0,last_frame:0")
         self.assertEqual(code, 200, body)
         self.assertEqual(self.done(body["id"])["model"], TURBO)
-        self.assertEqual(self.studio.turbo(task="fl2va", remix_from=src["id"], keep="last_frame:0"),
-                         (400, {"error": f"ValueError: {NOT_LAST}"}))
-        self.assertEqual(len(self.inputs()), 2)                                  # the clip's and the Remix's
+        code, body = self.studio.turbo(task="fl2va", remix_from=src["id"], keep="last_frame:0")
+        self.assertEqual(code, 200, body)
+        last = self.done(body["id"])
+        self.assertEqual((last["model"], last["status"], bool(last.get("last_frame")), last.get("first_frame")),
+                         (TURBO, "done", True, None))
+        self.assertEqual(Path(last["output"]).name, "clip_1024x576_124f.mp4")      # it ends on the last frame
+        ref = self.clip(task="ref2va", files={"ref_images": [("r.png", png())]}, seed=4)
+        self.assertEqual(self.studio.turbo(task="ref2va", remix_from=ref["id"], keep="ref_images:0"),
+                         (400, {"error": f"ValueError: {NOT_REF2VA}"}))
+        self.assertEqual(len(self.inputs()), 4)                 # the clips' and the Remixes'; none for the refused
 
 
 class TurboPlainTokens(TurboTest):
@@ -3992,6 +4021,17 @@ class TurboMemory(TurboTest):
         self.studio.set_memory(101)
         self.assertTrue(self.waiting_for(self.turbo(seed=2), "turbo-jobs.log"))
 
+    def test_floor_per_size_and_length(self):
+        """Long 768p clips need more than the floor (their job's min_free_for): 107 GiB at 15 s; a 576p 15 s clip
+        starts from the floor."""
+        self.studio.set_memory(105)
+        job = self.studio.wait([self.turbo(resolution="768p", seconds=15)], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", (
+            "ModelJobFailed: not enough free memory for a LightX2V Turbo clip: 105.0 GiB available with the models "
+            "closed, 107 GiB needed (LFSTUDIO_H3TURBO_MIN_FREE_GIB, 7 more at 768p 15 s); close other apps")))
+        self.assertEqual(self.runs("encodes.log"), [])
+        self.assertTrue(self.waiting_for(self.turbo(seconds=15, seed=2), "turbo-jobs.log"))
+
     def test_guard(self):
         jid = self.turbo()
         pid = self.waiting_for(jid, "turbo-jobs.log")
@@ -4224,19 +4264,29 @@ class LauncherModels(LauncherSettingsCheck):
 
 
 class TurboSeam(unittest.TestCase):
-    """Where the h3-turbo work plugs in: the job the server loads (LFSTUDIO_H3TURBO_SCRIPT, default jobs/h3turbo_job.py)
-    has the names and tables the server uses, and the sizes of its canvases are the registry's; the stand-in has them,
-    and so does the real job once it is in this copy (skipped until then)."""
-    NAMES = ("JOB_VERSION", "PRESETS", "RECEIPT", "MINIMAX_PROMPT_TOKENS", "CANVAS", "studio_settings", "parse_job",
-             "output_name", "worker_command", "worker_environment", "parse_line", "write_json", "check_install")
+    """Where LightX2V Turbo's job plugs in: the job the server loads (LFSTUDIO_H3TURBO_SCRIPT, default
+    jobs/h3turbo_job.py) has the names and tables the server uses, the registry's model id and the sizes of its
+    canvases, takes every clip the registry offers, and gives the registry's estimates (its estimate_s); the stand-in
+    the stub studio runs has the same names and gives the same values (its tables, settings, lengths, the frames it
+    keeps and the memory floor)."""
+    NAMES = ("MODEL", "JOB_VERSION", "PRESETS", "RECEIPT", "MINIMAX_PROMPT_TOKENS", "CANVAS", "studio_settings",
+             "min_free_for", "parse_job", "output_name", "worker_command", "worker_environment", "parse_line",
+             "write_json", "check_install")
+    REAL = REPO_DIR / "jobs" / "h3turbo_job.py"
+    STUB = Path(__file__).resolve().parent / "stub" / "h3turbo_job.py"
 
-    def check(self, path):
-        spec = importlib.util.spec_from_file_location("h3turbo_job_under_test", path)
+    @staticmethod
+    def load(path):
+        spec = importlib.util.spec_from_file_location(f"h3turbo_job_under_test_{path.parent.name}", path)
         job = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(job)
+        return job
+
+    def check(self, path):
+        job = self.load(path)
         for name in self.NAMES:
             self.assertTrue(hasattr(job, name), f"{path} has no {name}")
-        self.assertEqual(job.JOB_VERSION, 1)
+        self.assertEqual((job.MODEL, job.JOB_VERSION), (TURBO, 1))
         self.assertIn(4, job.PRESETS)
         self.assertEqual({k: list(v) for k, v in job.CANVAS.items()},
                          {("576p", "landscape"): [1024, 576], ("576p", "portrait"): [576, 1024],
@@ -4253,15 +4303,69 @@ class TurboSeam(unittest.TestCase):
                          ["/py", "-I", "-B", "/job.py", "--job", "/c/job.json", "--parent", "7"])
         self.assertEqual(job.parse_line("[lf-studio] phase step 2/4"), ("phase", "step 2/4"))
         self.assertNotIn("HF_TOKEN", job.worker_environment({"HF_TOKEN": "x", "PATH": "/bin"}))
+        return job
+
+    def registry(self):
+        return server_value("MODELS", SOL_H3="sol-h3", TURBO=TURBO, END_STATE={}, BACKENDS={},
+                            FRAME_SETS=server_value("FRAME_SETS"), DURATIONS=server_value("DURATIONS"))[TURBO]
+
+    def job_data(self, **changes):
+        """A job.json as the server's turbo_job_data writes it."""
+        data = {"version": 1, "task": "fl2va", "orientation": "landscape", "resolution": "576p", "seconds": 5,
+                "seed": 1, "steps": 4, "lora": "/l/" + LORA4, "shift": [6, 3], "conditioning": "/c/qwen/c.pt",
+                "qwen_canvas": "draft", "first_frame": "/c/a.png", "last_frame": None, "audio_noise": "seed",
+                "crf": 19, "x264_preset": "veryfast", "load": "fast", "abort_below_gib": 6,
+                "paths": {"base_model": "/b", "output": "/c/turbo"}, "meta": {"studio_job": "x"}}
+        data.update(changes)
+        return data
 
     def test_the_stand_in(self):
-        self.check(Path(__file__).resolve().parent / "stub" / "h3turbo_job.py")
+        self.check(self.STUB)
 
     def test_the_job(self):
-        real = REPO_DIR / "jobs" / "h3turbo_job.py"
-        if not real.is_file():
-            self.skipTest("jobs/h3turbo_job.py is not in this copy yet (the h3-turbo work)")
-        self.check(real)
+        job = self.check(self.REAL)
+        model = self.registry()
+        # every clip the registry offers is a job.json the job takes; its estimates are the job's
+        for row in model["offers"]:
+            for task, frames, seconds, orientation, resolution, steps in itertools.product(
+                    row["task"], row["frames"], row["seconds"], row["orientation"], row["resolution"], row["steps"]):
+                if task == "t2va" and frames != "first":
+                    continue
+                anchors = frames.split("+") if task == "fl2va" else []
+                parsed = job.parse_job(self.job_data(
+                    task=task, seconds=seconds, orientation=orientation, resolution=resolution, steps=steps,
+                    first_frame="/c/a.png" if "first" in anchors else None,
+                    last_frame="/c/b.png" if "last" in anchors else None), "/c/turbo")
+                self.assertEqual(parsed["keyframes"], anchors)
+        estimates = {f"{r}/{s}/{sec}": int(round(job.estimate_s(r, sec, s), -1))
+                     for row in model["offers"] for r in row["resolution"] for s in row["steps"]
+                     for sec in row["seconds"]}
+        self.assertEqual(model["estimates_s"], estimates)
+
+    def test_the_stand_in_is_the_job(self):
+        """The stand-in's tables and answers are the real job's: what the stub studio tests is what runs."""
+        real, stub = self.load(self.REAL), self.load(self.STUB)
+        for name in ("MODEL", "JOB_VERSION", "RECEIPT", "PRESETS", "OFFERED_STEPS", "CANVAS", "QWEN_CANVASES",
+                     "MINIMAX_PROMPT_TOKENS", "JOB_KEYS", "REQUIRED", "MIN_FREE_GIB", "GUARD_GIB", "MIN_SECONDS",
+                     "MAX_SECONDS", "ABORT_BELOW_GIB", "USE_GIB", "USE_SPREAD_GIB", "FLOOR_ROWS"):
+            self.assertEqual(getattr(stub, name), getattr(real, name), name)
+        for environ in ({}, {"LFSTUDIO_H3TURBO_QWEN_CANVAS": "full", "LFSTUDIO_H3TURBO_MIN_FREE_GIB": "-1",
+                             "LFSTUDIO_H3TURBO_BASE": "rel"}):
+            self.assertEqual(stub.studio_settings(environ), real.studio_settings(environ))
+        for resolution, orientation, seconds in itertools.product(("576p", "768p"), ("landscape", "portrait"),
+                                                                  range(5, 16)):
+            for floor in (0, 100, 110):
+                self.assertEqual(stub.min_free_for(resolution, seconds, floor),
+                                 real.min_free_for(resolution, seconds, floor), (resolution, seconds, floor))
+            for first, last in ((None, None), ("/c/a.png", None), (None, "/c/b.png"), ("/c/a.png", "/c/b.png")):
+                data = self.job_data(task="fl2va" if first or last else "t2va", resolution=resolution,
+                                     orientation=orientation, seconds=seconds, first_frame=first, last_frame=last)
+                self.assertEqual(stub.output_name(stub.parse_job(data, "/c/turbo")),
+                                 real.output_name(real.parse_job(data, "/c/turbo")))
+        for seconds in (4, 16):
+            for job in (stub, real):
+                with self.assertRaisesRegex(ValueError, "seconds: a whole number from 5 to 15"):
+                    job.parse_job(self.job_data(seconds=seconds), "/c/turbo")
 
 
 def server_value(name, **names):
@@ -4273,19 +4377,13 @@ def server_value(name, **names):
 
 
 class TurboEncodeSeam(TurboTest):
-    """Where the h3-turbo work's prompt encode (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, default bench/h3turbo_encode.py) plugs
-    in, once it is in this copy (skipped until then): it takes the arguments encode_prompt gives it (as the stand-in
-    logged them on a stub studio), refuses a prompt of keyframe lines alone with a line ENCODE_LINE reads that names
-    NO_TEXT_ONLY and takes that flag, and writes the files and keys the server reads (qwen/conditioning.pt,
-    encode.json image_tokens, qwen-text/prompt.txt and text-only.json dropped), here through its own encode() with a
-    stand-in of runtime.pipeline.Worker. Standard library: no Qwen, no GPU."""
+    """Where LightX2V Turbo's prompt encode (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, default bench/h3turbo_encode.py) plugs in:
+    it takes the arguments encode_prompt gives it (as the stand-in logged them on a stub studio), refuses a prompt of
+    keyframe lines alone with a line ENCODE_LINE reads that names NO_TEXT_ONLY and takes that flag, and writes the files
+    and keys the server reads (qwen/conditioning.pt, encode.json image_tokens, qwen-text/prompt.txt and text-only.json
+    dropped), here through its own encode() with a stand-in of runtime.pipeline.Worker. Standard library: no Qwen, no
+    GPU."""
     helper = REPO_DIR / "bench" / "h3turbo_encode.py"
-
-    def setUp(self):
-        if not self.helper.is_file():
-            self.skipTest(f"{self.helper.relative_to(self.helper.parents[1])} is not in this copy yet (the h3-turbo "
-                          "work)")
-        super().setUp()
 
     def load_helper(self):
         spec = importlib.util.spec_from_file_location("h3turbo_encode_under_test", self.helper)
@@ -4319,7 +4417,8 @@ class TurboEncodeSeam(TurboTest):
                 plan["prompt_tokens"] = "minimax"                       # runtime_side's, from the patch's runtime
                 case_spec = {"case_id": plan["case_id"], "prompt": plan["prompt"], "seed": plan["seed"],
                              "task": plan["task"], **{f"{a}_frame": f for a, f in plan["frames"].items()}}
-                summary = helper.encode(plan, self.worker(plan), {}, {}, case_spec)
+                with contextlib.redirect_stderr(io.StringIO()):         # its progress lines
+                    summary = helper.encode(plan, self.worker(plan), {}, {}, case_spec)
                 # what encode_prompt reads
                 self.assertTrue((case / "qwen" / "conditioning.pt").is_file())
                 written = json.loads((case / "encode.json").read_text())

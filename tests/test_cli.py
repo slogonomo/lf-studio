@@ -796,23 +796,27 @@ class Models(CliTest):
         self.assertTrue(lines[0].startswith("sol-h3: Sol-H3 (the default), NVIDIA's Sol two-stage pipeline"), lines)
         self.assertIn("  makes t2va, fl2va or ref2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 "
                       "or 15 s, landscape or portrait", lines)
-        for line in ("  makes t2va or fl2va (fl2va keyframes: first or first+last), 5 s, landscape or portrait, "
-                     "resolution 576p or 768p, steps 4",
+        for line in ("  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 or 15 s, "
+                     "landscape or portrait, resolution 576p or 768p, steps 4",
                      "  option resolution: 576p (the default; 1024x576, 9:16 576x1024), 768p (1344x768, 9:16 768x1344)",
                      "  option steps: 4 (the default)",
-                     "  not yet: fl2va keyframes last: LightX2V Turbo needs a first frame for now (a last frame alone: "
-                     "use Sol-H3)",
-                     "  not yet: 6, 7, 8, 10, 12 or 15 s: LightX2V Turbo makes 5 s clips for now"):
+                     "  not yet: ref2va: LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not "
+                     "Reference (ref2va): use Sol-H3",
+                     "  time per clip, resolution 576p, steps 4: 5 s about 3:20, 6 s about 4:10, 7 s about 4:40, 8 s "
+                     "about 5:10, 10 s about 6:40, 12 s about 8:20, 15 s about 11:00 (estimates until one is measured "
+                     "here)",
+                     "  time per clip, resolution 768p, steps 4: 5 s about 5:50, 6 s about 7:50, 7 s about 8:50, 8 s "
+                     "about 10:00, 10 s about 13:40, 12 s about 17:50, 15 s about 24:00 (estimates until one is "
+                     "measured here)"):
             self.assertIn(line, lines)
         self.assertTrue(any(x.startswith(f"{TURBO}: LightX2V Turbo (experimental), ") for x in lines), lines)
-        self.assertIn("  time per clip: resolution 576p, steps 4, 5 s: about 3:20 (an estimate until one is measured "
-                      "here); resolution 768p, steps 4, 5 s: about 6:00 (an estimate until one is measured here)",
-                      lines)
         table = json.loads(self.ok("models", "--json").stdout)
         self.assertTrue(table["model_choice"])
         self.assertEqual(table["models"], self.studio.state()["models"])
         jid = json.loads(self.ok("generate", "--prompt", "x", "--model", TURBO, "--wait", "--json").stdout)["id"]
-        self.assertRegex(self.ok("models").stdout, r"resolution 576p, steps 4, 5 s: about 0:0\d \(measured here\)")
+        self.assertRegex(self.ok("models").stdout, r"  time per clip, resolution 576p, steps 4: 5 s about 0:0\d "
+                                                   r"\(measured here\), 6 s about 4:10, .*, 15 s about 11:00 "
+                                                   r"\(estimates where not measured here\)\n")
         self.assertRegex(self.ok("status", jid).stdout, rf"^{jid}  done       t2va, landscape, 5 s, seed \d+, {TURBO} "
                                                         r"576p 4 steps  done in 0:0\d\n$")
 
@@ -846,14 +850,13 @@ class Models(CliTest):
 
     def test_refused_before_anything_is_sent(self):
         """What the model doesn't make (yet), an option it doesn't have or a value it lacks, a model the studio
-        doesn't have, a core field as an option: exit 2 with the reason, and nothing reaches the studio."""
+        doesn't have, a core field as an option: exit 2 with the reason, and nothing reaches the studio. What it makes
+        since its GPU validation (6 s, a last frame alone) is taken."""
         self.frame("last.png", 84, 48)
         self.frame("face.png")
         for args, words in [
-                (["--model", TURBO, "--seconds", 6], "LightX2V Turbo makes 5 s clips for now; nothing was submitted"),
                 (["--model", TURBO, "--ref", "face.png"], "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) "
                                                           "clips for now, not Reference (ref2va): use Sol-H3"),
-                (["--model", TURBO, "--last-frame", "last.png"], "LightX2V Turbo needs a first frame for now"),
                 (["--model", TURBO, "--resolution", "1080p"], "resolution must be 576p or 768p for lightx2v-turbo"),
                 (["--model", TURBO, "--steps", 8], "steps must be 4 for lightx2v-turbo"),
                 (["--model", TURBO, "--option", "foo=1"], "foo is not an option of lightx2v-turbo; it takes "
@@ -870,8 +873,13 @@ class Models(CliTest):
             self.assertEqual(p.returncode, 2, (args, p.stderr))
             self.assertIn(words, p.stderr, args)
         self.assertEqual(self.studio.state()["jobs"], [])
-        p = self.sol("generate", "--prompt", "x", "--model", TURBO, "--seconds", 6, "--json")
-        self.assertEqual(json.loads(p.stdout)["error"], "LightX2V Turbo makes 5 s clips for now; nothing was submitted")
+        p = self.sol("generate", "--prompt", "x", "--model", TURBO, "--ref", "face.png", "--json")
+        self.assertEqual(json.loads(p.stdout)["error"], "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips "
+                                                        "for now, not Reference (ref2va): use Sol-H3; nothing was "
+                                                        "submitted")
+        rec = json.loads(self.ok("generate", "--prompt", "x", "--model", TURBO, "--seconds", 6, "--last-frame",
+                                 "last.png", "--wait", "--json").stdout)    # what the GPU validation cleared
+        self.assertEqual((rec["state"], rec["task"], rec["seconds"], rec["model"]), ("done", "fl2va", 6, TURBO))
 
     def test_keyframe_shape_of_the_model(self):
         """The shape warning names the clip's size at the model's resolution."""

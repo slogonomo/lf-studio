@@ -5,16 +5,17 @@ GPU, no weights.
     python -I -B tests/stub/h3turbo_job.py --job <case>/turbo/job.json [--parent PID]
 
 The server loads and runs it as it loads and runs the real job (LFSTUDIO_H3TURBO_SCRIPT; tests/stub/studio.py sets
-that). Loaded: the standard-library names webui/server.py uses, with the real job's interface (JOB_VERSION, PRESETS,
-CANVAS, MINIMAX_PROMPT_TOKENS, RECEIPT, studio_settings with the real settings, defaults and messages, parse_job,
-output_name, worker_command, worker_environment, parse_line, write_json, check_install). Run: in its own process
-group, its output in worker.log. It reads job.json (version 1), refuses one whose conditioning or LoRA file is
-missing (exit 2, as the real job), prints the real job's progress lines ("[lf-studio] phase loading", "step 1/N" ...
-"step N/N", "decoding", "saving"; N = the job's steps) over STUB_H3TURBO_S seconds, then writes in paths.output
-clip_<W>x<H>_<frames>f.mp4 (an ffmpeg testsrc2 pattern with a tone, at the job's canvas, the studio's frames for its
-length, 24 fps, AAC), stand-ins for audio.pt and latents.safetensors, and receipt.json. SIGTERM (Cancel) ends it at
-once: a "cancelled" receipt, an error line, exit status 143. With --parent, as the real job, it is killed when that
-process (the server) ends.
+that). Loaded: the standard-library names webui/server.py uses, with the real job's interface and values (MODEL,
+JOB_VERSION, PRESETS, CANVAS, MINIMAX_PROMPT_TOKENS, RECEIPT, studio_settings with the real settings, defaults and
+messages, min_free_for with the real job's memory model, parse_job with its lengths, output_name with the frames it
+keeps, worker_command, worker_environment, parse_line, write_json, check_install; tests/test_server.py TurboSeam
+compares them with the real job's). Run: in its own process group, its output in worker.log. It reads job.json (version
+1), refuses one whose conditioning or LoRA file is missing (exit 2, as the real job), prints the real job's progress
+lines ("[lf-studio] phase loading", "step 1/N" ... "step N/N", "decoding", "saving"; N = the job's steps) over
+STUB_H3TURBO_S seconds, then writes in paths.output clip_<W>x<H>_<frames>f.mp4 (an ffmpeg testsrc2 pattern with a tone,
+at the job's canvas, the frames the real job keeps for its length and keyframes, 24 fps, AAC), stand-ins for audio.pt
+and latents.safetensors, and receipt.json. SIGTERM (Cancel) ends it at once: a "cancelled" receipt, an error line, exit
+status 143. With --parent, as the real job, it is killed when that process (the server) ends.
   STUB_H3TURBO_S       seconds the job takes (default 2)
   STUB_H3TURBO_FAIL    1: fail at the first step, as a job that ran out of memory ("[lf-studio] error ...", exit 1)
   STUB_H3TURBO_ABORT   1: stop at the first step as the real job does when MemAvailable falls below its
@@ -35,6 +36,7 @@ import time
 from pathlib import Path
 
 TAG = "[lf-studio]"
+MODEL = "lightx2v-turbo"
 JOB_VERSION = 1
 RECEIPT = "receipt.json"
 FPS, AUDIO_RATE = 24, 32000
@@ -52,6 +54,9 @@ PRESETS = {
 OFFERED_STEPS = (4,)
 MIN_FREE_GIB = 100
 GUARD_GIB = 5
+MIN_SECONDS, MAX_SECONDS = 5, 15
+ABORT_BELOW_GIB = 6
+USE_GIB, USE_SPREAD_GIB, FLOOR_ROWS = (77.8, 0.186), 1.6, (2, 1000)       # the real job's memory model
 JOB_KEYS = {"version", "task", "orientation", "resolution", "seconds", "seed", "steps", "lora", "shift",
             "conditioning", "qwen_canvas", "first_frame", "last_frame", "audio_noise", "crf", "x264_preset", "load",
             "abort_below_gib", "paths", "meta"}
@@ -85,9 +90,25 @@ def studio_frames(draft_frames):
     return ((int(draft_frames) - 1) // 8) * 8 + 1
 
 
+def kept_frames(frames, keyframes):
+    """As the real job's: every frame made with a last keyframe, else the studio's length."""
+    return int(frames) if "last" in keyframes else studio_frames(frames)
+
+
 def output_name(job):
     width, height = CANVAS[(job["resolution"], job["orientation"])]
-    return f"clip_{width}x{height}_{studio_frames(frames_for_seconds(job['seconds']))}f.mp4"
+    return f"clip_{width}x{height}_{kept_frames(frames_for_seconds(job['seconds']), job['keyframes'])}f.mp4"
+
+
+def min_free_for(resolution, seconds, floor):
+    """As the real job's: the floor, or more where its memory model asks for it (768p from 12 s)."""
+    if floor <= 0:
+        return floor
+    width, height = CANVAS[(resolution, "landscape")]
+    frames, per_frame = frames_for_seconds(seconds), (height // 32) * (width // 32)
+    keyframes, text = FLOOR_ROWS
+    rows = text + keyframes * per_frame + 2 * int(round(frames / FPS * 40)) + ((frames - 5) // 17 * 5 + 2) * per_frame
+    return max(floor, math.ceil(USE_GIB[0] + USE_GIB[1] * rows / 1000 + ABORT_BELOW_GIB + USE_SPREAD_GIB))
 
 
 def studio_settings(environ):
@@ -157,6 +178,8 @@ def parse_job(data, job_dir):
         raise JobError(f"resolution/qwen_canvas: {data['resolution']!r}, {data['qwen_canvas']!r}")
     if type(data["steps"]) is not int or type(data["seconds"]) is not int or type(data["seed"]) is not int:
         raise JobError("steps, seconds and seed: whole numbers")
+    if not MIN_SECONDS <= data["seconds"] <= MAX_SECONDS:
+        raise JobError(f"seconds: a whole number from {MIN_SECONDS} to {MAX_SECONDS}, got {data['seconds']!r}")
     job = dict(data, lora=_path(data["lora"], "lora"), conditioning=_path(data["conditioning"], "conditioning"),
                first_frame=_path(data.get("first_frame"), "first_frame", required=False),
                last_frame=_path(data.get("last_frame"), "last_frame", required=False))
@@ -164,6 +187,7 @@ def parse_job(data, job_dir):
         raise JobError("t2va takes no first_frame or last_frame (fl2va does)")
     if data["task"] == "fl2va" and not (job["first_frame"] or job["last_frame"]):
         raise JobError("fl2va needs a first_frame, a last_frame or both")
+    job["keyframes"] = [anchor for anchor in ("first", "last") if job[f"{anchor}_frame"]]
     paths = data["paths"]
     if not isinstance(paths, dict) or set(paths) - {"base_model", "output"}:
         raise JobError("paths: a JSON object with base_model and output")
@@ -241,7 +265,8 @@ def main(argv):
     if os.environ.get("STUB_H3TURBO_LOG"):
         with open(os.environ["STUB_H3TURBO_LOG"], "a") as log:
             log.write(json.dumps({"pid": os.getpid(), "job": str(job_path), "argv": argv[1:]}) + "\n")
-    receipt = {"state": "running", "pid": os.getpid(), "job_file": str(job_path), "times_s": {}, "stub": True}
+    receipt = {"state": "running", "model": MODEL, "pid": os.getpid(), "job_file": str(job_path), "times_s": {},
+               "stub": True}
     started, status, out = time.time(), 0, job_path.parent
     try:
         job = parse_job(json.loads(job_path.read_text()), job_path.parent)
@@ -267,7 +292,7 @@ def main(argv):
             receipt["times_s"][key] = round(receipt["times_s"].get(key, 0) + time.time() - t0, 2)
         receipt["load_s"] = receipt["times_s"]["loading"]
         width, height = CANVAS[(job["resolution"], job["orientation"])]
-        frames = studio_frames(frames_for_seconds(job["seconds"]))
+        frames = kept_frames(frames_for_seconds(job["seconds"]), job["keyframes"])
         name = output_name(job)
         if os.environ.get("STUB_H3TURBO_OUTPUT") != "none":
             write_mp4(out / name, width, height, frames, os.environ.get("STUB_H3TURBO_OUTPUT"))

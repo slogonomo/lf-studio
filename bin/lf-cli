@@ -1199,11 +1199,18 @@ def models_text(models):
                              else one_of(v) for d, v in dims.items())
             lines.append(f"  not yet: {what}" + (f": {why}" if why else ""))
         etas = m.get("eta_s") if isinstance(m.get("eta_s"), dict) else {}
-        times = [f"{eta_label(m, k)}: about {mmss(v['s'])}" + (" (measured here)" if v.get("measured") else
-                                                               " (an estimate until one is measured here)")
-                 for k, v in etas.items() if isinstance(v, dict) and isinstance(v.get("s"), (int, float))]
-        if times:
-            lines.append("  time per clip: " + "; ".join(times))
+        groups = {}                                    # the options in words -> [(length, time, measured)]
+        for k, v in etas.items():
+            if isinstance(v, dict) and isinstance(v.get("s"), (int, float)):
+                head, _, length = eta_label(m, k).rpartition(", ")
+                groups.setdefault(head, []).append((length, mmss(v["s"]), bool(v.get("measured"))))
+        for head, times in groups.items():
+            lines.append(f"  time per clip{', ' + head if head else ''}: "
+                         + ", ".join(f"{length} about {s}" + (" (measured here)" if measured else "")
+                                     for length, s, measured in times)
+                         + ("" if all(measured for _, _, measured in times) else
+                            " (estimates" + (" where not measured here" if any(x[2] for x in times) else
+                                             " until one is measured here") + ")"))
     return "\n".join(lines)
 
 
