@@ -353,7 +353,8 @@ PAGE = 24                        # clips per gallery page (/api/state carries th
 FINISHED = ("done", "failed", "cancelled")       # a job's final statuses; any other is queued or running
 session = {"pipeline": None, "key": None, "state": "idle", "since": time.time()}
 work = {"job": None,             # the job whose pipeline call (start or generate) is running (pipeline_call)
-        "process": None}         # a running upscale's job process (upscale_process), stopped at shutdown
+        "process": None,         # a running GPU job's process (gpu_process: the Upscale's job), stopped at shutdown
+        "labels": None}          # its names in the log: (for Cancel, for shutdown)
 # Notified after every saved change of a job (save_job) and at shutdown: GET /api/jobs/<id>?wait= waits on it. Not
 # `lock`, which the worker does not hold while it changes a job. `waiting` (guarded by it): the requests waiting.
 changed = threading.Condition()
@@ -1210,11 +1211,11 @@ def stop_job(job):
     """Stop a running job that has been cancelled (its own thread, started by /api/cancel): while its pipeline call
     runs (work["job"]), SIGTERM the worker process groups as abort_preload does, also those started after the first
     signal (the loading pass starts Stage2 once Stage1 is loaded). Each group once: qwen_python.sh stops its
-    container in a TERM trap, which a second signal would cut short. An upscale's job (work["process"]) gets SIGKILL
-    if it is still there UPSCALE_STOP_S after its SIGTERM: its handler runs only once the GPU call under way returns,
-    which can take minutes. The signals and the checks are under `lock`, so they never reach the next job's workers.
-    Ends when the job has finished."""
-    sent, termed = set(), None
+    container in a TERM trap, which a second signal would cut short. A GPU job's process (work["process"]: an
+    upscale's job) gets SIGKILL if it is still there GPU_JOB_STOP_S after its SIGTERM: a job's handler runs only once
+    the GPU call under way returns, which can take minutes. The signals and the checks are under `lock`, so they never
+    reach the next job's workers. Ends when the job has finished."""
+    sent, termed = set(), None             # termed: (pid, when) of the GPU job's process signalled
     while not stopping.is_set():
         with lock:
             if job["status"] in FINISHED:
@@ -1225,38 +1226,50 @@ def stop_job(job):
                     log(f"cancel: sent SIGTERM to the worker process group(s) {new} of", job["case_id"])
                 sent.update(new)
                 proc = work["process"]
-                if proc is not None and proc.pid in sent and termed is None:
-                    termed = time.time()
-                if termed and time.time() - termed > UPSCALE_STOP_S and proc is not None and proc.poll() is None:
-                    log(f"cancel: the upscale's job {proc.pid} is still there {UPSCALE_STOP_S} s after SIGTERM: "
+                if proc is not None and proc.pid in sent and (termed is None or termed[0] != proc.pid):
+                    termed = (proc.pid, time.time())
+                if (termed and termed[0] == proc.pid and time.time() - termed[1] > GPU_JOB_STOP_S
+                        and proc.poll() is None):
+                    log(f"cancel: {work['labels'][0]} {proc.pid} is still there {GPU_JOB_STOP_S} s after SIGTERM: "
                         "SIGKILL")
                     with contextlib.suppress(OSError):
                         os.killpg(proc.pid, signal.SIGKILL)
-                    termed = float("inf")          # once
+                    termed = (proc.pid, float("inf"))      # once
         time.sleep(0.2)
 
 
 # ------------------------------------------------------------------------------------------ the experimental Upscale
 UPSCALE_REQUEST = ("id", "resolution", "strength", "audio", "seed")    # POST /api/upscale's keys
-UPSCALE_FREE_WAIT_S = 5          # how long the memory floor waits for a closed session's memory to come back
-UPSCALE_STOP_S = 20              # Cancel and shutdown: SIGKILL an upscale's job this long after its SIGTERM
+FREE_WAIT_S = 5                  # how long a memory floor waits for a closed session's memory to come back
+GPU_JOB_STOP_S = 20              # Cancel and shutdown: SIGKILL a GPU job's process this long after its SIGTERM
+UPSCALE_FREE_WAIT_S, UPSCALE_STOP_S = FREE_WAIT_S, GPU_JOB_STOP_S      # their names up to 0.5.1
 UPSCALE_LENGTH = "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"
 # a guard: every orientation the studio makes (runtime.geometry's ORIENTATIONS) is one of the job's SHAPES
 # (tests/test_upscale.py checks it), so only an orientation added later gets this
 UPSCALE_SHAPE = "Upscale needs a 16:9 or 9:16 clip (1344x768 or 768x1344)"
 
 
-class UpscaleFailed(RuntimeError):
-    """An upscale could not start, or its job failed: the message says why (the job's own error line, when it has
-    one)."""
+class JobFailed(RuntimeError):
+    """A GPU job (gpu_process) could not start, or failed: the message says why (the job's own error line, when it
+    has one)."""
+
+
+class UpscaleFailed(JobFailed):
+    """An upscale could not start, or its job failed."""
 
 
 def mem_available_gib():
-    """MemAvailable in GiB (read from LFSTUDIO_TEST_MEMINFO in the tests), or None when it can't be read."""
+    """MemAvailable in GiB (read from LFSTUDIO_TEST_MEMINFO in the tests), or None when it can't be read. The
+    server's own reading, with the Upscale off too."""
     try:
-        return regen.meminfo(MEMINFO).get("MemAvailable")
+        with open(MEMINFO) as handle:
+            for line in handle:
+                key, _, rest = line.partition(":")
+                if key == "MemAvailable":
+                    return int(rest.split()[0]) / 1048576
     except (OSError, ValueError, IndexError):
-        return None
+        pass
+    return None
 
 
 def upscale_files(job):
@@ -1398,9 +1411,9 @@ def submit_upscale(raw):
 
 
 def enough_memory(floor):
-    """MemAvailable (GiB) as soon as it reaches `floor`, else the most seen within UPSCALE_FREE_WAIT_S (a closed
+    """MemAvailable (GiB) as soon as it reaches `floor`, else the most seen within FREE_WAIT_S (a closed
     session's memory comes back as its workers end); None when it can't be read. No wait for a floor of 0."""
-    best, deadline = None, time.time() + UPSCALE_FREE_WAIT_S
+    best, deadline = None, time.time() + FREE_WAIT_S
     while floor > 0:
         available = mem_available_gib()
         if available is not None:
@@ -1475,52 +1488,26 @@ def run_upscale(job):
     publish(job, final, f"{stem}_{job['resolution']}")      # next to the clip's own copy
 
 
+UPSCALE_LABELS = ("the upscale's job", "the running upscale")      # in the log: for Cancel, for shutdown
+
+
 def upscale_process(job, out, job_path, parent_mp4):
-    """The upscale's job (LFSTUDIO_UPSCALE_SCRIPT: upscale/regen2k_job.py) with the Regen-2K Python, in a process
-    group of its own (stop_job's SIGTERM reaches it as it reaches the pipeline's workers), its output in worker.log.
-    A thread follows that log for the job's progress (upscale_tail), another stops the job when memory runs out
-    (upscale_guard). The job ends when this process does (--parent: PR_SET_PDEATHSIG), so a server killed hard does
-    not leave it running unguarded. Then the clip's sound goes in, copied. Returns the MP4; raises with the job's own
-    error line."""
+    """The upscale's job (LFSTUDIO_UPSCALE_SCRIPT: upscale/regen2k_job.py) with the Regen-2K Python (gpu_process:
+    its progress as job["upscale_phase"], the guard LFSTUDIO_UPSCALE_GUARD_GIB). The job ends when this process does
+    (--parent: PR_SET_PDEATHSIG), so a server killed hard does not leave it running unguarded. Then the clip's sound
+    goes in, copied. Returns the MP4; raises with the job's own error line."""
     log_path = out / "worker.log"
-    with open(log_path, "ab") as log_file:
-        try:
-            proc = subprocess.Popen(regen.worker_command(UPSCALE_CONF["python"], UPSCALE_SCRIPT, job_path,
-                                                         os.getpid()), cwd=out,
-                                    env=regen.worker_environment(os.environ), stdin=subprocess.DEVNULL,
-                                    stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True)
-        except OSError as error:
-            raise UpscaleFailed(f"cannot start the upscale job with LFSTUDIO_UPSCALE_PYTHON={UPSCALE_CONF['python']} "
-                                f"({error.strerror or error})") from None
-    with lock:                             # atomic with stop_upscale: it stops this job, or the job is stopped here
-        work["process"] = proc
-        late = stopping.is_set()
-    if late:                               # the server began to shut down while the job started
-        log("the studio is shutting down: stopping the upscale's job it just started")
-        with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
-    log(f"upscaling {job['case_id']} (job pid {proc.pid}): {job['resolution']}, {job['strength']}, "
-        f"audio {job['audio']}")
-    halt, seen = threading.Event(), {}
-    threads = [threading.Thread(target=upscale_tail, args=(log_path, job, halt, seen), daemon=True),
-               threading.Thread(target=upscale_guard, args=(proc, halt, seen), daemon=True)]
-    for thread in threads:
-        thread.start()
-    try:
-        code = proc.wait()
-    finally:
-        halt.set()
-        for thread in threads:
-            thread.join(timeout=15)
-        with lock:
-            work["process"] = None
-    if "guard" in seen:
-        raise UpscaleFailed(f"stopped: MemAvailable was below {UPSCALE_CONF['guard_gib']:g} GiB for 3 s "
-                            f"({seen['guard']:.1f} GiB; LFSTUDIO_UPSCALE_GUARD_GIB)")
-    if code and stopping.is_set():
-        raise UpscaleFailed("the studio was stopped")
-    if code:
-        raise UpscaleFailed(seen.get("error") or f"the upscale job exited with code {code}; see {log_path}")
+
+    def on_phase(name):
+        job["upscale_phase"] = name[:80]
+    code, seen = gpu_process(
+        regen.worker_command(UPSCALE_CONF["python"], UPSCALE_SCRIPT, job_path, os.getpid()),
+        regen.worker_environment(os.environ), out, log_path, regen.parse_line, on_phase, UPSCALE_LABELS,
+        (UPSCALE_CONF["guard_gib"], "upscale"), UpscaleFailed,
+        f"cannot start the upscale job with LFSTUDIO_UPSCALE_PYTHON={UPSCALE_CONF['python']}",
+        f"upscaling {job['case_id']} (job pid {{pid}}): {job['resolution']}, {job['strength']}, audio {job['audio']}")
+    job_ended(code, seen, UpscaleFailed, "LFSTUDIO_UPSCALE_GUARD_GIB", UPSCALE_CONF["guard_gib"],
+              f"the upscale job exited with code {code}; see {log_path}")
     silent = out / regen.OUTPUT_VIDEO
     if not silent.is_file():
         raise UpscaleFailed(f"the upscale job wrote no {silent.name}; see {log_path}")
@@ -1541,9 +1528,59 @@ def upscale_process(job, out, job_path, parent_mp4):
     return final
 
 
-def upscale_tail(path, job, halt, seen):
-    """Follow the upscale job's worker.log: each "[lf-studio] phase <name>" line becomes job["upscale_phase"], the
-    last "[lf-studio] error <text>" seen["error"]. Reads what is left once more after `halt` is set."""
+def gpu_process(command, env, cwd, log_path, parse_line, on_phase, labels, guard, failure, cannot_start, announce):
+    """Run one GPU process of a job (an upscale's job) to its end: in a process group of its own (stop_job's SIGTERM
+    reaches it as it reaches the pipeline's workers; it is work["process"], so stop_job and stop_gpu_job send SIGKILL
+    if it outlives the SIGTERM by GPU_JOB_STOP_S), its output in log_path. A thread follows that log (job_tail:
+    parse_line's phases go to on_phase, its errors to seen["error"]), another stops the process when memory runs out
+    (memory_guard; guard = (floor GiB, who, for the log)). `labels`: its names in the log, for Cancel and for
+    shutdown; `announce`: the log line once it runs ({pid}). Returns (its exit status, seen); raises `failure` with
+    cannot_start when it can't be started."""
+    with open(log_path, "ab") as log_file:
+        try:
+            proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=log_file,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as error:
+            raise failure(f"{cannot_start} ({error.strerror or error})") from None
+    with lock:                             # atomic with stop_gpu_job: it stops this process, or it is stopped here
+        work["process"], work["labels"] = proc, labels
+        late = stopping.is_set()
+    if late:                               # the server began to shut down while it started
+        log(f"the studio is shutting down: stopping {labels[0]} it just started")
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    log(announce.format(pid=proc.pid))
+    halt, seen = threading.Event(), {}
+    threads = [threading.Thread(target=job_tail, args=(log_path, parse_line, on_phase, halt, seen), daemon=True),
+               threading.Thread(target=memory_guard, args=(proc, halt, seen, *guard), daemon=True)]
+    for thread in threads:
+        thread.start()
+    try:
+        code = proc.wait()
+    finally:
+        halt.set()
+        for thread in threads:
+            thread.join(timeout=15)
+        with lock:
+            work["process"] = work["labels"] = None
+    return code, seen
+
+
+def job_ended(code, seen, failure, guard_setting, guard_gib, otherwise):
+    """Raise `failure` for a GPU process that did not end well (gpu_process's exit status and seen): stopped by the
+    guard, by the studio's shutdown, or with its own error line (else `otherwise`)."""
+    if "guard" in seen:
+        raise failure(f"stopped: MemAvailable was below {guard_gib:g} GiB for 3 s ({seen['guard']:.1f} GiB; "
+                      f"{guard_setting})")
+    if code and stopping.is_set():
+        raise failure("the studio was stopped")
+    if code:
+        raise failure(seen.get("error") or otherwise)
+
+
+def job_tail(path, parse_line, on_phase, halt, seen):
+    """Follow a GPU job's log: for each line, parse_line gives ("phase", name), which goes to on_phase, or ("error",
+    text), the last of which is seen["error"]. Reads what is left once more after `halt` is set."""
     pos, rest, chunk = 0, b"", 1 << 20
     while True:
         last = halt.is_set()
@@ -1557,9 +1594,9 @@ def upscale_tail(path, job, halt, seen):
         *lines, rest = (rest + data).split(b"\n")
         rest = rest[-4096:]                # a line without an end (a progress bar) can't grow without bound
         for line in lines:
-            found = regen.parse_line(line.rsplit(b"\r", 1)[-1].decode("utf-8", "replace"))
+            found = parse_line(line.rsplit(b"\r", 1)[-1].decode("utf-8", "replace"))
             if found and found[0] == "phase":
-                job["upscale_phase"] = found[1][:80]
+                on_phase and on_phase(found[1])
             elif found:
                 seen["error"] = found[1]
         if len(data) == chunk:             # more to read now
@@ -1569,39 +1606,40 @@ def upscale_tail(path, job, halt, seen):
         halt.wait(0.25)
 
 
-def upscale_guard(proc, halt, seen):
-    """Stop the upscale's job when MemAvailable stays below LFSTUDIO_UPSCALE_GUARD_GIB for 3 s: SIGKILL to its process
-    group. On the DGX Spark's unified memory a job that takes the last few GiB can hang the machine, and this must
-    fire before the launcher's guard (below 4 GiB for 3 s), which would stop the whole studio. So not SIGTERM, as
-    bench/memguard-run.sh sends to a process without a handler: the job's handler runs only once the GPU call under
-    way returns, and the launcher's seconds keep counting meanwhile. Sets seen["guard"] (the MemAvailable it saw), the
-    reason the server records (the job's receipt stays at "running"); ends when `halt` is set."""
-    floor, low = UPSCALE_CONF["guard_gib"], 0
+def memory_guard(proc, halt, seen, floor, who):
+    """Stop a GPU job's process when MemAvailable stays below `floor` GiB for 3 s (its setting, e.g.
+    LFSTUDIO_UPSCALE_GUARD_GIB): SIGKILL to its process group. On the DGX Spark's unified memory a job that takes the
+    last few GiB can hang the machine, and this must fire before the launcher's guard (below 4 GiB for 3 s), which
+    would stop the whole studio. So not SIGTERM, as bench/memguard-run.sh sends to a process without a handler: the
+    job's handler runs only once the GPU call under way returns, and the launcher's seconds keep counting meanwhile.
+    Sets seen["guard"] (the MemAvailable it saw), the reason the server records (the job's receipt stays at
+    "running"); ends when `halt` is set. `who` names the job in the log."""
+    low = 0
     while floor > 0 and not halt.wait(1):
         available = mem_available_gib()
         low = low + 1 if available is not None and available < floor else 0
         if low < 3:
             continue
         seen["guard"] = available
-        log(f"upscale: MemAvailable {available:.1f} GiB, below {floor:g} GiB for 3 s: stopping its job (SIGKILL)")
+        log(f"{who}: MemAvailable {available:.1f} GiB, below {floor:g} GiB for 3 s: stopping its job (SIGKILL)")
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
         return
 
 
-def stop_upscale():
-    """At shutdown: SIGTERM a running upscale's job (its process group; SIGKILL if it is still there UPSCALE_STOP_S
-    later), so that it does not go on without the studio. (Its --parent ends it if the server dies first, and
-    bin/lf-studio's cleanup stops one left behind too: WORKER_RE.)"""
+def stop_gpu_job():
+    """At shutdown: SIGTERM a running GPU job's process (its process group; SIGKILL if it is still there
+    GPU_JOB_STOP_S later), so that it does not go on without the studio. (A job's --parent ends it if the server dies
+    first, and bin/lf-studio's cleanup stops one left behind too: WORKER_RE.)"""
     with lock:
-        proc = work["process"]
+        proc, labels = work["process"], work["labels"]
     if proc is None or proc.poll() is not None:
         return
-    log("stopping the running upscale")
+    log(f"stopping {labels[1]}")
     with contextlib.suppress(OSError):
         os.killpg(proc.pid, signal.SIGTERM)
     try:
-        proc.wait(timeout=UPSCALE_STOP_S)
+        proc.wait(timeout=GPU_JOB_STOP_S)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -2716,7 +2754,7 @@ def main():
         with changed:                                  # the waiting requests' 503s go out before the process ends
             changed.notify_all()
             changed.wait_for(lambda: waiting == 0, timeout=5)
-        stop_upscale()
+        stop_gpu_job()
         close_session("server exit")
         log("bye")
 
