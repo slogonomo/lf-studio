@@ -276,12 +276,32 @@ lists the pinned revisions and terms.
   ([project page](https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/),
   [code](https://github.com/NVlabs/Sana/tree/sol-engine/models/Open-H3-Regenerate-2K)), with the SoL-Refiner
   refinement recipe. Its LoRA merges LightX2V's FL2VA Turbo adapter and Alissonerdx's LMS Sharp LoRA. NVIDIA asks
-  users to cite the SoL-Refiner paper together with the project page (the last two entries below).
+  users to cite the SoL-Refiner paper together with the project page (the last two citations below).
+
+### Citations
+
+- Yitong Li, Junsong Chen, Haopeng Li, Haozhe Liu, Jincheng Yu, Ligeng Zhu, Ping Luo, Song Han, Enze Xie.
+  *Sol Video Inference Engine: Agent-Native Full-Stack Acceleration Framework for Efficient Video Generation.*
+  2026. [arXiv:2606.23743](https://arxiv.org/abs/2606.23743)
+- Haopeng Li, Yitong Li, Junsong Chen, Tian Ye, Haozhe Liu, Jincheng Yu, Duomin Wang, Ruihua Zhang, Zeke Xie,
+  Enze Xie, Song Han. *Sol-Attn: Accelerating Video Generation Inference via On-the-Fly Attention Sparsification.*
+  2026. [arXiv:2607.24027](https://arxiv.org/abs/2607.24027)
+- Haozhe Liu, Tian Ye, Shuchen Xue, Yitong Li, Junsong Chen, Haopeng Li, Jincheng Yu, Duomin Wang, Ruihua Zhang,
+  Lei Zhu, Song Han, Enze Xie. *SoL-Refiner: Speed-of-Light One-Step Refinement for High-Resolution Video.* 2026.
+  [arXiv:2609.37969](https://arxiv.org/abs/2609.37969)
+- Sensen Gao, Haozhe Liu, Yitong Li, Haopeng Li, Tian Ye, Jia-Wang Bian, Song Han, Enze Xie.
+  *Open-H3-Regenerate-2K: High-Resolution Video Refinement with Few-Step Diffusion.* Project page, 2026.
+  [nvlabs.github.io/Sana/Open-H3-Regenerate-2K](https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/)
+
+<details>
+<summary>BibTeX</summary>
 
 ```bibtex
 @misc{li2026solvideoinferenceengine,
-  title         = {Sol Video Inference Engine: Agent-Native Full-Stack Acceleration Framework for Efficient Video Generation},
-  author        = {Yitong Li and Junsong Chen and Haopeng Li and Haozhe Liu and Jincheng Yu and Ligeng Zhu and Ping Luo and Song Han and Enze Xie},
+  title         = {Sol Video Inference Engine: Agent-Native Full-Stack Acceleration Framework for Efficient
+                   Video Generation},
+  author        = {Yitong Li and Junsong Chen and Haopeng Li and Haozhe Liu and Jincheng Yu and
+                   Ligeng Zhu and Ping Luo and Song Han and Enze Xie},
   year          = {2026},
   eprint        = {2606.23743},
   archivePrefix = {arXiv},
@@ -291,10 +311,11 @@ lists the pinned revisions and terms.
 }
 
 @article{li2026solattn,
-  title={Sol-Attn: Accelerating Video Generation Inference via On-the-Fly Attention Sparsification},
-  author={Li, Haopeng and Li, Yitong and Chen, Junsong and Ye, Tian and Liu, Haozhe and Yu, Jincheng and Wang, Duomin and Zhang, Ruihua and Xie, Zeke and Xie, Enze and Han, Song},
-  journal={arXiv preprint arXiv:2607.24027},
-  year={2026}
+  title   = {Sol-Attn: Accelerating Video Generation Inference via On-the-Fly Attention Sparsification},
+  author  = {Li, Haopeng and Li, Yitong and Chen, Junsong and Ye, Tian and Liu, Haozhe and Yu, Jincheng and
+             Wang, Duomin and Zhang, Ruihua and Xie, Zeke and Xie, Enze and Han, Song},
+  journal = {arXiv preprint arXiv:2607.24027},
+  year    = {2026}
 }
 
 @misc{liu2026solrefiner,
@@ -311,12 +332,15 @@ lists the pinned revisions and terms.
 
 @misc{gao2026openh3regenerate2k,
   title        = {Open-H3-Regenerate-2K: High-Resolution Video Refinement with Few-Step Diffusion},
-  author       = {Sensen Gao and Haozhe Liu and Yitong Li and Haopeng Li and Tian Ye and Jia-Wang Bian and Song Han and Enze Xie},
+  author       = {Sensen Gao and Haozhe Liu and Yitong Li and Haopeng Li and Tian Ye and Jia-Wang Bian and
+                  Song Han and Enze Xie},
   year         = {2026},
   howpublished = {\url{https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/}},
   note         = {Project page}
 }
 ```
+
+</details>
 
 ## Related projects
 
