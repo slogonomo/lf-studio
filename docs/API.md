@@ -455,7 +455,7 @@ only: NVIDIA's pipeline is fixed at 121 frames, and fl2va and ref2va clips need 
 first. NVIDIA's code is written for 16:9 (1344×768): the job takes a 9:16 clip (768×1344) through it with the shapes
 turned, without changing NVIDIA's files, and the result is upright (1080×1920, 1440×2560 or 2160×3840). 9:16 has run
 on the GPU at 1080p (as fast as 16:9) and 2K, not yet at 4K, and NVIDIA trained its refiner on 16:9 video. The other
-lengths (3 to 15 s), fl2va and ref2va are follow-ups.
+lengths the studio offers (6 to 15 s), fl2va and ref2va are follow-ups.
 
 ```bash
 curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: application/json' \

@@ -64,7 +64,7 @@ What this wrapper changes, and why:
 The input: the clip's MP4 (stage2/refined_*.mp4), through NVIDIA's encode_video at 768p (1344x768, or 768x1344 for
 9:16). Scope: t2va clips, 5 s (121 frames at 24 fps, the length NVIDIA's pipeline is fixed at), 16:9 or 9:16. fl2va
 and ref2va need a text-only encode of the prompt (their conditioning interleaves the pictures), the other lengths
-(3 to 15 s) changes to NVIDIA's fixed length: follow-ups.
+the studio offers (6 to 15 s) changes to NVIDIA's fixed length: follow-ups.
 
 Measured on a DGX Spark (GB10), 2026-10-28: this job run by a staging studio with nothing else loaded, 5 s clips,
 balanced (2 steps from 0.7), the clip's audio, standard forward and VAE, cuDNN attention, one run each. A 16:9 clip with
