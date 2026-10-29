@@ -109,19 +109,21 @@ one with the model choice off and compares what they answer, value by value, and
 `ServerParts` compiles parts of the server (`stop_job`, `registry_problems`) from its source with stand-ins, for what a
 stub studio can't reach on cue. `tests/test_api.py` has the API records (`Model*`). The `Model*` classes in
 `tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V Turbo doesn't make yet greyed out
-with the reason (Reference; with `not_yet_table`, its table before its GPU validation put into `/api/state`, also
-lengths and a last frame alone: no field changes another, Generate is disabled and says why), the header, the times per
-size and length and Generate's label per model, the request, the choices kept, the card's model tag, its Upscale button
-and download name, Remix, a clip's progress and the status line, Cancel, and a clip of a model that is off now;
-`ModelChoiceOffPage` loads this page and v0.5.1's (from git) side by side with the model choice off and compares their
-pixels, texts, requests and kept choices after the same clicks; `MachineTexts` checks Sol-H3's times in the Model row
-per backend. `tests/ui_test.py` checks the Model row when a studio has one (`UiTestScript` runs it with a LightX2V Turbo
-clip). The client: `Models`, `ModelsRunning`, `ModelsOff` and `ModelsOldStudio` in `tests/test_cli.py` (`lf-cli models`,
-`generate --model` with the model's options and its files, every refusal before anything is sent, the shape warning at
-the model's size, status and cancel while a clip runs, a studio with the model choice off, an older studio and one that
-spark-switchboard has stopped: fake servers), and `Models` and `ModelsOff` in `tests/test_mcp.py` (the `models` tool,
-`generate` with a model, the repeat key with the model and its options, the refusals; `FakeStudio` has the stopped
-studio).
+with the reason (Reference and 15 s, and 768p at 12 s, a size and length it makes apart only; with `not_yet_table`, its
+table before its GPU validation put into `/api/state`, also lengths and a last frame alone: no field changes another,
+Generate is disabled and says why), the header, the times per size and length and Generate's label per model, the
+request, the choices kept, the card's model tag, its Upscale button and download name, Remix, a clip's progress and the
+status line, Cancel, and a clip of a model that is off now; `ModelChoiceOffPage` loads this page and v0.5.1's (from git)
+side by side with the model choice off and compares their pixels, texts, requests and kept choices after the same
+clicks; `MachineTexts` checks Sol-H3's times in the Model row per backend; `KeyframeLine` the fl2va keyframe line that
+the chip, the Example and the placeholder write for the keyframes attached (the prompt guide's line for one keyframe,
+the page's two-picture line for both). `tests/ui_test.py` checks the Model row when a studio has one (`UiTestScript`
+runs it with a LightX2V Turbo clip). The client: `Models`, `ModelsRunning`, `ModelsOff` and `ModelsOldStudio` in
+`tests/test_cli.py` (`lf-cli models`, `generate --model` with the model's options and its files, every refusal before
+anything is sent, the shape warning at the model's size, status and cancel while a clip runs, a studio with the model
+choice off, an older studio and one that spark-switchboard has stopped: fake servers), and `Models` and `ModelsOff` in
+`tests/test_mcp.py` (the `models` tool, `generate` with a model, the repeat key with the model and its options, the
+refusals; `FakeStudio` has the stopped studio).
 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as

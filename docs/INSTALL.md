@@ -254,11 +254,13 @@ the memory floor and guard) are in [bin/env.example](../bin/env.example).
 The studio runs two programs of this repo for each LightX2V Turbo clip: `bench/h3turbo_encode.py`, its prompt encode (a
 transient Qwen worker, with the studio's own Python in the patched package), then `jobs/h3turbo_job.py`, the clip itself
 on the GPU in the environment above. A clip needs 100 GiB of free memory once the Sol-H3 models are closed
-(`LFSTUDIO_H3TURBO_MIN_FREE_GIB`), more for a 768p clip of 12 s or more (103 GiB at 12 s, 107 at 15 s); an idle DGX
-Spark has about 117. Both can be run by hand with the studio stopped
-([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo) says how they were measured): `bench/h3turbo-encode.sh`
-with the studio's settings, then the job with a `job.json` as its docstring describes (`--check` checks one without the
-GPU).
+(`LFSTUDIO_H3TURBO_MIN_FREE_GIB`; a minimum: a lower value does not take a clip below what the job's memory model says
+it needs, 90-100 GiB by size and length); an idle DGX Spark has about 117. Both can be run by hand with the studio
+stopped ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo) says how they were measured):
+`bench/h3turbo-encode.sh` with the studio's settings, then the job with a `job.json` as its docstring describes: the
+`for_job` fields of the encode's `encode.json` plus `seconds`, `seed`, `steps`, `lora`, `shift` and `paths` (`--check`
+checks one without the GPU). By hand the job also takes 15 s and 768p 12 s, which the studio does not offer yet (768p
+12 s needs 103 GiB free, 768p 15 s 107).
 
 To remove it: take `lightx2v-turbo` out of `LFSTUDIO_MODELS` (or delete the line), then delete the two files above
 from `checkpoints/Minimax-h3-Turbo` (not NVIDIA's ref2va LoRA next to them) and, if the Upscale doesn't use it,
