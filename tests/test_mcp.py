@@ -114,6 +114,7 @@ class McpTest(unittest.TestCase):
     load_s, clip_s = 1, 0.5
     studio_needed = True
     studio_env = {}
+    models = None                  # LFSTUDIO_MODELS (the stub studio's default: sol-h3 alone, the model choice off)
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-mcp-"))
@@ -122,7 +123,7 @@ class McpTest(unittest.TestCase):
         self.studio = None
         if self.studio_needed:
             self.studio = StubStudio(self.dir / "studio", port=free_port(), load_s=self.load_s, clip_s=self.clip_s,
-                                     preload=False, env=self.studio_env).start()
+                                     preload=False, env=self.studio_env, models=self.models).start()
         self.servers = []
 
     def mcp(self, url=None, cwd=None, **env):
@@ -184,7 +185,7 @@ class Protocol(McpTest):
         self.assertIn("2026-07-28", e["data"]["supported"])
         self.assertIn("2025-11-25", e["data"]["supported"])
         r = self.m.request("tools/list", {"_meta": MODERN_META})["result"]
-        self.assertEqual(len(r["tools"]), 7)
+        self.assertEqual(len(r["tools"]), 8)
         self.assertIn("_meta", r)
         e = self.m.request("tools/list", {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}})["error"]
         self.assertEqual(e["code"], -32602)
@@ -219,11 +220,11 @@ class Protocol(McpTest):
             self.assertIn(words, text(r))
 
     def test_tools_list(self):
-        """9.3 #4: seven flat tools Claude Code accepts (upscale is the experimental Upscale's), with short enough
-        descriptions."""
+        """9.3 #4: eight flat tools Claude Code accepts (upscale is the experimental Upscale's, models lists the
+        studio's models), with short enough descriptions."""
         r = self.m.request("tools/list")["result"]
         self.assertEqual([t["name"] for t in r["tools"]], ["generate", "wait", "status", "cancel", "fetch",
-                                                            "upscale", "prompt_guide"])
+                                                            "upscale", "models", "prompt_guide"])
         self.assertEqual((r["ttlMs"], r["cacheScope"]), (3600000, "public"))
         for tool in r["tools"]:
             schema = tool["inputSchema"]
@@ -247,6 +248,19 @@ class Protocol(McpTest):
         self.assertIn("stretched or cropped", generate)                          # DECISIONS 12
         self.assertIn("change the seed", generate)                               # DECISIONS 14
         self.assertIn("never removes a clip", generate)
+        self.assertIn("model: sol-h3 (Sol-H3, the default) or another model the studio lists (the models tool",
+                      generate)
+        props = r["tools"][0]["inputSchema"]["properties"]
+        # no enum for the model or its options: a model added to the studio later needs no new client
+        self.assertEqual(props["model"]["type"], "string")
+        self.assertEqual((props["resolution"]["type"], props["steps"]["type"], props["options"]["type"]),
+                         ("string", "integer", "object"))
+        for name in ("model", "resolution", "steps", "options"):
+            self.assertNotIn("enum", props[name], name)
+        models = r["tools"][6]
+        self.assertEqual((models["annotations"], models["inputSchema"]["properties"]),
+                         ({"readOnlyHint": True}, {}))
+        self.assertIn("Never starts a stopped studio", models["description"])
 
     def test_end_of_input(self):
         """9.3 #11: closing stdin ends the process within 2 s."""
@@ -632,6 +646,111 @@ class LongClips(McpTest):
                                   rf'Call wait with id "{jid}" to keep waiting\.')
 
 
+TURBO = "lightx2v-turbo"
+
+
+class Models(McpTest):
+    """The model choice on (LFSTUDIO_MODELS=sol-h3,lightx2v-turbo): the models tool, generate with a model and its
+    options (checked against the studio's table before anything is sent), and the repeat key with the model."""
+    models = "sol-h3,lightx2v-turbo"
+
+    def test_models_tool(self):
+        r = self.mcp().call("models")
+        self.assertFalse(r["isError"], text(r))
+        self.assertEqual(r["structuredContent"], {"model_choice": True, "models": self.studio.state()["models"]})
+        lines = text(r).split("\n\n")[0].splitlines()
+        self.assertTrue(lines[0].startswith("sol-h3: Sol-H3 (the default), "), lines)
+        self.assertIn("  not yet: ref2va: LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not "
+                      "Reference (ref2va): use Sol-H3", lines)
+        self.assertNotIn("  not yet: 15 s", "\n".join(lines))
+        self.assertIn("  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 or 15 s, "
+                      "landscape or portrait, resolution 576p or 768p, steps 4", lines)
+        self.assertIn("  time per clip, resolution 576p, steps 4: 5 s about 3:20, 6 s about 4:10, 7 s about 4:40, 8 s "
+                      "about 5:10, 10 s about 6:40, 12 s about 8:20, 15 s about 11:00 (estimates until one is measured "
+                      "here)", lines)
+        self.assertIn("  option resolution: 576p (the default; 1024x576, 9:16 576x1024), 768p (1344x768, 9:16 "
+                      "768x1344)", lines)
+
+    def test_generate_with_a_model(self):
+        """model and resolution (or options) make a LightX2V Turbo clip; the text says so; the MP4 is saved under
+        the studio's name for it."""
+        m = self.mcp()
+        r = m.call("generate", {"prompt": "x", "seed": 2, "model": TURBO, "options": {"resolution": "768p"},
+                                "wait_s": 30})
+        self.assertFalse(r["isError"], text(r))
+        rec = r["structuredContent"]
+        self.assertEqual((rec["model"], rec["model_opts"]["resolution"]), (TURBO, "768p"))
+        self.assertIn(f"seed 2, {TURBO} 768p 4 steps).", text(r))
+        self.assertEqual(Path(rec["path"]).name, f"lf-studio_{TURBO}-768p_t2va_5s_seed2_{rec['id'][:6]}.mp4")
+        r = m.call("generate", {"prompt": "x", "seed": 2, "model": TURBO, "resolution": "576p", "steps": 4,
+                                "wait_s": 30})
+        self.assertFalse(r["isError"], text(r))
+        self.assertEqual(r["structuredContent"]["model_opts"]["resolution"], "576p")
+
+    def test_the_repeat_key_has_the_model(self):
+        """An identical call returns the earlier clip; the same prompt and seed with another model, or other
+        options, makes a clip of its own."""
+        m = self.mcp()
+        args = {"prompt": "x", "seed": 4, "wait_s": 0}
+        sol = m.call("generate", args)["structuredContent"]["id"]
+        turbo = m.call("generate", dict(args, model=TURBO))["structuredContent"]["id"]
+        big = m.call("generate", dict(args, model=TURBO, resolution="768p"))["structuredContent"]["id"]
+        self.assertEqual(len({sol, turbo, big}), 3)
+        r = m.call("generate", dict(args, model=TURBO))
+        self.assertIn(f"Already submitted as {turbo}", text(r))
+        r = m.call("generate", dict(args, model=TURBO, options={"resolution": "768p"}))   # the same as resolution
+        self.assertIn(f"Already submitted as {big}", text(r))
+        self.assertEqual(len(self.studio.state()["jobs"]), 3)
+
+    def test_a_last_frame_alone_at_8_s(self):
+        """What the GPU validation cleared: a last frame alone, and lengths past 5 s, as LightX2V Turbo clips."""
+        r = self.mcp().call("generate", {"prompt": "x", "model": TURBO, "seconds": 8, "last_frame": self.frame(),
+                                         "wait_s": 30})
+        self.assertFalse(r["isError"], text(r))
+        rec = r["structuredContent"]
+        self.assertEqual((rec["model"], rec["task"], rec["seconds"], rec["state"]), (TURBO, "fl2va", 8, "done"))
+
+    def test_refusals(self):
+        """What the model doesn't make yet, an unknown model or option, a value it lacks, a core field among the
+        options: a tool error with the reason, and nothing reaches the studio."""
+        m = self.mcp()
+        for args, words in [
+                ({"model": TURBO, "references": [self.frame()]},
+                 "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use "
+                 "Sol-H3. Nothing was submitted."),
+                ({"model": TURBO, "resolution": "4k"}, "resolution must be 576p or 768p for lightx2v-turbo"),
+                ({"model": TURBO, "options": {"steps": "8"}}, "steps must be 4 for lightx2v-turbo"),
+                ({"model": TURBO, "options": {"seconds": 5}}, "options seconds: seconds is a field of every clip"),
+                ({"model": TURBO, "options": {"resolution": "768p"}, "resolution": "576p"},
+                 "resolution: resolution is given twice"),
+                ({"model": TURBO, "options": {"resolution": ["768p"]}}, "options must be an object of names and "
+                                                                       "values (strings or integers)"),
+                ({"model": "nope"}, "this studio has no model nope; it has sol-h3 (Sol-H3), lightx2v-turbo "
+                                    "(LightX2V Turbo)"),
+                ({"model": "Turbo"}, "model must be a model id such as sol-h3 or lightx2v-turbo (the models tool"),
+                ({"steps": 4}, "steps is not an option of sol-h3; it takes none")]:
+            r = m.call("generate", dict({"prompt": "x"}, **args))
+            self.assertTrue(r["isError"], args)
+            self.assertIn(words, text(r), args)
+        self.assertEqual(self.studio.state()["jobs"], [])
+
+
+class ModelsOff(McpTest):
+    """The model choice off (the default): the models tool says every clip is Sol-H3; another model or an option is
+    refused before anything is sent."""
+
+    def test_off(self):
+        m = self.mcp()
+        r = m.call("models")
+        self.assertFalse(r["isError"])
+        self.assertTrue(text(r).startswith("This studio has no model choice: every clip is Sol-H3 (sol-h3)"))
+        self.assertEqual(r["structuredContent"], {"model_choice": False, "models": []})
+        r = m.call("generate", {"prompt": "x", "model": TURBO})
+        self.assertTrue(r["isError"])
+        self.assertIn(f"so it can't make a {TURBO} clip; leave model and the options out", text(r))
+        self.assertEqual(self.studio.state()["jobs"], [])
+
+
 class FakeStudio(McpTest):
     """Against fake servers: switchboard's answers (DECISIONS 13) and a submit that outlives its call (DECISIONS 14)."""
     studio_needed = False
@@ -731,6 +850,25 @@ class FakeStudio(McpTest):
         self.assertIn(f"Already submitted as {self.JID}", text(r))
         self.assertEqual([p for p in fake.paths() if p == "/api/generate"], ["/api/generate"])
         self.assertNotIn(json.dumps("g1"), m.responses)
+
+    def test_a_model_on_a_stopped_studio(self):
+        """switchboard has the studio stopped, so its models can't be read without starting it: the submit goes
+        (and starts it), and an answer without the model (the studio has no model choice) is cancelled at once."""
+        def answer(method, path, headers, body):
+            if path == "/api/state":
+                return switchboard_error("stopped", "LF Studio is not running")
+            if path == "/api/generate":
+                return 200, JSON, {"id": self.JID, "job": {"id": self.JID, "state": "queued", "task": "t2va"}}
+            if path == "/api/cancel":
+                return 200, JSON, {"ok": True, "job": {"id": self.JID, "status": "cancelled"}}
+            return 404, JSON, {"error": "not found"}
+        fake = self.fake(answer)
+        r = self.mcp(url=fake.url).call("generate", {"prompt": "x", "model": TURBO, "wait_s": 20})
+        self.assertTrue(r["isError"])
+        self.assertIn(f"so it can't make a {TURBO} clip; leave model and the options out", text(r))
+        self.assertIn(f"the clip it queued instead ({self.JID}, a Sol-H3 clip) is cancelled", text(r))
+        self.assertEqual([(m, p) for m, p, _, _ in fake.requests],
+                         [("GET", "/api/state"), ("POST", "/api/generate"), ("POST", "/api/cancel")])
 
     def test_identical_generate_while_the_studio_is_unavailable(self):
         """DECISIONS 14: only the studio's 404 for the earlier clip (deleted) makes an identical generate submit

@@ -367,6 +367,91 @@ and it goes on. `does not have NVIDIA's SHA-256 (kept as ....bad)`: a weight fil
 kept for a look, and a run again downloads it anew. `ignored the Range request`: something between you and Hugging Face
 (a proxy, `HF_ENDPOINT`) does not pass on byte ranges, which the AdaLN table needs.
 
+## LightX2V Turbo (experimental)
+
+LightX2V Turbo, the second model, is off unless `LFSTUDIO_MODELS` lists it
+([INSTALL.md](INSTALL.md#experimental-lightx2v-turbo)). Each of its clips has a directory of its own,
+`$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/<session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case>/`,
+with `prompt.txt` and `encode.log` (the prompt encode's output), `qwen/` (and for Keyframes `qwen-text/`, the prompt
+without its keyframe references; none for a prompt that is nothing but its keyframe line, which is encoded again
+without it, as the server log says), and `turbo/` with `job.json` (what the studio asked for), `worker.log` (the job's
+output) and `receipt.json` (its times, peak memory and lowest MemAvailable). A failed clip's card shows the error.
+
+**No Model row on the page.** The studio runs with `LFSTUDIO_MODELS` unset or `sol-h3` alone (the default): the page
+is then as it was. Set `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo` and restart.
+
+**The studio won't start: `LFSTUDIO_MODELS=...: unknown model ... (known: sol-h3, lightx2v-turbo)`,
+`... must include sol-h3, the studio's own model`, or `the experimental LightX2V Turbo (lightx2v-turbo) runs on the
+DGX Spark only, not with LFSTUDIO_BACKEND=rtx5090`.** The setting is a comma list of model ids with `sol-h3` in it;
+LightX2V Turbo needs ~100 GiB of GPU memory, so not on the RTX 5090. `bin/lf-studio --check` says the same.
+
+**`REFUSED - the experimental LightX2V Turbo (LFSTUDIO_MODELS): no Python at LFSTUDIO_H3TURBO_PYTHON=...`** (or `no
+.../minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors (the 4-step LoRA; install/66-h3turbo.sh fetches it)`, `the
+base model has no weights in vae/ ...`, `no prompt encode at ...`). The launcher checks its environment, base model
+and LoRA files at start with its job's own code. Run `install/66-h3turbo.sh`, or take `lightx2v-turbo` out of
+`LFSTUDIO_MODELS`. `cannot read its job .../jobs/h3turbo_job.py (no such file)`: this copy of LF Studio has no
+LightX2V Turbo job; update it.
+
+**`install/66-h3turbo.sh`: `the base model ... has no VAE weights in vae/ (a t2va-only download has vae/config.json
+only)`.** Step 20 downloaded MiniMax-H3 for t2va alone, which leaves out the VAE's weights; LightX2V Turbo decodes with
+them. Run `install/20-weights.sh` with `fl2va` in `LFSTUDIO_TASKS` (the default has it), then 66 again. `does not have
+the pinned size ... and SHA-256 ... (kept as ....partial.bad)`: the downloaded LoRA file is not the pinned one; it is
+kept for a look, and a run again downloads it anew. `the download of ... broke off`: run the step again; it goes on
+from the `.partial` file.
+
+**400 `lightx2v-turbo is off on this studio (LFSTUDIO_MODELS)`**, or `lf-cli` saying `this studio has no model
+choice: it makes Sol-H3 (sol-h3) clips only`. The studio has LightX2V Turbo off, or is a version without the model
+choice (`lf-cli models` says which models it has). `lf-cli` and the MCP server check this before they submit, so no
+Sol-H3 clip is made in its place.
+
+**400 `LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3`,
+`resolution must be 576p or 768p for lightx2v-turbo`, `steps must be 4 for lightx2v-turbo`.** What LightX2V Turbo
+makes is a table in the studio, and these are not in it yet; the page greys them out with the same reason. Use
+Sol-H3 for them. `resolution is an option of lightx2v-turbo; sol-h3 takes none`: the option goes with
+`"model": "lightx2v-turbo"` only. (Before its GPU validation it also refused 6-12 s and a last frame alone, `LightX2V
+Turbo makes 5 s clips for now` and `... needs a first frame for now`, and until 15 s and 768p 12 s had run on the GPU
+(one run each, on one DGX Spark, 2026-10-29), `LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not
+15 s: use Sol-H3` and `LightX2V Turbo does not make clips with ..., seconds 12, ..., resolution 768p, ... together
+yet`; it makes all those now.)
+
+**A LightX2V Turbo clip with a last frame is 3 frames longer** (124 frames at 5 s, `clip_..._124f.mp4`, where its
+other clips and Sol-H3's have 121). The model anchors the last frame to the last frame it makes, so such a clip keeps
+every frame made and ends on your last frame; the studio's usual length would end 3 frames (0.125 s) before it. At 6 to
+12 s it is 2 to 7 frames longer, at 15 s one (362), with its sound as long.
+
+**400 `lightx2v-turbo needs SOL_H3_PROMPT_TOKENS=minimax for a prompt with MiniMax's tokens (<d>, ...)`.** The
+studio's settings tokenize prompts as plain text (`SOL_H3_PROMPT_TOKENS=plain`), which splits `<d>` and the other
+tokens into text that H3 never saw; LightX2V Turbo's job refuses such a conditioning, so the studio says it at once.
+Remove the setting (minimax is the default), or write the prompt without those tokens.
+
+**`not enough free memory for a LightX2V Turbo clip: N GiB available with the models closed, 100 GiB needed
+(LFSTUDIO_H3TURBO_MIN_FREE_GIB); close other apps`** (or, with a lower setting, `90 GiB needed (what a 576p 5 s clip
+needs, more than LFSTUDIO_H3TURBO_MIN_FREE_GIB=80)`). The studio closed the Sol-H3 models, and something else still
+holds the memory. Close it and try again. On one DGX Spark the job took 80-98 GiB of MemAvailable at its lowest (from
+about 117 GiB: 24.5 GiB left at 768p 10 s, 22.5 at 768p 12 s; 768p 15 s, the most it used, took 97.6 GiB). A 768p clip
+of 12 s or more needs more than the default 100 GiB: 103 GiB at 12 s (`103 GiB needed (what a 768p 12 s clip needs,
+more than LFSTUDIO_H3TURBO_MIN_FREE_GIB=100)`) and 107 at 15 s. The setting is a minimum: below what the job's memory
+model says a clip of its size and length needs to stay above the job's own 6 GiB stop (90 GiB at 576p 5 s, 100 at
+768p 10 s), the clip would be stopped part way, so a lower value does not take it below that; 0 turns the check off
+([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)).
+
+**`stopped: MemAvailable was below 5 GiB for 3 s (...; LFSTUDIO_H3TURBO_GUARD_GIB)`**, or `stopped by its job:
+MemAvailable fell below 6 GiB`. The studio's guard, or the job's own (exit status 3), stopped it before the machine
+ran out of memory. Usually another app grew meanwhile; `turbo/worker.log` shows how far it got.
+
+**`the prompt encode failed: ...`** (or `refused the clip`). The prompt encode runs a Qwen worker of its own, in the
+studio's Qwen container (Docker), as the Sol-H3 models do; `encode.log` in the clip's directory has its output. A
+container that won't start fails the clip, with no retry: see [Loading fails](#loading-fails). When the guard or a
+Cancel had to kill the encode, the studio also stops the Qwen worker it left (the log says `stopping the Qwen worker
+the prompt encode left`).
+
+**A queue of Sol-H3 and LightX2V Turbo clips is slow.** Clips run in order, and each change of model costs time: a
+LightX2V Turbo clip closes the Sol-H3 models first (about 40 s), and the next Sol-H3 clip loads them again (about
+1-2 min). Nothing is warmed up after a LightX2V Turbo clip. Queue clips of one model together.
+
+**The Upscale button of a LightX2V Turbo clip is greyed out** (`Upscale of LightX2V Turbo clips comes in a later
+version`). Not yet.
+
 ## Stopping
 
 Ctrl-C, SIGTERM or SIGHUP: the server closes its pipeline (up to ~40 s; the launcher waits up to

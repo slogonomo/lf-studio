@@ -91,6 +91,12 @@ LFSTUDIO_TASKS=${LFSTUDIO_TASKS:-t2va fl2va ref2va}   # which tasks to download 
 LFSTUDIO_UPSCALE_PKG=${LFSTUDIO_UPSCALE_PKG:-$LFSTUDIO_HOME/Open-H3-Regenerate-2K}
 LFSTUDIO_UPSCALE_WEIGHTS=${LFSTUDIO_UPSCALE_WEIGHTS:-$LFSTUDIO_CHECKPOINTS/Open-H3-Regenerate-2K}
 LFSTUDIO_UPSCALE_BASE=${LFSTUDIO_UPSCALE_BASE:-$LFSTUDIO_CHECKPOINTS/MiniMax-H3}
+# The experimental LightX2V Turbo (off unless LFSTUDIO_MODELS lists lightx2v-turbo; bin/env.example): the MiniMax-H3
+# base model its job reads and the folder install/66-h3turbo.sh puts LightX2V's turbo LoRA files in. The server's
+# defaults (its job's studio_settings). Its Python is the Upscale's venv, $LFSTUDIO_HOME/envs/regen2k, unless
+# LFSTUDIO_H3TURBO_PYTHON names another.
+LFSTUDIO_H3TURBO_BASE=${LFSTUDIO_H3TURBO_BASE:-$LFSTUDIO_CHECKPOINTS/MiniMax-H3}
+LFSTUDIO_H3TURBO_LORAS=${LFSTUDIO_H3TURBO_LORAS:-$LFSTUDIO_CHECKPOINTS/Minimax-h3-Turbo}
 # The machine (docs/RTX5090.md): spark (default) = NVIDIA's Sol-H3-Spark package on a DGX Spark, rtx5090 =
 # Sol-H3-RTX5090 on a workstation with one RTX 5090. It picks the package, the Sana commit, the patch and the
 # install variants. install/00-check.sh and 90-env.sh detect the GPU and suggest or write it.

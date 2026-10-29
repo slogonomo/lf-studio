@@ -6,7 +6,12 @@ One file, standard library only, Python 3.9 or later: copy it to any machine tha
   lf-cli generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
          [--orientation landscape|portrait] [--seconds 5|6|7|8|10|12|15] [--seed N]
          [--first-frame FILE|URL] [--last-frame FILE|URL] [--ref FILE|URL]...
+         [--model ID] [--resolution R] [--steps N] [--option NAME=VALUE]...
          [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
+                                --model: sol-h3 (Sol-H3, the default) or another model the studio lists (lf-cli
+                                models), with that model's options; checked against the studio before anything is
+                                sent, so a studio without that model makes no clip
+  lf-cli models                 the studio's models: what each makes, its options and its time per clip
   lf-cli wait ID [--out PATH] [--poster] [--timeout S]
   lf-cli status [ID]
   lf-cli cancel ID
@@ -72,6 +77,15 @@ UPSCALE_RESOLUTIONS = ("1080p", "2k", "4k")
 UPSCALE_STRENGTHS = ("faithful", "balanced", "full")
 UPSCALE_AUDIO = ("clip", "silence")
 FRAMES = ("first_frame", "last_frame")
+# The model of a clip (docs/API.md, "Models"): sol-h3 (Sol-H3) when none is named. Another model, and its options,
+# come from the studio's own table (GET /api/state "models"), read before the submit, so this file needs no change for
+# a model added later. The options are the model's own request fields; these names are not options.
+DEFAULT_MODEL = "sol-h3"
+MODEL_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+OPTION_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+CORE_FIELDS = ("prompt", "task", "orientation", "seconds", "seed", "first_frame", "last_frame", "ref_images",
+               "ref_videos", "ref_audio", "remix_from", "keep", "model")
+FRAME_SETS = {("first_frame",): "first", ("last_frame",): "last", ("first_frame", "last_frame"): "first+last"}
 IMG = (".png", ".jpg", ".jpeg", ".webp")
 VID = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
 AUD = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
@@ -295,7 +309,10 @@ INSTRUCTIONS = (
     "when the clip is done, saves the MP4 here and returns its absolute path, its studio URL and a poster frame. "
     "If it answers that the clip is still running, call wait with the id. Cancelling a tool call does not cancel the "
     "clip; use cancel for that. A studio with the experimental Upscale on also takes upscale: a finished 5 s text "
-    "clip (16:9 or 9:16) to 1080p, 2K or 4K, which takes about 10 min to 1.6 h or more.")
+    "clip (16:9 or 9:16) to 1080p, 2K or 4K, which takes about 10 min to 1.6 h or more. Every clip is Sol-H3 "
+    "unless generate names another model the studio lists: call models to see them, what each makes and its "
+    "options (the experimental LightX2V Turbo makes the whole clip in one stage and keeps a keyframe's look more "
+    "closely, and is slower).")
 
 
 # ---- small things ------------------------------------------------------------------------------------------------
@@ -320,11 +337,29 @@ def is_upscale(rec):
     return rec.get("kind") == "upscale"
 
 
+def other_model(rec):
+    """A clip's model when it is not Sol-H3 (the studio's own; a record without "model" is one), else None."""
+    model = (rec or {}).get("model")
+    return model if isinstance(model, str) and model and model != DEFAULT_MODEL and not is_upscale(rec) else None
+
+
+def model_text(rec):
+    """", lightx2v-turbo 576p" for a clip of another model than Sol-H3 (its resolution and steps when it has them),
+    "" for Sol-H3."""
+    model = other_model(rec)
+    if not model:
+        return ""
+    opts = rec.get("model_opts") if isinstance(rec.get("model_opts"), dict) else {}
+    return (f", {model}" + (f" {opts['resolution']}" if opts.get("resolution") else "")
+            + (f" {opts['steps']} steps" if opts.get("steps") else ""))
+
+
 def clip_desc(rec):
     if is_upscale(rec):
         return (f"{rec.get('resolution')} upscale of {str(rec.get('parent'))[:8]}, {rec.get('strength')}, "
                 f"{rec.get('task')}, {rec.get('seconds')} s, seed {rec.get('seed')}")
-    return f"{rec.get('task')}, {rec.get('orientation')}, {rec.get('seconds')} s, seed {rec.get('seed')}"
+    return (f"{rec.get('task')}, {rec.get('orientation')}, {rec.get('seconds')} s, seed {rec.get('seed')}"
+            + model_text(rec))
 
 
 def noun(rec):
@@ -334,7 +369,7 @@ def noun(rec):
 
 PHASE_TEXT = {"starting": "starting", "generating": "generating", "saving": "saving the clip",
               "retrying": "retrying after a worker error", "cancelling": "cancelling", "running": "running",
-              "unloading": "closing the studio's models for the upscale"}
+              "unloading": "closing the studio's models for the upscale", "encoding": "encoding the prompt"}
 
 
 def phase_text(rec):
@@ -344,6 +379,13 @@ def phase_text(rec):
         n = rec.get("ahead") or 0
         return "queued, next in line" if n == 0 else f"queued, {n} ahead"
     if state == "running":
+        model, step = other_model(rec), rec.get("job_phase")
+        if model and phase == "unloading":             # a clip of another model runs as a job of its own
+            return f"closing the {DEFAULT_MODEL} models first"
+        if model and phase in ("loading", "generating"):
+            if phase == "loading" and step in (None, "starting", "loading"):
+                return f"loading {model}, then generating"
+            return "generating" + (f": {step}" if step else "")
         if phase == "loading":
             eta = rec.get("load_eta")
             return "loading models, then generating" + (f" (about {mmss(eta)} in all)" if eta else "")
@@ -369,8 +411,11 @@ def labels_text(rec):
 
 
 def clip_name(rec):
-    """The name the studio downloads a clip as (when its answer has none); an upscale's is its clip's (the parent's id)
-    with the resolution and its own id after it."""
+    """The name the studio downloads a clip as (when its answer has none): its record's file_name when it has one (a
+    studio with the model choice on gives it); else an upscale's is its clip's (the parent's id) with the resolution
+    and its own id after it."""
+    if isinstance(rec.get("file_name"), str) and rec["file_name"].strip("._"):
+        return safe_name(rec["file_name"])
     if is_upscale(rec):
         return (f"lf-studio_{rec.get('task')}_{rec.get('seconds')}s_seed{rec.get('seed')}_"
                 f"{str(rec.get('parent'))[:6]}_{rec.get('resolution')}_{rec.get('id', '')[:6]}.mp4")
@@ -772,13 +817,14 @@ def image_size(data):
 
 
 def build_request(prompt, task=None, orientation=None, seconds=None, seed=None, first_frame=None, last_frame=None,
-                  references=(), names=None, check=None):
+                  references=(), names=None, check=None, clip_sizes=None):
     """A clip request, checked here before anything is uploaded: loads the files (downloading URLs), takes the task
     from the files when it is not given, and checks the task against the files, the types, H3's reference counts and
     the 200 MB the studio takes. Without an orientation, a keyframe's shape picks it. Returns a dict: fields (the
     form's), files [(zone, name, bytes)], notes and warnings (lines for the person or agent), bytes, videos (the
     number of reference videos), hashes (SHA-256 of each file). `names` maps first_frame, last_frame and reference
     to the words the messages use for them (reference: a function of the list index); check() runs during downloads.
+    `clip_sizes`: the clip's size per orientation when its model has its own (model_sizes), else Sol-H3's (SIZES).
     Raises Fail (exit 2)."""
     names = names or {"first_frame": "first_frame", "last_frame": "last_frame", "reference": "references[{}]".format}
     try:
@@ -824,7 +870,7 @@ def build_request(prompt, task=None, orientation=None, seconds=None, seed=None, 
         zone, (w, h) = known[0]
         orientation = "portrait" if h > w else "landscape"
         notes.append(f"{orientation}, from the shape of {names[zone]} ({w}x{h})")
-    cw, ch = SIZES[orientation or "landscape"]
+    cw, ch = (clip_sizes or SIZES)[orientation or "landscape"]
     for zone, (w, h) in known:
         if abs((w / h) / (cw / ch) - 1) > 0.05:
             warnings.append(f"{names[zone]} is {w}x{h}, but a {orientation or 'landscape'} clip is {cw}x{ch}: the "
@@ -911,6 +957,261 @@ def submit_upscale(studio, body, hold):
     if isinstance(error, Busy):
         error.message += f" The upscale was NOT queued; try again in about {error.retry or 60} s."
     raise error
+
+
+# ---- models ------------------------------------------------------------------------------------------------------
+# A clip is Sol-H3's (sol-h3) unless the request names another model. The studio publishes its models in GET
+# /api/state "models" (with its model choice on: LFSTUDIO_MODELS): per model what it makes (capabilities, and the rows
+# of its table, combinations), its options and its time per clip. A generate that names another model, or any option,
+# reads that first and checks the request against it, because the studio's form ignores fields it does not know: an
+# older studio, or one with the model choice off, would make a Sol-H3 clip without a word.
+def one_of(values):
+    """"a", "a or b", "a, b or c"."""
+    values = [str(v) for v in values]
+    if not values:
+        return "nothing"
+    return values[0] if len(values) == 1 else f"{', '.join(values[:-1])} or {values[-1]}"
+
+
+def option_pairs(items, word="--option"):
+    """--option NAME=VALUE (repeated) -> [(name, value)]."""
+    pairs = []
+    for item in items or []:
+        name, eq, value = item.partition("=")
+        if not eq:
+            raise Fail(f"{word} takes NAME=VALUE (an option of the model, lf-cli models lists them), not {item!r}", 2)
+        pairs.append((name.strip(), value.strip()))
+    return pairs
+
+
+def model_choice(model, pairs, resolution=None, steps=None, words=None):
+    """The model and options of a generate, spelled right (the studio's table decides the rest: model_entry):
+    `model` an id, `pairs` [(name, value)] from --option or the MCP's options, `resolution` and `steps` the short
+    forms of those two options. `words` names the flags in messages. Returns (model or None, {name: value}). Raises
+    Fail (exit 2)."""
+    words = words or {"model": "--model", "option": "--option", "resolution": "--resolution", "steps": "--steps"}
+    if model is not None and not MODEL_ID.fullmatch(model):
+        raise Fail(f"{words['model']} must be a model id such as {DEFAULT_MODEL} or lightx2v-turbo (lowercase letters, "
+                   f"digits and hyphens; the studio lists its models: lf-cli models), not {model!r}", 2,
+                   mcp=f"{words['model']} must be a model id such as {DEFAULT_MODEL} or lightx2v-turbo (the models "
+                       f"tool lists the studio's), not {model!r}")
+    given = [(name, value, f"{words['option']} {name}") for name, value in pairs]
+    given += [(name, value, words[name]) for name, value in (("resolution", resolution), ("steps", steps))
+              if value is not None]
+    options = {}
+    for name, value, word in given:
+        if name in CORE_FIELDS:
+            raise Fail(f"{word}: {name} is a field of every clip, not an option of a model", 2)
+        if not OPTION_NAME.fullmatch(name):
+            raise Fail(f"{word}: {name!r} is not an option name (lowercase letters, digits and _)", 2)
+        if name in options:
+            raise Fail(f"{word}: {name} is given twice", 2)
+        if isinstance(value, bool) or not isinstance(value, (str, int)) or value == "":
+            raise Fail(f"{word}: {name} needs a value, a string or an integer", 2)
+        options[name] = value
+    return model, options
+
+
+def studio_models(studio):
+    """The studio's models (GET /api/state "models"), or None for a studio without the model choice (its
+    LFSTUDIO_MODELS lists sol-h3 alone, or it is an older version). Behind spark-switchboard /api/state is a passive
+    path: it never starts the studio, and with X-Switchboard-Wait: 0 it is not held while the studio starts. Raises
+    Busy when switchboard answers for the studio (stopped, starting, ...), Fail otherwise."""
+    status, headers, raw = studio.call("GET", "/api/state", None, {"X-Switchboard-Wait": "0"}, 30)
+    obj = parse_json(raw)
+    if status != 200 or not isinstance(obj, dict):
+        raise refusal(status, headers, raw)
+    models = obj.get("models")
+    if not isinstance(models, list):
+        return None
+    return [m for m in models if isinstance(m, dict) and isinstance(m.get("id"), str)]
+
+
+def no_choice(model, mcp=False):
+    """What a studio without the model choice can't do: make a clip of `model`, or one with options."""
+    what = f"a {model} clip" if model and model != DEFAULT_MODEL else "a clip with options"
+    return (f"this studio has no model choice: it makes Sol-H3 ({DEFAULT_MODEL}) clips only, without options (its "
+            f"LFSTUDIO_MODELS lists {DEFAULT_MODEL} alone, or it is an older version), so it can't make {what}; leave "
+            + ("model and the options out" if mcp else "out --model and the options")
+            + ", or use a studio that has that model")
+
+
+def model_entry(models, model, options, mcp=False):
+    """The studio's table entry of `model` (None: Sol-H3) from studio_models, with `options` checked against it:
+    each one of its options, a value it has (an integer option takes "8" too), and one it offers. Returns (entry,
+    the options with their types). Raises Fail (exit 2) with the reason."""
+    model = model or DEFAULT_MODEL
+    if models is None:
+        raise Fail(no_choice(model), 2, mcp=no_choice(model, True))
+    entry = next((m for m in models if m["id"] == model), None)
+    if entry is None:
+        listed = ", ".join(f"{m['id']} ({m.get('name') or m['id']})" for m in models)
+        raise Fail(f"this studio has no model {model}; it has {listed}" + ("" if mcp else " (lf-cli models)"), 2)
+    own = {o.get("name"): o for o in entry.get("options") or [] if isinstance(o, dict)}
+    typed = {}
+    for name, value in options.items():
+        if name not in own:
+            raise Fail(f"{name} is not an option of {model}; it takes " + (", ".join(own) if own else "none"), 2)
+        option = own[name]
+        if option.get("type") == "integer" and isinstance(value, str) and re.fullmatch(r"\s*[0-9]{1,9}\s*", value):
+            value = int(value)
+        choices = [c for c in option.get("choices") or [] if isinstance(c, dict)]
+        choice = next((c for c in choices if c.get("value") == value and type(c.get("value")) is type(value)), None)
+        if choice is None:
+            raise Fail(f"{name} must be {one_of(c.get('value') for c in choices)} for {model}", 2)
+        if choice.get("offered") is False:
+            raise Fail(choice.get("why") or f"{model} does not make clips with {name} {value} yet", 2)
+        typed[name] = value
+    return entry, typed
+
+
+def model_check(studio, model, options, mcp=False):
+    """Before a generate that names a model other than Sol-H3, or any option: (entry, options, verify). entry: the
+    model's table entry, its options checked (model_entry); None when nothing needs checking, or when switchboard
+    answered for a stopped or starting studio, which can't be asked without starting it: then verify is True and the
+    submit's answer is checked instead (verify_model). Raises Fail."""
+    if not options and (model is None or model == DEFAULT_MODEL):
+        return None, options, False
+    try:
+        models = studio_models(studio)
+    except Busy:
+        return None, options, True
+    entry, options = model_entry(models, model, options, mcp)
+    return entry, options, False
+
+
+def model_sizes(entry, options):
+    """The clip's size per orientation, {"landscape": (w, h), "portrait": (w, h)}, from the model's option whose
+    choices have one (its value, else its default), or None (Sol-H3's: SIZES)."""
+    for option in (entry or {}).get("options") or []:
+        if not isinstance(option, dict):
+            continue
+        value = options.get(option.get("name"), option.get("default"))
+        for choice in option.get("choices") or []:
+            size = choice.get("size") if isinstance(choice, dict) else None
+            if isinstance(size, dict) and choice.get("value") == value and all(
+                    isinstance(size.get(o), list) and len(size[o]) == 2 for o in ORIENTATIONS):
+                return {o: tuple(size[o]) for o in ORIENTATIONS}
+    return None
+
+
+def model_refusal(entry, req, options):
+    """Why the model (its table entry) does not make this clip, as the studio would answer, or None: the reason of
+    the first value it does not make yet (the task, fl2va's keyframes, the length, the format), else that no row of
+    its table has all of them together, with the options."""
+    fields = req["fields"]
+    values = {"task": fields["task"]}
+    frames = FRAME_SETS.get(tuple(z for z in FRAMES if any(f[0] == z for f in req["files"])))
+    if fields["task"] == "fl2va" and frames:          # (fl2va without a frame: the studio says what it needs)
+        values["frames"] = frames
+    values.update(seconds=int(fields.get("seconds") or 5), orientation=fields.get("orientation") or "landscape")
+    name = entry.get("name") or entry["id"]
+    capabilities = entry.get("capabilities") if isinstance(entry.get("capabilities"), dict) else {}
+    for dim, value in values.items():
+        found = next((c for c in capabilities.get(dim) or [] if isinstance(c, dict) and c.get("value") == value), None)
+        if found is not None and found.get("offered") is False:
+            return found.get("why") or f"{name} does not make these clips"
+    for option in entry.get("options") or []:
+        if isinstance(option, dict) and option.get("name"):
+            values[option["name"]] = options.get(option["name"], option.get("default"))
+    rows = [r for r in entry.get("combinations") or [] if isinstance(r, dict)]
+    if rows and not any(all(v in (r.get(d) or ()) for d, v in values.items()) for r in rows):
+        return f"{name} does not make clips with {', '.join(f'{d} {v}' for d, v in values.items())} together yet"
+    return None
+
+
+def add_model_fields(req, model, options):
+    """The model and its options into the form (only when given: a request without them is as before)."""
+    if model is not None:
+        req["fields"]["model"] = model
+    for name, value in options.items():
+        req["fields"][name] = str(value)
+
+
+def verify_model(studio, answer, model, mcp=False):
+    """After a submit whose model could not be checked first (switchboard had the studio stopped or starting): the
+    clip's record must name the model asked for, as a studio that has it records it. A studio without the model
+    choice leaves "model" out and made a Sol-H3 clip without the options: that clip is cancelled at once (switchboard
+    has just started the studio for it, so no one's loaded session is lost). Raises Fail (exit 2)."""
+    job = answer.get("job") if isinstance(answer.get("job"), dict) else {}
+    if job.get("model") == (model or DEFAULT_MODEL):
+        return
+    jid = answer.get("id")
+    try:
+        studio.json("POST", "/api/cancel", {"id": jid}, timeout=SIDE_S)
+        done = f"the clip it queued instead ({jid}, a Sol-H3 clip) is cancelled"
+    except Fail as error:
+        done = (f"the clip it queued instead ({jid}, a Sol-H3 clip) could not be cancelled ({error.message}): "
+                + ("call cancel with its id" if mcp else f"lf-cli cancel {jid}"))
+    why = (f"{no_choice(model, mcp)}. spark-switchboard had the studio stopped, so its models could not be read before "
+           f"the submit; {done}")
+    raise Fail(why, 2, jid=jid)
+
+
+def eta_label(entry, key):
+    """An eta_s key ("576p/4/5": the options' values in the table's order, then the length) in words."""
+    parts, names = key.split("/"), [o.get("name") for o in entry.get("options") or []]
+    if len(parts) != len(names) + 1:
+        return key
+    return ", ".join([f"{n} {v}" for n, v in zip(names, parts[:-1])] + [f"{parts[-1]} s"])
+
+
+def models_text(models):
+    """The studio's models (studio_models) in words, for a person or an agent."""
+    if models is None:
+        return (f"This studio has no model choice: every clip is Sol-H3 ({DEFAULT_MODEL}), NVIDIA's two-stage "
+                f"pipeline (its LFSTUDIO_MODELS lists {DEFAULT_MODEL} alone, or it is an older version).")
+    lines = []
+    for m in models:
+        flags = [w for w, on in (("the default", m.get("default")), ("experimental", m.get("experimental"))) if on]
+        lines.append(f"{m['id']}: {m.get('name') or m['id']}" + (f" ({', '.join(flags)})" if flags else "")
+                     + (f", {m['about']}" if m.get("about") else ""))
+        options = [o for o in m.get("options") or [] if isinstance(o, dict) and o.get("name")]
+        for row in m.get("combinations") or []:
+            if not isinstance(row, dict):
+                continue
+            words = [one_of(row.get("task") or [])]
+            if "fl2va" in (row.get("task") or []) and row.get("frames"):
+                words[0] += f" (fl2va keyframes: {one_of(row['frames'])})"
+            words.append(f"{one_of(row.get('seconds') or [])} s")
+            words.append(one_of(row.get("orientation") or []))
+            words += [f"{o['name']} {one_of(row.get(o['name']) or [])}" for o in options]
+            lines.append("  makes " + ", ".join(words))
+        for o in options:
+            choices = []
+            for c in o.get("choices") or []:
+                notes = ["the default"] if c.get("value") == o.get("default") else []
+                size = c.get("size") if isinstance(c.get("size"), dict) else {}
+                if all(isinstance(size.get(k), list) and len(size[k]) == 2 for k in ORIENTATIONS):
+                    notes.append(f"{size['landscape'][0]}x{size['landscape'][1]}, 9:16 "
+                                 f"{size['portrait'][0]}x{size['portrait'][1]}")
+                if c.get("offered") is False:
+                    notes.append(f"not yet: {c.get('why')}")
+                choices.append(f"{c.get('value')}" + (f" ({'; '.join(notes)})" if notes else ""))
+            lines.append(f"  option {o['name']}: {', '.join(choices)}")
+        reasons = {}                                   # why -> {dimension: [values]}
+        for dim, values in (m.get("capabilities") or {}).items():
+            for c in values if isinstance(values, list) else []:
+                if isinstance(c, dict) and c.get("offered") is False:
+                    reasons.setdefault(c.get("why") or "", {}).setdefault(dim, []).append(c.get("value"))
+        for why, dims in reasons.items():
+            what = "; ".join(f"{one_of(v)} s" if d == "seconds" else f"fl2va keyframes {one_of(v)}" if d == "frames"
+                             else one_of(v) for d, v in dims.items())
+            lines.append(f"  not yet: {what}" + (f": {why}" if why else ""))
+        etas = m.get("eta_s") if isinstance(m.get("eta_s"), dict) else {}
+        groups = {}                                    # the options in words -> [(length, time, measured)]
+        for k, v in etas.items():
+            if isinstance(v, dict) and isinstance(v.get("s"), (int, float)):
+                head, _, length = eta_label(m, k).rpartition(", ")
+                groups.setdefault(head, []).append((length, mmss(v["s"]), bool(v.get("measured"))))
+        for head, times in groups.items():
+            lines.append(f"  time per clip{', ' + head if head else ''}: "
+                         + ", ".join(f"{length} about {s}" + (" (measured here)" if measured else "")
+                                     for length, s, measured in times)
+                         + ("" if all(measured for _, _, measured in times) else
+                            " (estimates" + (" where not measured here" if any(x[2] for x in times) else
+                                             " until one is measured here") + ")"))
+    return "\n".join(lines)
 
 
 # ---- waiting and saving ------------------------------------------------------------------------------------------
@@ -1145,7 +1446,8 @@ def fetch_clip(studio, jid, saver, wake, wake_hold):
 
 # ---- state of the studio -----------------------------------------------------------------------------------------
 STATUS_PHASES = {"starting": "starting", "loading models + generating": "loading", "generating": "generating",
-                 "retrying after a worker error": "retrying", "freeing memory": "unloading", "upscaling": "upscaling"}
+                 "retrying after a worker error": "retrying", "freeing memory": "unloading", "upscaling": "upscaling",
+                 "encoding the prompt": "encoding"}
 
 
 def overview(studio):
@@ -1291,10 +1593,16 @@ def cmd_generate(studio, args, output):
         raise Fail("the prompt is empty", 2)
     if not 0 <= args.hold <= 3600:
         raise Fail("--hold must be 0-3600 seconds", 2)
+    model, options = model_choice(args.model, option_pairs(args.option), args.resolution, args.steps)
+    entry, options, verify = model_check(studio, model, options)
     req = build_request(prompt, args.task, args.orientation, args.seconds, args.seed, args.first_frame,
                         args.last_frame, args.ref or [],
                         {"first_frame": "--first-frame", "last_frame": "--last-frame",
-                         "reference": lambda i: f"--ref #{i + 1}"})
+                         "reference": lambda i: f"--ref #{i + 1}"}, clip_sizes=model_sizes(entry, options))
+    why = entry and model_refusal(entry, req, options)
+    if why:
+        raise Fail(f"{why}; nothing was submitted", 2)
+    add_model_fields(req, model, options)
     for note in req["notes"]:
         output.say(f"orientation: {note}")
     for warning in req["warnings"]:
@@ -1312,6 +1620,8 @@ def cmd_generate(studio, args, output):
         print("lf-cli: interrupted during the submit; the clip may or may not have been queued (check with: "
               "lf-cli status)", file=sys.stderr, flush=True)
         return 130
+    if verify:
+        verify_model(studio, answer, model)
     jid, rec = answer["id"], answer.get("job") or {"id": answer["id"]}
     output.track(rec)
     if not wait:
@@ -1387,6 +1697,15 @@ def cmd_status(studio, args, output):
     return 0
 
 
+def cmd_models(studio, args, output):
+    sb = studio.switchboard()
+    if asleep(sb):
+        raise Fail(f"{asleep_text(sb)}; its models can be read once it runs again", 3)
+    models = studio_models(studio)
+    output.result(models_text(models), {"model_choice": models is not None, "models": models or []})
+    return 0
+
+
 def cmd_cancel(studio, args, output):
     jid = check_id(args.id)
     sb = studio.switchboard()
@@ -1398,6 +1717,8 @@ def cmd_cancel(studio, args, output):
         text = f"cancelled {jid}"
     elif is_upscale(job):
         text = f"cancelling upscale {jid}: its job stops within about 20 s"
+    elif other_model(job):
+        text = f"cancelling {jid} ({other_model(job)}): its job stops within about 20 s"
     else:
         text = f"cancelling {jid}: it stops once the pipeline has closed (about 40 s)"
     output.result(text, answer)
@@ -1443,7 +1764,10 @@ TOOLS = [
          "orientation, the first keyframe's shape picks it. Write the prompt in H3's format (prompt_guide). "
          "References are numbered in the order given per kind: <Picture N>, <Video N>, <Audio N>; a reference video "
          "with sound also takes an <Audio N> just before its own <Video N>. The result's labels list shows the "
-         "numbering used. An identical call to this server within 30 minutes returns the earlier clip instead of "
+         "numbering used. model: sol-h3 (Sol-H3, the default) or another model the studio lists (the models tool "
+         "says what each makes and its options, given as resolution, steps or options); the experimental "
+         "lightx2v-turbo makes the whole clip in one stage and keeps a keyframe's look more closely, and is slower. "
+         "An identical call to this server within 30 minutes returns the earlier clip instead of "
          "making a new one: change the seed (or pass again: true) for another take. After a restart of the server (a "
          "new session), status lists the newest clips. Cancelling this call never removes a clip that was already "
          "submitted."),
@@ -1462,6 +1786,16 @@ TOOLS = [
          "last_frame": {"type": "string", "description": "Image path or http(s) URL (fl2va)"},
          "references": {"type": "array", "items": STR, "maxItems": 12,
                         "description": "ref2va: image, video and audio paths or http(s) URLs"},
+         "model": {"type": "string", "description": (
+             "Default sol-h3 (Sol-H3: two stages, about 1 min for 5 s once loaded). Or another model this studio "
+             "lists (the models tool, which says what each makes), e.g. lightx2v-turbo: experimental, one stage, "
+             "keeps a keyframe's look. Checked against the studio before anything is sent")},
+         "resolution": {"type": "string", "description": ("An option of the model, the clip's size (the models "
+                                                          "tool lists each model's choices)")},
+         "steps": {"type": "integer", "minimum": 1, "description": ("An option of the model (the models tool lists "
+                                                                    "each model's choices)")},
+         "options": {"type": "object", "description": ("Other options of the model by name, as the models tool "
+                                                       "lists them, e.g. {\"resolution\": \"768p\"}")},
          "wait_s": WAIT_S, "out": OUT, "poster": POSTER,
          "again": {"type": "boolean", "default": False,
                    "description": "Make a new clip even if an identical call made one in the last 30 minutes"}}}},
@@ -1511,6 +1845,13 @@ TOOLS = [
          "audio": {"type": "string", "enum": list(UPSCALE_AUDIO), "description": "Default: the studio's"},
          "seed": {"type": "integer", "minimum": 0, "description": "The refine's seed; default the clip's"},
          "wait_s": WAIT_S, "out": OUT, "poster": POSTER}}},
+    {"name": "models", "title": "The studio's models",
+     "description": ("The models this studio makes clips with (generate's model): for each, what it makes now (tasks, "
+                     "keyframes, lengths, formats), what not yet and why, its options (resolution, steps, ...) and "
+                     "its time per clip. Every clip is sol-h3 (Sol-H3) unless generate names another. Never starts a "
+                     "stopped studio."),
+     "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+     "annotations": {"readOnlyHint": True}},
     {"name": "prompt_guide", "title": "H3 prompt guide",
      "description": ("The H3 prompt guide: formats per task, dialogue tags, keyframe lines, reference labels, "
                      "examples. Read it before writing a prompt."),
@@ -1518,7 +1859,7 @@ TOOLS = [
      "annotations": {"readOnlyHint": True}},
 ]
 TYPE_WORDS = {"string": "a string", "integer": "an integer", "number": "a number", "boolean": "true or false",
-              "array": "a list of strings"}
+              "array": "a list of strings", "object": "an object of names and values (strings or integers)"}
 
 
 def check_arguments(tool, args):
@@ -1540,7 +1881,10 @@ def check_arguments(tool, args):
               "integer": isinstance(value, int) and not isinstance(value, bool),
               "number": isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value),
               "boolean": isinstance(value, bool),
-              "array": isinstance(value, list) and all(isinstance(v, str) for v in value)}[kind]
+              "array": isinstance(value, list) and all(isinstance(v, str) for v in value),
+              "object": isinstance(value, dict) and all(
+                  isinstance(k, str) and isinstance(v, (str, int)) and not isinstance(v, bool)
+                  for k, v in value.items())}[kind]
         if not ok:
             raise Fail(f"{key} must be {TYPE_WORDS[kind]}")
         if "enum" in spec and value not in spec["enum"]:
@@ -1617,11 +1961,12 @@ class Call:
 class Submission:
     """A generate of this session: its POST runs in its own thread, which outlives a cancelled or timed-out call."""
 
-    def __init__(self, key, req, out):
+    def __init__(self, key, req, out, verify=None):
         self.key, self.out, self.time = key, out, time.time()
         self.fields = {k: v for k, v in req["fields"].items() if k != "prompt"}
         self.total, self.sent = req["bytes"], 0
         self.id, self.record, self.error, self.path = None, None, None, None
+        self.verify = verify          # the model the answer must name (verify_model), or None
         self.done = threading.Event()
 
 
@@ -1661,7 +2006,7 @@ class McpServer:
         self.clips = []                               # Submission, oldest first
         self.handlers = {"generate": self.t_generate, "wait": self.t_wait, "status": self.t_status,
                          "cancel": self.t_cancel, "fetch": self.t_fetch, "upscale": self.t_upscale,
-                         "prompt_guide": self.t_guide}
+                         "models": self.t_models, "prompt_guide": self.t_guide}
 
     # -- transport
     def log(self, text):
@@ -1840,7 +2185,7 @@ class McpServer:
                     f"{rec.get('parent')}, {rec.get('strength')}).")
         else:
             text = (f"{prefix}Clip {jid} is done: saved {path} ({megabytes(n)}, {rec.get('seconds')} s "
-                    f"{rec.get('task')} {rec.get('orientation')}, seed {rec.get('seed')}).")
+                    f"{rec.get('task')} {rec.get('orientation')}, seed {rec.get('seed')}{model_text(rec)}).")
         if rec.get("labels"):
             text += f" Labels: {labels_text(rec)}."
         result = text_result(text, data)
@@ -1911,6 +2256,8 @@ class McpServer:
             sub.sent = n
         try:
             answer = submit(self.studio, req, hold, sent)
+            if sub.verify is not None:
+                verify_model(self.studio, answer, sub.verify, mcp=True)
             sub.id, sub.record = answer["id"], answer.get("job")
             self.log(f"submitted clip {sub.id}")
         except Fail as error:
@@ -1933,16 +2280,30 @@ class McpServer:
         t0 = time.time()
         budget = self.budget(args.get("wait_s"))
         saver = self.saver(args.get("out"), args.get("poster", True))
+        model, options = model_choice(args.get("model"), sorted((args.get("options") or {}).items()),
+                                      args.get("resolution"), args.get("steps"),
+                                      {"model": "model", "option": "options", "resolution": "resolution",
+                                       "steps": "steps"})
+        call.set_phase("reading the studio's models")
+        entry, options, verify = model_check(self.studio, model, options, mcp=True)
+        call.check()
         call.set_phase("reading the input files")
         req = build_request(args["prompt"], args.get("task"), args.get("orientation"), args.get("seconds"),
                             args.get("seed"), args.get("first_frame"), args.get("last_frame"),
-                            args.get("references") or [], check=call.check)
+                            args.get("references") or [], check=call.check,
+                            clip_sizes=model_sizes(entry, options))
         call.check()
+        why = entry and model_refusal(entry, req, options)
+        if why:
+            raise Fail(f"{why[0].upper()}{why[1:]}. Nothing was submitted.")
+        add_model_fields(req, model, options)
         prefix = "".join(f"Note: {w} " for w in req["warnings"])
         if req["notes"]:
             prefix += f"Orientation: {req['notes'][0]}. "
         what = {k: args.get(k) for k in ("prompt", "task", "orientation", "seconds", "seed", "first_frame",
                                           "last_frame", "references")}
+        # the model and its options too: another model's take of the same prompt is never the earlier clip
+        what.update(model=model or DEFAULT_MODEL, options={k: str(v) for k, v in options.items()})
         key = hashlib.sha256(json.dumps([what, req["hashes"]], sort_keys=True).encode()).hexdigest()
         earlier = None if args.get("again") else self.recent(key)
         if earlier is not None and not earlier.done.is_set():
@@ -1962,7 +2323,7 @@ class McpServer:
                                             prefix)
                 return self.wait_outcome(earlier.id, t0 + budget, saver, call, prefix)
         margin = 15 + req["bytes"] / 2e6 + 15 * req["videos"]   # the upload, and the studio normalizing ref videos
-        sub = Submission(key, req, args.get("out"))
+        sub = Submission(key, req, args.get("out"), (model or DEFAULT_MODEL) if verify else None)
         with self.clips_lock:
             self.clips.append(sub)
         threading.Thread(target=self.post, args=(sub, req, max(0.0, budget - margin)), daemon=True).start()
@@ -2081,6 +2442,9 @@ class McpServer:
             return text_result(f"{noun(job)} {jid} was cancelled (it had not started).", job)
         if is_upscale(job):
             return text_result(f"Upscale {jid} is being cancelled: its job stops within about 20 s.", job)
+        if other_model(job):
+            return text_result(f"Clip {jid} ({other_model(job)}) is being cancelled: its job stops within about 20 s.",
+                               job)
         return text_result(f"Clip {jid} is being cancelled: it stops once the pipeline has closed (about 40 s); the "
                            "next clip then loads the models again.", job)
 
@@ -2103,6 +2467,14 @@ class McpServer:
         if args.get("wait_s") == 0 or time.time() >= t0 + budget:
             return self.outcome(uid, rec.get("state", "queued"), rec, saver, prefix)
         return self.wait_outcome(uid, t0 + budget, saver, call, prefix)
+
+    def t_models(self, args, call):
+        sb = self.studio.switchboard()
+        if asleep(sb):
+            return text_result(f"{asleep_text(sb)[0].upper()}{asleep_text(sb)[1:]}: its models can be read once it "
+                               "runs again (generate starts it).", {"switchboard": sb}, error=True)
+        models = studio_models(self.studio)
+        return text_result(models_text(models), {"model_choice": models is not None, "models": models or []})
 
     def t_guide(self, args, call):
         return {"content": [{"type": "text", "text": GUIDE}], "isError": False}
@@ -2145,6 +2517,15 @@ def parser():
     g.add_argument("--last-frame", metavar="FILE|URL", help="fl2va: the last frame (an image)")
     g.add_argument("--ref", action="append", metavar="FILE|URL",
                    help="ref2va: a reference image, video or audio file (repeat; numbered in order per kind)")
+    g.add_argument("--model", metavar="ID",
+                   help=f"default {DEFAULT_MODEL} (Sol-H3); another model the studio lists (lf-cli models), e.g. the "
+                        "experimental lightx2v-turbo. Checked against the studio before anything is sent")
+    g.add_argument("--resolution", metavar="R", help="an option of the model, the clip's size (as --option "
+                                                     "resolution=R; lf-cli models lists each model's choices)")
+    g.add_argument("--steps", type=int, metavar="N", help="an option of the model (as --option steps=N; lf-cli "
+                                                          "models lists each model's choices)")
+    g.add_argument("--option", action="append", metavar="NAME=VALUE",
+                   help="any option of the model, as lf-cli models lists them (repeat)")
     g.add_argument("--wait", action="store_true", help="wait for the clip and save the MP4 (into the current "
                                                        "directory unless --out)")
     g.add_argument("--out", metavar="PATH", help="the MP4 file, or a directory for it (implies --wait)")
@@ -2189,13 +2570,15 @@ def parser():
     u.add_argument("--hold", type=float, default=HOLD_S, metavar="S",
                    help=f"how long spark-switchboard may hold the request while it starts the studio (default "
                         f"{HOLD_S})")
+    sub.add_parser("models", parents=[common],
+                   help="the studio's models: what each makes, its options and its time per clip")
     sub.add_parser("guide", parents=[common], help="print the prompt guide for H3")
     sub.add_parser("mcp", parents=[common], help="run the MCP server on stdin/stdout")
     return ap
 
 
 COMMANDS = {"generate": cmd_generate, "wait": cmd_wait, "status": cmd_status, "cancel": cmd_cancel,
-            "fetch": cmd_fetch, "upscale": cmd_upscale, "guide": cmd_guide}
+            "fetch": cmd_fetch, "upscale": cmd_upscale, "models": cmd_models, "guide": cmd_guide}
 
 
 # Until 0.6 the settings may have their names up to 0.4, SOLH3_X for LFSTUDIO_X.

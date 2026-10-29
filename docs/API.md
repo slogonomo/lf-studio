@@ -20,7 +20,8 @@ without a GPU.
 Contents: [Quick start](#quick-start) · [Access](#access) · [Turning the API off](#turning-the-api-off) ·
 [Through spark-switchboard](#through-spark-switchboard) · [Making a clip](#making-a-clip-post-apigenerate) ·
 [Waiting](#waiting-get-apijobsid) · [Getting the clip](#getting-the-clip) · [Cancel](#cancel) ·
-[Other endpoints](#other-endpoints) · [Errors](#errors) · [CLI](#cli-binlf-cli) ·
+[Models](#models-experimental-lightx2v-turbo) · [Other endpoints](#other-endpoints) · [Errors](#errors) ·
+[CLI](#cli-binlf-cli) ·
 [MCP server](#mcp-server-lf-cli-mcp) · [Prompt guide](#prompt-guide)
 
 ## Quick start
@@ -239,6 +240,8 @@ still sending may see the connection close instead). Base64 adds a third, so JSO
 | `first_frame`, `last_frame` | one image file each (fl2va) | |
 | `ref_images`, `ref_videos`, `ref_audio` | files, repeated, in order (ref2va) | |
 | `remix_from`, `keep` | reuse files of an earlier clip ([Remix](#remix)) | |
+| `model` | `sol-h3` (Sol-H3), or another model the studio has on ([Models](#models-experimental-lightx2v-turbo)): `lightx2v-turbo` | `sol-h3` |
+| `resolution`, `steps`, ... | the model's own options, as `/api/state` `models` lists them: `lightx2v-turbo` takes `resolution` (`576p` or `768p`) and `steps` (`4`) | the model's defaults (`576p`, `4`) |
 
 File types go by the file name's extension: images `.png .jpg .jpeg .webp`, videos `.mp4 .mov .m4v .webm .mkv`,
 audio `.wav .mp3 .flac .m4a .ogg`. The form is lenient, as the page needs it: unknown fields are ignored, empty file
@@ -260,8 +263,9 @@ with references are refused.
 
 The keys are the form's: `prompt`, `task`, `orientation`, `seconds` (an integer), `seed` (an integer, or `null`
 for a random one), `first_frame` and `last_frame` (one file each), `ref_images`, `ref_videos` and `ref_audio`
-(lists of files, in order), `remix_from` and `keep` (a list of `"zone:index"` strings). `null` counts as left
-out, for every key. A file is either
+(lists of files, in order), `remix_from` and `keep` (a list of `"zone:index"` strings), `model` (a string) and,
+on a studio with the model choice on, the options of its models (`resolution`, a string, and `steps`, an integer,
+with LightX2V Turbo on). `null` counts as left out, for every key. A file is either
 
 - `{"name": "kitchen.png", "data": "<base64>"}`: the name's extension gives the type; or
 - `"data:image/png;base64,<base64>"`: the type gives the extension, and the file is named after its key
@@ -303,7 +307,16 @@ behind:
    files, 12 in total (`H3 limits: ...`), and at least one image or video. A wrong type gets `unsupported file type
    .gif (allowed: ...)`. Reference videos are converted on arrival (at most 672x384, 24 fps, their first 15 s, sound
    kept); one shorter than 2 s gets `reference videos must be at least 2 s (H3 limit)`.
-3. The pipeline's own check of the request.
+3. The model and its options ([Models](#models-experimental-lightx2v-turbo)): `model must be one of ...`,
+   `lightx2v-turbo is off on this studio (LFSTUDIO_MODELS)`, an option of another model (`resolution is an option of
+   lightx2v-turbo; sol-h3 takes none`), a value the model lacks (`resolution must be 576p or 768p for
+   lightx2v-turbo`), and a clip outside what the model makes now, with its reason (`LightX2V Turbo makes Text
+   (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3`), or, for a model whose table
+   makes some values only apart (none does now), `<name> does not make clips with task ..., seconds ..., ...
+   together yet`. With `SOL_H3_PROMPT_TOKENS=plain`, a LightX2V Turbo prompt that holds MiniMax's tokens (`<d>`, ...)
+   is refused too. With the model choice off, `"model": "sol-h3"` is taken and any other model refused; the form,
+   lenient as ever, ignores option fields, and JSON refuses them as unknown keys.
+4. The pipeline's own check of the request.
 
 A refusal is 400 `{"error": "<type>: <message>"}`, for example `{"error": "ValueError: prompt is empty"}`.
 
@@ -350,12 +363,13 @@ The clip as stored (the keys `/api/state` shows), plus these keys, worked out fo
 | Key | Value |
 |---|---|
 | `state` | `queued`, `running`, `done`, `failed` or `cancelled`. Use this; `status` is a phrase for people (`loading models + generating`, ...). `done`, `failed` and `cancelled` are final. |
-| `phase` | `null` unless running; then `starting`, `loading` (the models, then this clip), `generating`, `retrying` (after a worker error), `saving`, `cancelling` or `running`; an upscale: `unloading`, then `upscaling` ([Upscale](#upscale-experimental-post-apiupscale)) |
+| `phase` | `null` unless running; then `starting`, `loading` (the models, then this clip), `generating`, `retrying` (after a worker error), `saving`, `cancelling` or `running`; an upscale: `unloading`, then `upscaling` ([Upscale](#upscale-experimental-post-apiupscale)); a LightX2V Turbo clip: `unloading` (the Sol-H3 models close), `encoding` (its prompt), `loading`, `generating` ([Models](#models-experimental-lightx2v-turbo)) |
 | `ahead` | queued only: the jobs that run before it (every queued clip runs before a queued upscale) |
 | `upscalable` | done, with the experimental Upscale on: whether it can be upscaled ([Upscale](#upscale-experimental-post-apiupscale)) |
 | `elapsed_s` | running only: seconds since it started |
 | `urls` | done, while its MP4 exists: `{"video": "/video/<id>", "poster": "/poster/<id>"}`, relative to the studio's address |
 | `labels` | fl2va and ref2va: what each input file is called in the prompt (below) |
+| `model`, `file_name` | with the model choice on ([Models](#models-experimental-lightx2v-turbo)) only: the clip's model (`sol-h3` for every clip made without one) and the name `/video/<id>` downloads it as |
 
 Some stored keys: `id`, `task`, `orientation`, `seconds`, `seed`, `prompt`, `created`, `started` and `finished`
 (Unix times), `wall_s` (seconds from start to end), `error` (failed), `load_eta` (while the models load: the last
@@ -364,7 +378,14 @@ length or orientation keeps the models loaded and changes the session's shape fi
 session's `[task, orientation, seconds]` before) and, once the change is done, `reshape_s` (the seconds it took). It
 runs with `phase` `generating` from the start; its first clip at a shape the session hasn't run takes longer (below).
 A clip that loads the models has neither key. Paths in the record (`first_frame`, `references`, `output`,
-`published`, `case_dirs`) are paths on the Spark, for information only.
+`published`, `case_dirs`) are paths on the Spark, for information only. A LightX2V Turbo clip also stores `model`,
+`model_opts` (its options, its size and what its job used: `{"resolution", "steps", "size": [w, h], "lora",
+"qwen_canvas", "image_tokens"}`), `job_phase` once its job runs (its job's own step: `starting`, `loading`, `step
+2/4`, `decoding`, `saving`; gone when it is done, kept where a failed or cancelled clip stopped), and when done
+`phases_s`, `load_s`, `peak_gib` and `low_mem_gib` from its job; an fl2va one also `text_only` (its prompt without
+the keyframe references, for a later Upscale: `{"prompt", "dropped"}`, or `null` for a prompt that is nothing but
+its keyframe lines, such as the guide's first-frame line alone). Sol-H3 clips store none of these: their records are
+as before the model choice.
 
 A done fl2va clip, abbreviated:
 
@@ -407,6 +428,7 @@ One clip renders at a time. Measured on one DGX Spark ([PERFORMANCE.md](PERFORMA
 | t2va, the first clip after a change of task (the models load first; also after any change with `LFSTUDIO_RESHAPE=0`) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
 | The first clip of fl2va (first and last frame) / ref2va (an image and a video), 5 s | 115 s / 178 s with `infer.py` |
 | Cancel of a running clip, until the pipeline has closed | about 40 s; the next clip then loads the models again |
+| LightX2V Turbo (experimental), 4 steps ([Models](#models-experimental-lightx2v-turbo)) | In the studio's queue (a staging studio on one DGX Spark, 2026-10-29, one clip each, the prompt encode included): 191-204 s for 5 s at 576p, 338 s at 768p, 399 s for 10 s at 576p. Its job, run by hand on one DGX Spark (2026-10-28/29, one clip per process, its load included, the prompt encode not): 173-190 s for 5 s at 576p, 328-350 s at 768p; 387 s for 10 s at 576p, 813 s at 768p; 606 s for 14 s and 632 s for 15 s at 576p; 1036 s for 12 s and 1425 s for 15 s at 768p ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). The studio shows its estimate per size and length until it has measured a clip (5 s: about 3:20 at 576p, 5:50 at 768p; 15 s: about 11:00 and 24:00), plus about 40 s when the Sol-H3 models must close first |
 
 Add the clips queued before it. The first run of a new setting after an install also compiles its kernels once
 (t2va 16:9 15 s: 357 s). The MP4s in one studio's publish folder were 3.2 MB on average and at most 7.7 MB (100
@@ -423,8 +445,9 @@ clips).
 
   Behind switchboard this path never starts the studio, and it sends the MP4 the moment the clip is done.
 - **`GET /video/<id>`**: the MP4 (`video/mp4`) with `Content-Disposition: inline;
-  filename="lf-studio_<task>_<seconds>s_seed<seed>_<id6>.mp4"`. `Range` requests get 206. 404 `no such video`. Behind
-  switchboard it starts a stopped studio.
+  filename="lf-studio_<task>_<seconds>s_seed<seed>_<id6>.mp4"` (a LightX2V Turbo clip:
+  `lf-studio_lightx2v-turbo-<resolution>_<task>_<seconds>s_seed<seed>_<id6>.mp4`, as its record's `file_name`).
+  `Range` requests get 206. 404 `no such video`. Behind switchboard it starts a stopped studio.
 - **`GET /poster/<id>`**: a JPEG of the frame at about 1 s, 640 pixels wide. 404 `no poster`. Behind switchboard it
   never starts the studio (with this version's integration file).
 
@@ -438,7 +461,8 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 - 200 `{"ok": true, "job": <stored record>}`. A queued clip is `cancelled` at once. A running one gets
   `"cancel_requested": true` and stays running (`phase` `cancelling`) until its pipeline has closed, about 40 s on
   the Spark, then reads `cancelled`. The next clip loads the models again. Cancelling it again meanwhile is 200 as
-  well.
+  well. A running LightX2V Turbo clip stops its prompt encode or its job (SIGTERM, then SIGKILL after 20 s), or, while
+  the Sol-H3 models close for it, once they have closed.
 - 409 `the clip has already finished`, `the clip has already failed`, `the clip is already cancelled`, or `the clip
   has just finished and is being saved`.
 - 404 `no such clip`; 400 `expected JSON {"id": ...}`.
@@ -510,11 +534,109 @@ every finished job in `/api/state`, `/api/jobs` and the API record has `upscalab
 its Stage-1 audio>}` or `{"ok": false, "why": "<the 400 or 409 text above>"}`.
 This endpoint is the page's, like Cancel: it works with `LFSTUDIO_API=0`.
 
+## Models (experimental): LightX2V Turbo
+
+Every clip has a model. Without one it is **Sol-H3** (`sol-h3`): NVIDIA's two-stage pipeline, the studio as it has
+always been. A studio on a DGX Spark with `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo` (off by default;
+[INSTALL.md](INSTALL.md#experimental-lightx2v-turbo), `bin/env.example`) also has **LightX2V Turbo**
+(`lightx2v-turbo`): the full MiniMax-H3 in one stage with LightX2V's turbo LoRA (`lightx2v/Minimax-h3-Turbo`), which
+keeps the look of a keyframe more closely than Sol-H3's draft and refine, and takes longer.
+
+**What it makes:** Text (t2va) and Keyframes (fl2va: a first frame, a last frame alone, or both), 5, 6, 7, 8, 10, 12
+or 15 s, 16:9 or 9:16, at `576p` (1024×576 or 576×1024, the default) or `768p` (1344×768 or 768×1344), in 4 steps.
+Reference (ref2va) is not offered yet: a request for it gets 400 with the reason, and the page shows it greyed out with
+it. Every model is meant to make all that Sol-H3 makes in the end. What a model makes now is data in the studio's
+table (`/api/state` `models`, below), so offering more needs no change in the page, `lf-cli` or the MCP server.
+
+**Its clip's length:** as Sol-H3's (121 frames at 5 s, 5.04 s; 361 at 15 s), except with a last frame: the model
+anchors that keyframe to the last frame it makes, so such a clip keeps every frame made and ends on it (124 frames at
+5 s, 5.17 s; 158 at 6 s, 175, 192, 243, 294 and 362 at 15 s), its sound as long. 15 s makes 362 frames (15.08 s),
+past the 15.0 s that Diffusers 0.40 takes: the job raises that limit for those clips alone (`jobs/h3turbo_job.py`,
+"Lengths"). The clip's MP4 name has its frame count (`clip_1024x576_124f.mp4`).
+
+**Request:** `"model": "lightx2v-turbo"` and its options, `"resolution": "576p"` or `"768p"` and `"steps": 4`, in the
+form or JSON of `POST /api/generate` ([Form fields](#form-fields)); left out, an option is the model's default.
+
+```bash
+curl -sS --fail-with-body -H 'Accept: application/json' -H 'X-Switchboard-Wait: 900' -F model=lightx2v-turbo \
+  -F resolution=768p -F 'prompt=<prompt.txt' -F first_frame=@kitchen.png "$S/api/generate"
+```
+
+**Prompt and keyframes:** write the prompt as for Sol-H3 ([Prompt guide](#prompt-guide)): the model reads the same
+format, and a prompt of the keyframe line alone works too. A keyframe should have the shape of the clip's size
+(1024×576 at 576p, ...): one of another shape is stretched or cropped to fit, and `lf-cli` warns about it.
+
+**How it runs:** as a job of its own in the queue, in order with every other clip. It closes the Sol-H3 models first
+when they are loaded (`status` `freeing memory`, `phase` `unloading`; about 40 s), fails at once below
+`LFSTUDIO_H3TURBO_MIN_FREE_GIB` of free memory (default 100; "close other apps"; the setting is a minimum: a clip
+needs at least what its job's memory model says one of its size and length takes, 90 GiB at 576p 5 s, 100 at 768p
+10 s, 103 at 768p 12 s and 107 at 768p 15 s, so a lower value does not take it below that), encodes the prompt with a
+Qwen worker of its own (`encoding the prompt`, `phase` `encoding`), then runs its GPU job (`loading models +
+generating`, then `generating`; `job_phase` says which step). Cancel stops it at any point. There is no retry after a
+failure and no warm-up after it: the next Sol-H3 clip loads its models again. A queue that mixes models pays a close
+or a load at each change. `POST /api/load` with `"model": "lightx2v-turbo"` answers 409 `LightX2V Turbo loads its model with each
+clip; there is nothing to load ahead`.
+
+**Time:** its job, run by hand on one DGX Spark (2026-10-28/29, 4 steps, one clip per process with the model's load),
+took 173-190 s for 5 s at 576p and 328-350 s at 768p, 387 s and 813 s for 10 s, and 606 s for 14 s at 576p; in one
+Text run each (2026-10-29), 632 s for 15 s at 576p, and 1036 s and 1425 s for 12 and 15 s at 768p. Its prompt encode
+took 9-18 s. In the studio's queue (a staging studio on one DGX Spark, 2026-10-29, one clip each), a 5 s clip took
+191-204 s at 576p and 338 s at 768p, and a 10 s clip at 576p 399 s, from the prompt encode to the poster
+([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). Until it has measured a clip of a size and length, the
+studio shows its estimate for it, from those runs (`eta_s`: about 3:20 at 576p and 5:50 at 768p for 5 s, 6:40 and 13:40
+for 10 s, 11:00 and 24:00 for 15 s), and the clip's own time after that. 6, 7 and 8 s, 12 s at 576p, and Keyframes
+clips longer than 14 s at 576p or 10 s at 768p (only Text ran at those lengths) have not run on the GPU: their times and
+memory floors are estimates.
+
+**Files and names:** a LightX2V Turbo clip downloads as
+`lf-studio_lightx2v-turbo-<resolution>_<task>_<seconds>s_seed<seed>_<id6>.mp4`, and its `LFSTUDIO_PUBLISH_DIR` copy
+is `<time>_<task>_<orientation>_<seconds>s_lightx2v-turbo-<resolution>_seed<seed>_<id6>.mp4`. Sol-H3 clips keep their
+names. A LightX2V Turbo clip can't be upscaled yet (`upscalable`: `{"ok": false, "why": "Upscale of LightX2V Turbo
+clips comes in a later version"}`). The same seed makes a different clip in another model or at another size.
+
+**`/api/state`** has, with the model choice on, `"models"` and `session.model` (`sol-h3` while a Sol-H3 session is
+loaded or loading, else `null`). `models` lists the models on, in order, each as:
+
+| Key | Value |
+|---|---|
+| `id`, `name`, `about` | `lightx2v-turbo`, `LightX2V Turbo`, a sentence |
+| `runs` | `session` (Sol-H3: its models stay loaded between clips) or `job` (a GPU job per clip) |
+| `experimental`, `default` | booleans; the default model is `sol-h3` |
+| `capabilities` | for each of `task`, `frames` (fl2va's keyframes: `first`, `last`, `first+last`), `seconds` and `orientation`, every value of the end state (what Sol-H3 makes) as `{"value", "offered": true}` or `{"value", "offered": false, "why": "<the reason>"}` |
+| `options` | `[{"name", "label", "type" (string or integer: its JSON type), "default", "choices": [{"value", "offered", "size": {"landscape": [w, h], "portrait": [w, h]}}]}]`; `size` where the choice sets the clip's size |
+| `combinations` | the rows of the model's table: a clip is offered when one row has each of its values (`{"task": [...], "frames": [...], "seconds": [...], "orientation": [...], "resolution": [...], "steps": [...]}`) |
+| `eta_s` | seconds per clip by options and length, `{"576p/4/5": {"s": 200, "measured": false}}`: the studio's estimate until a clip has been measured there, then the last measured time (`measured: true`). Empty for Sol-H3 (the page has its own times) |
+
+```json
+{"id": "lightx2v-turbo", "name": "LightX2V Turbo", "runs": "job", "experimental": true, "default": false,
+ "capabilities": {"task": [{"value": "t2va", "offered": true}, {"value": "fl2va", "offered": true},
+                           {"value": "ref2va", "offered": false, "why": "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3"}],
+                  "seconds": [{"value": 5, "offered": true}, {"value": 6, "offered": true}, "..."],
+                  "...": "..."},
+ "options": [{"name": "resolution", "label": "Size", "type": "string", "default": "576p",
+              "choices": [{"value": "576p", "size": {"landscape": [1024, 576], "portrait": [576, 1024]}, "offered": true},
+                          {"value": "768p", "size": {"landscape": [1344, 768], "portrait": [768, 1344]}, "offered": true}]},
+             {"name": "steps", "label": "Steps", "type": "integer", "default": 4, "choices": [{"value": 4, "offered": true}]}],
+ "combinations": [{"task": ["t2va", "fl2va"], "frames": ["first", "last", "first+last"],
+                   "seconds": [5, 6, 7, 8, 10, 12, 15], "orientation": ["landscape", "portrait"],
+                   "resolution": ["576p", "768p"], "steps": [4]}],
+ "eta_s": {"576p/4/5": {"s": 200, "measured": false}, "576p/4/6": {"s": 250, "measured": false}, "...": "...",
+           "768p/4/15": {"s": 1440, "measured": false}}}
+```
+
+With the model choice off (`LFSTUDIO_MODELS` unset, or `sol-h3` alone) the studio answers as before: no `models`, no
+`session.model`, no `model` or `file_name` in the records, the page as it was. A form submit ignores fields it does
+not know, so a client that names a model must check `models` first, as `lf-cli` and the MCP server do
+([CLI](#cli-binlf-cli)).
+
+From a program: `lf-cli generate --model lightx2v-turbo --resolution 768p ...` and `lf-cli models`
+([CLI](#cli-binlf-cli)), or the MCP tool `generate` with `model` and the tool `models` ([Tools](#tools)).
+
 ## Other endpoints
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "upscale", "upscale_defaults", "upscale_load", "session", "jobs", "done", "more", "deleted"}`. `upscale` is true when the experimental Upscale is on (`LFSTUDIO_UPSCALE=1`); then finished jobs have `upscalable`, `upscale_defaults` holds the choices the page's Upscale starts with and `upscale_load` its load, `fast` or `standard` (else both `null`). `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
+| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "upscale", "upscale_defaults", "upscale_load", "session", "jobs", "done", "more", "deleted"}`, and with the model choice on also `"models"` ([Models](#models-experimental-lightx2v-turbo)). `upscale` is true when the experimental Upscale is on (`LFSTUDIO_UPSCALE=1`); then finished jobs have `upscalable`, `upscale_defaults` holds the choices the page's Upscale starts with and `upscale_load` its load, `fast` or `standard` (else both `null`). `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
 | `GET /api/jobs?before=<created>&limit=<n>` | Older clips, newest first: `{"jobs": [...], "more": true/false}`. `before` is a `created` time (default: now), `limit` 1-100 (default 24). Records as stored. |
 | `GET /api/inputs/<id>` | A clip's input files, for Remix: `{"task", "inputs": {"<zone>": [{"name", "index", "url"}]}, "missing": [...]}` |
 | `GET /input/<id>/<zone>/<index>` | One input file (reference videos as converted). 404 `no such input`. |
@@ -527,7 +649,7 @@ Used by the page; stable, but not designed for agents. Each takes a JSON body of
 |---|---|---|
 | `POST /api/delete` | `{"id"}` | moves a finished clip and its files to the trash for `LFSTUDIO_TRASH_DAYS` (default 7); 409 while it is queued or running, or while an upscale of it is |
 | `POST /api/undelete` | `{"id"}` | brings it back |
-| `POST /api/load` | `{"task", "orientation", "seconds"}` | loads the models for those settings ahead of a clip ("Load selected now"). With that task loaded, it only changes the session's length and orientation, without a warm-up clip (`reshape` true). 400 for a length not offered, with a submit's message; 409 while a clip is queued or running |
+| `POST /api/load` | `{"task", "orientation", "seconds"}`, and `"model"` (default `sol-h3`) | loads the models for those settings ahead of a clip ("Load selected now"). With that task loaded, it only changes the session's length and orientation, without a warm-up clip (`reshape` true). 400 for a length not offered, with a submit's message, or a model that is off; 409 while a clip is queued or running, and for `lightx2v-turbo`, which loads with each clip |
 | `POST /api/unload` | none | frees the models; 409 while a clip runs |
 
 ## Errors
@@ -567,7 +689,9 @@ new download from the 0.4 address gets only that shim, which says where to get `
 lf-cli generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
        [--orientation landscape|portrait] [--seconds 5|6|7|8|10|12|15] [--seed N]
        [--first-frame FILE|URL] [--last-frame FILE|URL] [--ref FILE|URL]...
+       [--model ID] [--resolution R] [--steps N] [--option NAME=VALUE]...
        [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
+lf-cli models                 # the studio's models: what each makes, its options, its time per clip
 lf-cli wait ID [--out PATH] [--poster] [--timeout S]
 lf-cli status [ID]
 lf-cli cancel ID
@@ -591,6 +715,29 @@ more than 5% off the clip's aspect ratio gets a warning. The shape is the one sh
 PNG or WebP counts, as the pipeline applies it. The upload sends `X-Switchboard-Wait: <--hold>` (default
 900 s).
 
+**`--model ID`** picks the clip's model: `sol-h3` (Sol-H3, also without the flag) or another model the studio has on
+([Models](#models-experimental-lightx2v-turbo)), such as the experimental `lightx2v-turbo`. Any string of lowercase
+letters, digits and hyphens is taken, so this file needs no update for a model added to the studio later.
+`--resolution R` and `--steps N` set those options of the model; `--option NAME=VALUE` (repeated) sets any option by
+its name (`--resolution 768p` is `--option resolution=768p`). The fields every clip has (`seconds`, `task`, ...) are
+not options. Before anything is uploaded, a generate with another model than `sol-h3`, or with any option, reads the
+studio's table (`GET /api/state`, which never starts a studio behind switchboard) and checks the request against it:
+a model it doesn't have, an option or value the model lacks, or a clip the model doesn't make yet is exit 2 with the
+reason (`LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3;
+nothing was submitted`). A studio without `models` (the model choice
+off, or an older version) is exit 2 too, with nothing submitted: its form would ignore the fields and make a Sol-H3
+clip. When spark-switchboard has the studio stopped, the table can't be read without starting it: then the clip is
+submitted (which starts the studio), and if the studio's answer doesn't name the model, the CLI cancels that clip at
+once and exits 2. A keyframe's shape warning uses the model's size (1024x576 at 576p). The clip's own name, progress
+lines and `status` show its model: `t2va, landscape, 5 s, seed 3, lightx2v-turbo 768p 4 steps`.
+
+**`models`** prints the studio's models: for each, what it makes now (one line per row of its table), its options with
+their choices, what it doesn't make yet and why, and its time per clip, a line per set of options (`time per clip,
+resolution 576p, steps 4: 5 s about 3:20, 6 s about 4:10, ... (estimates until one is measured here)`; a time measured
+on the studio says `(measured here)`). `--json` gives `{"model_choice": true, "models": [...]}`, the studio's table as
+[`/api/state`](#models-experimental-lightx2v-turbo) has it; a studio without the model choice gives `{"model_choice":
+false, "models": []}` and says that every clip is Sol-H3.
+
 **Line ends.** `--prompt-file FILE` reads the file with universal newlines, so CRLF becomes LF, while the page's form
 sends a multi-line prompt with CRLF and the studio keeps it: the same prompt can tokenize differently through the CLI
 and through the page. To render a page clip again, pass its prompt as the page sent it (its API record's `prompt`),
@@ -598,7 +745,8 @@ for example with `--prompt` (`--prompt-file -` also keeps CRLF, on Linux).
 
 - Without `--wait`, `--out` or `--poster`, it prints the clip's id and exits.
 - With any of them it waits, then saves the MP4: into the current directory under the clip's own name
-  (`lf-studio_<task>_<s>s_seed<seed>_<id6>.mp4`), into a directory given as `--out` (an existing one, or a path ending
+  (`lf-studio_<task>_<s>s_seed<seed>_<id6>.mp4`; a LightX2V Turbo clip's has `lightx2v-turbo-<resolution>_` after
+  `lf-studio_`), into a directory given as `--out` (an existing one, or a path ending
   in `/`), or as the `--out` file, which it replaces. `--poster` also saves the poster as `<name>.jpg`. It checks
   that it can write there before it submits (exit 2 if not).
 - `--timeout S` stops waiting after S seconds (exit 4, the id on stdout); the clip keeps running. Ctrl-C while
@@ -606,7 +754,8 @@ for example with `--prompt` (`--prompt-file -` also keeps CRLF, on Linux).
 
 **`wait ID`** waits for a clip and saves it as above. **`fetch ID`** saves a finished clip (also one made in the
 page) without waiting; a clip still running is exit 4. **`status`** prints one line per clip: the queued and
-running ones, oldest first, then the newest 5 finished ones; `status ID` one clip. **`cancel ID`** cancels it.
+running ones, oldest first, then the newest 5 finished ones; `status ID` one clip. **`cancel ID`** cancels it (a
+LightX2V Turbo clip's job stops within about 20 s).
 
 **`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s t2va clip,
 16:9 or 9:16 ([Upscale](#upscale-experimental-post-apiupscale)), and works as `generate` from there: without
@@ -659,6 +808,8 @@ lf-cli wait "$id" --out clip.mp4 --poster --timeout 600
 lf-cli --json fetch "$id" --out clips/
 up=$(lf-cli upscale "$id" --resolution 2k --strength faithful)                # experimental: queue an upscale
 lf-cli wait "$up" --out clips/                                                 # ~30 min later: ..._2k_<id6>.mp4
+lf-cli models                                                                  # experimental: the studio's models
+lf-cli generate --model lightx2v-turbo --resolution 768p --first-frame kitchen.png --prompt-file prompt.txt --wait
 ```
 
 ## MCP server: `lf-cli mcp`
@@ -688,12 +839,13 @@ host registered with `sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; 
 
 | Tool | Arguments | Does |
 |---|---|---|
-| `generate` | `prompt` (required), `task`, `orientation`, `seconds`, `seed`, `first_frame`, `last_frame`, `references` (paths on the agent's machine or http(s) URLs), `wait_s`, `out`, `poster` (default true), `again` | queues a clip, waits up to `wait_s` and, when it is done, saves the MP4 |
+| `generate` | `prompt` (required), `task`, `orientation`, `seconds`, `seed`, `first_frame`, `last_frame`, `references` (paths on the agent's machine or http(s) URLs), `model`, `resolution`, `steps`, `options`, `wait_s`, `out`, `poster` (default true), `again` | queues a clip, waits up to `wait_s` and, when it is done, saves the MP4. `model` is a string without an `enum` (`sol-h3`, the default, or another model the studio has: the `models` tool), `resolution` and `steps` are options of the model, and `options` an object of any of its options by name; they are checked against the studio's table first, as the CLI does |
 | `wait` | `id` (required), `wait_s`, `out`, `poster` | waits for a clip and saves it |
 | `status` | `id` | one clip's record; without an id, the clips this session submitted, then the queue and the newest clips. Never waits, downloads or starts a stopped studio. |
 | `cancel` | `id` (required) | cancels a queued or running clip |
 | `fetch` | `id` (required), `out`, `poster`, `wake` (default false) | saves a finished clip (also one made in the page); refuses on a studio switchboard has stopped unless `wake` is true |
 | `upscale` | `id` (required), `resolution`, `strength`, `audio`, `seed`, `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished 5 s t2va clip, 16:9 or 9:16 ([Upscale](#upscale-experimental-post-apiupscale)), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. Each call queues another upscale |
+| `models` | none | the studio's models ([Models](#models-experimental-lightx2v-turbo)): what each makes now, its options, what not yet and why, its time per clip; `structuredContent` is `{"model_choice", "models"}` as `lf-cli models --json`. Read-only, and never starts a stopped studio |
 | `prompt_guide` | none | the [prompt guide](#prompt-guide) |
 
 **Results.** A done clip gives a text block (`Clip <id> is done: saved <absolute path> (3.2 MB, 5 s fl2va
@@ -710,9 +862,9 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
 - **The submit** holds at switchboard for what is left of the call's budget after a margin for the upload (15 s,
   plus 1 s per 2 MB, plus 15 s per reference video), so `generate` still answers within `wait_s`. The upload runs
   on its own: a call that is cancelled or times out still submits the clip, and `status` without an id shows it.
-- **An identical `generate` to the same MCP server process within 30 minutes** (the same arguments and the same
-  file contents) returns the earlier clip instead of making another: "Already submitted as <id> ...". Change the
-  seed, or pass `again: true`, for another take. A clip that failed, was cancelled or was deleted is made again; a
+- **An identical `generate` to the same MCP server process within 30 minutes** (the same arguments, the model and
+  its options included, and the same file contents) returns the earlier clip instead of making another: "Already
+  submitted as <id> ...". Change the seed, or pass `again: true`, for another take. A clip that failed, was cancelled or was deleted is made again; a
   studio that is starting, stopped or unreachable keeps the earlier clip. The server remembers these calls in
   memory only: after a host restart or in a new host session, the same call makes a new clip, so look for the
   earlier one first with `status` (no id: the newest clips) or its id.

@@ -40,6 +40,38 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   "audio"}, for the page's choices) and "upscale_load" (null with it off, else LFSTUDIO_UPSCALE_LOAD, for the page's
   expected times); with it on, every finished job in /api/state, /api/jobs and the API record has "upscalable": {"ok":
   true, "clip_audio": bool} or {"ok": false, "why": "..."}.
+- The model of a clip ("model" in POST /api/generate, the form and JSON): sol-h3 (Sol-H3, NVIDIA's two-stage
+  pipeline above; the default: a request without a model and a record without one mean sol-h3) or, experimental and on
+  the DGX Spark only with LFSTUDIO_MODELS=sol-h3,lightx2v-turbo, lightx2v-turbo (LightX2V Turbo: the full MiniMax-H3 in
+  one stage with LightX2V's turbo LoRA). MODELS is the registry: per model its name, how it runs, its options
+  (lightx2v-turbo: "resolution" 576p, the default, or 768p; "steps" 4) and its capability table: the rows of what it
+  makes now, and why not yet for the rest of what every model is meant to make (END_STATE, Sol-H3's tasks, keyframes,
+  lengths and formats). lightx2v-turbo makes t2va, and fl2va with a first frame, a last frame or both, at 5, 6, 7, 8,
+  10, 12 or 15 s, 576p or 768p, 16:9 or 9:16, now (not ref2va). Its clip with a last frame keeps every frame its job
+  makes, so that it ends on the frame the last keyframe is anchored to (124 frames at 5 s, 5.17 s; the studio's 121
+  otherwise). A 15 s clip is 362 frames made, past diffusers 0.40's 15.0 s: its job raises that limit for that clip
+  (jobs/h3turbo_job.py, "Lengths"). A model that is off or unknown, an option of another model, a value of an option it
+  does not have, or a clip outside its table gets 400 with the reason; so does a prompt with MiniMax's tokens for
+  lightx2v-turbo with SOL_H3_PROMPT_TOKENS=plain. With more than one model on, /api/state has "models" (public_models:
+  the enabled models' tables, options and expected times) and "session" "model", the page gets the same table in a
+  <script id="lf-models">, and the records in /api/state, /api/jobs and the API have "model" and "file_name" (the name
+  /video/<id> downloads as).
+  POST /api/load takes "model": a LightX2V Turbo clip loads its model itself (409). A LightX2V Turbo clip is a job of
+  its own in the same queue, in order with every other clip (run_model_job): it closes the Sol-H3 session and stops a
+  warm-up (status "freeing memory"), refuses to start below its memory floor (its job's min_free_for: the larger of
+  LFSTUDIO_H3TURBO_MIN_FREE_GIB and what a clip of its size and length needs to stay above the job's own stop: 90-100
+  GiB, 103 at 768p 12 s and 107 at 768p 15 s; 0 = no check), encodes the prompt with a transient Qwen worker
+  (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, status "encoding the prompt"; for fl2va also the prompt without its keyframe
+  references, "text_only", for a later Upscale: null when nothing is left of it, a prompt of keyframe lines alone), then
+  runs its job (LFSTUDIO_H3TURBO_SCRIPT with LFSTUDIO_H3TURBO_PYTHON; status "loading models + generating", "generating"
+  from its first step, "job_phase" from its "[lf-studio] phase" lines) in a process group of its own, both under one
+  pipeline_call, so Cancel stops either; LFSTUDIO_H3TURBO_GUARD_GIB guards it. No retry, no warm-up afterwards (nor at
+  start after one). Its record has "model", "model_opts" (the options, the size, the LoRA, the Qwen canvas and its image
+  tokens) and the job's times and memory; its files go into
+  <session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case_id>/ (qwen/, qwen-text/, turbo/), its name has
+  the model and the options: lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. It can't be upscaled
+  yet. With LFSTUDIO_MODELS unset (sol-h3 only) everything is as before: no "models", no new keys in the records or the
+  session, the page as it is; "model": "sol-h3" is taken, another model is refused.
 
 For agents and scripts (#29; docs/API.md):
 - POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
@@ -123,12 +155,34 @@ Environment:
   LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 5 more at 4K:
                              regen2k_job.min_free_for; 0 = no check)
   LFSTUDIO_UPSCALE_GUARD_GIB stop an upscale when MemAvailable stays below this for 3 s (default 5; 0 = no guard)
-  Test hooks: LFSTUDIO_UPSCALE_SCRIPT (the job script, default upscale/regen2k_job.py) and LFSTUDIO_TEST_MEMINFO (a
-  file read for MemAvailable instead of /proc/meminfo; with the Upscale on, the start log warns when it is set).
+  LFSTUDIO_MODELS            sol-h3 (default): the models a clip may have, a comma list with sol-h3 in it.
+                             sol-h3,lightx2v-turbo: also the experimental LightX2V Turbo above, on the DGX Spark only.
+                             An unknown model, a list without sol-h3, or lightx2v-turbo with LFSTUDIO_BACKEND=rtx5090
+                             stops the server; so does a bad value of the settings below while it is on (its job's
+                             studio_settings, which bin/lf-studio --check uses too). They are not read while it is off.
+  LFSTUDIO_H3TURBO_PYTHON    the Python of LightX2V Turbo's job (default $LFSTUDIO_HOME/envs/regen2k/bin/python, the
+                             Upscale's environment)
+  LFSTUDIO_H3TURBO_BASE      the MiniMax-H3 base model (default $LFSTUDIO_CHECKPOINTS/MiniMax-H3)
+  LFSTUDIO_H3TURBO_LORAS     the folder of LightX2V's turbo LoRA files (default
+                             $LFSTUDIO_CHECKPOINTS/Minimax-h3-Turbo)
+  LFSTUDIO_H3TURBO_QWEN_CANVAS  where the prompt encoder sees the keyframes: draft (the default: the 384p draft canvas,
+                             252 image tokens per keyframe) or canvas (the clip's own canvas: 576 or 1008 tokens,
+                             steps 1-3 % longer; the GPU validation found its frame 0 the same as draft's)
+  LFSTUDIO_H3TURBO_MIN_FREE_GIB  MemAvailable a LightX2V Turbo clip needs once the Sol-H3 session is closed (default
+                             100; 0 = no check). A minimum: a clip needs at least what its job's min_free_for says one
+                             of its size and length takes to stay above the job's 6 GiB stop (90 GiB at 576p 5 s, 100
+                             at 768p 10 s, 103 at 768p 12 s and 107 at 768p 15 s): a value below that does not lower
+                             that clip's floor, only 0 turns the check off.
+  LFSTUDIO_H3TURBO_GUARD_GIB stop its job when MemAvailable stays below this for 3 s (default 5; 0 = no guard)
+  Test hooks: LFSTUDIO_UPSCALE_SCRIPT (the job script, default upscale/regen2k_job.py), LFSTUDIO_H3TURBO_SCRIPT
+  (LightX2V Turbo's job, which the server loads, for its model id, settings, presets, memory floor and job.json check,
+  and runs; default jobs/h3turbo_job.py), LFSTUDIO_H3TURBO_ENCODE_SCRIPT (its prompt encode, run with this server's
+  Python in the package; default bench/h3turbo_encode.py) and LFSTUDIO_TEST_MEMINFO (a file read for MemAvailable
+  instead of /proc/meminfo; with the Upscale or LightX2V Turbo on, the start log warns when it is set).
 Until 0.6 these settings may also have their names up to 0.4 (SOLH3_HOST for LFSTUDIO_HOST, and so on; not
-LFSTUDIO_LAUNCHER_PID or the LFSTUDIO_UPSCALE ones, which are new): an old name counts where the new one is not set,
-with one warning. The default state directory is ~/.local/state/sol-h3-studio while that has jobs.db and
-~/.local/state/lf-studio does not.
+LFSTUDIO_LAUNCHER_PID, LFSTUDIO_MODELS or the LFSTUDIO_UPSCALE and LFSTUDIO_H3TURBO ones, which are new): an old name
+counts where the new one is not set, with one warning. The default state directory is
+~/.local/state/sol-h3-studio while that has jobs.db and ~/.local/state/lf-studio does not.
 
 SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0),
 SOL_H3_DYNAMIC_TEXT_LENGTH (1 or 0; 1, the default since 0.4, compiles Stage 1's body blocks once per session for any
@@ -170,6 +224,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 TASKS = ("t2va", "fl2va", "ref2va")
+# seconds; 5 = NVIDIA's frozen route, others = lf-studio extension. 3 and 4 s went after 0.5.0 (3 s clips never came
+# out right; the patch still takes 3-15 s, for infer.py and the bench).
+DURATIONS = (5, 6, 7, 8, 10, 12, 15)
 
 
 def fail(message):
@@ -348,6 +405,154 @@ if UPSCALE:
     UPSCALE_CONF, problems = regen.studio_settings(os.environ)
     if problems:
         fail("; ".join(problems))
+
+# ------------------------------------------------------------------------------------------ the models (the docstring)
+# MODELS is the registry the server checks requests against and that the page, the API and the clients read
+# (public_models). Each model's capability table: "offers", the rows of what it makes now (a clip is offered when one
+# row has each of its values: its task, for fl2va its keyframes, its length, its format and the model's options), and
+# "not_yet", why it does not make the rest of END_STATE (what every model is meant to make in the end: Sol-H3's) or of
+# its options' choices yet. Offering more is a change of this data, after a GPU validation; the page and the clients
+# follow it. A model that "runs" a "job" is a GPU job of its own per clip (run_model_job); "setting" names its
+# settings, LFSTUDIO_<setting>_*.
+SOL_H3, TURBO = "sol-h3", "lightx2v-turbo"
+DEFAULT_MODEL = SOL_H3           # a request without a model, and every record without one (all clips before 0.6)
+FRAME_SETS = ("first", "last", "first+last")      # an fl2va clip's keyframes
+END_STATE = {"task": TASKS, "frames": FRAME_SETS, "seconds": DURATIONS, "orientation": tuple(ORIENTATIONS)}
+MODELS = {
+    SOL_H3: {
+        "name": "Sol-H3", "about": "NVIDIA's Sol two-stage pipeline: a MiniMax-H3 draft at 384p refined by LTX-2.5",
+        "runs": "session", "experimental": False, "backends": tuple(BACKENDS), "options": (),
+        "offers": (dict(END_STATE),), "not_yet": ()},
+    TURBO: {
+        "name": "LightX2V Turbo", "setting": "H3TURBO",
+        "about": "the full MiniMax-H3 in one stage with LightX2V's turbo LoRA: keeps the look of your keyframe",
+        "runs": "job", "experimental": True, "backends": ("spark",),
+        # "tag": the option is in the clip's file name always (else only when it is not the default), with "unit"
+        "options": (
+            {"name": "resolution", "label": "Size", "type": "string", "default": "576p", "tag": "always",
+             "choices": ({"value": "576p", "size": {"landscape": [1024, 576], "portrait": [576, 1024]}},
+                         {"value": "768p", "size": {"landscape": [1344, 768], "portrait": [768, 1344]}})},
+            {"name": "steps", "label": "Steps", "type": "integer", "default": 4, "unit": "step",
+             "choices": ({"value": 4},)}),
+        # The GPU validation on a DGX Spark (2026-10-28/29) ran t2va, a first frame, a last frame alone and first +
+        # last, at 576p (5, 10 and 14 s) and 768p (5 and 10 s); GPU runs on 2026-10-29 (t2va, one clip each, the job on
+        # a conditioning of the studio's encode) of 576p 15 s and 768p 12 and 15 s came within its model of a clip (the
+        # job's min_free_for and estimate_s), which the other lengths follow. 15 s is the studio's 362 frames, past
+        # diffusers 0.40's stock 15.0 s: the job raises that for its clip (its docstring, "Lengths").
+        "offers": ({"task": ("t2va", "fl2va"), "frames": FRAME_SETS, "seconds": DURATIONS,
+                    "orientation": ("landscape", "portrait"), "resolution": ("576p", "768p"), "steps": (4,)},),
+        "not_yet": (
+            {"task": ("ref2va",), "why": "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not "
+                                        "Reference (ref2va): use Sol-H3"},),
+        # seconds a clip takes, by its options and length, until one has been measured here (remember_job_time): the
+        # job's estimate_s (the GPU validation's receipts: the prompt encode, the process and its load, 4 steps by the
+        # rows of the clip's sequence, the decode by its frames and pixels; measured at 576p 5, 10, 14 and 15 s and
+        # 768p 5, 10, 12 and 15 s, the rest estimated), to 10 s; +~40 s when the Sol-H3 session must close first.
+        # tests/test_server.py TurboSeam checks them against the job, for every clip offered.
+        "estimates_s": {"576p/4/5": 200, "576p/4/6": 250, "576p/4/7": 280, "576p/4/8": 310, "576p/4/10": 400,
+                        "576p/4/12": 500, "576p/4/15": 660, "768p/4/5": 350, "768p/4/6": 470, "768p/4/7": 530,
+                        "768p/4/8": 600, "768p/4/10": 820, "768p/4/12": 1070, "768p/4/15": 1440}},
+}
+
+
+def models_setting(value, backend):
+    """LFSTUDIO_MODELS -> (the enabled models in the registry's order, problem or None). bin/lf-studio --check says
+    the same in the same words."""
+    asked = [m.strip() for m in value.split(",") if m.strip()] or [DEFAULT_MODEL]
+    unknown = [m for m in asked if m not in MODELS]
+    if unknown:
+        return (), f"LFSTUDIO_MODELS={value}: unknown model {unknown[0]} (known: {', '.join(MODELS)})"
+    if DEFAULT_MODEL not in asked:
+        return (), f"LFSTUDIO_MODELS={value}: must include {DEFAULT_MODEL}, the studio's own model"
+    for m in asked:
+        if backend not in MODELS[m]["backends"]:
+            return (), (f"LFSTUDIO_MODELS={value}: the experimental {MODELS[m]['name']} ({m}) runs on the DGX Spark "
+                        f"only, not with LFSTUDIO_BACKEND={backend} (it needs ~100 GiB of GPU memory); set "
+                        f"LFSTUDIO_MODELS={DEFAULT_MODEL}")
+    return tuple(m for m in MODELS if m in asked), None
+
+
+OPTION_KINDS = {"string": str, "integer": int}     # an option's "type" -> the type of its values (JSON's)
+
+
+def registry_problems():
+    """What is wrong with MODELS' tables (a bug; the server stops): an option of a type the requests can't carry (the
+    form and JSON carry strings and integers: json_form, check_model, lf-cli), with a value or default not of its
+    type or a default not among its choices, or of another type than an option of the same name of another model; a
+    row without a dimension of the model or with a value it can't have, or a value not offered without a reason."""
+    found, kinds = [], {}
+    for mid, m in MODELS.items():
+        for o in m["options"]:
+            kind = OPTION_KINDS.get(o.get("type"))
+            if kind is None:
+                found.append(f"{mid}: option {o['name']} has type {o.get('type')!r}, not "
+                             f"{' or '.join(OPTION_KINDS)}")
+                continue
+            values = [c["value"] for c in o["choices"]]
+            found += [f"{mid}: option {o['name']}: {v!r} is not of its type, {o['type']}"
+                      for v in values + [o["default"]] if type(v) is not kind]
+            if o["default"] not in values:
+                found.append(f"{mid}: option {o['name']}'s default {o['default']!r} is not one of its choices")
+            if kinds.setdefault(o["name"], o["type"]) != o["type"]:
+                found.append(f"{mid}: option {o['name']} is of type {o['type']}, another model's of type "
+                             f"{kinds[o['name']]}")
+        dims = dict(END_STATE, **{o["name"]: tuple(c["value"] for c in o["choices"]) for o in m["options"]})
+        for row in m["offers"]:
+            if set(row) != set(dims):
+                found.append(f"{mid}: a row has {sorted(row)}, not {sorted(dims)}")
+                continue
+            found += [f"{mid}: {d} {v} is not one of {dims[d]}" for d in dims for v in row[d] if v not in dims[d]]
+        for d, values in dims.items():
+            for v in values:
+                offered = any(v in row.get(d, ()) for row in m["offers"])
+                reasons = [n for n in m["not_yet"] if v in n.get(d, ())]
+                if offered == bool(reasons):
+                    found.append(f"{mid}: {d} {v} is {'offered and has' if offered else 'not offered and has no'} "
+                                 "reason not yet")
+    return found
+
+
+problems = registry_problems()
+if problems:
+    fail("the model registry (MODELS): " + "; ".join(problems))
+ENABLED, problem = models_setting(os.environ.get("LFSTUDIO_MODELS") or DEFAULT_MODEL, BACKEND)
+if problem:
+    fail(f"{problem} (see bin/env.example)")
+MULTI = len(ENABLED) > 1         # the model choice is on: /api/state "models", "model" in the records, the page's table
+# the request fields of the enabled models' options (POST /api/generate), and their JSON types
+OPTION_TYPES = {o["name"]: o["type"] for mid in ENABLED for o in MODELS[mid]["options"]}
+# LightX2V Turbo (the docstring): its job, jobs/h3turbo_job.py, and its prompt encode, bench/h3turbo_encode.py;
+# LFSTUDIO_H3TURBO_SCRIPT and LFSTUDIO_H3TURBO_ENCODE_SCRIPT (test hooks: tests/stub/h3turbo_job.py and
+# tests/stub/h3turbo_encode.py) put others in their place. The job is loaded as the Upscale's is, for its
+# standard-library part: MODEL (this registry's id), JOB_VERSION, PRESETS (steps -> LoRA file and shifts), RECEIPT,
+# MINIMAX_PROMPT_TOKENS, studio_settings, min_free_for (the memory floor per size and length), parse_job,
+# output_name, worker_command, worker_environment, parse_line and write_json (bin/lf-studio --check also calls its
+# check_install).
+REPO_ROOT = Path(__file__).resolve().parents[1]
+H3TURBO_SCRIPT = Path(os.environ.get("LFSTUDIO_H3TURBO_SCRIPT") or REPO_ROOT / "jobs" / "h3turbo_job.py").expanduser()
+H3TURBO_ENCODE = Path(os.environ.get("LFSTUDIO_H3TURBO_ENCODE_SCRIPT")
+                      or REPO_ROOT / "bench" / "h3turbo_encode.py").expanduser()
+H3TURBO_ABORT_GIB = 6            # job.json abort_below_gib: the job stops itself below this MemAvailable (exit 3)
+JOB_MODULES = {}                 # an enabled job model -> its job's module
+MODEL_CONF = {}                  # -> its studio_settings: python, base_model, loras, qwen_canvas, min_free_gib, ...
+if TURBO in ENABLED:
+    try:
+        spec = importlib.util.spec_from_file_location("lf_studio_h3turbo_job", H3TURBO_SCRIPT)
+        JOB_MODULES[TURBO] = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(JOB_MODULES[TURBO])
+    except (OSError, ImportError, SyntaxError) as error:
+        fail(f"LFSTUDIO_MODELS has {TURBO}: cannot read its job {H3TURBO_SCRIPT} ({error})")
+    if getattr(JOB_MODULES[TURBO], "MODEL", None) != TURBO:
+        fail(f"{H3TURBO_SCRIPT} is the job of {getattr(JOB_MODULES[TURBO], 'MODEL', None)!r}, not of {TURBO}")
+    MODEL_CONF[TURBO], problems = JOB_MODULES[TURBO].studio_settings(os.environ)
+    if problems:
+        fail("; ".join(problems) + " (see bin/env.example)")
+    missing = [c["value"] for o in MODELS[TURBO]["options"] if o["name"] == "steps" for c in o["choices"]
+               if c["value"] not in JOB_MODULES[TURBO].PRESETS]
+    if missing:
+        fail(f"{H3TURBO_SCRIPT} has no LoRA preset for {', '.join(map(str, missing))} steps, which MODELS offers")
+    if not H3TURBO_ENCODE.is_file():
+        fail(f"LFSTUDIO_MODELS has {TURBO}: no prompt encode at {H3TURBO_ENCODE}")
 for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -360,7 +565,9 @@ PAGE = 24                        # clips per gallery page (/api/state carries th
 FINISHED = ("done", "failed", "cancelled")       # a job's final statuses; any other is queued or running
 session = {"pipeline": None, "key": None, "state": "idle", "since": time.time()}
 work = {"job": None,             # the job whose pipeline call (start or generate) is running (pipeline_call)
-        "process": None}         # a running upscale's job process (upscale_process), stopped at shutdown
+        "process": None,         # a running GPU job's process (gpu_process: an upscale's job, a LightX2V Turbo
+                                 # clip's prompt encode or its job), stopped at shutdown
+        "labels": None}          # its names in the log: (for Cancel, for shutdown)
 # Notified after every saved change of a job (save_job) and at shutdown: GET /api/jobs/<id>?wait= waits on it. Not
 # `lock`, which the worker does not hold while it changes a job. `waiting` (guarded by it): the requests waiting.
 changed = threading.Condition()
@@ -457,10 +664,15 @@ def is_upscale(job):
     return job.get("kind") == "upscale"
 
 
+def job_model(job):
+    """A clip's model: its "model", or sol-h3 for a clip without one (every clip before the model choice)."""
+    return job.get("model") or DEFAULT_MODEL
+
+
 def warm_up_wanted():
-    """A queued clip waits for the warm-up's models, so the warm-up is kept for it (an upscale closes them anyway).
-    Call it holding `lock`."""
-    return any(j["status"] == "queued" and not is_upscale(j)
+    """A queued clip waits for the warm-up's models, so the warm-up is kept for it (an upscale or a clip of a job model
+    closes them anyway). Call it holding `lock`."""
+    return any(j["status"] == "queued" and not is_upscale(j) and job_model(j) == SOL_H3
                and same_models(session.get("loading_key"), (j["task"], j["orientation"], j.get("seconds", 5)))
                for j in jobs)
 
@@ -966,10 +1178,27 @@ def run_job(job):
     publish(job, src, publish_stem(job))
 
 
+def model_tag(job):
+    """What a clip's file names say of its model: "" for sol-h3 (its names are as before the model choice), else the
+    model and its options, those marked "tag" always, the others when not the default: lightx2v-turbo-576p,
+    lightx2v-turbo-768p-8step."""
+    model = job_model(job)
+    if model == SOL_H3 or is_upscale(job):
+        return ""
+    opts, parts = job.get("model_opts") or {}, [model]
+    for option in MODELS.get(model, {}).get("options", ()):
+        value = opts.get(option["name"])
+        if value is not None and (option.get("tag") == "always" or value != option["default"]):
+            parts.append(f"{value}{option.get('unit', '')}")
+    return "-".join(parts)
+
+
 def publish_stem(job):
-    """The name of a clip's LFSTUDIO_PUBLISH_DIR copy, without .mp4: now, its settings, its seed and its id's start."""
+    """The name of a clip's LFSTUDIO_PUBLISH_DIR copy, without .mp4: now, its settings, its model (model_tag), its
+    seed and its id's start."""
+    tag = model_tag(job)
     return (f"{time.strftime('%Y%m%d-%H%M%S')}_{job['task']}_{job['orientation']}_{job.get('seconds', 5)}s_"
-            f"seed{job['seed']}_{job['id'][:6]}")
+            f"{tag + '_' if tag else ''}seed{job['seed']}_{job['id'][:6]}")
 
 
 def publish(job, src, stem):
@@ -1015,7 +1244,9 @@ def clip_name(job):
     if is_upscale(job):
         return (f"lf-studio_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['parent'][:6]}_"
                 f"{job['resolution']}_{job['id'][:6]}.mp4")
-    return f"lf-studio_{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_{job['id'][:6]}.mp4"
+    tag = model_tag(job)                   # a clip of another model than sol-h3: the model and its options first
+    return (f"lf-studio_{tag + '_' if tag else ''}{job['task']}_{job.get('seconds', 5)}s_seed{job['seed']}_"
+            f"{job['id'][:6]}.mp4")
 
 
 def settled(job):
@@ -1024,7 +1255,8 @@ def settled(job):
 
 
 PHASES = {"starting": "starting", "loading models + generating": "loading", "generating": "generating",
-          "retrying after a worker error": "retrying", "freeing memory": "unloading", "upscaling": "upscaling"}
+          "retrying after a worker error": "retrying", "freeing memory": "unloading", "upscaling": "upscaling",
+          "encoding the prompt": "encoding"}
 
 
 def runs_before(a, b):
@@ -1036,12 +1268,14 @@ def api_record(job):
     """A job as the API shows it (#29): the stored record plus
       state      queued, running, done, failed or cancelled: stable codes for programs (status is for people);
       phase      running only (else None): cancelling, saving, starting, loading (the models, with its clip),
-                 generating, retrying (after a worker error), unloading (an upscale freeing the memory), upscaling
-                 (its job runs; upscale_phase says where) or running;
+                 generating, retrying (after a worker error), unloading (an upscale or a clip of a job model freeing
+                 the memory), encoding (a LightX2V Turbo clip's prompt), upscaling (its job runs; upscale_phase says
+                 where) or running; a LightX2V Turbo clip's job_phase says where its job is;
       ahead      queued only: the jobs that run before it (every clip queued runs before an upscale);
       elapsed_s  running only: seconds since it started;
       urls       done, with its MP4 still there: {"video", "poster"}, paths relative to the studio's address;
-      upscalable done, with the Upscale on: as in /api/state."""
+      upscalable done, with the Upscale on: as in /api/state;
+      model, file_name  with more than one model on (with_model_fields)."""
     with lock:
         rec = dict(job)
         ahead = sum(j["status"] == "queued" and j is not job and runs_before(j, job) for j in jobs)
@@ -1058,7 +1292,19 @@ def api_record(job):
     elif rec["state"] == "done" and clip_file(rec):
         rec["urls"] = {"video": f"/video/{rec['id']}", "poster": f"/poster/{rec['id']}"}
     with_upscalable([rec])
+    with_model_fields([rec])
     return rec
+
+
+def with_model_fields(records):
+    """With more than one model on (MULTI), give each record among `records` (copies) "model" (every clip has one:
+    sol-h3 for a record without it; an upscale has none) and "file_name" (what /video/<id> downloads it as:
+    clip_name). Nothing with sol-h3 alone, so the records are as before the model choice."""
+    for rec in records if MULTI else ():
+        if not is_upscale(rec):
+            rec.setdefault("model", SOL_H3)
+        rec["file_name"] = clip_name(rec)
+    return records
 
 
 preload = {"pending": None}      # (key, case) to warm up when nothing is queued: at start, or "Load selected now"
@@ -1083,11 +1329,12 @@ def warmup_case(job):
 
 def preload_candidate():
     """The last finished clip's settings and warm-up case, or None (see warmup_case). Upscales don't count: they
-    load none of the studio's models. A clip of a length no longer offered (3 or 4 s, up to 0.5.0) warms up 5 s, the
-    length its Remix on the page picks."""
+    load none of the studio's models. None when that clip is of a job model (LightX2V Turbo): whoever made it is
+    making those, and a warm-up of Sol-H3 would only be closed again. A clip of a length no longer offered (3 or 4 s,
+    up to 0.5.0) warms up 5 s, the length its Remix on the page picks."""
     last = next((j for j in reversed(jobs) if j.get("status") == "done" and not j.get("deleted")
                  and not is_upscale(j)), None)
-    case = warmup_case(last) if last else None
+    case = warmup_case(last) if last and job_model(last) == SOL_H3 else None
     if not case:
         return None
     seconds = last.get("seconds", 5)
@@ -1217,11 +1464,12 @@ def stop_job(job):
     """Stop a running job that has been cancelled (its own thread, started by /api/cancel): while its pipeline call
     runs (work["job"]), SIGTERM the worker process groups as abort_preload does, also those started after the first
     signal (the loading pass starts Stage2 once Stage1 is loaded). Each group once: qwen_python.sh stops its
-    container in a TERM trap, which a second signal would cut short. An upscale's job (work["process"]) gets SIGKILL
-    if it is still there UPSCALE_STOP_S after its SIGTERM: its handler runs only once the GPU call under way returns,
-    which can take minutes. The signals and the checks are under `lock`, so they never reach the next job's workers.
-    Ends when the job has finished."""
-    sent, termed = set(), None
+    container in a TERM trap, which a second signal would cut short. A GPU job's process (work["process"]: an
+    upscale's job, a LightX2V Turbo clip's prompt encode or its job) gets SIGKILL if it is still there GPU_JOB_STOP_S
+    after its SIGTERM: a job's handler runs only once the GPU call under way returns, which can take minutes. The
+    signals and the checks are under `lock`, so they never reach the next job's workers. Ends when the job has
+    finished."""
+    sent, termed = set(), None             # termed: (pid, when) of the GPU job's process signalled
     while not stopping.is_set():
         with lock:
             if job["status"] in FINISHED:
@@ -1232,38 +1480,55 @@ def stop_job(job):
                     log(f"cancel: sent SIGTERM to the worker process group(s) {new} of", job["case_id"])
                 sent.update(new)
                 proc = work["process"]
-                if proc is not None and proc.pid in sent and termed is None:
-                    termed = time.time()
-                if termed and time.time() - termed > UPSCALE_STOP_S and proc is not None and proc.poll() is None:
-                    log(f"cancel: the upscale's job {proc.pid} is still there {UPSCALE_STOP_S} s after SIGTERM: "
+                if proc is not None and proc.pid in sent and (termed is None or termed[0] != proc.pid):
+                    termed = (proc.pid, time.time())
+                # proc is None between a job's GPU processes (after one, before its pipeline call returns)
+                if (termed and proc is not None and termed[0] == proc.pid and time.time() - termed[1] > GPU_JOB_STOP_S
+                        and proc.poll() is None):
+                    log(f"cancel: {work['labels'][0]} {proc.pid} is still there {GPU_JOB_STOP_S} s after SIGTERM: "
                         "SIGKILL")
                     with contextlib.suppress(OSError):
                         os.killpg(proc.pid, signal.SIGKILL)
-                    termed = float("inf")          # once
+                    termed = (proc.pid, float("inf"))      # once
         time.sleep(0.2)
 
 
 # ------------------------------------------------------------------------------------------ the experimental Upscale
 UPSCALE_REQUEST = ("id", "resolution", "strength", "audio", "seed")    # POST /api/upscale's keys
-UPSCALE_FREE_WAIT_S = 5          # how long the memory floor waits for a closed session's memory to come back
-UPSCALE_STOP_S = 20              # Cancel and shutdown: SIGKILL an upscale's job this long after its SIGTERM
+FREE_WAIT_S = 5                  # how long a memory floor waits for a closed session's memory to come back
+GPU_JOB_STOP_S = 20              # Cancel and shutdown: SIGKILL a GPU job's process this long after its SIGTERM
+UPSCALE_FREE_WAIT_S, UPSCALE_STOP_S = FREE_WAIT_S, GPU_JOB_STOP_S      # their names up to 0.5.1
 UPSCALE_LENGTH = "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"
 # a guard: every orientation the studio makes (runtime.geometry's ORIENTATIONS) is one of the job's SHAPES
 # (tests/test_upscale.py checks it), so only an orientation added later gets this
 UPSCALE_SHAPE = "Upscale needs a 16:9 or 9:16 clip (1344x768 or 768x1344)"
 
 
-class UpscaleFailed(RuntimeError):
-    """An upscale could not start, or its job failed: the message says why (the job's own error line, when it has
-    one)."""
+class JobFailed(RuntimeError):
+    """A GPU job (gpu_process) could not start, or failed: the message says why (the job's own error line, when it
+    has one)."""
+
+
+class UpscaleFailed(JobFailed):
+    """An upscale could not start, or its job failed."""
+
+
+class ModelJobFailed(JobFailed):
+    """A clip of a job model (LightX2V Turbo) could not start, or a step of it failed."""
 
 
 def mem_available_gib():
-    """MemAvailable in GiB (read from LFSTUDIO_TEST_MEMINFO in the tests), or None when it can't be read."""
+    """MemAvailable in GiB (read from LFSTUDIO_TEST_MEMINFO in the tests), or None when it can't be read. The
+    server's own reading, with the Upscale off too."""
     try:
-        return regen.meminfo(MEMINFO).get("MemAvailable")
+        with open(MEMINFO) as handle:
+            for line in handle:
+                key, _, rest = line.partition(":")
+                if key == "MemAvailable":
+                    return int(rest.split()[0]) / 1048576
     except (OSError, ValueError, IndexError):
-        return None
+        pass
+    return None
 
 
 def upscale_files(job):
@@ -1288,6 +1553,9 @@ def upscalable(job):
     copy of the job."""
     if is_upscale(job):
         return 400, "an upscale can't be upscaled again"
+    if job_model(job) != SOL_H3:
+        name = MODELS.get(job_model(job), {}).get("name", job_model(job))
+        return 400, f"Upscale of {name} clips comes in a later version"
     if job.get("task") != "t2va":
         return 400, "Upscale takes text-to-video (t2va) clips only, for now"
     if job.get("seconds", 5) != 5:
@@ -1405,9 +1673,9 @@ def submit_upscale(raw):
 
 
 def enough_memory(floor):
-    """MemAvailable (GiB) as soon as it reaches `floor`, else the most seen within UPSCALE_FREE_WAIT_S (a closed
+    """MemAvailable (GiB) as soon as it reaches `floor`, else the most seen within FREE_WAIT_S (a closed
     session's memory comes back as its workers end); None when it can't be read. No wait for a floor of 0."""
-    best, deadline = None, time.time() + UPSCALE_FREE_WAIT_S
+    best, deadline = None, time.time() + FREE_WAIT_S
     while floor > 0:
         available = mem_available_gib()
         if available is not None:
@@ -1482,52 +1750,26 @@ def run_upscale(job):
     publish(job, final, f"{stem}_{job['resolution']}")      # next to the clip's own copy
 
 
+UPSCALE_LABELS = ("the upscale's job", "the running upscale")      # in the log: for Cancel, for shutdown
+
+
 def upscale_process(job, out, job_path, parent_mp4):
-    """The upscale's job (LFSTUDIO_UPSCALE_SCRIPT: upscale/regen2k_job.py) with the Regen-2K Python, in a process
-    group of its own (stop_job's SIGTERM reaches it as it reaches the pipeline's workers), its output in worker.log.
-    A thread follows that log for the job's progress (upscale_tail), another stops the job when memory runs out
-    (upscale_guard). The job ends when this process does (--parent: PR_SET_PDEATHSIG), so a server killed hard does
-    not leave it running unguarded. Then the clip's sound goes in, copied. Returns the MP4; raises with the job's own
-    error line."""
+    """The upscale's job (LFSTUDIO_UPSCALE_SCRIPT: upscale/regen2k_job.py) with the Regen-2K Python (gpu_process:
+    its progress as job["upscale_phase"], the guard LFSTUDIO_UPSCALE_GUARD_GIB). The job ends when this process does
+    (--parent: PR_SET_PDEATHSIG), so a server killed hard does not leave it running unguarded. Then the clip's sound
+    goes in, copied. Returns the MP4; raises with the job's own error line."""
     log_path = out / "worker.log"
-    with open(log_path, "ab") as log_file:
-        try:
-            proc = subprocess.Popen(regen.worker_command(UPSCALE_CONF["python"], UPSCALE_SCRIPT, job_path,
-                                                         os.getpid()), cwd=out,
-                                    env=regen.worker_environment(os.environ), stdin=subprocess.DEVNULL,
-                                    stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True)
-        except OSError as error:
-            raise UpscaleFailed(f"cannot start the upscale job with LFSTUDIO_UPSCALE_PYTHON={UPSCALE_CONF['python']} "
-                                f"({error.strerror or error})") from None
-    with lock:                             # atomic with stop_upscale: it stops this job, or the job is stopped here
-        work["process"] = proc
-        late = stopping.is_set()
-    if late:                               # the server began to shut down while the job started
-        log("the studio is shutting down: stopping the upscale's job it just started")
-        with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
-    log(f"upscaling {job['case_id']} (job pid {proc.pid}): {job['resolution']}, {job['strength']}, "
-        f"audio {job['audio']}")
-    halt, seen = threading.Event(), {}
-    threads = [threading.Thread(target=upscale_tail, args=(log_path, job, halt, seen), daemon=True),
-               threading.Thread(target=upscale_guard, args=(proc, halt, seen), daemon=True)]
-    for thread in threads:
-        thread.start()
-    try:
-        code = proc.wait()
-    finally:
-        halt.set()
-        for thread in threads:
-            thread.join(timeout=15)
-        with lock:
-            work["process"] = None
-    if "guard" in seen:
-        raise UpscaleFailed(f"stopped: MemAvailable was below {UPSCALE_CONF['guard_gib']:g} GiB for 3 s "
-                            f"({seen['guard']:.1f} GiB; LFSTUDIO_UPSCALE_GUARD_GIB)")
-    if code and stopping.is_set():
-        raise UpscaleFailed("the studio was stopped")
-    if code:
-        raise UpscaleFailed(seen.get("error") or f"the upscale job exited with code {code}; see {log_path}")
+
+    def on_phase(name):
+        job["upscale_phase"] = name[:80]
+    code, seen = gpu_process(
+        regen.worker_command(UPSCALE_CONF["python"], UPSCALE_SCRIPT, job_path, os.getpid()),
+        regen.worker_environment(os.environ), out, log_path, regen.parse_line, on_phase, UPSCALE_LABELS,
+        (UPSCALE_CONF["guard_gib"], "upscale"), UpscaleFailed,
+        f"cannot start the upscale job with LFSTUDIO_UPSCALE_PYTHON={UPSCALE_CONF['python']}",
+        f"upscaling {job['case_id']} (job pid {{pid}}): {job['resolution']}, {job['strength']}, audio {job['audio']}")
+    job_ended(code, seen, UpscaleFailed, "LFSTUDIO_UPSCALE_GUARD_GIB", UPSCALE_CONF["guard_gib"],
+              f"the upscale job exited with code {code}; see {log_path}")
     silent = out / regen.OUTPUT_VIDEO
     if not silent.is_file():
         raise UpscaleFailed(f"the upscale job wrote no {silent.name}; see {log_path}")
@@ -1548,9 +1790,59 @@ def upscale_process(job, out, job_path, parent_mp4):
     return final
 
 
-def upscale_tail(path, job, halt, seen):
-    """Follow the upscale job's worker.log: each "[lf-studio] phase <name>" line becomes job["upscale_phase"], the
-    last "[lf-studio] error <text>" seen["error"]. Reads what is left once more after `halt` is set."""
+def gpu_process(command, env, cwd, log_path, parse_line, on_phase, labels, guard, failure, cannot_start, announce):
+    """Run one GPU process of a job (an upscale's job, a LightX2V Turbo clip's prompt encode or its job) to its end:
+    in a process group of its own (stop_job's SIGTERM reaches it as it reaches the pipeline's workers; it is
+    work["process"], so stop_job and stop_gpu_job send SIGKILL if it outlives the SIGTERM by GPU_JOB_STOP_S), its
+    output in log_path. A thread follows that log (job_tail: parse_line's phases go to on_phase, its errors to
+    seen["error"]), another stops the process when memory runs out (memory_guard; guard = (floor GiB, who, for the
+    log)). `labels`: its names in the log, for Cancel and for shutdown; `announce`: the log line once it runs ({pid}).
+    Returns (its exit status, seen); raises `failure` with cannot_start when it can't be started."""
+    with open(log_path, "ab") as log_file:
+        try:
+            proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=log_file,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as error:
+            raise failure(f"{cannot_start} ({error.strerror or error})") from None
+    with lock:                             # atomic with stop_gpu_job: it stops this process, or it is stopped here
+        work["process"], work["labels"] = proc, labels
+        late = stopping.is_set()
+    if late:                               # the server began to shut down while it started
+        log(f"the studio is shutting down: stopping {labels[0]} it just started")
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    log(announce.format(pid=proc.pid))
+    halt, seen = threading.Event(), {}
+    threads = [threading.Thread(target=job_tail, args=(log_path, parse_line, on_phase, halt, seen), daemon=True),
+               threading.Thread(target=memory_guard, args=(proc, halt, seen, *guard), daemon=True)]
+    for thread in threads:
+        thread.start()
+    try:
+        code = proc.wait()
+    finally:
+        halt.set()
+        for thread in threads:
+            thread.join(timeout=15)
+        with lock:
+            work["process"] = work["labels"] = None
+    return code, seen
+
+
+def job_ended(code, seen, failure, guard_setting, guard_gib, otherwise):
+    """Raise `failure` for a GPU process that did not end well (gpu_process's exit status and seen): stopped by the
+    guard, by the studio's shutdown, or with its own error line (else `otherwise`)."""
+    if "guard" in seen:
+        raise failure(f"stopped: MemAvailable was below {guard_gib:g} GiB for 3 s ({seen['guard']:.1f} GiB; "
+                      f"{guard_setting})")
+    if code and stopping.is_set():
+        raise failure("the studio was stopped")
+    if code:
+        raise failure(seen.get("error") or otherwise)
+
+
+def job_tail(path, parse_line, on_phase, halt, seen):
+    """Follow a GPU job's log: for each line, parse_line gives ("phase", name), which goes to on_phase, or ("error",
+    text), the last of which is seen["error"]. Reads what is left once more after `halt` is set."""
     pos, rest, chunk = 0, b"", 1 << 20
     while True:
         last = halt.is_set()
@@ -1564,9 +1856,9 @@ def upscale_tail(path, job, halt, seen):
         *lines, rest = (rest + data).split(b"\n")
         rest = rest[-4096:]                # a line without an end (a progress bar) can't grow without bound
         for line in lines:
-            found = regen.parse_line(line.rsplit(b"\r", 1)[-1].decode("utf-8", "replace"))
+            found = parse_line(line.rsplit(b"\r", 1)[-1].decode("utf-8", "replace"))
             if found and found[0] == "phase":
-                job["upscale_phase"] = found[1][:80]
+                on_phase and on_phase(found[1])
             elif found:
                 seen["error"] = found[1]
         if len(data) == chunk:             # more to read now
@@ -1576,42 +1868,325 @@ def upscale_tail(path, job, halt, seen):
         halt.wait(0.25)
 
 
-def upscale_guard(proc, halt, seen):
-    """Stop the upscale's job when MemAvailable stays below LFSTUDIO_UPSCALE_GUARD_GIB for 3 s: SIGKILL to its process
-    group. On the DGX Spark's unified memory a job that takes the last few GiB can hang the machine, and this must
-    fire before the launcher's guard (below 4 GiB for 3 s), which would stop the whole studio. So not SIGTERM, as
-    bench/memguard-run.sh sends to a process without a handler: the job's handler runs only once the GPU call under
-    way returns, and the launcher's seconds keep counting meanwhile. Sets seen["guard"] (the MemAvailable it saw), the
-    reason the server records (the job's receipt stays at "running"); ends when `halt` is set."""
-    floor, low = UPSCALE_CONF["guard_gib"], 0
+def memory_guard(proc, halt, seen, floor, who):
+    """Stop a GPU job's process when MemAvailable stays below `floor` GiB for 3 s (its setting, e.g.
+    LFSTUDIO_UPSCALE_GUARD_GIB): SIGKILL to its process group. On the DGX Spark's unified memory a job that takes the
+    last few GiB can hang the machine, and this must fire before the launcher's guard (below 4 GiB for 3 s), which
+    would stop the whole studio. So not SIGTERM, as bench/memguard-run.sh sends to a process without a handler: the
+    job's handler runs only once the GPU call under way returns, and the launcher's seconds keep counting meanwhile.
+    Sets seen["guard"] (the MemAvailable it saw), the reason the server records (the job's receipt stays at
+    "running"); ends when `halt` is set. `who` names the job in the log."""
+    low = 0
     while floor > 0 and not halt.wait(1):
         available = mem_available_gib()
         low = low + 1 if available is not None and available < floor else 0
         if low < 3:
             continue
         seen["guard"] = available
-        log(f"upscale: MemAvailable {available:.1f} GiB, below {floor:g} GiB for 3 s: stopping its job (SIGKILL)")
+        log(f"{who}: MemAvailable {available:.1f} GiB, below {floor:g} GiB for 3 s: stopping its job (SIGKILL)")
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
         return
 
 
-def stop_upscale():
-    """At shutdown: SIGTERM a running upscale's job (its process group; SIGKILL if it is still there UPSCALE_STOP_S
-    later), so that it does not go on without the studio. (Its --parent ends it if the server dies first, and
-    bin/lf-studio's cleanup stops one left behind too: WORKER_RE.)"""
+def stop_gpu_job():
+    """At shutdown: SIGTERM a running GPU job's process (its process group; SIGKILL if it is still there
+    GPU_JOB_STOP_S later), so that it does not go on without the studio. (A job's --parent ends it if the server dies
+    first, and bin/lf-studio's cleanup stops one left behind too: WORKER_RE.)"""
     with lock:
-        proc = work["process"]
+        proc, labels = work["process"], work["labels"]
     if proc is None or proc.poll() is not None:
         return
-    log("stopping the running upscale")
+    log(f"stopping {labels[1]}")
     with contextlib.suppress(OSError):
         os.killpg(proc.pid, signal.SIGTERM)
     try:
-        proc.wait(timeout=UPSCALE_STOP_S)
+        proc.wait(timeout=GPU_JOB_STOP_S)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
+
+
+# ------------------------------------------------------------------------------------------ clips of a job model
+TURBO_LABELS = ("the LightX2V Turbo job", "the running LightX2V Turbo clip")
+ENCODE_LABELS = ("the LightX2V Turbo prompt encode", "the running LightX2V Turbo prompt encode")
+ENCODE_LINE = re.compile(r"\[h3turbo-encode\] (failed|refused): (.*)")
+NO_TEXT_ONLY = "--no-text-only"     # the encode's flag that skips the text-only input; its refusal names it
+
+
+def encode_line(line):
+    """A line of the prompt encode's output -> ("error", text) for its failure or refusal, else None."""
+    m = ENCODE_LINE.match(line.strip())
+    return ("error", m.group(2).strip()) if m else None
+
+
+def model_options(model, opts, orientation):
+    """A clip's model_opts at submit: its options (check_model) and, from the option that has sizes, its size."""
+    out = dict(opts)
+    for option in MODELS[model]["options"]:
+        choice = next((c for c in option["choices"] if c["value"] == opts.get(option["name"])), {})
+        if "size" in choice:
+            out["size"] = list(choice["size"][orientation])
+    return out
+
+
+def eta_key(model, opts, seconds):
+    """The key of a clip's expected time: its options' values in the registry's order, then its length (576p/4/5)."""
+    return "/".join([str(opts.get(o["name"])) for o in MODELS[model]["options"]] + [str(seconds)])
+
+
+def read_times():
+    try:
+        times = json.loads(LOAD_TIMES.read_text())
+        return times if isinstance(times, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def remember_job_time(job, seconds):
+    """Record how long a clip of a job model took, from its prompt encode to its saved MP4 (the Sol-H3 close before
+    it not counted), as job/<model>/<eta_key> in load-times.json. Never "last": that is Sol-H3's cold start."""
+    try:
+        times = read_times()
+        times[f"job/{job['model']}/{eta_key(job['model'], job['model_opts'], job['seconds'])}"] = seconds
+        LOAD_TIMES.write_text(json.dumps(times, indent=1))
+    except (OSError, ValueError):
+        traceback.print_exc()
+
+
+def model_eta(model):
+    """A job model's expected seconds per clip: {eta_key: {"s", "measured"}}, its last measured time where there is
+    one (remember_job_time), else the registry's estimate. {} for sol-h3 (the page has its own times)."""
+    times, out = read_times(), {}
+    for key, estimate in MODELS[model].get("estimates_s", {}).items():
+        measured = times.get(f"job/{model}/{key}")
+        out[key] = {"s": measured, "measured": True} if measured else {"s": estimate, "measured": False}
+    prefix = f"job/{model}/"
+    for name, value in times.items():
+        if name.startswith(prefix) and name[len(prefix):] not in out:
+            out[name[len(prefix):]] = {"s": value, "measured": True}
+    return out
+
+
+def encode_prompt(job, case, conf):
+    """A LightX2V Turbo clip's prompt conditioning: its prompt encode (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, by default
+    bench/h3turbo_encode.py) with this server's Python in the patched package, as a GPU process of its
+    own (gpu_process: Cancel and shutdown stop it, and it stops its transient Qwen worker): the prompt and the
+    keyframes, seen at the LFSTUDIO_H3TURBO_QWEN_CANVAS canvas, into <case>/qwen/, and for fl2va the prompt without its
+    keyframe references into <case>/qwen-text/ (the input of a later Upscale; job["text_only"]). A prompt that is
+    nothing but its keyframe references has no such text: the encode refuses it, naming --no-text-only, and runs again
+    with it (text_only null). After an encode that ended badly, stop_encode_worker. Its log is <case>/encode.log.
+    Returns (the conditioning, the encode's summary: encode.json)."""
+    opts, prompt_file, log_path = job["model_opts"], case / "prompt.txt", case / "encode.log"
+    prompt_file.write_text(job["prompt"], encoding="utf-8")
+    command = [sys.executable, "-I", "-B", str(H3TURBO_ENCODE), "--case", str(case), "--prompt-file", str(prompt_file),
+               "--orientation", job["orientation"], "--resolution", opts["resolution"], "--canvas", conf["qwen_canvas"],
+               "--seed", str(job["seed"]), "--case-id", job["case_id"], "--package", str(PKG)]
+    for anchor in ("first", "last"):
+        if job.get(f"{anchor}_frame"):
+            command += [f"--{anchor}", job[f"{anchor}_frame"]]
+    env = dict(os.environ, LFSTUDIO_PATHS=PATHS_TEMPLATE)
+
+    def encode(command):
+        code, seen = gpu_process(command, env, PKG, log_path, encode_line, None, ENCODE_LABELS,
+                                 (conf["guard_gib"], "LightX2V Turbo's prompt encode"), ModelJobFailed,
+                                 f"cannot start the prompt encode {H3TURBO_ENCODE}",
+                                 f"encoding the prompt of {job['case_id']} (pid {{pid}}): Qwen canvas "
+                                 f"{conf['qwen_canvas']}")
+        if code not in (0, 2):             # killed (the guard, a SIGKILL after Cancel or shutdown) or failed; a
+            stop_encode_worker(case)       # refusal (2) started nothing
+        return code, seen
+
+    code, seen = encode(command)
+    text_only = job["task"] == "fl2va"
+    if code == 2 and text_only and NO_TEXT_ONLY in (seen.get("error") or ""):
+        # The prompt is nothing but its keyframe references (the guide's first-frame line, the page's alignLine()):
+        # nothing is left for the text-only encode, which only a later Upscale reads, and the encode refused before
+        # it started anything. The clip itself needs no text-only input: encode it without one (text_only null).
+        log(f"{job['case_id']}: the prompt encode refused the text-only input ({seen['error']}): encoding the clip "
+            "without it")
+        if job.get("cancel_requested"):
+            raise Cancelled("cancelled during the prompt encode")
+        text_only = False
+        code, seen = encode(command + [NO_TEXT_ONLY])
+    what = "refused the clip" if code == 2 else "failed"
+    if seen.get("error"):
+        seen["error"] = f"the prompt encode {what}: {seen['error']}"
+    job_ended(code, seen, ModelJobFailed, "LFSTUDIO_H3TURBO_GUARD_GIB", conf["guard_gib"],
+              f"the prompt encode {what} (exit code {code}); see {log_path}")
+    conditioning = case / "qwen" / "conditioning.pt"
+    if not conditioning.is_file():
+        raise ModelJobFailed(f"the prompt encode wrote no {conditioning.relative_to(case)}; see {log_path}")
+    try:
+        summary = json.loads((case / "encode.json").read_text())
+    except (OSError, ValueError) as error:
+        log("no readable encode.json from the prompt encode:", error)
+        summary = {}
+    if (case / "qwen-text" / "prompt.txt").is_file():
+        try:
+            dropped = json.loads((case / "qwen-text" / "text-only.json").read_text()).get("dropped")
+        except (OSError, ValueError, AttributeError):
+            dropped = None
+        job["text_only"] = {"prompt": (case / "qwen-text" / "prompt.txt").read_text(encoding="utf-8"),
+                            "dropped": dropped}
+    elif job["task"] == "fl2va" and not text_only:
+        job["text_only"] = None            # no text without the keyframe references: it can't be upscaled later
+    return conditioning, summary
+
+
+def stop_encode_worker(case):
+    """After a prompt encode that ended badly: stop the transient Qwen worker it may have left. runtime.pipeline.Worker
+    starts that worker (qwen_python.sh, its Docker container) in a session of its own as the encode's child, so it is
+    not in the encode's process group (the guard's and Cancel's SIGKILL) and not a child of this server
+    (signal_workers). An encode killed that way can't close it, and it lives on, with Qwen's ~17 GiB, until it next
+    reads its stdin: after its start (6-13 s) or the encode under way, while the next clip may load already. Found by
+    its command line (runtime.worker --module qwen --options <case>/qwen-worker/options.json, the case as given or
+    resolved, as bin/lf-studio's cleanup finds the pipeline's workers), its group gets SIGTERM once: qwen_python.sh
+    stops its container in a TERM trap, which a second signal would cut short. An encode that closed its worker
+    itself leaves nothing to find. Returns the groups signalled."""
+    wanted = {str(root / "qwen-worker" / "options.json") for root in (case, case.resolve())}
+    sent = []
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            argv = (d / "cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+            pgrp = int((d / "stat").read_text().rsplit(")", 1)[1].split()[2])
+        except (OSError, ValueError, IndexError):
+            continue
+        after = dict(zip(argv, argv[1:]))   # each argument -> the one after it
+        if (pgrp == int(d.name) and "runtime.worker" in argv and after.get("--module") == "qwen"
+                and after.get("--options") in wanted):
+            log(f"stopping the Qwen worker the prompt encode left (process group {pgrp})")
+            with contextlib.suppress(OSError):
+                os.killpg(pgrp, signal.SIGTERM)
+                sent.append(pgrp)
+    return sent
+
+
+def turbo_job_data(job, out, conf, module, conditioning):
+    """A LightX2V Turbo clip's job.json (version 1 of jobs/h3turbo_job.py): its settings, the LoRA and shifts of its
+    steps (the job's PRESETS), the conditioning, its keyframes, the base model and where its files go."""
+    opts = job["model_opts"]
+    preset = module.PRESETS[opts["steps"]]
+    return {"version": module.JOB_VERSION, "task": job["task"], "orientation": job["orientation"],
+            "resolution": opts["resolution"], "seconds": job["seconds"], "seed": job["seed"], "steps": opts["steps"],
+            "lora": str(conf["loras"] / preset["file"]), "shift": list(preset["shift"]),
+            "conditioning": str(conditioning), "qwen_canvas": conf["qwen_canvas"],
+            "first_frame": job.get("first_frame"), "last_frame": job.get("last_frame"), "audio_noise": "seed",
+            "crf": 19, "x264_preset": "veryfast", "load": "fast", "abort_below_gib": H3TURBO_ABORT_GIB,
+            "paths": {"base_model": str(conf["base_model"]), "output": str(out)}, "meta": {"studio_job": job["id"]}}
+
+
+def video_size(mp4):
+    """An MP4's (width, height) (ffprobe), or None when ffprobe can't read it."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                            "-of", "csv=p=0", str(mp4)], capture_output=True, text=True, timeout=60)
+        width, height = map(int, r.stdout.strip().split(",")[:2])
+        return width, height
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def run_model_job(job):
+    """A clip of a job model, LightX2V Turbo (the docstring): close the Sol-H3 session and check the memory floor, then
+    in one pipeline_call (so that Cancel stops either step and answers 409 only once the clip is being saved) its
+    prompt encode (encode_prompt) and its job (gpu_process) in <session>/<case_id>/turbo/, then the poster, the
+    record, its time and the publish copy. Raises when it fails or is cancelled; no retry, and no warm-up after it."""
+    model = job_model(job)
+    spec, conf, module = MODELS[model], MODEL_CONF[model], JOB_MODULES[model]
+    name, setting, opts = spec["name"], f"LFSTUDIO_{spec['setting']}", job["model_opts"]
+    if job.get("cancel_requested"):
+        raise Cancelled("cancelled before it started")
+    job["status"] = "freeing memory"
+    job["phase_since"] = time.time()
+    abort_preload(f"{name} needs the memory")
+    close_session(f"{name} needs the memory")
+    if job.get("cancel_requested"):        # cancelled while the models were closed: nothing of its own ran
+        raise Cancelled("cancelled before it started")
+    floor = module.min_free_for(opts["resolution"], job["seconds"], conf["min_free_gib"])
+    available = enough_memory(floor)
+    if available is None and floor > 0:
+        log(f"{name}: cannot read MemAvailable from {MEMINFO}; starting without the memory check")
+    if available is not None and available < floor:
+        # the setting is a minimum: a clip needs at least what its job's model of a clip says for its size and length
+        why = f"{setting}_MIN_FREE_GIB" if floor == conf["min_free_gib"] else \
+            (f"what a {opts['resolution']} {job['seconds']} s clip needs, more than {setting}_MIN_FREE_GIB="
+             f"{conf['min_free_gib']:g}")
+        raise ModelJobFailed(f"not enough free memory for a {name} clip: {available:.1f} GiB available with the "
+                             f"models closed, {floor:g} GiB needed ({why}); close other apps")
+    case = new_session_dir(f"{model}-{opts['resolution']}-{job['task']}-{job['orientation']}-{job['seconds']}s") \
+        / job["case_id"]
+    out = case / "turbo"
+    with lock:
+        if stopping.is_set():
+            raise ModelJobFailed("the studio is shutting down")
+    out.mkdir(parents=True)
+    job.setdefault("case_dirs", []).append(str(case))      # for Delete, even if it fails
+    opts.update(lora=module.PRESETS[opts["steps"]]["file"], qwen_canvas=conf["qwen_canvas"])
+    t0 = time.time()
+
+    def on_phase(phase):
+        job["job_phase"] = phase[:80]
+        if phase.startswith("step") and job["status"] == "loading models + generating":
+            job.update(status="generating", phase_since=time.time())
+
+    def encode_and_run():
+        if job.get("cancel_requested"):    # cancelled during the memory check: nothing of its own ran yet
+            raise Cancelled("cancelled before it started")
+        job.update(status="encoding the prompt", phase_since=time.time())
+        conditioning, summary = encode_prompt(job, case, conf)
+        job["encode_s"] = round(time.time() - t0, 1)
+        if isinstance(summary.get("image_tokens"), int):
+            opts["image_tokens"] = summary["image_tokens"]
+        if job.get("cancel_requested"):    # Cancel came as the encode ended: the job is not started
+            raise Cancelled("cancelled after the prompt encode")
+        data = turbo_job_data(job, out, conf, module, conditioning)
+        parsed = module.parse_job(data, out)   # the job's own check of job.json: a JobError (ValueError) is a bug here
+        job_path = out / "job.json"
+        module.write_json(job_path, data)
+        job.update(status="loading models + generating", phase_since=time.time(), job_phase="starting")
+        log_path = out / "worker.log"
+        code, seen = gpu_process(
+            module.worker_command(conf["python"], H3TURBO_SCRIPT, job_path, os.getpid()),
+            module.worker_environment(os.environ), out, log_path, module.parse_line, on_phase, TURBO_LABELS,
+            (conf["guard_gib"], name), ModelJobFailed,
+            f"cannot start the {name} job with {setting}_PYTHON={conf['python']}",
+            f"{name}: {job['case_id']} (job pid {{pid}}): {job['task']}, {job['orientation']}, {job['seconds']} s, "
+            f"{opts['resolution']}, {opts['steps']} steps")
+        if code == 3 and "guard" not in seen and not stopping.is_set():
+            raise ModelJobFailed(f"stopped by its job: MemAvailable fell below {H3TURBO_ABORT_GIB:g} GiB"
+                                 + (f" ({seen['error']})" if seen.get("error") else ""))
+        job_ended(code, seen, ModelJobFailed, f"{setting}_GUARD_GIB", conf["guard_gib"],
+                  f"the {name} job exited with code {code}; see {log_path}")
+        try:
+            receipt = json.loads((out / module.RECEIPT).read_text())
+        except (OSError, ValueError) as error:
+            log(f"no readable receipt from the {name} job:", error)
+            receipt = {}
+        output = receipt.get("output") if isinstance(receipt.get("output"), dict) else {}
+        mp4 = out / (output.get("file") or module.output_name(parsed))
+        if not mp4.is_file():
+            raise ModelJobFailed(f"the {name} job wrote no {mp4.name}; see {log_path}")
+        size = video_size(mp4)
+        if size is None:
+            raise ModelJobFailed(f"the {name} job's {mp4.name} can't be read; see {log_path}")
+        if opts.get("size") and list(size) != opts["size"]:
+            raise ModelJobFailed(f"the {name} job's {mp4.name} is {size[0]}x{size[1]}, not "
+                                 f"{opts['size'][0]}x{opts['size'][1]}")
+        return mp4, receipt
+
+    mp4, receipt = pipeline_call(job, encode_and_run, f"{name} failed")
+    make_poster(mp4)
+    job.pop("job_phase", None)
+    job.update(output=str(mp4), e2e_s=round(time.time() - t0, 1), includes_model_load=True)
+    lows = receipt.get("lowest_mem_available_gib")
+    job.update(phases_s=receipt.get("times_s"), load_s=receipt.get("load_s"),
+               peak_gib=receipt.get("peak_allocated_gib"),
+               low_mem_gib=lows.get("all") if isinstance(lows, dict) else None)
+    remember_job_time(job, job["e2e_s"])
+    publish(job, mp4, publish_stem(job))
 
 
 def warm_up_after_upscale():
@@ -1684,6 +2259,8 @@ def worker_loop():
             try:
                 if is_upscale(job):
                     run_upscale(job)             # no retry: a failed upscale most likely ran out of memory
+                elif job_model(job) != SOL_H3:
+                    run_model_job(job)           # no retry either: memory or a bug won't fix itself
                 else:
                     try:
                         run_job(job)
@@ -1711,7 +2288,7 @@ def worker_loop():
                 job.pop(k, None)                         # answering 409 meanwhile
             save_job(job)                   # wakes GET /api/jobs/<id>?wait=
             if is_upscale(job):
-                warm_up_after_upscale()
+                warm_up_after_upscale()     # (none after a clip of a job model: it is what the user is making)
 
 
 # ------------------------------------------------------------------------------------------ HTTP
@@ -1721,8 +2298,14 @@ PAGE_BACKEND = '<meta name="lf-studio-backend" content="spark">'   # the page's 
 
 def page_html():
     """The page, naming this studio's backend in its lf-studio-backend meta tag, so its first paint already has the
-    machine's texts. On the Spark it goes out unchanged."""
-    return PAGE_FILE.read_text().replace(PAGE_BACKEND, PAGE_BACKEND.replace('"spark"', f'"{BACKEND}"'), 1)
+    machine's texts, and with more than one model on the model registry after it (public_models, as in /api/state)
+    in <script type="application/json" id="lf-models">. On the Spark with sol-h3 alone it goes out unchanged."""
+    meta = PAGE_BACKEND.replace('"spark"', f'"{BACKEND}"')
+    page = PAGE_FILE.read_text().replace(PAGE_BACKEND, meta, 1)
+    if MULTI:                              # "<" escaped, so no text in it can end the script element
+        table = json.dumps(public_models()).replace("<", "\\u003c")
+        page = page.replace(meta, f'{meta}\n<script type="application/json" id="lf-models">{table}</script>', 1)
+    return page
 
 
 def parse_multipart(ctype, body):
@@ -1912,9 +2495,6 @@ def job_labels(job):
 IMG = {".png", ".jpg", ".jpeg", ".webp"}
 AUD = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 VID = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
-# seconds; 5 = NVIDIA's frozen route, others = lf-studio extension. 3 and 4 s went after 0.5.0 (3 s clips never came
-# out right; the patch still takes 3-15 s, for infer.py and the bench).
-DURATIONS = (5, 6, 7, 8, 10, 12, 15)
 MAX_UPLOAD = 200 * 1024 * 1024
 SMALL_BODY = 64 * 1024           # the JSON bodies of /api/cancel, /api/delete, /api/undelete, /api/load, /api/unload
 PROMPT_MAX = 32768               # characters
@@ -1967,6 +2547,91 @@ def check_fields(fields):
     return task, orientation, prompt, seconds, seed
 
 
+def one_of(values):
+    """"a", "a or b", "a, b or c"."""
+    values = [str(v) for v in values]
+    return values[0] if len(values) == 1 else f"{', '.join(values[:-1])} or {values[-1]}"
+
+
+def offered(model, dim, value):
+    """Whether `model` makes clips with this value of a dimension (task, frames: fl2va's keyframes, seconds,
+    orientation, or one of its options) in a row of its table: {"value", "offered": true}, or {"value", "offered":
+    false, "why"} with its reason not yet."""
+    m = MODELS[model]
+    if any(value in row.get(dim, ()) for row in m["offers"]):
+        return {"value": value, "offered": True}
+    why = next((n["why"] for n in m["not_yet"] if value in n.get(dim, ())), f"{m['name']} does not make these clips")
+    return {"value": value, "offered": False, "why": why}
+
+
+def model_refusal(model, values):
+    """Why `model` does not make a clip with these values ({dim: value} for offered()), or None: the reason of the
+    first value it does not make, in the order given; else, when no row of its table has all of them, that it does not
+    make them together."""
+    for dim, value in values.items():
+        found = offered(model, dim, value)
+        if not found["offered"]:
+            return found["why"]
+    if any(all(value in row[dim] for dim, value in values.items()) for row in MODELS[model]["offers"]):
+        return None
+    asked = ", ".join(f"{dim} {value}" for dim, value in values.items())
+    return f"{MODELS[model]['name']} does not make clips with {asked} together yet"
+
+
+def public_models():
+    """The enabled models, as /api/state "models" and the page's lf-models table give them, in the registry's order:
+    [{"id", "name", "about", "runs" (session or job), "experimental", "default", "capabilities", "options",
+    "combinations", "eta_s"}]. capabilities: for each of task, frames (fl2va's keyframes: first, last, first+last),
+    seconds and orientation, every value of the end state (Sol-H3's) as offered(); options: name, label, type
+    (string or integer: its JSON type), default, and the choices as offered(), with a "size" per orientation where the
+    choice sets the clip's size; combinations: the rows of the table, one of which a clip must fit in full; eta_s:
+    model_eta."""
+    out = []
+    for mid in ENABLED:
+        m = MODELS[mid]
+        out.append({"id": mid, "name": m["name"], "about": m["about"], "runs": m["runs"],
+                    "experimental": m["experimental"], "default": mid == DEFAULT_MODEL,
+                    "capabilities": {dim: [offered(mid, dim, v) for v in values] for dim, values in END_STATE.items()},
+                    "options": [dict({k: o[k] for k in ("name", "label", "type", "default")},
+                                     choices=[dict(c, **offered(mid, o["name"], c["value"])) for c in o["choices"]])
+                                for o in m["options"]],
+                    "combinations": [{dim: list(values) for dim, values in row.items()} for row in m["offers"]],
+                    "eta_s": model_eta(mid)})
+    return out
+
+
+def check_model(fields, task, orientation, seconds):
+    """The model of a submit and its options, the same for the form and JSON (json_form checks the JSON types
+    first): "model" (none or empty: sol-h3) one of the enabled ones; each of its options one of its choices (its
+    default when not given), and no option of another model; then its table for the task, length, format and options
+    (the keyframes are checked in submit, once the files are known). Returns (model, options). Raises ValueError with
+    what the client is told."""
+    model = fields.get("model") or DEFAULT_MODEL
+    if model not in ENABLED:
+        if model in MODELS:
+            raise ValueError(f"{model} is off on this studio (LFSTUDIO_MODELS)")
+        raise ValueError(f"model must be one of {', '.join(ENABLED)}")
+    own = {o["name"]: o for o in MODELS[model]["options"]}
+    for name in OPTION_TYPES:
+        if name not in own and fields.get(name) not in (None, ""):
+            owners = [mid for mid in ENABLED if any(o["name"] == name for o in MODELS[mid]["options"])]
+            raise ValueError(f"{name} is an option of {', '.join(owners)}; {model} takes "
+                             + (", ".join(own) if own else "none"))
+    opts = {}
+    for name, option in own.items():
+        value, choices = fields.get(name), [c["value"] for c in option["choices"]]
+        value = option["default"] if value in (None, "") else value
+        if option["type"] == "integer" and isinstance(value, str) and re.fullmatch(r"\s*[0-9]{1,9}\s*", value):
+            value = int(value)
+        if value not in choices:
+            raise ValueError(f"{name} must be {one_of(choices)} for {model}")
+        opts[name] = value
+    why = model_refusal(model, dict(task=task, seconds=seconds, orientation=orientation, **opts))
+    if why:
+        raise ValueError(why)
+    return model, opts
+
+
 def check_counts(images, videos, audio):
     """H3's limits on ref2va references (the counts of one request)."""
     if (images > REF_MAX["image"] or videos > REF_MAX["video"] or audio > REF_MAX["audio"]
@@ -1991,7 +2656,8 @@ def kept_zones(fields):
     return {item.partition(":")[0] for item in (fields.get("keep") or "").split(",")} & set(ZONES)
 
 
-JSON_KEYS = ("prompt", "task", "orientation", "seconds", "seed", "remix_from", "keep") + ZONES
+JSON_KEYS = ("prompt", "task", "orientation", "seconds", "seed", "remix_from", "keep") + ZONES + ("model",) + \
+    tuple(OPTION_TYPES)          # the options of the enabled models (none with sol-h3 alone)
 NO_URLS = "the studio does not fetch URLs; send the file as base64, or use bin/lf-cli, which downloads URLs itself"
 DATA_URI = re.compile(r"data:([^;,]*)((?:;[^;,]*)*);base64,", re.I)
 SPACES = str.maketrans("", "", " \t\n\r\f\v")
@@ -2039,10 +2705,11 @@ def b64_file(label, text):
 def json_form(raw):
     """POST /api/generate with a JSON body (#29) as the form's (fields, files), for submit(). Keys: prompt, task,
     orientation, seconds, seed (an integer, or null for a random one), first_frame and last_frame (one file each),
-    ref_images, ref_videos and ref_audio (lists of files), remix_from and keep (a list of "zone:index"). null is the
-    same as leaving a key out. Stricter than the form: an unknown key, a wrong type, a malformed file, files the task
-    doesn't use, frames together with references, and keep without remix_from are refused (ValueError), all before
-    any file is decoded."""
+    ref_images, ref_videos and ref_audio (lists of files), remix_from and keep (a list of "zone:index"), model (a
+    string) and the enabled models' options (OPTION_TYPES: resolution, a string, and steps, an integer, with
+    lightx2v-turbo on). null is the same as leaving a key out. Stricter than the form: an unknown key, a wrong type, a
+    malformed file, files the task doesn't use, frames together with references, and keep without remix_from are
+    refused (ValueError), all before any file is decoded; so is what check_model refuses."""
     try:
         body = json.loads(raw, strict=False)    # strict=False: wrapped base64 (raw line breaks in a string) is fine
     except ValueError as error:                 # also bytes that are not UTF-8
@@ -2054,11 +2721,17 @@ def json_form(raw):
             raise ValueError(f'unknown key "{key}" (known: {", ".join(JSON_KEYS)})')
     body = {k: v for k, v in body.items() if v is not None}
     fields = {}
-    for key in ("prompt", "task", "orientation", "remix_from"):
+    for key in ("prompt", "task", "orientation", "remix_from", "model") + tuple(
+            k for k, kind in OPTION_TYPES.items() if kind == "string"):
         if key in body:
             if not isinstance(body[key], str):
                 raise ValueError(f"{key} must be a string")
             fields[key] = body[key]
+    for key in (k for k, kind in OPTION_TYPES.items() if kind == "integer"):
+        if key in body:
+            if type(body[key]) is not int:
+                raise ValueError(f"{key} must be an integer")
+            fields[key] = str(body[key])
     if "seconds" in body:
         if type(body["seconds"]) is not int:
             raise ValueError("seconds must be an integer")
@@ -2093,7 +2766,8 @@ def json_form(raw):
             pending[zone] = [(label, *json_file(label, v, stems[zone])) for label, v in items]
     zones = set(pending) | kept_zones(fields)
     fields["task"] = fields.get("task") or infer_task(zones)
-    task = check_fields(fields)[0]
+    task, orientation, _, seconds, _ = check_fields(fields)
+    check_model(fields, task, orientation, seconds)
     for zone in ZONES:                          # in the form's order, so the first one named is the first sent
         if zone in zones:
             if task == "t2va":
@@ -2120,6 +2794,7 @@ def submit(fields, files):
     job_dir = None
     try:
         task, orientation, prompt, seconds, seed = check_fields(fields)
+        model, opts = check_model(fields, task, orientation, seconds)
         if seed is None:
             seed = int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF        # empty -> random
         # Remix: "keep" names files of clip "remix_from" to reuse, as zone:index in the order of /api/inputs
@@ -2149,6 +2824,8 @@ def submit(fields, files):
         job = {"id": jid, "case_id": f"web_{time.strftime('%H%M%S')}_{jid[:6]}", "task": task,
                "orientation": orientation, "seconds": seconds, "prompt": prompt, "seed": seed, "status": "queued",
                "created": time.time()}
+        if model != SOL_H3:                # a sol-h3 clip's record stays as before the model choice
+            job.update(model=model, model_opts=model_options(model, opts, orientation))
         if task == "fl2va":
             for key in FRAMES:
                 if files.get(key):
@@ -2175,6 +2852,18 @@ def submit(fields, files):
                 raise ValueError("ref2va needs at least one reference image or video")
             check_counts(counts["image"], counts["video"], counts["audio"])
             job["references"] = refs
+        if task == "fl2va":                # the keyframes against the model's table
+            frames = "+".join(anchor for anchor in ("first", "last") if job.get(f"{anchor}_frame"))
+            why = model_refusal(model, dict(task=task, frames=frames, seconds=seconds, orientation=orientation, **opts))
+            if why:
+                raise ValueError(why)
+        # a job model's conditioning with MiniMax's prompt tokens split into plain text (SOL_H3_PROMPT_TOKENS=plain,
+        # or a patch without the setting) is refused by its job: said now, not after the memory was freed for it
+        tokens = [t for t in getattr(JOB_MODULES.get(model), "MINIMAX_PROMPT_TOKENS", ()) if t in prompt]
+        mode = getattr(runtime.config, "prompt_tokens_mode", lambda: "plain")() if tokens else None
+        if tokens and mode != "minimax":
+            raise ValueError(f"{model} needs SOL_H3_PROMPT_TOKENS=minimax for a prompt with MiniMax's tokens "
+                             f"({', '.join(tokens)}): {mode} splits them into text tokens H3 never saw")
         # validate now so errors come back immediately
         probe = {k: job[k] for k in ("case_id", "prompt", "seed", "task")}
         for k in ("first_frame", "last_frame", "references"):
@@ -2203,7 +2892,10 @@ def submit(fields, files):
         return full
     save_job(job)
     if session.get("preloading"):
-        if not same_models(session.get("loading_key"), (job["task"], job["orientation"], job["seconds"])):
+        if job_model(job) != SOL_H3:       # it closes the warm-up's models anyway: kept only for a clip before it
+            if not waited_for:
+                abort_preload(f"a {MODELS[job_model(job)]['name']} clip arrived, which needs the memory")
+        elif not same_models(session.get("loading_key"), (job["task"], job["orientation"], job["seconds"])):
             if not waited_for:
                 abort_preload("a job for another mode/format/length arrived")
         elif time.time() < (session.get("takeover_until") or 0):
@@ -2278,7 +2970,12 @@ class H(BaseHTTPRequestHandler):
                          "jobs": [dict(j) for j in window],
                          "done": sum(j["status"] == "done" for j in finished), "more": len(finished) > PAGE,
                          "deleted": {j["id"]: j["created"] for j in jobs if j.get("deleted")}}   # in the trash
+                if MULTI:                  # the model choice: the registry, and the loaded session's model
+                    state["session"]["model"] = SOL_H3 if session.get("key") or session.get("loading_key") else None
+            if MULTI:
+                state["models"] = public_models()                       # (reads load-times.json)
             with_upscalable(state["jobs"])                              # (reads files: without the lock)
+            with_model_fields(state["jobs"])
             return self.send(200, state)
         if path == "/api/jobs":            # older clips: ?before=<created>&limit=<n>, newest first
             q = parse_qs(urlsplit(self.path).query)
@@ -2290,7 +2987,7 @@ class H(BaseHTTPRequestHandler):
             with lock:
                 older = [j for j in jobs if j["created"] < before and not j.get("deleted")]
                 page = [dict(j) for j in older[::-1][:limit]]
-            return self.send(200, {"jobs": with_upscalable(page), "more": len(older) > limit})
+            return self.send(200, {"jobs": with_model_fields(with_upscalable(page)), "more": len(older) > limit})
         m = re.fullmatch(r"/poster/([0-9a-f]{32})", path)
         if m:
             mp4 = clip_file(find_job(m.group(1)))
@@ -2489,8 +3186,17 @@ class H(BaseHTTPRequestHandler):
                 key = (want["task"], want["orientation"], int(want["seconds"]))
                 if key[0] not in PATHS or key[1] not in ORIENTATIONS:
                     raise ValueError
+                model = want.get("model") or DEFAULT_MODEL          # sol-h3 when not given, as before
             except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
                 return self.send(400, {"error": "expected JSON {task, orientation, seconds}"})
+            if not isinstance(model, str):
+                return self.send(400, {"error": "model must be a string"})
+            if model != SOL_H3:
+                if model not in ENABLED:
+                    return self.send(400, {"error": f"{model} is off on this studio (LFSTUDIO_MODELS)"
+                                           if model in MODELS else f"model must be one of {', '.join(ENABLED)}"})
+                return self.send(409, {"error": f"{MODELS[model]['name']} loads its model with each clip; there is "
+                                                "nothing to load ahead"})
             if key[2] not in DURATIONS:
                 return self.send(400, {"error": length_refusal(key[2])})
             if not PATHS[key[0]].is_file():
@@ -2709,9 +3415,16 @@ def main():
             log(f"WARNING: {' or '.join(regen.FASTLOAD_SWITCHES)} is not 1 (the patch's switches), and the Upscale's "
                 "job inherits them: its fast load reads no weight file with O_DIRECT, all of them through mmap, which "
                 "takes minutes")
-    if UPSCALE and MEMINFO != "/proc/meminfo":
-        log(f"WARNING: LFSTUDIO_TEST_MEMINFO={MEMINFO}, a test hook: the Upscale's memory floor and guard read "
-            "MemAvailable from that file, not from this machine; unset it outside the tests")
+    if TURBO in ENABLED:
+        conf = MODEL_CONF[TURBO]
+        log(f"the experimental LightX2V Turbo is on (LFSTUDIO_MODELS): {H3TURBO_SCRIPT} with {conf['python']}, its "
+            f"prompt encode {H3TURBO_ENCODE}; Qwen canvas {conf['qwen_canvas']}, memory floor {conf['min_free_gib']:g} "
+            f"GiB, guard {conf['guard_gib']:g} GiB")
+    users = [name for name, on in (("the Upscale's", UPSCALE), ("LightX2V Turbo's", TURBO in ENABLED)) if on]
+    if users and MEMINFO != "/proc/meminfo":
+        floors = "memory floors and guards" if len(users) > 1 else "memory floor and guard"
+        log(f"WARNING: LFSTUDIO_TEST_MEMINFO={MEMINFO}, a test hook: {' and '.join(users)} {floors} read MemAvailable "
+            "from that file, not from this machine; unset it outside the tests")
     log(f"LF Studio on http://{HOST}:{PORT}/ (package {PKG}, state {STATE_DIR})")
     try:
         srv.serve_forever()
@@ -2723,7 +3436,7 @@ def main():
         with changed:                                  # the waiting requests' 503s go out before the process ends
             changed.notify_all()
             changed.wait_for(lambda: waiting == 0, timeout=5)
-        stop_upscale()
+        stop_gpu_job()
         close_session("server exit")
         log("bye")
 

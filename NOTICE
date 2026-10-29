@@ -23,6 +23,12 @@ This repository contains:
   (https://github.com/huggingface/diffusers, 0.40.0, by The HuggingFace Team), Apache License, Version 2.0.
   upscale/fastload.py, with which it loads the weights, is a copy of runtime/fastload.py from
   patches/lf-studio.patch: a new file there, lf-studio's own code, not NVIDIA's.
+- jobs/h3turbo_job.py (the experimental LightX2V Turbo) runs the modular MiniMax-H3 pipeline of Diffusers
+  (https://github.com/huggingface/diffusers, 0.40.0, by The HuggingFace Team; Apache License, Version 2.0) with a
+  LightX2V turbo LoRA, and contains code adapted from: PEFT's LoRA Linear forward (https://github.com/huggingface/peft,
+  peft/tuners/lora/layer.py, by The HuggingFace Team; Apache License, Version 2.0), and the target modules, key names,
+  step count and shift rules of LightX2V's Minimax-H3-Turbo reference inference
+  (https://github.com/ModelTC/Minimax-H3-Turbo, inference_minimax_h3.py, by ModelTC; Apache License, Version 2.0).
 - install/regen2k_weights.py contains code adapted from that package's download.py (the byte-range read of Sharp's
   AdaLN table, fetch_curve, and its file hashes), and install/constraints/regen2k-requirements.in starts from its
   requirements.txt. Apache License, Version 2.0.
@@ -45,6 +51,10 @@ with that page:
   Lei Zhu, Song Han, Enze Xie. arXiv:2609.37969, 2026.
   Open-H3-Regenerate-2K: High-Resolution Video Refinement with Few-Step Diffusion. Sensen Gao, Haozhe Liu,
   Yitong Li, Haopeng Li, Tian Ye, Jia-Wang Bian, Song Han, Enze Xie. Project page, 2026.
+
+LightX2V Turbo, the experimental second model, runs LightX2V's turbo LoRA for MiniMax-H3 by ModelTC
+(https://huggingface.co/lightx2v/Minimax-h3-Turbo, https://github.com/ModelTC/Minimax-H3-Turbo; not included):
+install/66-h3turbo.sh fetches the files at a pinned revision.
 
 Not included here, obtained separately by the user, each under its own terms:
 

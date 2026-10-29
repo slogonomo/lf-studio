@@ -81,6 +81,11 @@ button,input,select,textarea{font:inherit;color:inherit}
 .aspect{display:block;border:1.8px solid currentColor;border-radius:3px}
 .len{grid-template-columns:repeat(7,minmax(0,1fr));grid-auto-flow:row}
 .len label{padding:8px 0;font-variant-numeric:tabular-nums;font-size:13px}
+/* the model choice (with more than one model on): what the selected model doesn't make yet is greyed out, with the
+   reason as its title, and stays selectable; picked anyway, it is outlined and Generate says why it can't run */
+.seg input[aria-disabled=true]+label{opacity:.42}
+.seg input[aria-disabled=true]:checked+label{opacity:1;color:var(--bad);box-shadow:0 0 0 1.5px color-mix(in srgb,var(--bad) 55%,transparent)}
+.mnote{font-size:12px;color:var(--faint);margin:6px 2px 0;line-height:1.45}
 
 /* drop zones (a real file input sits underneath each) */
 .drops{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center}
@@ -136,6 +141,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
   box-shadow:0 1px 0 rgba(255,255,255,.28) inset,0 8px 22px color-mix(in srgb,var(--acc) 32%,transparent);transition:filter .15s,transform .05s}
 #go:hover{filter:brightness(1.06)}#go:active{transform:translateY(1px)}
 #go:disabled{filter:saturate(.4);cursor:progress}
+#go.blocked{cursor:not-allowed}
 #go.reload{background:var(--panel2);color:var(--warn);box-shadow:0 0 0 1.5px color-mix(in srgb,var(--warn) 70%,transparent) inset}
 #go .eta{font-weight:500;opacity:.85;font-size:13px}
 #reloadnote{font-size:12.5px;color:var(--warn);margin-top:8px}
@@ -186,6 +192,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .body{padding:11px 13px 12px;display:flex;flex-direction:column;gap:7px;flex:1}
 .tags{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
 .tag{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--bg2);border:1px solid var(--line);color:var(--mut);font-variant-numeric:tabular-nums;white-space:nowrap}
+.tag.model{background:var(--accbg);border-color:color-mix(in srgb,var(--acc) 40%,transparent);color:var(--fg)}   /* a clip of another model than the studio's own */
 .st{font-weight:700;font-size:11.5px;padding:2px 9px;border-radius:999px}
 .st.ok{background:var(--okbg);color:var(--ok)}.st.wait{background:var(--warnbg);color:var(--warn)}.st.bad{background:var(--badbg);color:var(--bad)}
 .st.off{background:var(--bg2);color:var(--mut)}
@@ -242,7 +249,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 <header class="top">
   <div class="brand">
     <div class="logo" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg></div>
-    <div><h1>LF <span>Studio</span></h1><p>MiniMax H3 draft → LTX-2.5 refine · <span id="res">1344×768</span> video with sound, on <span id="machine">one DGX Spark</span></p></div>
+    <div><h1>LF <span>Studio</span></h1><p><span id="pipe">MiniMax H3 draft → LTX-2.5 refine</span> · <span id="res">1344×768</span> video with sound, on <span id="machine">one DGX Spark</span></p></div>
   </div>
   <div class="status" id="status" data-s="idle" role="status" aria-live="polite">
     <span class="dot"></span><span><span class="k">Models</span> <span id="loaded">…</span></span><span id="loadtimer"></span>
@@ -252,6 +259,13 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 
 <div class="layout">
 <form class="panel create" id="f" autocomplete="off">
+  <div class="sec" id="msec" hidden>
+    <div class="lbl" title="The same seed makes a different clip in another model">Model</div>
+    <div class="seg" id="mseg" role="radiogroup" aria-label="Model"></div>
+    <p class="mnote" id="mabout"></p>
+  </div>
+  <div id="mopts"></div>
+
   <div class="sec">
     <div class="lbl">Mode</div>
     <div class="seg" role="radiogroup" aria-label="Mode">
@@ -368,9 +382,14 @@ const $=id=>document.getElementById(id), form=$('f');
 const EX={t2va:"integrated_multimodal_description: A wide aerial shot follows an eagle gliding over a turquoise alpine lake, with pine forest, a narrow waterfall and snow-covered peaks visible in the background. Its wings flex gently as it banks through the warm afternoon light. The camera maintains its distance and reveals the landscape in one continuous shot. Natural colors, realistic feathers, no cuts or text.\noverall_soundscape: Wind moving through the valley, a distant eagle call and soft waterfall noise.\nnon_diegetic_music: None.",
 fl2va:"ALIGN\nintegrated_multimodal_description: A red fox walks from the woodland edge into the clearing. The camera stays wide.\noverall_soundscape: Soft wind and leaves rustling.",
 ref2va:"subject_definitions: <Subject 1> is the person in <Picture 1>. <Audio 1> provides the voice reference.\nsummary: [reference generation] <Subject 1> stands in a garden and greets the camera.\nretention_analysis: <Subject 1>: fully_preserved - face, hair and clothing as in <Picture 1>.\ndetailed_description: [Shot 1] A static medium shot. <Subject 1> faces the camera and says, <d>[English] Welcome to the garden.</d>\noverall_soundscape: Quiet outdoor ambience.\nnon_diegetic_music: N/A"};
-// fl2va alignment line: Picture 1 = first frame at 0 s, Picture 2 = last frame at the selected length
-const alignLine=()=>`How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; Picture 2 aligns with the ${(+val('seconds')||5).toFixed(2)}-second mark.`;
-const example=t=>EX[t].replace('ALIGN',alignLine());
+// fl2va's keyframe line for the keyframes attached (framesNow), S.SS the selected length: a first frame alone is fully
+// referenced at 0 s and a last frame alone, Picture 1, aligns with the length (the prompt guide's lines, docs/API.md);
+// both, or none attached yet: Picture 1 = first frame at 0 s, Picture 2 = last frame at the length
+const ALIGN={"first":"For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.",
+"last":"How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the S.SS-second mark of the target video.",
+"first+last":"How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; Picture 2 aligns with the S.SS-second mark."};
+const alignLine=frames=>(ALIGN[frames]||ALIGN['first+last']).replace('S.SS',(+val('seconds')||5).toFixed(2));
+const example=(t,frames)=>EX[t].replace('ALIGN',alignLine(frames));
 const HINT={t2va:"H3 base format",fl2va:"start with the alignment line",ref2va:"H3 full-reference format"};
 const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","non_diegetic_music: N/A"],
   fl2va:["alignment line","integrated_multimodal_description:","overall_soundscape:"],
@@ -426,46 +445,157 @@ const setRadio=(n,v)=>{const el=form.querySelector(`input[name="${n}"][value="${
 const prompt=$('prompt'),seed=$('seed'),autoroll=$('autoroll');
 const keyText=k=>`${TASK[k[0]]} · ${FMT[k[1]]} · ${k[2]||5} s`;
 const RES={landscape:'1344×768',portrait:'768×1344'};
-function resUI(){setText($('res'),RES[val('orientation')]||RES.landscape);}
+// the header: the pipeline and the clip's size; for another model than the studio's own, its name and its size
+const PIPE=$('pipe').textContent;
+function resUI(){const m=selModel(),o=val('orientation')||'landscape',so=m&&m.id!==modelDefault()&&sizeOpt(m);
+  const c=so&&so.choices.find(c=>String(c.value)===String(optVal(m,so)));
+  setText($('pipe'),m&&m.id!==modelDefault()?m.name+(m.experimental?' (experimental)':''):PIPE);
+  setText($('res'),c&&c.size?c.size[o].join('×'):RES[o]||RES.landscape);}
 // clip time: hh:mm today, otherwise with the date (and the year if it is not this year)
 function stamp(ts){const d=new Date(ts*1000),n=new Date(),t=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   if(d.toDateString()===n.toDateString())return t;
   const o=d.getFullYear()===n.getFullYear()?{month:'short',day:'numeric'}:{year:'numeric',month:'short',day:'numeric'};
   return `${d.toLocaleDateString([],o)}, ${t}`;}
 function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),2200);}
+const setAttr=(el,n,v)=>{if(v==null){if(el.hasAttribute(n))el.removeAttribute(n);}else if(el.getAttribute(n)!==String(v))el.setAttribute(n,v);};
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// The model choice (LFSTUDIO_MODELS, docs/API.md). With more than one model on, the server puts its table of the
+// enabled models in <script id="lf-models"> for the first paint and in /api/state "models"; without it (the studio's
+// own model alone) none of this shows and the page is as before. Per model: its name, how it runs (a "session" kept
+// loaded between clips, or a "job" per clip that loads its model itself), its capabilities (every value of task,
+// frames: fl2va's keyframes, seconds and orientation, offered or not yet with the reason), its options (choices
+// likewise; a choice with a "size" sets the clip's size), the combinations a clip must fit in full, and eta_s, the
+// expected seconds per clip ("576p/4/5": the options' values in their order, then the length), measured on this
+// studio or an estimate. The Model row and one row per option with more than one choice are built once; afterwards
+// only their texts and attributes change. What the selected model doesn't make yet is greyed out with the reason as
+// its title and stays selectable, so no field changes another; a pick it can't make disables Generate and #err says
+// why. Choices persist per browser: lfstudio.model and lfstudio.opt.<model>.<option>.
+let MODELS=(()=>{try{const t=JSON.parse(($('lf-models')||{}).textContent||'null');return Array.isArray(t)?t:[];}catch(e){return [];}})();
+const CLOSE_S=40;                       // closing the loaded Sol-H3 session first (docs/PERFORMANCE.md: ~40 s)
+const modelOf=id=>MODELS.find(m=>m.id===id);
+const multi=()=>MODELS.length>1;
+const modelDefault=()=>(MODELS.find(m=>m.default)||{}).id||'sol-h3';      // a record without a model is the default's
+const defaultName=()=>(modelOf(modelDefault())||{name:'Sol-H3'}).name;
+const jobModel=j=>j.model||modelDefault();
+// a clip of a model that runs as a job of its own (LightX2V Turbo): one not in the table counts as one
+const runsJob=j=>!isUp(j)&&jobModel(j)!==modelDefault()&&(modelOf(jobModel(j))||{runs:'job'}).runs==='job';
+const selModel=()=>multi()&&modelOf(val('model'))||null;                 // null: the studio's own model, as before
+const optName=(m,o)=>`opt:${m.id}:${o.name}`;
+const optVal=(m,o)=>{const v=val(optName(m,o)),c=o.choices.find(c=>String(c.value)===v);return c?c.value:o.default;};
+const optsOf=m=>Object.fromEntries((m?m.options:[]).map(o=>[o.name,optVal(m,o)]));
+const sizeOpt=m=>m.options.find(o=>o.choices.some(c=>c.size));
+const cap=t=>t?t[0].toUpperCase()+t.slice(1):'';
+// a model's expected seconds per clip ({s, measured}) with these options and length, or null when it has none; the
+// studio's own model: the machine's warm time (MACHINES)
+function modelEta(m,opts,s){if(!m||m.runs!=='job')return {s:ETA[s]||60,measured:true};
+  return (m.eta_s||{})[[...m.options.map(o=>String(opts[o.name])),String(s)].join('/')]||null;}
+const capOf=(m,dim,v)=>(((m.capabilities||{})[dim]||(m.options.find(o=>o.name===dim)||{}).choices)||[]).find(c=>String(c.value)===String(v));
+// why model m doesn't make a clip with these values ({dim: value}), or '': as the server's model_refusal
+function refusal(m,values){const vs=Object.entries(values);
+  for(const [dim,v] of vs){const c=capOf(m,dim,v);if(c&&!c.offered)return c.why||`${m.name} does not make these clips yet`;}
+  const rows=m.combinations||[];          // none listed: what each value allows is all there is to it
+  if(!rows.length||rows.some(row=>vs.every(([d,v])=>(row[d]||[]).map(String).includes(String(v)))))return '';
+  return `${m.name} does not make clips with ${vs.map(([d,v])=>`${d} ${v}`).join(', ')} together yet`;}
+// fl2va's keyframes as the form holds them (attached or kept from a Remix): first, last, first+last or ''
+function framesNow(){const has=n=>{const z=zones.find(z=>z.querySelector('input').name===n);return !!z&&(z.querySelector('input').files.length>0||z.kept.length>0);};
+  const f=has('first_frame'),l=has('last_frame');return f&&l?'first+last':f?'first':l?'last':'';}
+function pickValues(m,frames){const v={task:val('task')};
+  if(frames&&v.task==='fl2va'&&framesNow())v.frames=framesNow();
+  return Object.assign(v,{seconds:+val('seconds'),orientation:val('orientation')},optsOf(m));}
+const cantRun=()=>{const m=selModel();return m?refusal(m,pickValues(m,true)):'';};
+// why value v of a field is not on offer with model m and the other fields as picked (those it offers), or ''
+function avail(m,dim,v){const c=capOf(m,dim,v);if(c&&!c.offered)return c.why||`${m.name} does not make these clips yet`;
+  const vals=pickValues(m,false);vals[dim]=v;
+  return refusal(m,Object.fromEntries(Object.entries(vals).filter(([d,x])=>d===dim||(capOf(m,d,x)||{offered:true}).offered)));}
+// the Model row and its option rows, once per model the table brings; the stored choices (or the defaults) picked
+function buildModels(){let added=false;
+  for(const m of MODELS){if($('m-'+m.id))continue;added=true;
+    const i=document.createElement('input'),l=document.createElement('label');i.type='radio';i.name='model';i.id='m-'+m.id;i.value=m.id;
+    l.htmlFor=i.id;l.textContent=m.name;l.append(document.createElement('small'));l.title=cap(m.about);$('mseg').append(i,l);
+    for(const o of m.options){const sec=document.createElement('div');sec.className='sec';sec.dataset.model=m.id;sec.hidden=true;
+      sec.innerHTML='<div class="lbl"></div><div class="seg" role="radiogroup"></div>';
+      sec.querySelector('.lbl').textContent=o.label;const seg=sec.querySelector('.seg');seg.setAttribute('aria-label',o.label);
+      for(const c of o.choices){const ci=document.createElement('input'),cl=document.createElement('label');
+        ci.type='radio';ci.name=optName(m,o);ci.id=`mo-${m.id}-${o.name}-${c.value}`;ci.value=String(c.value);
+        cl.htmlFor=ci.id;cl.textContent=String(c.value);cl.append(document.createElement('small'));seg.append(ci,cl);}
+      $('mopts').append(sec);}}
+  if(!added)return;
+  setRadio('model',store.get('model',modelDefault()))||setRadio('model',modelDefault());
+  for(const m of MODELS)for(const o of m.options)setRadio(optName(m,o),store.get(`opt.${m.id}.${o.name}`,String(o.default)))||setRadio(optName(m,o),String(o.default));}
+// texts and attributes for the selected model: the rows shown, the ETAs, what is greyed out and why
+const setHidden=(el,v)=>{if(el.hidden!==v)el.hidden=v;},setDisabled=(el,v)=>{if(el.disabled!==v)el.disabled=v;};
+function modelUI(){const on=multi(),m=selModel(),sec=+val('seconds');setHidden($('msec'),!on);
+  form.querySelectorAll('input[name="model"]').forEach(i=>{setDisabled(i,!on||!modelOf(i.value));
+    const mm=modelOf(i.value),sm=i.nextElementSibling.lastChild;if(!mm)return;
+    const e=modelEta(mm,optsOf(mm),sec);setText(sm,[mm.experimental?'experimental':'',e?`~${fmtS(e.s)}`:''].filter(Boolean).join(' · '));});
+  setText($('mabout'),m?cap(m.about):'');
+  document.querySelectorAll('#mopts .sec').forEach(s=>{const mine=!!m&&s.dataset.model===m.id,ins=[...s.querySelectorAll('input')];
+    setHidden(s,!mine||ins.length<2);ins.forEach(i=>setDisabled(i,!mine));
+    if(!mine)return;const o=m.options.find(o=>ins[0].name===optName(m,o));
+    // each choice: the clip's size it sets (for the format picked) and the time a clip takes with it
+    ins.forEach(i=>{const c=o.choices.find(c=>String(c.value)===i.value),e=modelEta(m,Object.assign(optsOf(m),{[o.name]:c.value}),sec);
+      setText(i.nextElementSibling.lastChild,[c.size?c.size[val('orientation')||'landscape'].join('×'):'',e?`~${fmtS(e.s)}`:''].filter(Boolean).join(' · '));});});
+  for(const [dim,inputs] of [['task','task'],['seconds','seconds'],['orientation','orientation'],...(m?m.options.map(o=>[o.name,optName(m,o)]):[])])
+    form.querySelectorAll(`input[name="${inputs}"]`).forEach(i=>{const why=m?avail(m,dim,i.value):'';
+      setAttr(i,'aria-disabled',why?'true':null);setAttr(i.nextElementSibling,'title',why||null);});
+  // the keyframes it takes: "one or both" (all), else those it offers ("first or both")
+  const caps=m&&(m.capabilities||{}).frames,fr=caps?caps.filter(c=>c.offered).map(c=>c.value):null,kf=document.querySelector('#fl .lbl small');
+  if(!fr&&!kf.dataset.all)return;    // the model choice off: the label as it is, no attribute added
+  if(!kf.dataset.all)kf.dataset.all=kf.textContent;
+  setText(kf,!fr||fr.length===caps.length?kf.dataset.all:fr.map(f=>({first:'first','last':'last','first+last':'both'}[f]||f)).join(' or '));}
+// the tag of a clip of another model than the studio's own: its name and options (those that set its size always,
+// the others when not their default): "LightX2V Turbo 576p", "… 576p · 8 steps"
+function modelTag(j){const m=modelOf(j.model),o=j.model_opts||{},parts=[m?m.name:j.model];
+  for(const op of m?m.options:[]){const v=o[op.name];if(v==null)continue;
+    if(op.choices.some(c=>c.size))parts.push(String(v));else if(String(v)!==String(op.default))parts.push(`· ${v} ${op.label.toLowerCase()}`);}
+  if(!m&&o.resolution)parts.push(o.resolution);
+  return parts.join(' ');}
+// Remix: the clip's model and its options into the form (and stored); returns what the message adds when that model
+// is off on this studio: the clip comes back as the studio's own model
+function remixModel(j){const id=jobModel(j),m=multi()&&modelOf(id),off=` as ${defaultName()} (${id} is off on this studio)`;
+  if(!multi())return id===modelDefault()?'':off;
+  const use=m||modelOf(modelDefault());setRadio('model',use.id);store.set('model',use.id);
+  for(const o of m?m.options:[]){const v=(j.model_opts||{})[o.name];
+    if(v!=null&&setRadio(optName(m,o),String(v)))store.set(`opt.${m.id}.${o.name}`,String(v));}
+  return m?'':off;}
 
 // restore persisted choices (each field on its own); a length no longer offered (3 or 4 s, up to 0.5.0) reads 5 s
 setRadio('task',store.get('task','t2va'))||setRadio('task','t2va');
 setRadio('orientation',store.get('orientation','landscape'))||setRadio('orientation','landscape');
 setRadio('seconds',store.get('seconds','5'))||setRadio('seconds','5');
 autoroll.checked=store.get('autoroll','0')==='1';seed.value=store.get('seed','42');prompt.value=store.get('prompt','');
+buildModels();
 
-function modeUI(){const t=val('task');$('fl').hidden=t!=='fl2va';$('ref').hidden=t!=='ref2va';$('hint').textContent=HINT[t];prompt.placeholder=example(t);
+// frames: the keyframes attached (framesNow; none before the drop zones are set up)
+function modeUI(frames){const t=val('task');$('fl').hidden=t!=='fl2va';$('ref').hidden=t!=='ref2va';$('hint').textContent=HINT[t];prompt.placeholder=example(t,frames);
   const c=$('chips');c.textContent='';
   const ex=document.createElement('button');ex.type='button';ex.className='chip ex';ex.textContent='Example';ex.title='Replace the prompt with an example';
-  ex.onclick=()=>{prompt.value=example(t);store.set('prompt',prompt.value);prompt.focus();};c.append(ex);
+  ex.onclick=()=>{prompt.value=example(t,framesNow());store.set('prompt',prompt.value);prompt.focus();};c.append(ex);
   CHIPS[t].forEach(k=>{const b=document.createElement('button');b.type='button';b.className='chip';
     b.textContent='+ '+(k==='alignment line'?'alignment line':k.replace(/:$/,'').split(':')[0]);b.title='Insert at the cursor';
-    b.onclick=()=>{const ins=k==='alignment line'?alignLine():k;const at=prompt.selectionStart??prompt.value.length;
+    b.onclick=()=>{const ins=k==='alignment line'?alignLine(framesNow()):k;const at=prompt.selectionStart??prompt.value.length;
       const pre=prompt.value.slice(0,at),post=prompt.value.slice(at),lead=pre&&!pre.endsWith('\n')?'\n':'';
       prompt.value=pre+lead+ins+' '+post;store.set('prompt',prompt.value);prompt.focus();const p=(pre+lead+ins+' ').length;prompt.setSelectionRange(p,p);};
     c.append(b);});}
 form.addEventListener('change',e=>{const n=e.target.name;
-  if(n==='task'||n==='orientation'||n==='seconds'){store.set(n,val(n));if(n==='task')modeUI();
-    if(n==='seconds')prompt.placeholder=example(val('task'));if(n==='orientation')resUI();updateGo();}});
+  if(n==='task'||n==='orientation'||n==='seconds'){store.set(n,val(n));if(n==='task')modeUI(framesNow());
+    if(n==='seconds')prompt.placeholder=example(val('task'),framesNow());if(n==='orientation')resUI();modelUI();updateGo();}
+  // the model and its options: each stored on its own; the header, the rows and Generate follow
+  else if(n==='model'||n.startsWith('opt:')){store.set(n==='model'?'model':'opt.'+n.slice(4).replace(':','.'),val(n));modelUI();resUI();updateGo();}});
 autoroll.addEventListener('change',()=>store.set('autoroll',autoroll.checked?'1':'0'));
 seed.addEventListener('input',()=>store.set('seed',seed.value));
 prompt.addEventListener('input',()=>store.set('prompt',prompt.value));
 prompt.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();form.requestSubmit();}});
 const rnd=()=>Math.floor(Math.random()*2147483647);
 $('roll').onclick=()=>{seed.value=rnd();store.set('seed',seed.value);};
-modeUI();resUI();
+modelUI();modeUI();resUI();
 
 // drop zones: previews for what's attached; drag-and-drop fills the native input, so the form posts it as before.
 // After Remix a zone also holds the remixed clip's files (z.kept, served by /input/...), shown first: they are sent
 // as remix_from + keep (zone:index), and the server reuses them. Each has its own ×; the zone's × clears all. In a
 // one-file zone (a keyframe) a new file replaces the kept one; in a reference zone new files come after them.
-let remixFrom=null,remixSeq=0;
+let remixFrom=null,remixSeq=0,booted=false;    // booted: the script has run (Generate follows the keyframes)
 const zones=[...document.querySelectorAll('.drop')];
 zones.forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs');z.kept=[];
   const thumb=(kind,src,name)=>{let el;
@@ -483,7 +613,8 @@ zones.forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs
       x.addEventListener('click',e=>{e.stopPropagation();z.kept.splice(i,1);show();});
       w.append(el,x);th.append(w);});
     files.forEach(f=>{const kind=f.type.split('/')[0];if(kind!=='image'&&kind!=='video'){th.append(thumb('audio','',f.name));return;}
-      const url=URL.createObjectURL(f),el=thumb(kind,url,f.name);el.dataset.url=url;th.append(el);});};
+      const url=URL.createObjectURL(f),el=thumb(kind,url,f.name);el.dataset.url=url;th.append(el);});
+    if(booted){updateGo();prompt.placeholder=example(val('task'),framesNow());}};
   z.addEventListener('click',e=>{if(!e.target.closest('.clear'))inp.click();});
   z.addEventListener('keydown',e=>{if(e.target.closest('button'))return;            // a ×: it handles its own keys
     if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click();}});
@@ -502,12 +633,33 @@ const now=()=>Date.now()/1000+skew;                 // server clock (the timers 
 const FINISHED=['done','failed','cancelled'],active=j=>!FINISHED.includes(j.status);
 // the mode/format/length that will be loaded once everything already queued has run (a clip being cancelled closes
 // its session). An upscale runs after the queued clips and closes the models: with one queued or running and no clip,
-// nothing will be loaded.
+// nothing will be loaded. A clip of a job model (LightX2V Turbo) runs in order with the others, closes them too and
+// leaves nothing loaded: when it is the last one, nothing will be loaded either.
 function effectiveKey(){const q=state.jobs.filter(j=>active(j)&&!j.cancel_requested&&!isUp(j));
-  if(q.length){const last=q.reduce((a,b)=>a.created>b.created?a:b);return [last.task,last.orientation,last.seconds||5];}
+  if(q.length){const last=q.reduce((a,b)=>a.created>b.created?a:b);return runsJob(last)?null:[last.task,last.orientation,last.seconds||5];}
   if(state.jobs.some(active))return null;
   return state.session.switching_to||(state.session.preloading?state.session.loading_key:state.session.key);}
-function updateGo(){const k=effectiveKey(),want=[val('task'),val('orientation'),+val('seconds')],go=$('go');
+// why the selected model can't make the pick, as #err shows it (it replaces what #err says; once the pick is fine it
+// goes, unless #err says something else by then); sending: a submit is under way
+let shownWhy='',sending=false;
+const LOADRULE=$('loadrule').textContent,
+  LOADRULE_OFF="If mode, format and length match what's loaded, the clip starts right away. Changing any of them reloads the models first.";
+function updateGo(){const go=$('go'),m=selModel(),why=cantRun(),err=$('err');
+  setText($('loadrule'),m&&m.runs==='job'?`Each ${m.name} clip loads its model itself, and closes the ${defaultName()} models first if they are loaded.`
+    :state.reshape===false?LOADRULE_OFF:LOADRULE);
+  if(why!==shownWhy){if(why||err.textContent===shownWhy)setText(err,why);shownWhy=why;}
+  go.classList.toggle('blocked',!!why);if(go.disabled!==(sending||!!why))go.disabled=sending||!!why;setAttr(go,'title',why||null);
+  // a model that runs as a job per clip: its own time (+ the close of the studio's models when they will be loaded);
+  // nothing to load ahead, so no "Load selected now"
+  if(why||m&&m.runs==='job'){go.classList.remove('reload');
+    const k=effectiveKey(),e=why?null:modelEta(m,optsOf(m),+val('seconds')),t=e?` · ~${fmtS(e.s+(k?CLOSE_S:0))}${e.measured?'':' est.'}`:'';
+    const html=`Generate <span class="eta">· ${why?`not with ${esc(m.name)} yet`:k?`closes ${esc(defaultName())} first`:esc(m.name)}${t}</span>`;
+    if(go.innerHTML!==html)go.innerHTML=html;
+    setText($('lenout'),e?`~${fmtS(e.s)} per clip${e.measured?'':', estimated'}`:'');
+    const noManifest=Array.isArray(state.tasks_ready)&&!state.tasks_ready.includes(val('task'));
+    const note=noManifest?`The server has no path manifest for ${TASK[val('task')]} mode (run install/70-manifests.sh).`:'';
+    setText($('reloadtext'),note);$('loadnow').hidden=true;$('reloadnote').hidden=!note;return;}
+  const k=effectiveKey(),want=[val('task'),val('orientation'),+val('seconds')];
   const same=!!k&&k[0]===want[0]&&k[1]===want[1]&&(k[2]||5)===want[2],eta=ETA[want[2]]||60;
   // #45: the same mode with another format or length keeps the models loaded (the server changes the session's
   // shape), unless the server reloads for any change (LFSTUDIO_RESHAPE=0)
@@ -548,16 +700,21 @@ $('loadnow').onclick=async()=>{const want={task:val('task'),orientation:val('ori
   catch(e){$('err').textContent='Could not reach the server: '+e;loadAsked=0;}
   poll();};
 
-form.addEventListener('submit',async e=>{e.preventDefault();$('err').textContent='';
+form.addEventListener('submit',async e=>{e.preventDefault();
+  const why=cantRun();if(why){$('err').textContent=shownWhy=why;return;}     // the selected model can't make it (Ctrl+Enter)
+  $('err').textContent='';
   if(!prompt.value.trim()){$('err').textContent='Write a prompt first (or press Example).';prompt.focus();return;}
   if(autoroll.checked){seed.value=rnd();store.set('seed',seed.value);}
-  const go=$('go');go.disabled=true;
+  const go=$('go');sending=go.disabled=true;
   const fd=new FormData(form),keep=zones.flatMap(z=>z.kept.map(k=>`${z.querySelector('input').name}:${k.index}`));
+  // the selected model's options under their own names (the form's radios are per model)
+  for(const k of [...fd.keys()])if(k.startsWith('opt:'))fd.delete(k);
+  const m=selModel();for(const o of m?m.options:[])fd.append(o.name,String(optVal(m,o)));
   if(remixFrom&&keep.length){fd.append('remix_from',remixFrom);fd.append('keep',keep.join(','));}
   try{const r=await fetch('/api/generate',{method:'POST',body:fd});const j=await r.json();
     if(!r.ok)$('err').textContent=j.error||'failed';else toast(`Queued · seed ${seed.value}`);}
   catch(err){$('err').textContent='Could not reach the server: '+err;}
-  go.disabled=false;poll();});
+  sending=go.disabled=false;updateGo();poll();});
 $('unload').onclick=async()=>{const r=await fetch('/api/unload',{method:'POST'});
   if(!r.ok)$('err').textContent=(await r.json()).error;else toast('Models unloaded');poll();};
 
@@ -599,6 +756,10 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
    <button type="button" class="act del" aria-label="Delete" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg><span class="t">Delete</span></button></div>`;
 
   const t=body.querySelectorAll('.tags .tag');t[0].textContent=TASK[j.task]||j.task;t[1].textContent=FMT[j.orientation]||j.orientation;t[2].textContent=`${j.seconds||5} s`;
+  // a clip of another model than the studio's own: a fourth tag with the model and its options (none on the studio's
+  // own clips, which look as before)
+  if(!isUp(j)&&jobModel(j)!==modelDefault()){const mt=document.createElement('span');mt.className='tag model';mt.textContent=modelTag(j);
+    body.querySelector('.tags').append(mt);}
   // an upscale: "2K upscale", its clip's mode and length; no Remix (its settings are its clip's) and no Upscale
   if(isUp(j)){t[0].textContent=`${(UPSCALE[j.resolution]||{name:j.resolution}).name} upscale`;t[1].textContent=TASK[j.task]||j.task;
     body.querySelector('.reuse-all').remove();body.querySelector('.act.up').remove();}
@@ -607,12 +768,14 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
   // new seed (#14); unticked, it keeps the clip's seed. A clip of a length no longer offered (3 or 4 s, up to
-  // 0.5.0) comes back at 5 s, and the message says so
+  // 0.5.0) comes back at 5 s, and the message says so. Its model and options come back too; a model that is off on
+  // this studio comes back as the studio's own, and the message says so
   if(!isUp(j))body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);
-    const gone=!setRadio('seconds',j.seconds||5);if(gone)setRadio('seconds','5');const at=gone?` at 5 s (${j.seconds} s is no longer offered)`:'';
+    const gone=!setRadio('seconds',j.seconds||5);if(gone)setRadio('seconds','5');
+    const at=(gone?` at 5 s (${j.seconds} s is no longer offered)`:'')+remixModel(j);
     prompt.value=j.prompt;seed.value=j.seed;
     [['task',j.task],['orientation',j.orientation],['seconds',val('seconds')],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
-    modeUI();updateGo();showForm(e.detail===0);$('err').textContent='';
+    modeUI();modelUI();if(multi())resUI();updateGo();showForm(e.detail===0);$('err').textContent='';if(shownWhy){shownWhy='';updateGo();}
     zones.forEach(z=>{z.querySelector('input').value='';z.kept=[];z.show();});remixFrom=null;const my=++remixSeq;
     if(j.task==='t2va'){toast('Settings loaded'+at);return;}
     // the clip's input files go back into the form (the server reuses them, nothing is uploaded again); a reply
@@ -677,7 +840,8 @@ async function cancel(id,btn,keyboard){const back=keyboard||document.activeEleme
   if(!r||!r.ok||!x.job){toast(x.error||'Could not cancel');if(back)btn.focus();poll();return;}
   cancelAt.set(id,pollSeq);known.set(id,x.job);render();
   if(back&&els[id])focusIn(els[id],'.reuse-all','.del','.seedv');
-  toast(x.job.status==='cancelled'?'Taken out of the queue':isUp(x.job)?'Stopping the upscale':'Stopping the clip · the models load again for the next one');
+  toast(x.job.status==='cancelled'?'Taken out of the queue':isUp(x.job)?'Stopping the upscale':runsJob(x.job)?'Stopping the clip'
+    :'Stopping the clip · the models load again for the next one');
   poll();}
 // Undo hides at once, so the rest of a double-click on it reaches what is under the toast: a card, or, with the page
 // scrolled up to the form while Undo showed, Generate (it would queue the draft), the seed toggle or a prompt chip.
@@ -719,6 +883,17 @@ if(window.ResizeObserver)new ResizeObserver(fitSoon).observe($('jobs'));else add
 function insert(j){const box=$('jobs'),d=els[j.id]=card(j);d.dataset.created=j.created;fitSoon();
   const next=[...box.querySelectorAll('.job')].find(x=>+x.dataset.created<j.created);
   if(next)box.insertBefore(d,next);else box.append(d);return d;}
+// Where a clip of a job model (LightX2V Turbo) is, from its status and its job's phase lines (job_phase): [for the
+// status line, for its card]. Its st tag: JOB_ST, else Generating.
+const JOB_ST={'freeing memory':'Freeing memory','encoding the prompt':'Encoding','loading models + generating':'Loading model'};
+function jobWhere(j){const p=j.job_phase||'',m=modelOf(jobModel(j)),name=m?m.name:jobModel(j);
+  return j.saving||p==='saving'?['saving','Saving']
+    :j.status==='freeing memory'?[`closing ${defaultName()}`,`Freeing memory · closing the ${defaultName()} models`]
+    :j.status==='encoding the prompt'?['encoding the prompt','Encoding the prompt']
+    :/^step /.test(p)?[p,`Generating · ${p}`]:p==='decoding'?['decoding','Decoding']:['loading',`Loading ${name}`];}
+function jobStatus(j){const m=modelOf(jobModel(j)),so=m&&sizeOpt(m),o=j.model_opts||{};
+  return [m?m.name:jobModel(j),TASK[j.task]||j.task,FMT[j.orientation]||j.orientation,`${j.seconds||5} s`,
+    ...(so&&o[so.name]!=null?[o[so.name]]:[]),j.cancel_requested?'cancelling':jobWhere(j)[0]].join(' · ');}
 function update(d,j,queue,s,t){
   const del=d.querySelector('.del');del.hidden=active(j);
   del.title=`Move this ${isUp(j)?'upscale':'clip and its input files'} to the trash (removed for good after ${state.trash_days??7} days)${j.published?', with its copy in the publish folder':''}`;
@@ -728,7 +903,7 @@ function update(d,j,queue,s,t){
   stop.hidden=hide;
   stop.title=isUp(j)?(j.status==='queued'?'Take this upscale out of the queue':'Stop this upscale')
     :j.status==='queued'?'Take this clip out of the queue (the card stays, with Remix)'
-    :'Stop this clip. The models load again for the next clip (about 1-2 min).';
+    :runsJob(j)?'Stop this clip':'Stop this clip. The models load again for the next clip (about 1-2 min).';
   // Upscale, on a finished clip when the server has it on: the clips it can't take show the reason (a click says it too)
   const ub=d.querySelector('.act.up');
   if(ub){const u=j.upscalable,show=!!state.upscale&&j.status==='done'&&!!u;ub.hidden=!show;
@@ -739,7 +914,7 @@ function update(d,j,queue,s,t){
   const cls=j.status==='done'?'ok':j.status==='failed'?'bad':j.status==='cancelled'?'off':'wait';
   if(stEl.className!=='st '+cls)stEl.className='st '+cls;
   setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='cancelled'?'Cancelled':cancelling?'Cancelling'
-    :j.status==='queued'?'Queued':isUp(j)?'Upscaling':loading?'Loading models':'Generating');
+    :j.status==='queued'?'Queued':isUp(j)?'Upscaling':runsJob(j)?JOB_ST[j.status]||'Generating':loading?'Loading models':'Generating');
   const when=stamp(j.created)+(isUp(j)?` · ${STRENGTH[j.strength]||j.strength}`:'');
   setText(d.querySelector('.when'),j.e2e_s?`${when} · ${j.includes_model_load?`${fmtS(j.e2e_s)} incl. model load`:j.cold_start_s?`made in ${fmtS(j.e2e_s)} · +${fmtS(j.cold_start_s)} model load`:`made in ${fmtS(j.e2e_s)}`}`:when);
   setText(d.querySelector('.errtxt'),j.status==='cancelled'?'':j.error||(j.first_error?'Recovered after: '+j.first_error:''));
@@ -748,16 +923,26 @@ function update(d,j,queue,s,t){
     media.textContent='';const v=document.createElement('video');v.controls=true;v.preload='none';v.playsInline=true;
     v.poster='/poster/'+j.id;v.src='/video/'+j.id;media.append(v);
     const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.textContent='Download';
-    a.download=isUp(j)?`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}_${String(j.parent).slice(0,6)}_${j.resolution}_${String(j.id).slice(0,6)}.mp4`:`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;
+    // a clip of another model than the studio's own: the server's name for it (file_name: its model and options)
+    a.download=isUp(j)?`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}_${String(j.parent).slice(0,6)}_${j.resolution}_${String(j.id).slice(0,6)}.mp4`
+      :jobModel(j)!==modelDefault()&&j.file_name?j.file_name:`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;
     d.querySelector('.dl').replaceWith(a);}
   else if(!media.dataset.done){const ph=media.querySelector('.ph2'),big=ph.querySelector('.big'),small=ph.querySelector('.small'),bar=ph.querySelector('.bar');
     if(j.status==='failed'){setText(big,'Failed');setText(small,'details below');bar.hidden=true;}
     else if(j.status==='cancelled'){setText(big,'Cancelled');setText(small,j.started?'stopped before it was done':'taken out of the queue');bar.hidden=true;}
     else if(cancelling){setText(big,'Cancelling');setText(small,'stopping the pipeline');bar.hidden=true;}
-    else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading&&!isUp(j)?'starts after the warm-up':'next up');bar.hidden=true;}
+    else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading&&!isUp(j)&&!runsJob(j)?'starts after the warm-up':'next up');bar.hidden=true;}
     else if(isUp(j)){bar.hidden=false;const el=t-(j.started||j.created),eta=upEta(j);
       setText(big,clock(el));
       setText(small,j.status==='upscaling'?`Upscaling · ${UP_PHASE[j.upscale_phase]||j.upscale_phase||'starting'}`:j.status==='freeing memory'?'Freeing memory · closing the models':'Starting');
+      const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
+    // a clip of a job model: its timer from its start; the bar against its model's time for its options and length,
+    // plus the close of the studio's models while that runs, or the time the close took (seen as the prompt encode
+    // started: phase_since)
+    else if(runsJob(j)){bar.hidden=false;const st0=j.started||j.created,el=t-st0,m=modelOf(jobModel(j));
+      if(j.status==='encoding the prompt'&&j.phase_since&&!d.dataset.close)d.dataset.close=Math.max(0,j.phase_since-st0).toFixed(1);
+      const e=m&&modelEta(m,j.model_opts||{},j.seconds||5),eta=(e&&e.s||240)+(j.status==='freeing memory'?CLOSE_S:+(d.dataset.close||0));
+      setText(big,clock(el));setText(small,jobWhere(j)[1]);
       const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
     else{bar.hidden=false;const t0=j.phase_since||j.started||j.created,el=t-t0,eta=loading?(j.load_eta||240):(ETA[j.seconds||5]||60);
       setText(big,clock(el));
@@ -765,14 +950,17 @@ function update(d,j,queue,s,t){
                            :j.reshaped_from?`Generating · new format or length, a bit over ~${fmtS(eta)}`:`Generating · usually ~${fmtS(eta)}`);
       const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}}
 function render(){const s=state.session,k=s.key,t=now();
-  if(state.reshape===false)setText($('loadrule'),"If mode, format and length match what's loaded, the clip starts right away. Changing any of them reloads the models first.");
-  const sState=s.state||'idle',st=$('status');if(st.dataset.s!==sState)st.dataset.s=sState;
-  setText($('loaded'),s.switching_to&&sState!=='loading'&&sState!=='reshaping'?`switching to ${keyText(s.switching_to)}`
-    :sState==='reshaping'&&s.loading_key?`changing to ${keyText(s.loading_key)}`
-    :sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`
+  // a clip of a job model (LightX2V Turbo) running: the status names it, its settings and where it is (the studio's
+  // models are closed for it, or being closed: nothing to unload). With more than one model on, the studio's own
+  // loaded models are named too: "Sol-H3 · Text · 16:9 · 5 s · ready"
+  const jr=state.jobs.find(j=>runsJob(j)&&active(j)&&j.status!=='queued'),kt=x=>(multi()?defaultName()+' · ':'')+keyText(x);
+  const sState=s.state||'idle',st=$('status'),shown=jr?'busy':sState;if(st.dataset.s!==shown)st.dataset.s=shown;
+  setText($('loaded'),jr?jobStatus(jr):s.switching_to&&sState!=='loading'&&sState!=='reshaping'?`switching to ${kt(s.switching_to)}`
+    :sState==='reshaping'&&s.loading_key?`changing to ${kt(s.loading_key)}`
+    :sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${kt(s.loading_key)}`:k?`${kt(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`
     :sState==='idle'&&state.jobs.some(j=>isUp(j)&&active(j)&&j.status!=='queued')?'closed for an upscale':(sState==='idle'?'not loaded':sState));
   setText($('loadtimer'),sState==='loading'||sState==='reshaping'||s.switching_to&&sState==='unloading'?clock(t-s.since):'');
-  $('unload').hidden=!k&&sState==='idle';
+  $('unload').hidden=!k&&sState==='idle'||!!jr;
   if(up.id&&!els[up.id])closeUpscale(false);                             // its clip's card is gone
   else placeUpscale();                                                   // cards above it can come and go
   for(const [id,seq] of gone)if(state.seq>seq)gone.delete(id);          // answered after the delete: server wins
@@ -864,6 +1052,9 @@ $('upgo').onclick=async e=>{if(e.detail>1)return;const id=up.id,j=known.get(id),
   toast(`${UPSCALE[body.resolution].name} upscale queued · its card is at the top`);poll();};
 async function poll(){const seq=++pollSeq;
   try{const r=await fetch('/api/state',{cache:'no-store'}),x=await r.json();if(seq<state.seq)return;   // an older answer
-    state=x;state.seq=seq;if(state.now)skew=state.now-Date.now()/1000;applyMachine(state.backend||'spark');render();}catch(e){}}
-poll();setInterval(poll,2000);setInterval(render,1000);
+    state=x;state.seq=seq;if(state.now)skew=state.now-Date.now()/1000;applyMachine(state.backend||'spark');
+    const had=multi();MODELS=Array.isArray(state.models)?state.models:[];        // the model choice: its table, times
+    if(had||multi()){buildModels();modelUI();resUI();}
+    render();}catch(e){}}
+poll();setInterval(poll,2000);setInterval(render,1000);booted=true;
 </script>

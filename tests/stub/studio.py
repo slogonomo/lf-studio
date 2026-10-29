@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Run webui/server.py against the stub runtime in tests/stub/runtime: no models, no GPU, small real MP4 clips.
 
-usage: tests/stub/studio.py [--port N] [--dir DIR] [--load-s S] [--clip-s S] [--no-preload]
+usage: tests/stub/studio.py [--port N] [--dir DIR] [--load-s S] [--clip-s S] [--no-preload] [--models LIST]
 
 Everything (runtime root, state, manifests) goes under --dir, default a new temp directory, so it never touches
 a real install. Ctrl-C stops it. Open the printed URL, or point tests/ui_test.py at it.
 The experimental Upscale is on (LFSTUDIO_UPSCALE=1), with tests/stub/upscale_job.py as its job
 (LFSTUDIO_UPSCALE_SCRIPT) and this Python as its environment; the server reads MemAvailable from a file under --dir
 (LFSTUDIO_TEST_MEMINFO, 117.7 GiB; StubStudio.set_memory changes it), not from the machine.
+The experimental LightX2V Turbo is off, as by default; --models sol-h3,lightx2v-turbo (StubStudio's models=) turns it
+on (LFSTUDIO_MODELS). Its hooks are always set, so a test can turn it on with the setting alone:
+tests/stub/h3turbo_job.py for its job (LFSTUDIO_H3TURBO_SCRIPT), tests/stub/h3turbo_encode.py for its prompt encode
+(LFSTUDIO_H3TURBO_ENCODE_SCRIPT), this Python as its environment, and a base model folder and the LoRA files (empty)
+under --dir.
 It stops at once, with a non-zero exit status, if the port is in use, and it exits non-zero if the server stops
 by itself. The tests import StubStudio from here.
 """
@@ -48,8 +53,12 @@ def port_taken(port):
 
 
 class StubStudio:
-    def __init__(self, root, port=None, load_s=3, clip_s=2, preload=True, env=None, package=None):
-        """package: the server's working directory, from which it imports runtime.* (default: this stub's)."""
+    def __init__(self, root, port=None, load_s=3, clip_s=2, preload=True, env=None, package=None, models=None,
+                 server=None):
+        """package: the server's working directory, from which it imports runtime.* (default: this stub's). models:
+        LFSTUDIO_MODELS (default: unset, sol-h3 alone). server: the server script (default webui/server.py; a test
+        runs an earlier release's)."""
+        self.server = Path(server) if server else SERVER
         self.root = Path(root)
         self.package = Path(package) if package else HERE
         self.port = port or free_port()
@@ -62,7 +71,15 @@ class StubStudio:
         # the server reads MemAvailable (the Upscale's memory floor and guard) from this file, not from the machine's
         self.meminfo = self.root / "meminfo"
         self.set_memory(117.7)
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith("LFSTUDIO_UPSCALE")}
+        # LightX2V Turbo's base model and LoRA files, as empty stand-ins (tests/stub/h3turbo_job.py checks the LoRA's)
+        self.h3turbo = self.root / "h3turbo"
+        (self.h3turbo / "base").mkdir(parents=True, exist_ok=True)
+        (self.h3turbo / "loras").mkdir(parents=True, exist_ok=True)
+        for name in ("minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors",
+                     "minimax_h3_fl2v_turbo_8step_v1.1_768p_bf16.safetensors"):
+            (self.h3turbo / "loras" / name).write_bytes(b"")
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith(("LFSTUDIO_UPSCALE", "LFSTUDIO_H3TURBO", "LFSTUDIO_MODELS"))}
         self.env.update(SOL_H3_SPARK_RUNTIME_ROOT=str(self.runtime),
                         LFSTUDIO_PATHS=str(self.root / "paths-{task}.json"), LFSTUDIO_STATE_DIR=str(self.state_dir),
                         LFSTUDIO_HOST="127.0.0.1", LFSTUDIO_PORT=str(self.port),
@@ -75,7 +92,14 @@ class StubStudio:
                         LFSTUDIO_UPSCALE_PKG=str(self.root / "regen2k" / "package"),
                         LFSTUDIO_UPSCALE_WEIGHTS=str(self.root / "regen2k" / "weights"),
                         LFSTUDIO_UPSCALE_BASE=str(self.root / "regen2k" / "base"),
-                        LFSTUDIO_TEST_MEMINFO=str(self.meminfo), STUB_UPSCALE_S="1")
+                        LFSTUDIO_TEST_MEMINFO=str(self.meminfo), STUB_UPSCALE_S="1",
+                        # LightX2V Turbo (off unless LFSTUDIO_MODELS has it), with the stand-ins of its job and encode
+                        LFSTUDIO_H3TURBO_SCRIPT=str(HERE / "h3turbo_job.py"),
+                        LFSTUDIO_H3TURBO_ENCODE_SCRIPT=str(HERE / "h3turbo_encode.py"),
+                        LFSTUDIO_H3TURBO_PYTHON=sys.executable, LFSTUDIO_H3TURBO_BASE=str(self.h3turbo / "base"),
+                        LFSTUDIO_H3TURBO_LORAS=str(self.h3turbo / "loras"), STUB_H3TURBO_S="1", STUB_QWEN_S="0.3")
+        if models:
+            self.env["LFSTUDIO_MODELS"] = models
         self.env.pop("LFSTUDIO_PUBLISH_DIR", None)
         self.env.pop("LFSTUDIO_ALLOWED_HOSTS", None)
         self.env.pop("LFSTUDIO_API", None)
@@ -95,8 +119,8 @@ class StubStudio:
             self._logf.close()
         since = self.log.stat().st_size if self.log.exists() else 0     # the log is appended to: this start's lines
         self._logf = self.log.open("a")
-        self.proc = subprocess.Popen([sys.executable, str(SERVER)], cwd=self.package, env=self.env, stdin=self.stdin,
-                                     stdout=self._logf, stderr=subprocess.STDOUT)
+        self.proc = subprocess.Popen([sys.executable, str(self.server)], cwd=self.package, env=self.env,
+                                     stdin=self.stdin, stdout=self._logf, stderr=subprocess.STDOUT)
         serving = f"LF Studio on {self.url}/".encode()
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -180,6 +204,11 @@ class StubStudio:
         return self.post("/api/generate", dict(task=task, orientation=orientation, seconds=seconds, prompt=prompt,
                                                seed=seed, **fields), files)
 
+    def turbo(self, task="t2va", orientation="landscape", seconds=5, prompt="a test clip", seed=1, files=None,
+              **fields):
+        """A LightX2V Turbo clip (POST /api/generate with model lightx2v-turbo); returns (status, parsed JSON)."""
+        return self.generate(task, orientation, seconds, prompt, seed, files, model="lightx2v-turbo", **fields)
+
     def upscale(self, jid, **fields):
         """POST /api/upscale for clip `jid`; returns (status, parsed JSON)."""
         return self.post("/api/upscale", json_body=dict(id=jid, **fields))
@@ -230,10 +259,11 @@ def main():
     ap.add_argument("--load-s", type=float, default=3)
     ap.add_argument("--clip-s", type=float, default=2)
     ap.add_argument("--no-preload", action="store_true")
+    ap.add_argument("--models", help="LFSTUDIO_MODELS, e.g. sol-h3,lightx2v-turbo (default: sol-h3 alone)")
     a = ap.parse_args()
     root = Path(a.dir or tempfile.mkdtemp(prefix="lf-studio-stub-"))
     try:
-        s = StubStudio(root, a.port, a.load_s, a.clip_s, not a.no_preload).start()
+        s = StubStudio(root, a.port, a.load_s, a.clip_s, not a.no_preload, models=a.models).start()
     except RuntimeError as error:
         sys.exit(f"stub studio not started: {error}")
     print(f"stub studio on {s.url}/  (files under {root}, log {s.log})", flush=True)
