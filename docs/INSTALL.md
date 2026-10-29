@@ -171,7 +171,10 @@ echo LFSTUDIO_UPSCALE=1 >> ~/.config/lf-studio/env
 bin/lf-studio --check                # checks the Upscale's environment, package and weights too
 ```
 
-Then restart the studio. What the step does:
+Then restart the studio. It upscales every finished 5 s clip. For a Keyframes or Reference clip it first encodes the
+prompt as text alone, a t2va encode: that needs t2va in `LFSTUDIO_TASKS` (the default has it), so that step 70 writes
+its path manifest, `paths-t2va.json`. Without it those clips' Upscale buttons are greyed out with that reason; Text
+clips are not affected. What the step does:
 
 1. **uv 0.13.4** for aarch64, from its GitHub release, checked against the release's SHA-256, into
    `$LFSTUDIO_HOME/bin`, and with it CPython 3.11.17 (NVIDIA's code is for Python 3.11) into `$LFSTUDIO_HOME/python`.
@@ -204,8 +207,10 @@ venv's Python): the step builds its own environment only. The sizes above are es
 to end on a fresh box yet. The Upscale's settings (strength, audio, load, preread, memory floor and guard) are in
 [bin/env.example](../bin/env.example).
 
-To remove it: set `LFSTUDIO_UPSCALE=0` (or delete the line), then remove `envs/regen2k`, `sources/sana-6e4a440`, the
-`Open-H3-Regenerate-2K` link and `checkpoints/Open-H3-Regenerate-2K` under `$LFSTUDIO_HOME`. Files it linked from the
+To remove it: set `LFSTUDIO_UPSCALE=0` (or delete the line), then remove `sources/sana-6e4a440`, the
+`Open-H3-Regenerate-2K` link and `checkpoints/Open-H3-Regenerate-2K` under `$LFSTUDIO_HOME`, and `envs/regen2k` unless
+`LFSTUDIO_MODELS` has `lightx2v-turbo`: [LightX2V Turbo](#experimental-lightx2v-turbo) runs in that environment, and
+the studio refuses to start without it. The environment does not need the other three. Files it linked from the
 Hugging Face cache stay there.
 
 ## Experimental: LightX2V Turbo
