@@ -50,21 +50,22 @@ index 19c4db6..898756d 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
-index 0327a69..50b278a 100644
+index 0327a69..913001b 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/config.py
-@@ -6,6 +6,10 @@ import os
+@@ -6,6 +6,11 @@ import os
  from pathlib import Path
  import re
  
 +# Modified by lf-studio: portrait orientation, clip length, the persistent compile-cache location, the Stage-2
-+# audio setting, the prompt-token setting, static-shape compiles and the Stage-1 prompt-length setting.
++# audio setting, the prompt-token setting, static-shape compiles, the Stage-1 prompt-length setting and the Stage-2
++# keyframe setting.
 +from .geometry import ORIENTATIONS, orient_recipe
 +
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +23,267 @@ REQUIRED_PATHS = (
+@@ -19,12 +24,287 @@ REQUIRED_PATHS = (
  )
  
  
@@ -255,6 +256,26 @@ index 0327a69..50b278a 100644
 +    if mode not in STAGE2_AUDIO_MODES:
 +        raise ValueError(f"SOL_H3_STAGE2_AUDIO must be one of {STAGE2_AUDIO_MODES}, "
 +                         f"not {os.environ.get('SOL_H3_STAGE2_AUDIO')!r}")
++    return mode
++
++
++# lf-studio: the user's first frame in Stage 2 (runtime/stage2.py, fl2va clips with a first frame only). Upstream's
++# Stage 2 starts every token at 9 % of the draft and 91 % noise under a fixed generic prompt and never sees the
++# keyframe, so it repaints frame 0 too. "pin" (the default): the keyframe, stretched to the output canvas and encoded
++# by the LTX-2.5 video VAE's encoder, is held clean at latent frame 0 (strength 1), as NVIDIA's GB200 parent of this
++# Stage 2 does (super_acceleration/stage2/official_compat_h3_refiner_diagnostic.py). "off": as upstream Sol-H3-RTX5090
++# (no encoder). "draft": the draft's own frame-0 latent is held instead (no encoder; a control for "pin"). t2va,
++# ref2va and fl2va clips without a first frame are unchanged in every mode. Read here so a bad value fails when a
++# Pipeline is made, before any worker loads (and again in Stage 2).
++STAGE2_KEYFRAME_MODES = ("off", "pin", "draft")
++
++
++def stage2_keyframe_mode():
++    """SOL_H3_STAGE2_KEYFRAME, default "pin" (case-insensitive; empty = the default; "off" = as upstream)."""
++    raw = os.environ.get("SOL_H3_STAGE2_KEYFRAME", "")
++    mode = raw.strip().lower() or "pin"
++    if mode not in STAGE2_KEYFRAME_MODES:
++        raise ValueError(f"SOL_H3_STAGE2_KEYFRAME must be one of {STAGE2_KEYFRAME_MODES}, not {raw!r}")
 +    return mode
 +
 +
@@ -970,10 +991,10 @@ index f3f15bb..4ef29ae 100644
          def release_all(self):
              for state in self.states:
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
-index fa18e02..f5cb753 100644
+index fa18e02..b167f21 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/pipeline.py
-@@ -6,9 +6,16 @@ from pathlib import Path
+@@ -6,9 +6,17 @@ from pathlib import Path
  import signal
  import subprocess
  import time
@@ -987,12 +1008,13 @@ index fa18e02..f5cb753 100644
  
 -from .config import PACKAGE, load_recipe
 -from .worker import write_json
-+from .config import PACKAGE, compile_cache_root, compile_dynamic, dynamic_text_length, load_recipe, stage2_audio_mode
++from .config import (PACKAGE, compile_cache_root, compile_dynamic, dynamic_text_length, load_recipe,
++                     stage2_audio_mode, stage2_keyframe_mode)
 +from .worker import OPERATIONS, write_json
  
  
  def await_json(path, process, timeout=1800):
-@@ -25,6 +32,24 @@ def await_json(path, process, timeout=1800):
+@@ -25,6 +33,24 @@ def await_json(path, process, timeout=1800):
      return receipt
  
  
@@ -1017,7 +1039,7 @@ index fa18e02..f5cb753 100644
  def worker_environment(name, paths):
      env = os.environ.copy()
      env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
-@@ -47,6 +72,31 @@ def worker_environment(name, paths):
+@@ -47,6 +73,31 @@ def worker_environment(name, paths):
          env.pop("LD_LIBRARY_PATH", None)
      elif name == "stage2":
          env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -1049,7 +1071,7 @@ index fa18e02..f5cb753 100644
      env["PYTHONPATH"] = os.pathsep.join(roots)
      return env
  
-@@ -79,7 +129,7 @@ class Worker:
+@@ -79,7 +130,7 @@ class Worker:
              raise
  
      def submit(self, op="run", **kwargs):
@@ -1058,7 +1080,7 @@ index fa18e02..f5cb753 100644
              raise ValueError("Unsupported session operation")
          self.sequence += 1
          response = self.root / f"response-{self.sequence:05d}.json"
-@@ -117,26 +167,48 @@ class Worker:
+@@ -117,26 +168,49 @@ class Worker:
  class Pipeline:
      """Reuse three isolated runtime environments and the same models for a batch.
  
@@ -1093,6 +1115,7 @@ index fa18e02..f5cb753 100644
 +        self.recipe_options = {"ref_image_match": ref_image_match, "ref_stage1_attn": ref_stage1_attn,
 +                               "prompt_tokens": self.config["stage1"]["prompt_tokens"]}
 +        stage2_audio_mode()     # lf-studio: a bad SOL_H3_STAGE2_AUDIO fails here, before any worker loads
++        stage2_keyframe_mode()  # lf-studio: the same for SOL_H3_STAGE2_KEYFRAME
 +        compile_dynamic()       # lf-studio: the same for SOL_H3_STATIC_SHAPES
 +        dynamic_text_length()   # lf-studio: and for SOL_H3_DYNAMIC_TEXT_LENGTH
 +        self.transient_qwen = self._transient(self.config)
@@ -1114,7 +1137,7 @@ index fa18e02..f5cb753 100644
          self.report = {"status": "STARTING", "task": task, "recipe": self.config, "requests": [],
                         "timing": "same-host monotonic request entry to completed muxed MP4",
                         "warmup_excluded": True, "first_formal_request_included": True,
-@@ -146,63 +218,375 @@ class Pipeline:
+@@ -146,63 +220,375 @@ class Pipeline:
      def save(self):
          write_json(self.root / "results.json", self.report)
  
@@ -1522,7 +1545,7 @@ index fa18e02..f5cb753 100644
                  self.stage2.wait(preparation)
              s2 = self.stage2.call(capture_dir=s1["capture_dir"], output_root=str(request / "stage2"),
                                    request_id=case["case_id"])
-@@ -218,6 +602,9 @@ class Pipeline:
+@@ -218,6 +604,9 @@ class Pipeline:
                         stage2_phases_s=s2.get("result", {}).get("phases_s", {}))
              if self.qwen is not None:
                  self.qwen.call("release_idle_cache")
@@ -1532,7 +1555,7 @@ index fa18e02..f5cb753 100644
          except BaseException as error:
              row.update(status="FAIL", error=f"{type(error).__name__}: {error}")
              self.report["status"] = "FAIL"
-@@ -234,13 +621,17 @@ class Pipeline:
+@@ -234,13 +623,17 @@ class Pipeline:
          self.save()
  
      def close(self):
@@ -2436,7 +2459,7 @@ index a1dd805..1a4b277 100644
          if self.closed or self.failed:
              raise RuntimeError("Stage1 session is unavailable")
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/capture.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/capture.py
-index 81e37ba..2cccd13 100644
+index 81e37ba..98d32b0 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/capture.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage1_ops/capture.py
 @@ -2,7 +2,9 @@
@@ -2445,7 +2468,7 @@ index 81e37ba..2cccd13 100644
  
 -def install_capture(worker):
 +# Modified by lf-studio: latent shape and audio length are arguments (clip length, orientation), kept in the
-+# capture state so that reshape_capture can change them between requests.
++# capture state so that reshape_capture can change them between requests; the receipt records the keyframes' sha256.
 +def install_capture(worker, latent_shape=(1, 24, 37, 24, 42), audio_samples=161333):
      """Install when native lazy decode stages exist; never decode H3 video."""
      import hashlib
@@ -2487,7 +2510,18 @@ index 81e37ba..2cccd13 100644
              if not bool(torch.isfinite(audio).all()):
                  raise RuntimeError("nonfinite native PCM")
              directory = Path(target["directory"])
-@@ -94,7 +98,7 @@ def install_capture(worker):
+@@ -83,6 +87,10 @@ def install_capture(worker):
+                 "status": "PASS", "same_request": True, "external_anchor_used": False,
+                 "task": task_of(target), "input_conditioned": task_of(target) != "t2va",
+                 "input_spec": input_spec(target), "capture_rank": 0,
++                # lf-studio: the keyframes Stage 1 read, so that Stage 2 pins the same first frame
++                # (SOL_H3_STAGE2_KEYFRAME=pin) and a copy of the draft can be checked
++                "input_sha256": {key: digest(Path(target[key])) for key in ("first_frame", "last_frame")
++                                 if target.get(key)},
+                 "condition_video_rows_excluded": state["condition_video_rows"],
+                 "condition_audio_rows_excluded": state["condition_audio_rows"],
+                 "payload_path": str(payload), "payload_sha256": digest(payload),
+@@ -94,7 +102,7 @@ def install_capture(worker):
                                    "normalization": "released_h3_per_channel_mean_std",
                                    "source": "original packed final latent unpatchified before VAE denormalize"},
                  "audio": {"shape": list(audio.shape), "dtype": str(audio.dtype), "sample_rate": 32000,
@@ -2496,7 +2530,7 @@ index 81e37ba..2cccd13 100644
                            "processing": "transpose TC to BCT; clamp [-1,1], original native PCM unchanged"},
                  "native_video_shape": None,
                  "latent_only_transfer": True,
-@@ -117,6 +121,17 @@ def install_capture(worker):
+@@ -117,6 +125,17 @@ def install_capture(worker):
              "audio_stage": type(audio_stage).__name__}
  
  
@@ -4447,16 +4481,18 @@ index 3b818dc..2352dd1 100644
      sparse.triton_block_sparse_attn_forward = counted_sparse
      original_mask = native._build_block_mask
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2.py
-index bf49f84..81064bc 100644
+index bf49f84..ca66937 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2.py
-@@ -3,26 +3,58 @@
+@@ -3,26 +3,102 @@
  The module imports GPU frameworks only when Session is constructed. A request
  consumes one same-request normalized H3/PCM bundle and the exact offline generic
  post-connector AV cache. Original PCM is muxed into the final MP4.
 +
 +lf-studio: by default the refiner sees that PCM clean and fixed (SOL_H3_STAGE2_AUDIO, below) instead of a
-+re-noised copy that it regenerates and then discards.
++re-noised copy that it regenerates and then discards. With SOL_H3_STAGE2_KEYFRAME=pin, the default, an fl2va
++request with a first frame also reads that image: stretched to the output canvas, encoded by the LTX-2.5 VAE encoder
++and held clean at latent frame 0, as NVIDIA's GB200 parent does (below).
  """
  from __future__ import annotations
  
@@ -4470,16 +4506,17 @@ index bf49f84..81064bc 100644
  import time
  
 +# Modified by lf-studio: clip-length/orientation geometry, persistent compile cache, Inductor autotune-cache
-+# fix, O_DIRECT weight loading, load-timing prints, the Stage-2 audio policy and reshape (another clip length or
-+# orientation in a running session; see "lf-studio:" notes).
-+from .config import STAGE2_AUDIO_MODES, compile_cache_root, stage2_audio_mode
++# fix, O_DIRECT weight loading, load-timing prints, the Stage-2 audio policy, reshape (another clip length or
++# orientation in a running session) and the Stage-2 keyframe pin (see "lf-studio:" notes).
++from .config import STAGE2_AUDIO_MODES, compile_cache_root, stage2_audio_mode, stage2_keyframe_mode
  from .latent_transfer import (WIRE_METADATA, load_latent_capture, load_payload,
                                sha256, validate_request_id, write_new)
  from .prompt_cache import FIXED_PROMPT, load_cache
  from .stage2_ops.h3_upscale import (ADAPTER_OUTPUT, H3_INPUT, H3_UPSCALED,
                                     REFINER_INPUT, upscale_comfy_normalized_h3)
 -from .stage2_ops.models import SIGMAS, TILES, construct, public_refiner_modules
-+from .stage2_ops.models import SIGMAS, TILES, bind_geometry, construct, geometry_tools, public_refiner_modules
++from .stage2_ops.models import (SIGMAS, TILES, bind_geometry, build_image_encoder, construct, geometry_tools,
++                                public_refiner_modules)
  from .stage2_ops.conv_direct_nhwc import installed_direct_upsample_nhwc
  from .stage2_ops.writer_chunking import tracked_writer_chunks
  from .offload import enabled as offload_enabled, validate_device
@@ -4508,32 +4545,125 @@ index bf49f84..81064bc 100644
 +    return replace(state, latent=state.clean_latent.clone(),
 +                   denoise_mask=torch_module.zeros_like(state.denoise_mask), frozen=True)
 +
++
++# lf-studio: the user's first frame in Stage 2 (SOL_H3_STAGE2_KEYFRAME, runtime/config.stage2_keyframe_mode).
++# Upstream Sol-H3-RTX5090 transfers only the draft's latent: Stage 2 starts every token at 9 % of it and 91 % noise
++# (sigma 0.909375) under a fixed generic prompt and never sees the keyframe, so it repaints frame 0 and the faces in
++# it. "pin" (the default; "off" is upstream's route) does what NVIDIA's GB200 parent of this Stage 2 does
++# (official_compat_h3_refiner_diagnostic.py encode_highres_first_frame; LTX-2's ti2vid_two_stages Stage 2 too): the
++# keyframe, encoded by the LTX-2.5 VAE encoder, replaces latent frame 0 (its 1,008 tokens) with a denoise mask of 0,
++# so those tokens are never noised and stay clean through all three updates (VideoConditionByLatentIndex, strength 1).
++# Before encoding, the keyframe is stretched to the output canvas as H3 stretched it (LANCZOS, qwen_ops.media),
++# because LTX's own loader would center-crop it instead. No token is added: the transformer's shapes, its compiled
++# graphs and the 141 Sol calls stay. Every other token gets the same noise draw as without the pin. "draft" holds the
++# draft's own frame-0 latent instead (no encoder), a control for "pin". Only fl2va requests with a first frame: t2va
++# and ref2va have no keyframe, and a last frame alone has nothing at frame 0 (pinning a later frame takes new tokens
++# in LTX-2).
++KEYFRAME_STRENGTH = 1.0
++
++
++def keyframe_mode_for(mode, session_task, row):
++    """The keyframe mode that applies to one request: `mode` for an fl2va capture with a first frame in an fl2va
++    session, else "off"."""
++    spec = row.get("input_spec") or {}
++    if mode == "off" or session_task != "fl2va" or row.get("task") != "fl2va" or not spec.get("first_frame"):
++        return "off"
++    return mode
++
++
++def stretch_keyframe(source, target, width, height):
++    """The first frame as H3's input preparation had it (EXIF-transposed RGB, LANCZOS-stretched to the canvas:
++    qwen_ops.media, the same as FastVideo's for the first existing keyframe), at the output canvas, written to a new
++    PNG: lossless (fast compression), without EXIF or a colour profile, so LTX's loader (which would apply both) reads
++    these pixels as they are. Returns the image's size."""
++    from PIL import Image
++    from .qwen_ops.media import load_rgb, prepare_keyframe_image
++    image = prepare_keyframe_image(load_rgb(source), height, width, stretch=True)
++    if image.size != (width, height):
++        raise RuntimeError(f"keyframe stretch gave {image.size}, expected {(width, height)}")
++    clean = Image.frombytes("RGB", image.size, image.tobytes())
++    with Path(target).open("xb") as stream:
++        clean.save(stream, format="PNG", compress_level=1)
++    return clean.size
++
  
  REQUIRED_PATHS = ("transformer", "refiner_lora", "output_video_vae", "audio_vae",
                    "adapter_dir", "h3_upscaler_source", "h3_upscaler_checkpoint", "prompt_cache")
-@@ -35,11 +67,20 @@ def _refiner_class(base, compat, session):
+@@ -35,15 +111,68 @@ def _refiner_class(base, compat, session):
          def __init__(self):
              construct(self, session.paths, torch=torch, dist=session.dist,
                        compile_enabled=session.compile_enabled, base=base, compat=compat,
 -                      cpu_offload=session.cpu_offload)
-+                      cpu_offload=session.cpu_offload, geometry=session.geometry)
++                      cpu_offload=session.cpu_offload, geometry=session.geometry,
++                      image_encoder=session.image_encoder_wanted())
  
          def first_frame_path(self, record):
-             return None
- 
+-            return None
++            # lf-studio: the stretched keyframe PNG that Session.run made for a pin (SOL_H3_STAGE2_KEYFRAME=pin);
++            # None otherwise, as upstream
++            png = record.get("_keyframe_png")
++            return None if png is None else Path(png)
++
 +        def prepare_multimodal_states(self, video_latent, audio_latent, conditionings, seed):
-+            # lf-studio: the upstream states first, so the random draws and the video noise are the same in both
-+            # modes; then, unless "joint", the audio state becomes the clean, frozen H3 audio (see STAGE2_AUDIO_MODES)
++            # lf-studio: SOL_H3_STAGE2_KEYFRAME=draft holds the draft's own frame-0 latent clean (a control for the
++            # pin); then the upstream states, so the random draws and the video noise are the same in every mode;
++            # then, unless "joint", the audio state becomes the clean, frozen H3 audio (see STAGE2_AUDIO_MODES)
++            request = getattr(session, "keyframe_request", None)
++            if request is not None and request["mode"] == "draft":
++                from ltx_core.conditioning import VideoConditionByLatentIndex
++                conditionings = [*conditionings, VideoConditionByLatentIndex(
++                    latent=video_latent[:, :, :1].clone(), strength=KEYFRAME_STRENGTH, latent_idx=0)]
 +            video_state, audio_state, generator = super().prepare_multimodal_states(
 +                video_latent, audio_latent, conditionings, seed)
 +            if session.stage2_audio == "joint":
 +                return video_state, audio_state, generator
 +            return video_state, frozen_audio_state(audio_state, torch), generator
-+
+ 
          def encode_highres_first_frame(self, image_path):
-             if image_path is not None:
-                 raise ValueError("latent transfer has no RGB first-frame conditioning")
-@@ -52,8 +93,14 @@ def _refiner_class(base, compat, session):
+-            if image_path is not None:
+-                raise ValueError("latent transfer has no RGB first-frame conditioning")
+-            return []
++            # lf-studio: upstream Sol-H3-RTX5090 has no RGB first-frame conditioning (image_path None: no
++            # conditioning). With a pin, the GB200 parent's encode: ImageConditioningInput(frame_idx=0, strength=1,
++            # the checkpoint's CRF) at base.HEIGHT x base.WIDTH (this shape's output canvas, bind_geometry) through
++            # the LTX-2.5 VAE encoder -> VideoConditionByLatentIndex(latent_idx=0)
++            if image_path is None:
++                return []
++            if getattr(self, "image_encoder", None) is None:
++                raise ValueError("latent transfer has no RGB first-frame conditioning without the image encoder "
++                                 "(SOL_H3_STAGE2_KEYFRAME=pin)")
++            self.image_encode_calls += 1
++            # lf-studio (RTX 5090): with CPU offload the encoder waits on the CPU, as the audio encoder does, and is
++            # on the GPU only for this encode (the H3 upscaler and adapter are back on the CPU by now, and the
++            # transformer's blocks are not running yet); the two moves are timed apart from the encode
++            moved_s = 0.0
++            if session.cpu_offload:
++                moved_s -= time.monotonic()
++                self.image_encoder.to(self.device)
++                torch.cuda.synchronize()
++                moved_s += time.monotonic()
++            try:
++                conditionings = super().encode_highres_first_frame(Path(image_path))
++            finally:
++                if session.cpu_offload:
++                    torch.cuda.synchronize()
++                    moved_s -= time.monotonic()
++                    self.image_encoder.cpu()
++                    moved_s += time.monotonic()
++            self._image_encoder_move_s = moved_s
++            shape = session.geometry["refiner_input"]
++            expected = (1, int(shape[1]), 1, int(shape[3]), int(shape[4]))
++            item = conditionings[0] if len(conditionings) == 1 else None
++            if (item is None or type(item).__name__ != "VideoConditionByLatentIndex"
++                    or item.latent_idx != 0 or item.strength != KEYFRAME_STRENGTH
++                    or tuple(item.latent.shape) != expected or not bool(torch.isfinite(item.latent).all())):
++                raise RuntimeError(f"keyframe pin contract failed: expected one latent-index-0 condition, strength "
++                                   f"{KEYFRAME_STRENGTH}, latent {expected}")
++            return conditionings
+ 
+         def prompt_stats(self, prompt):
+             return session.prompt_cache.stats(prompt)
+@@ -52,8 +181,14 @@ def _refiner_class(base, compat, session):
              return session.prompt_cache.contexts(prompt, self.device)
  
          def prepare_input(self, source_path):
@@ -4549,7 +4679,7 @@ index bf49f84..81064bc 100644
                  "preprocess": "normalized_h3_x2_then_adapter_crop_t16",
                  "latent_upsampler": False}
  
-@@ -65,24 +112,25 @@ def _refiner_class(base, compat, session):
+@@ -65,24 +200,25 @@ def _refiner_class(base, compat, session):
                      raise RuntimeError(f"H3 bridge shape/dtype/layout contract failed: {shape}")
                  return value
  
@@ -4582,7 +4712,7 @@ index bf49f84..81064bc 100644
  
          def encode_source_audio(self, source_path):
              from ltx_core.model.audio_vae import encode_audio
-@@ -132,14 +180,17 @@ def _refiner_class(base, compat, session):
+@@ -132,14 +268,17 @@ def _refiner_class(base, compat, session):
              session.writer_chunk_receipt = {"chunk_frames": 16, "source_chunks": 0,
                  "emitted_chunks": 0, "frames": 0, "source_layouts": [], "complete": False}
              chunks = tracked_writer_chunks(chunks, session.writer_chunk_receipt,
@@ -4602,7 +4732,7 @@ index bf49f84..81064bc 100644
                      crf=19, preset="veryfast", thread_count=8)
                  if not temporary.is_file() or temporary.stat().st_size == 0:
                      raise RuntimeError("video encoder produced no output")
-@@ -158,6 +209,92 @@ def _refiner_class(base, compat, session):
+@@ -158,6 +297,92 @@ def _refiner_class(base, compat, session):
      return SparkRefiner
  
  
@@ -4695,7 +4825,7 @@ index bf49f84..81064bc 100644
  class Session:
      """Construct once, prepare/run sequential requests, then close the worker."""
  
-@@ -168,11 +305,15 @@ class Session:
+@@ -168,11 +393,20 @@ class Session:
          self.closed = self.failed = False
          self.prepared = self.current_capture = self.payload = None
          self.completed_requests = 0
@@ -4708,10 +4838,15 @@ index bf49f84..81064bc 100644
          self.cpu_offload = offload_enabled(config)
 +        self.geometry = canvas.from_recipe(config)
 +        self.stage2_audio = stage2_audio_mode()     # lf-studio: before this worker loads its models
++        # lf-studio: the keyframe setting and this session's task (the recipe's stage1.task, before the config is
++        # narrowed to its stage2 part); keyframe_request holds what one request pins (Session.run)
++        self.stage2_keyframe = stage2_keyframe_mode()
++        self.task = (config.get("stage1") or {}).get("task", "t2va")
++        self.keyframe_request = None
          config = config.get("stage2", config)
          self.compile_enabled = config.get("compile", True)
          self.fixed_prompt = config.get("fixed_prompt", FIXED_PROMPT)
-@@ -186,11 +327,22 @@ class Session:
+@@ -186,11 +420,22 @@ class Session:
              if not path.is_file() or not path.stat().st_size:
                  raise FileNotFoundError(path)
          self.work_dir = Path(work_dir).resolve()
@@ -4735,7 +4870,7 @@ index bf49f84..81064bc 100644
          try:
              self._construct()
          except BaseException:
-@@ -211,8 +363,14 @@ class Session:
+@@ -211,8 +456,14 @@ class Session:
              self._owns_dist = True
          if dist.get_world_size() != 1:
              raise RuntimeError("Spark requires one distributed rank")
@@ -4751,21 +4886,86 @@ index bf49f84..81064bc 100644
          with torch.inference_mode():
              self.models = _refiner_class(base, compat, self)()
          self.conv_layout_receipt = self.stack.enter_context(installed_direct_upsample_nhwc(torch_module=torch))
-@@ -221,6 +379,7 @@ class Session:
+@@ -221,6 +472,7 @@ class Session:
              "session_started_monotonic_ns": self.started_ns, "session_ready_monotonic_ns": self.ready_ns,
              "session_initialization_s": (self.ready_ns - self.started_ns) / 1e9,
              "refiner_recipe": {"sigmas": list(SIGMAS), "updates": 3, "lora_strength": 0.8,
-+                               "stage2_audio": self.stage2_audio,
++                               "stage2_audio": self.stage2_audio, "stage2_keyframe": self.stage2_keyframe,
                                 "joint_audio_video": True, "expected_sol_backend": "triton"},
              "spatial_route": self.models.h3_spatial_route, "conv_actual_tiling": asdict(self.models.tiling_config),
              "actual_parameter_dtypes": self.models.parameter_dtypes,
-@@ -252,18 +411,22 @@ class Session:
+@@ -229,8 +481,63 @@ class Session:
+             "all2all_copy_elision": self.models.all2all_receipt,
+             "offload": "cpu" if self.cpu_offload else "none",
+             "denoiser_dummy_warmup": False, "latent_only_transfer": True}
++        self._keyframe_receipt()
+         self.timings["startup_s"] = self.session_receipt["session_initialization_s"]
+ 
++    def image_encoder_wanted(self):
++        """lf-studio: an fl2va session with SOL_H3_STAGE2_KEYFRAME=pin builds the LTX-2.5 image encoder."""
++        return self.stage2_keyframe == "pin" and self.task == "fl2va"
++
++    def ensure_image_encoder(self):
++        """lf-studio: build the image encoder now if this session lacks it (a session made with another
++        SOL_H3_STAGE2_KEYFRAME whose mode was changed, as the replay bench's keyframe arms do)."""
++        if self.models.image_encoder is None:
++            with self.torch.inference_mode():
++                build_image_encoder(self.models, self.paths, torch=self.torch, base=self.base, compat=self.compat,
++                                    cpu_offload=self.cpu_offload)
++            self._keyframe_receipt()
++        return self.models.image_encoder
++
++    def _keyframe_receipt(self):
++        """lf-studio: the session receipt's keyframe fields. Stage 2 reads more than the latent transfer only when
++        an fl2va session pins the keyframe."""
++        models = self.models
++        self.session_receipt["stage2_keyframe"] = {
++            "mode": self.stage2_keyframe, "task": self.task,
++            "applies_to": "fl2va requests with a first frame", "image_encoder": models.image_encoder is not None,
++            "image_conditioning_crf": models.image_conditioning_crf}
++        self.session_receipt["latent_only_transfer"] = not (self.stage2_keyframe == "pin" and self.task == "fl2va")
++
++    def _prepare_keyframe(self, mode, row, root):
++        """lf-studio: what this request pins at latent frame 0 (keyframe_mode_for): None ("off"), the draft's own
++        frame 0 ("draft"), or the capture's first frame stretched to the output canvas and written to
++        keyframe_first_<W>x<H>.png in the request's directory ("pin"; the image Stage 1 read, checked against the
++        capture's sha256 when it has one)."""
++        if mode == "off":
++            return None
++        tokens = int(self.geometry["refiner_input"][3]) * int(self.geometry["refiner_input"][4])
++        request = {"mode": mode, "latent_index": 0, "strength": KEYFRAME_STRENGTH, "tokens": [0, tokens]}
++        if mode == "draft":
++            return dict(request, source="the draft's own frame-0 latent (H3 x2 upscaler and adapter output)")
++        started_ns = time.monotonic_ns()
++        source = Path(row["input_spec"]["first_frame"])
++        if not source.is_file():
++            raise FileNotFoundError(f"the first frame of this fl2va clip is gone, Stage 2 cannot pin it: {source}")
++        source_sha256 = sha256(source)
++        recorded = (row.get("input_sha256") or {}).get("first_frame")
++        if recorded is not None and recorded != source_sha256:
++            raise RuntimeError(f"the first frame changed after Stage 1 read it: {source}")
++        width, height = self.geometry["output_width"], self.geometry["output_height"]
++        if (self.base.WIDTH, self.base.HEIGHT) != (width, height):
++            raise RuntimeError("the refiner's canvas is not this request's output canvas")
++        png = root / f"keyframe_first_{width}x{height}.png"
++        stretch_keyframe(source, png, width, height)
++        request.update(source=str(source), source_sha256=source_sha256, png=str(png), png_sha256=sha256(png),
++                       canvas=[width, height], resize="LANCZOS stretch, as H3's first keyframe",
++                       stretch_s=(time.monotonic_ns() - started_ns) / 1e9)
++        self.ensure_image_encoder()
++        return dict(request, crf=self.models.image_conditioning_crf)
++
+     def prepare(self, request_id, output_root):
+         started_ns = time.monotonic_ns()
+         if self.closed or self.failed or self.prepared is not None or self.current_capture is not None:
+@@ -252,33 +559,51 @@ class Session:
          if (self.closed or self.failed or self.current_capture is not None or self.prepared is None
                  or self.prepared["request_id"] != request_id or self.prepared["output_root"] != str(root)):
              raise RuntimeError("run requires the matching completed prepare identity and output root")
 +        shape = (self.geometry["orientation"], self.geometry["output_frames"])
          receipt = {"status": "RUNNING", "request_id": request_id, "stage2_started_monotonic_ns": started_ns,
-+            "stage2_audio": self.stage2_audio,
++            "stage2_audio": self.stage2_audio, "stage2_keyframe": "off",
++            "stage2_keyframe_setting": self.stage2_keyframe,
 +            "shape": list(shape), "first_request_at_shape": shape not in self.shapes_run,     # lf-studio
              "request_index": self.completed_requests, "preparation": dict(self.prepared),
              "timing_boundary": "run_entry_after_prepare_to_atomic_final_muxed_MP4"}
@@ -4776,15 +4976,50 @@ index bf49f84..81064bc 100644
 +            self.payload = load_payload(row, torch_module=self.torch, h3_shape=self.geometry["h3"],
 +                                        audio_shape=self.geometry["audio"])
              receipt.update(case_id=row["case_id"], capture=row)
++            # lf-studio: the keyframe pin of this request (None: none, as upstream)
++            receipt["stage2_keyframe"] = keyframe_mode_for(self.stage2_keyframe, self.task, row)
++            keyframe = self.keyframe_request = self._prepare_keyframe(receipt["stage2_keyframe"], row, root)
++            pinned = receipt["stage2_keyframe"] == "pin"
              models = self.models
-             before = models.h3_upscaler_calls, models.adapter_convert_calls, self.prompt_cache.context_calls
+-            before = models.h3_upscaler_calls, models.adapter_convert_calls, self.prompt_cache.context_calls
++            before = (models.h3_upscaler_calls, models.adapter_convert_calls, self.prompt_cache.context_calls,
++                      models.image_encode_calls)
              layout_before = self.conv_layout_receipt["calls"]
 -            output = root / "refined_1344x768_121f.mp4"
 +            output = root / f"refined_{self.geometry['output_width']}x{self.geometry['output_height']}_{self.geometry['output_frames']}f.mp4"
              record = {"prompt_id": row["case_id"], "prompt": self.fixed_prompt, "seed": row["seed"],
                        "source_index": row["source_index"], "index": 0, "_source_path": "/dev/null"}
++            if pinned:
++                record["_keyframe_png"] = keyframe["png"]
              with self.torch.inference_mode():
-@@ -292,9 +455,11 @@ class Session:
+                 result = models.run_diagnostic(record, output)
+-            calls = tuple(a - b for a, b in zip((models.h3_upscaler_calls,
+-                models.adapter_convert_calls, self.prompt_cache.context_calls), before))
+-            if calls != (1, 1, 1) or not self.writer_chunk_receipt["complete"]:
+-                raise RuntimeError("expected one H3 upscale, adapter and cached AV context consumption")
++            calls = tuple(a - b for a, b in zip((models.h3_upscaler_calls, models.adapter_convert_calls,
++                self.prompt_cache.context_calls, models.image_encode_calls), before))
++            if calls != (1, 1, 1, int(pinned)) or not self.writer_chunk_receipt["complete"]:
++                raise RuntimeError("expected one H3 upscale, adapter and cached AV context consumption"
++                                   + (" and one keyframe encode" if pinned else " and no keyframe encode"))
+             phases = result["phases_s"]
+             phases["fixed_prompt_context_copy_s"] = phases.pop("gemma_multimodal_embedding_s")
+             phases["h3_upscale_and_adapter_s"] = phases.pop("official_input_video_vae_encode_s")
+             phases.update(h3_latent_upscale_s=models._h3_upscale_s, h3_ltx_adapter_s=models._h3_adapter_s)
+-            result["highres_first_frame"] = None
++            if pinned:
++                phases["keyframe_stretch_s"] = round(keyframe.pop("stretch_s"), 6)
++                if self.cpu_offload:     # lf-studio (RTX 5090): inside highres_first_frame_condition_s
++                    phases["image_encoder_move_s"] = round(models._image_encoder_move_s, 6)
++            result["highres_first_frame"] = keyframe
+             result["spatial_route"] = {**models.h3_spatial_route,
+-                "actual_calls": {"h3_upscaler": 1, "adapter": 1, "ltx_learned_x2": 0, "input_video_vae": 0}}
++                "actual_calls": {"h3_upscaler": 1, "adapter": 1, "ltx_learned_x2": 0,
++                                 "input_video_vae": int(pinned)}}
+             finished_ns = models.final_mp4_complete_monotonic_ns
+             self.final_mp4_complete_monotonic_ns = finished_ns
+             receipt.update(status="PASS", result=result, output=str(output), output_sha256=sha256(output),
+@@ -292,18 +617,60 @@ class Session:
              write_new(root / "final_file_manifest.json", {key: receipt[key] for key in (
                  "status", "request_id", "case_id", "output", "output_sha256", "output_bytes",
                  "stage2_started_monotonic_ns", "final_mp4_complete_monotonic_ns", "stage2_request_s")})
@@ -4797,8 +5032,11 @@ index bf49f84..81064bc 100644
              return receipt
          except BaseException as error:
              self.failed = True
-@@ -304,6 +469,46 @@ class Session:
-             self.current_capture = self.payload = self.prepared = None
+             receipt.update(status="FAIL", error=f"{type(error).__name__}: {error}")
+             raise
+         finally:
+-            self.current_capture = self.payload = self.prepared = None
++            self.current_capture = self.payload = self.prepared = self.keyframe_request = None
              write_new(root / "stage2_result.json", receipt)
  
 +    def reshape(self, config):
@@ -5455,20 +5693,27 @@ index 0000000..326940e
 +    wrapper.sol_h3_block_source = source
 +    return wrapper
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
-index 04a6f36..0e576d1 100644
+index 04a6f36..052d245 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/models.py
-@@ -7,6 +7,9 @@ pixel-input VAE, LTX upsampler and preview-decoder models.
+@@ -3,10 +3,16 @@
+ Builders and joint AV sampling are the public Super Acceleration/LTX classes.
+ This factory avoids the older diagnostic constructor's unused image, text,
+ pixel-input VAE, LTX upsampler and preview-decoder models.
++lf-studio: the image encoder is built for fl2va sessions with SOL_H3_STAGE2_KEYFRAME=pin, the
++default (build_image_encoder), as the older diagnostic constructor builds it.
+ """
  from __future__ import annotations
  
  from collections import Counter
-+# Modified by lf-studio: geometry arguments (clip length, orientation), load-timing prints, static-shape compile
-+# and reshape (bind_geometry, geometry_tools: another clip shape in a running session).
++# Modified by lf-studio: geometry arguments (clip length, orientation), load-timing prints, static-shape compile,
++# reshape (bind_geometry, geometry_tools: another clip shape in a running session) and the keyframe image encoder
++# (build_image_encoder).
 +import time
  import gc
  import importlib
  import os
-@@ -36,7 +39,7 @@ def offload_placement(name, module):
+@@ -36,7 +42,7 @@ def offload_placement(name, module):
              "binding_scope": "module views; streaming CPU backing and GPU pools are managed by LTX"}
  
  
@@ -5477,7 +5722,7 @@ index 04a6f36..0e576d1 100644
      ltx_root = Path(ltx_root).resolve(strict=True)
      for package in ("ltx-core", "ltx-pipelines", "ltx-kernels"):
          source = ltx_root / "packages" / package / "src"
-@@ -48,17 +51,97 @@ def public_refiner_modules(ltx_root):
+@@ -48,17 +54,122 @@ def public_refiner_modules(ltx_root):
      for path in (model_root / "super_acceleration/stage2", model_root.parents[1]):
          if str(path) not in sys.path:
              sys.path.insert(0, str(path))
@@ -5575,11 +5820,36 @@ index 04a6f36..0e576d1 100644
 +        dynamic=compile_dynamic(), seq_dim_dynamic=False, capture=False)
 +
 +
-+def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_offload=False, geometry=None):
++def build_image_encoder(models, paths, *, torch, base, compat, cpu_offload=False, registry=None):
++    """lf-studio (SOL_H3_STAGE2_KEYFRAME=pin): the LTX-2.5 video VAE's encoder and the H.264 CRF that image
++    conditionings are re-compressed at, from the output VAE checkpoint, as the GB200 parent builds them
++    (official_compat_h3_refiner_diagnostic.OfficialCompatRefiner.__init__). Only the encoder's weights are read
++    (VAE_ENCODER_COMFY_KEYS_FILTER), ~0.6 GiB in BF16. It runs uncompiled. Idempotent. With CPU offload it is
++    built on the CPU, as the audio encoder and the video decoder are, and Stage 2 moves it to the GPU only for the
++    one encode of a request (SparkRefiner.encode_highres_first_frame)."""
++    if getattr(models, "image_encoder", None) is not None:
++        return models.image_encoder
++    image_block = compat.ImageConditioner(str(paths["output_video_vae"]), models.dtype, models.device,
++        registry=base.ModelRegistry() if registry is None else registry,
++        alloc_trim_strategy=base.AllocatorTrimStrategy.DEFER)
++    models.image_conditioning_crf = image_block.default_image_crf
++    models.image_encoder = image_block._encoder_builder.build(
++        device=torch.device("cpu") if cpu_offload else models.device, dtype=models.dtype).eval().requires_grad_(False)
++    residency = getattr(models, "residency", None)
++    if residency is not None:
++        placement = offload_placement if cpu_offload else base._module_residency
++        residency["image_encoder"] = placement("image_encoder", models.image_encoder)
++    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} image encoder built "
++          f"(CRF {models.image_conditioning_crf}{', on the CPU' if cpu_offload else ''})", flush=True)
++    return models.image_encoder
++
++
++def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_offload=False, geometry=None,
++              image_encoder=False):
      from .h3_ltx_adapter import H3ToLTXAdapter
      from ltx_core.model.transformer.model import LTXModelType
  
-@@ -66,13 +149,12 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -66,14 +177,15 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
      models.device, models.dtype = torch.device("cuda", 0), torch.bfloat16
      models.compile_enabled = compile_enabled
      models.attention_backend = "sol"
@@ -5592,9 +5862,12 @@ index 04a6f36..0e576d1 100644
      models.last_decoder_stream_info = None
 +    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} upscaler+adapter start", flush=True)
      models.h3_upscaler_calls = models.adapter_convert_calls = 0
++    models.image_encoder = models.image_conditioning_crf = None     # lf-studio: built below for a keyframe pin
++    models.image_encode_calls = 0
      models.h3_upscaler, models.h3_spatial_route = load_upscaler(
          paths["h3_upscaler_source"], paths["h3_upscaler_checkpoint"],
-@@ -83,13 +165,11 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+         device=models.device, torch_module=torch)
+@@ -83,13 +195,11 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
          models.h3_upscaler.cpu()
          models.h3_ltx_adapter.model.cpu()
  
@@ -5612,7 +5885,7 @@ index 04a6f36..0e576d1 100644
      lora = base.LoraPathStrengthAndSDOps(str(paths["refiner_lora"]), 0.8, base.LTXV_LORA_COMFY_RENAMING_MAP)
      stage = base.DiffusionStage.from_checkpoint(str(paths["transformer"]), models.dtype,
          models.device, loras=(lora,), quantization=None, registry=registry,
-@@ -119,8 +199,29 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -119,8 +229,29 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
          builder = stage._transformer_builder
          stage._transformer_builder = builder.with_module_ops(
              (*builder.module_ops, create_video_self_attention_module_ops(manager)))
@@ -5644,7 +5917,7 @@ index 04a6f36..0e576d1 100644
          models.transformer = X0Model(SequenceParallelModelWrapper(
              models.streaming_transformer, manager)).eval().requires_grad_(False)
          # Retain the released Triton Sol implementation on SM120. The generic
-@@ -134,6 +235,7 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -134,6 +265,7 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
              attn_mgr=manager, registry=registry,
              tracker=base.TransformerWeightTracker(group=dist.group.WORLD, no_lora_swap=True))
          models.transformer = stage._build_transformer(video_tools=models.video_tools).requires_grad_(False)
@@ -5652,13 +5925,16 @@ index 04a6f36..0e576d1 100644
      models.sol_attention = base.Stage2SolAttention(models.transformer,
          isolate_sol_from_compile=compile_enabled)
      models.sol_backend = base._actual_sol_backend()
-@@ -149,22 +251,16 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+@@ -149,22 +281,19 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
          registry=registry, alloc_trim_strategy=base.AllocatorTrimStrategy.DEFER)
      models.audio_encoder = audio_block._encoder_builder.build(
          device=torch.device("cpu") if cpu_offload else models.device, dtype=models.dtype).eval().requires_grad_(False)
 -    models.audio_tools = compat.AudioLatentTools(compat.AudioPatchifier(patch_size=1),
 -        compat.AudioLatentShape.from_video_pixel_shape(pixel_shape))
 +    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} audio encoder built", flush=True)
++    if image_encoder:     # lf-studio: the keyframe pin's encoder (SOL_H3_STAGE2_KEYFRAME=pin, fl2va sessions)
++        build_image_encoder(models, paths, torch=torch, base=base, compat=compat, cpu_offload=cpu_offload,
++                            registry=registry)
      decoder_block = compat.VideoDecoder(str(paths["output_video_vae"]), models.dtype,
          models.device, registry=registry, alloc_trim_strategy=base.AllocatorTrimStrategy.DEFER)
 -    # Original explicit Conv tiles. Resolve before constructing decoder weights.
@@ -5677,6 +5953,15 @@ index 04a6f36..0e576d1 100644
      models.parameter_dtypes = dict(Counter(str(p.dtype) for p in models.transformer.parameters()))
      if (not models.parameter_dtypes.get("torch.bfloat16")
              or not set(models.parameter_dtypes) <= {"torch.bfloat16", "torch.float32"}):
+@@ -174,6 +303,8 @@ def construct(models, paths, *, torch, dist, compile_enabled, base, compat, cpu_
+         ("transformer", models.transformer), ("audio_encoder", models.audio_encoder),
+         ("video_decoder", models.video_decoder), ("h3_upscaler", models.h3_upscaler),
+         ("h3_ltx_adapter", models.h3_ltx_adapter.model))}
++    if models.image_encoder is not None:     # lf-studio: the keyframe pin's encoder (built above, before residency)
++        models.residency["image_encoder"] = placement("image_encoder", models.image_encoder)
+     gc.collect()
+     torch.cuda.empty_cache()
+     torch.cuda.synchronize()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/writer_chunking.py b/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/writer_chunking.py
 index 9264fee..d557151 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/runtime/stage2_ops/writer_chunking.py
@@ -5994,10 +6279,10 @@ index 0000000..05ffd7b
 +    sys.exit(main())
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_geometry.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_geometry.py
 new file mode 100644
-index 0000000..7f999ab
+index 0000000..fa9d78d
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_geometry.py
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,47 @@
 +"""lf-studio: CPU tests of the derived portrait / clip-length geometry (not part of upstream Sol-H3-RTX5090)."""
 +import unittest
 +
@@ -6031,15 +6316,26 @@ index 0000000..7f999ab
 +        with self.assertRaises(ValueError):
 +            load_recipe(orientation="square")
 +
++    def test_the_keyframe_pin_takes_latent_frame_0_of_every_shape(self):
++        """lf-studio (SOL_H3_STAGE2_KEYFRAME=pin): latent frame 0 is the first 1,008 of Stage 2's tokens at every
++        length and in both orientations, and the pin adds none."""
++        for orientation in ("landscape", "portrait"):
++            for seconds, tokens in ((5, 16128), (6, 20160), (7, 22176), (8, 24192), (10, 31248), (12, 37296),
++                                    (15, 46368)):
++                with self.subTest(orientation=orientation, seconds=seconds):
++                    shape = geometry.from_recipe(load_recipe("fl2va", orientation=orientation, seconds=seconds))
++                    _, channels, frames, height, width = shape["refiner_input"]
++                    self.assertEqual((channels, height * width, frames * height * width), (128, 1008, tokens))
++
 +
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
 new file mode 100644
-index 0000000..d42b20f
+index 0000000..94ea100
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_ltx_blocks.py
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,354 @@
 +"""lf-studio: CPU tests of the fused LTX block file reader (runtime/stage2_ops/ltx_blocks.py).
 +
 +Part of lf-studio (Apache-2.0); not part of the upstream Sol-H3-RTX5090 package.
@@ -6059,18 +6355,30 @@ index 0000000..d42b20f
 +sys.path.insert(0, str(PACKAGE))
 +
 +
-+def _stub_ltx_core():
-+    """ltx_core lives in the Stage2 environment; the source only needs alloc_buffer from it."""
++_STUBBED = {}
++
++
++def setUpModule():
++    """ltx_core lives in the Stage2 environment; the source only needs alloc_buffer from it. The stand-in is in
++    sys.modules only while these tests run, so that other test modules' checks for the real ltx_core (the keyframe
++    pin's KeyframePinLtxTests, run at import while the tests are discovered) don't find it."""
 +    if "ltx_core.block_streaming.utils" in sys.modules:
 +        return
 +    utils = types.ModuleType("ltx_core.block_streaming.utils")
 +    utils.alloc_buffer = lambda nbytes, device, pin_memory: torch.empty(nbytes, dtype=torch.uint8)
 +    for name in ("ltx_core", "ltx_core.block_streaming"):
-+        sys.modules.setdefault(name, types.ModuleType(name))
-+    sys.modules["ltx_core.block_streaming.utils"] = utils
++        if name not in sys.modules:
++            _STUBBED[name] = sys.modules[name] = types.ModuleType(name)
++    _STUBBED["ltx_core.block_streaming.utils"] = sys.modules["ltx_core.block_streaming.utils"] = utils
 +
 +
-+_stub_ltx_core()
++def tearDownModule():
++    for name, module in _STUBBED.items():
++        if sys.modules.get(name) is module:
++            del sys.modules[name]
++    _STUBBED.clear()
++
++
 +from runtime.stage2_ops import ltx_blocks  # noqa: E402
 +
 +
@@ -6383,10 +6691,10 @@ index 0000000..d42b20f
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
-index 6a8c437..ed622ef 100644
+index 6a8c437..fe34b7c 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_pipeline.py
-@@ -3,13 +3,16 @@
+@@ -3,13 +3,18 @@
  import json
  import contextlib
  import io
@@ -6399,12 +6707,14 @@ index 6a8c437..ed622ef 100644
  
 -from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS
 +# Modified by lf-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location, the
-+# Stage-2 audio setting and the prompt-token setting, each also under CPU offload (no resident Qwen, no overlap).
-+from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root
++# Stage-2 audio setting, the prompt-token setting and the Stage-2 keyframe setting, each also under CPU offload (no
++# resident Qwen, no overlap).
++from runtime.config import (read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root,
++                            stage2_keyframe_mode)
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -59,7 +62,48 @@ class FakeWorker:
+@@ -59,7 +64,48 @@ class FakeWorker:
          self.events.append(("close", self.name))
  
  
@@ -6453,7 +6763,7 @@ index 6a8c437..ed622ef 100644
      def test_cpu_offload_serializes_gpu_work_and_preserves_math_recipe(self):
          FakeWorker.events = []
          case = {"case_id": "offload", "prompt": "A bird glides over a mountain lake.", "seed": 42}
-@@ -71,6 +115,7 @@ class PipelineTests(unittest.TestCase):
+@@ -71,6 +117,7 @@ class PipelineTests(unittest.TestCase):
                  self.assertEqual(recipe, load_recipe())
                  pipeline.start(case)
                  self.assertIsNone(pipeline.qwen)
@@ -6461,7 +6771,7 @@ index 6a8c437..ed622ef 100644
                  FakeWorker.events.clear()
                  pipeline.generate(case)
                  pipeline.generate(dict(case, case_id="second"))
-@@ -87,28 +132,277 @@ class PipelineTests(unittest.TestCase):
+@@ -87,28 +134,300 @@ class PipelineTests(unittest.TestCase):
                  pipeline.close()
  
      def test_residency_order_and_real_endpoint(self):
@@ -6641,6 +6951,29 @@ index 6a8c437..ed622ef 100644
 +            os.environ["SOL_H3_STAGE2_AUDIO"] = "JOINT"
 +            Pipeline({}, Path(directory) / "run", worker_factory=factory)
 +
++    def test_bad_stage2_keyframe_setting_fails_before_any_worker_and_a_good_one_reaches_stage2(self):
++        """lf-studio: a bad SOL_H3_STAGE2_KEYFRAME fails when the Pipeline is made, not when Stage 2 has loaded; the
++        setting reaches the Stage-2 worker through its environment, which Stage 2 reads before it builds its
++        models. Empty (or unset) is the default, pin."""
++        made = []
++        def factory(*args, **kwargs):
++            made.append(args)
++            return FakeWorker(*args, **kwargs)
++        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
++            os.environ["SOL_H3_STAGE2_KEYFRAME"] = "first"
++            with self.assertRaisesRegex(ValueError, "SOL_H3_STAGE2_KEYFRAME must be one of .*, not 'first'"):
++                Pipeline({}, Path(directory) / "run", task="fl2va", worker_factory=factory)
++            self.assertFalse((Path(directory) / "run").exists())
++            self.assertEqual(made, [])
++            for name, value, mode in (("pin", "PIN", "pin"), ("draft", "draft", "draft"), ("off", "off", "off"),
++                                      ("default", "", "pin")):
++                os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
++                pipeline = Pipeline({}, Path(directory) / name, task="fl2va", worker_factory=factory)
++                self.assertEqual(pipeline.config["stage1"]["task"], "fl2va")     # what Stage 2 takes its task from
++                os.environ["SOL_H3_COMPILE_CACHE"] = str(Path(directory) / "cache")
++                self.assertEqual(worker_environment("stage2", {})["SOL_H3_STAGE2_KEYFRAME"], value)
++                self.assertEqual(stage2_keyframe_mode(), mode)                  # what Stage 2 reads from it
++
 +    def test_bad_dynamic_text_length_setting_fails_before_any_worker(self):
 +        """lf-studio: a bad SOL_H3_DYNAMIC_TEXT_LENGTH fails when the Pipeline is made, not when Stage 1 installs
 +        its regions with the transformer in memory."""
@@ -6760,7 +7093,7 @@ index 6a8c437..ed622ef 100644
  
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
-@@ -222,7 +516,7 @@ class PipelineTests(unittest.TestCase):
+@@ -222,7 +541,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", offload_mode="none", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -6769,7 +7102,7 @@ index 6a8c437..ed622ef 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -252,7 +546,7 @@ class PipelineTests(unittest.TestCase):
+@@ -252,7 +571,7 @@ class PipelineTests(unittest.TestCase):
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
                                                      ref_image_match="stage2", ref_stage1_attn="sol",
@@ -6778,7 +7111,7 @@ index 6a8c437..ed622ef 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -287,11 +581,36 @@ class PipelineTests(unittest.TestCase):
+@@ -287,11 +606,36 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -7797,10 +8130,10 @@ index 0000000..4d4cdd3
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py
 new file mode 100644
-index 0000000..c4aabe0
+index 0000000..b0aebe3
 --- /dev/null
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_reshape.py
-@@ -0,0 +1,1156 @@
+@@ -0,0 +1,1221 @@
 +"""lf-studio: CPU tests of reshape, another clip length or orientation in a running session (not part of upstream
 +Sol-H3-RTX5090). Stand-in workers check that every worker sees the shape of each request; the shape state each real
 +worker rebinds is checked against what a fresh worker for that shape has."""
@@ -8590,6 +8923,34 @@ index 0000000..c4aabe0
 +        self.assertEqual((receipt["orientation"], receipt["output_frames"]), ("portrait", 361))
 +        self.assertEqual(value.reshapes, [receipt])
 +
++    def test_the_keyframe_pin_follows_the_shape(self):
++        """lf-studio (SOL_H3_STAGE2_KEYFRAME=pin): after a reshape the keyframe is stretched to the new output canvas,
++        which is also the canvas the refiner encodes it at (the shared module's WIDTH and HEIGHT, bind_geometry), and
++        it takes latent frame 0 of the new shape."""
++        from PIL import Image
++        value = self.session()
++        value.base = SimpleNamespace(COMPILE_WARMUP_ALL2ALL_TIMEOUT_S=600.0)
++        value.stage2_keyframe, value.task = "pin", "fl2va"
++        value.models.image_encoder, value.models.image_conditioning_crf = "encoder", 18
++        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ):
++            source = Path(directory) / "first.png"
++            Image.new("RGB", (300, 400), (90, 120, 150)).save(source)
++            row = {"task": "fl2va", "input_spec": {"first_frame": str(source), "last_frame": None}}
++            models.bind_geometry(value.base, value.geometry)
++            for config in (load_recipe("fl2va", orientation="portrait", seconds=10), load_recipe("fl2va", seconds=15)):
++                with mock.patch.object(stage2, "geometry_tools", lambda *args: None), \
++                     mock.patch.object(stage2, "asdict", lambda value: {}):
++                    value.reshape(config)
++                shape = geometry.from_recipe(config)
++                canvas = (shape["output_width"], shape["output_height"])
++                root = Path(directory) / f"{canvas[0]}x{canvas[1]}"
++                root.mkdir()
++                pin = value._prepare_keyframe("pin", row, root)
++                self.assertEqual((value.base.WIDTH, value.base.HEIGHT), canvas)
++                self.assertEqual((pin["canvas"], pin["tokens"]), (list(canvas), [0, 1008]))
++                with Image.open(pin["png"]) as written:
++                    self.assertEqual(written.size, canvas)
++
 +    def test_session_refuses_a_busy_worker_and_other_settings(self):
 +        value = self.session()
 +        value.prepared = {"request_id": "r"}
@@ -8825,6 +9186,43 @@ index 0000000..c4aabe0
 +            self.assertEqual(receipt["audio"]["shape"], list(ten["audio"]))
 +            with self.assertRaisesRegex(RuntimeError, "unexpected H3 geometry"):
 +                request(five["h3"], Path(temp) / "c")
++
++    def test_capture_records_the_keyframes_it_read(self):
++        """lf-studio: an fl2va capture records the sha256 of its first and last frame (Stage 2 checks the first frame
++        it pins against it, SOL_H3_STAGE2_KEYFRAME=pin); a t2va capture records none."""
++        import hashlib
++        import torch
++        stages = {"video_decoding_stage": SimpleNamespace(), "audio_decoding_stage": SimpleNamespace(
++            forward=lambda batch, args: SimpleNamespace(extra={"audio": torch.zeros((200000, 2)),
++                                                               "audio_sample_rate": 32000}))}
++        worker = SimpleNamespace(pipeline=SimpleNamespace(_stage_name_mapping=stages))
++        five = geometry.from_recipe()
++        args = SimpleNamespace(output_type="pil", video_decode_backend="h3-vae")
++        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(sys.modules, FakeFastVideo(torch).modules):
++            first, last = Path(temp) / "first.png", Path(temp) / "last.jpg"
++            first.write_bytes(b"first frame bytes")
++            last.write_bytes(b"last frame bytes")
++            capture.install_capture(worker, latent_shape=five["h3"], audio_samples=five["audio"][2])
++            receipts = {}
++            for name, inputs in (("t2va", {"task": "t2va"}),
++                                 ("both", {"task": "fl2va", "first_frame": str(first), "last_frame": str(last)}),
++                                 ("last", {"task": "fl2va", "last_frame": str(last)})):
++                directory = Path(temp) / name
++                directory.mkdir()
++                capture.arm_capture(worker, {"case_id": "c", "prompt": "p", "seed": 1, "source_index": 0,
++                                             "directory": str(directory), **inputs})
++                rows = 0 if name == "t2va" else 252
++                batch = SimpleNamespace(extra={"layout": SimpleNamespace(num_condition_video_rows=rows,
++                                                                         num_condition_audio_rows=0)},
++                                        raw_latent_shape=five["h3"], latents=torch.zeros(rows + 4, 8),
++                                        save_video=False, return_frames=False)
++                stages["video_decoding_stage"].forward(batch, args)
++                stages["audio_decoding_stage"].forward(batch, args)
++                receipts[name] = json.loads((directory / "capture.json").read_text())["input_sha256"]
++        digest = lambda data: hashlib.sha256(data).hexdigest()
++        self.assertEqual(receipts, {"t2va": {}, "both": {"first_frame": digest(b"first frame bytes"),
++                                                         "last_frame": digest(b"last frame bytes")},
++                                    "last": {"last_frame": digest(b"last frame bytes")}})
 +
 +
 +class QwenReshapeTests(unittest.TestCase):
@@ -10144,20 +10542,33 @@ index 0000000..04d1047
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
-index b1fd3a9..81b5ca7 100644
+index b1fd3a9..d793d15 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
-@@ -1,5 +1,9 @@
+@@ -1,18 +1,30 @@
  """CPU-only handoff, normalization and offline-conditioning behavior checks."""
 +# Modified by lf-studio: Stage-2 audio policy tests (Stage2AudioPolicyTests), autotune-cache fallback tests
-+# (AutotuneCacheFallbackTests), CPU-offload device moves around the shape-generic calls (Stage2OffloadTests).
++# (AutotuneCacheFallbackTests), CPU-offload device moves around the shape-generic calls (Stage2OffloadTests), the
++# Stage-2 keyframe pin (Stage2KeyframeTests, KeyframePinLtxTests).
++import contextlib
  import copy
-+from dataclasses import dataclass
++from dataclasses import dataclass, fields
++import io
 +import os
  import json
  import math
  from pathlib import Path
-@@ -13,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++import shutil
+ import sys
+ import tempfile
++import time
++import types
+ from types import SimpleNamespace
+ import unittest
++from unittest import mock
+ from unittest.mock import patch
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
  from runtime import latent_transfer as transfer
  from runtime import prompt_cache as cache
  from runtime import stage2
@@ -10165,7 +10576,7 @@ index b1fd3a9..81b5ca7 100644
  
  
  class Tensor:
-@@ -146,5 +151,357 @@ class Stage2ContractTests(unittest.TestCase):
+@@ -146,5 +158,1052 @@ class Stage2ContractTests(unittest.TestCase):
          self.assertEqual(model.encode_highres_first_frame(None), [])
  
  
@@ -10519,6 +10930,701 @@ index b1fd3a9..81b5ca7 100644
 +        self.assertEqual(info["autotune_cache_state"], "miss")
 +        self.assertEqual(self.events, self.RETUNED)
 +        self.assertEqual(self.stored_block(), 512)
++
++
++# lf-studio: the Stage-2 keyframe pin (SOL_H3_STAGE2_KEYFRAME, docs/PATCH.md item 19)
++class Latent:
++    """A video latent stand-in: shape, slicing along the frame axis, clone."""
++    def __init__(self, shape, name="latent"):
++        self.shape, self.name = tuple(shape), name
++    def __getitem__(self, index):
++        frames = range(self.shape[2])[index[2]]
++        return Latent((*self.shape[:2], len(frames), *self.shape[3:]),
++                      f"{self.name}[frames {frames.start}:{frames.stop}]")
++    def clone(self):
++        return Latent(self.shape, self.name + ".clone")
++
++
++class VideoConditionByLatentIndex:
++    """ltx_core.conditioning.VideoConditionByLatentIndex's constructor (the stand-in parent and the draft use it)."""
++    def __init__(self, latent, strength, latent_idx):
++        self.latent, self.strength, self.latent_idx = latent, strength, latent_idx
++
++
++LTX_CONDITIONING = {"ltx_core": types.ModuleType("ltx_core"),
++                    "ltx_core.conditioning": types.ModuleType("ltx_core.conditioning")}
++LTX_CONDITIONING["ltx_core.conditioning"].VideoConditionByLatentIndex = VideoConditionByLatentIndex
++RUN_TORCH = SimpleNamespace(inference_mode=contextlib.nullcontext, zeros_like=ZEROS.zeros_like,
++                            isfinite=lambda value: SimpleNamespace(all=lambda: True),
++                            cuda=SimpleNamespace(synchronize=lambda: None), device=lambda name: f"device({name})")
++
++
++def keyframe_image(path, size, mode="RGB", exif_orientation=None, icc=False):
++    """A test image with distinct pixels (a gradient and a few blocks), saved as PNG or JPEG by its suffix."""
++    from PIL import Image, ImageCms, ImageDraw
++    image = Image.new("RGB", size)
++    image.putdata([((x * 255) // size[0], (y * 255) // size[1], (x * y) % 256) for y in range(size[1])
++                   for x in range(size[0])])
++    draw = ImageDraw.Draw(image)
++    draw.rectangle((size[0] // 8, size[1] // 8, size[0] // 3, size[1] // 4), fill=(250, 20, 30))
++    draw.ellipse((size[0] // 2, size[1] // 2, size[0] - 4, size[1] - 4), fill=(10, 200, 90))
++    if mode == "RGBA":
++        image = image.convert("RGBA")
++        image.putalpha(128)
++    options = {}
++    if icc:
++        options["icc_profile"] = ImageCms.ImageCmsProfile(ImageCms.createProfile("LAB")).tobytes()
++    if exif_orientation is not None:
++        exif = Image.Exif()
++        exif[0x0112] = exif_orientation
++        options["exif"] = exif.tobytes()
++    image.save(path, **options)
++    return path
++
++
++def h3_stretch(path, width, height):
++    """What H3's input preparation does to the first existing keyframe, written out with PIL alone: EXIF
++    orientation applied, RGB, LANCZOS stretch to the canvas (FastVideo minimax_h3_input_preparation)."""
++    from PIL import Image, ImageOps
++    with Image.open(path) as image:
++        image = ImageOps.exif_transpose(image).convert("RGB")
++    return image if image.size == (width, height) else image.resize((width, height), Image.Resampling.LANCZOS)
++
++
++class Stage2KeyframeTests(unittest.TestCase):
++    def setUp(self):
++        patcher = mock.patch.dict(os.environ)       # bind_geometry sets H3_LTX_*; load_recipe reads the infer.py
++        patcher.start()                             # defaults and the prompt-token setting
++        self.addCleanup(patcher.stop)
++        for name in ("SOL_H3_STAGE2_KEYFRAME", "SOL_H3_ORIENTATION", "SOL_H3_SECONDS", "SOL_H3_PROMPT_TOKENS"):
++            os.environ.pop(name, None)
++        self.temp = Path(tempfile.mkdtemp())
++        self.addCleanup(shutil.rmtree, self.temp)
++
++    # ---- the setting and which requests it pins --------------------------------------------------------------
++    def test_setting(self):
++        """pin by default (unset or empty); off and draft when set, in any case; another value fails by name."""
++        self.assertEqual(stage2.stage2_keyframe_mode(), "pin")
++        for value, mode in (("", "pin"), (" ", "pin"), ("pin", "pin"), (" PIN ", "pin"), ("Draft", "draft"),
++                            ("off", "off"), (" OFF ", "off")):
++            os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
++            self.assertEqual(stage2.stage2_keyframe_mode(), mode)
++        os.environ["SOL_H3_STAGE2_KEYFRAME"] = "on"
++        with self.assertRaisesRegex(ValueError, r"SOL_H3_STAGE2_KEYFRAME must be one of \('off', 'pin', 'draft'\), "
++                                                r"not 'on'"):
++            stage2.stage2_keyframe_mode()
++
++    def test_only_fl2va_clips_with_a_first_frame_are_pinned(self):
++        first = {"task": "fl2va", "input_spec": {"task": "fl2va", "first_frame": "/in/a.png", "last_frame": None}}
++        both = {"task": "fl2va", "input_spec": {"task": "fl2va", "first_frame": "/in/a.png", "last_frame": "/in/b.png"}}
++        last = {"task": "fl2va", "input_spec": {"task": "fl2va", "first_frame": None, "last_frame": "/in/b.png"}}
++        t2va = {"task": "t2va", "input_spec": {"task": "t2va", "first_frame": None, "last_frame": None}}
++        ref2va = {"task": "ref2va", "input_spec": {"task": "ref2va", "references": [{"type": "image", "path": "/r"}]}}
++        for mode in ("pin", "draft"):
++            self.assertEqual(stage2.keyframe_mode_for(mode, "fl2va", first), mode)
++            self.assertEqual(stage2.keyframe_mode_for(mode, "fl2va", both), mode)
++            self.assertEqual(stage2.keyframe_mode_for(mode, "fl2va", last), "off")     # nothing at frame 0
++            self.assertEqual(stage2.keyframe_mode_for(mode, "t2va", t2va), "off")
++            self.assertEqual(stage2.keyframe_mode_for(mode, "ref2va", ref2va), "off")
++            self.assertEqual(stage2.keyframe_mode_for(mode, "t2va", first), "off")     # another session's capture
++            self.assertEqual(stage2.keyframe_mode_for(mode, "fl2va", {"task": "fl2va"}), "off")
++        self.assertEqual(stage2.keyframe_mode_for("off", "fl2va", first), "off")
++
++    # ---- the stretch -----------------------------------------------------------------------------------------
++    def test_the_keyframe_is_stretched_as_h3_stretched_it(self):
++        from PIL import Image
++        sources = {"3x4.png": keyframe_image(self.temp / "3x4.png", (300, 400)),
++                   "9x16.jpg": keyframe_image(self.temp / "9x16.jpg", (180, 320)),
++                   "exact.png": keyframe_image(self.temp / "exact.png", (1344, 768)),
++                   "rgba-icc.png": keyframe_image(self.temp / "rgba-icc.png", (320, 200), mode="RGBA", icc=True),
++                   "exif6.jpg": keyframe_image(self.temp / "exif6.jpg", (320, 180), exif_orientation=6)}
++        for name, source in sources.items():
++            for width, height in ((1344, 768), (768, 1344)):
++                with self.subTest(source=name, canvas=(width, height)):
++                    target = self.temp / f"{name}-{width}x{height}.png"
++                    self.assertEqual(stage2.stretch_keyframe(source, target, width, height), (width, height))
++                    with Image.open(target) as written:
++                        self.assertEqual((written.format, written.mode, written.size), ("PNG", "RGB", (width, height)))
++                        self.assertNotIn("icc_profile", written.info)       # LTX's loader would convert colours
++                        self.assertNotIn(0x0112, written.getexif())         # and rotate the image again
++                        self.assertEqual(written.tobytes(), h3_stretch(source, width, height).tobytes())
++        with Image.open(self.temp / "exif6.jpg-1344x768.png") as written, Image.open(sources["exif6.jpg"]) as raw:
++            self.assertEqual(raw.size, (320, 180))                  # stored landscape, shown portrait: rotated first
++            self.assertEqual(written.tobytes(), h3_stretch(sources["exif6.jpg"], 1344, 768).tobytes())
++        with Image.open(self.temp / "exact.png-1344x768.png") as written, Image.open(sources["exact.png"]) as raw:
++            self.assertEqual(written.tobytes(), raw.convert("RGB").tobytes())  # at the canvas already: unchanged
++        with self.assertRaises(FileExistsError):                    # never over another request's file
++            stage2.stretch_keyframe(sources["3x4.png"], self.temp / "3x4.png-1344x768.png", 1344, 768)
++
++    def test_the_stretch_is_the_prompt_encoders(self):
++        from runtime.qwen_ops import media
++        source = keyframe_image(self.temp / "src.jpg", (240, 320), exif_orientation=3)
++        stage2.stretch_keyframe(source, self.temp / "out.png", 768, 1344)
++        from PIL import Image
++        with Image.open(self.temp / "out.png") as written:
++            self.assertEqual(written.tobytes(), media.prepare_keyframe_image(
++                media.load_rgb(source), 1344, 768, stretch=True).tobytes())
++
++    # ---- the refiner's methods, with a stand-in parent -------------------------------------------------------
++    def refiner(self, session, calls):
++        class Upstream:                           # official_compat_h3_refiner_diagnostic.OfficialCompatRefiner
++            def encode_highres_first_frame(self, image_path):
++                calls.append(("encode", image_path, (base.WIDTH, base.HEIGHT)))
++                shape = session.geometry["refiner_input"]
++                return [VideoConditionByLatentIndex(Latent((1, shape[1], 1, shape[3], shape[4]), "image"), 1.0, 0)]
++
++            def prepare_multimodal_states(self, video_latent, audio_latent, conditionings, seed):
++                calls.append(("states", video_latent, audio_latent, conditionings, seed))
++                return "video_state", AudioState(Named("noised"), Named("ones"), Named("clean")), "generator"
++
++            def run_diagnostic(self, record, output_path):  # the parent's order, its calls only
++                calls.append(("record", dict(record)))
++                first_frame = self.first_frame_path(record)
++                video_latent = self.video_encode(None)
++                conditionings = self.encode_highres_first_frame(first_frame)
++                self.prepare_multimodal_states(video_latent, "audio", conditionings, int(record["seed"]))
++                session.prompt_cache.context_calls += 1
++                session.writer_chunk_receipt = {"complete": True}
++                Path(output_path).write_bytes(b"not a real MP4")
++                self.final_mp4_complete_monotonic_ns = time.monotonic_ns()
++                return {"phases_s": {"gemma_multimodal_embedding_s": 0.01, "official_input_video_vae_encode_s": 0.02,
++                                     "highres_first_frame_condition_s": 0.03},
++                        "highres_first_frame": str(first_frame)}
++
++        base = session.base
++        cls = stage2._refiner_class(base, SimpleNamespace(OfficialCompatRefiner=Upstream), session)
++        model = object.__new__(cls)
++        model.image_encoder, model.image_conditioning_crf, model.image_encode_calls = "encoder", 18, 0
++        model.h3_upscaler_calls = model.adapter_convert_calls = 0
++        model.h3_spatial_route, model._h3_upscale_s, model._h3_adapter_s = {"route": "h3"}, 0.1, 0.2
++
++        def video_encode(normalized):
++            model.h3_upscaler_calls += 1
++            model.adapter_convert_calls += 1
++            return Latent(session.geometry["refiner_input"], "adapter")
++        model.video_encode = video_encode
++        model.prepare_steady_state = lambda: None
++        return model
++
++    def session(self, mode, task="fl2va", orientation="landscape", calls=None, offload=False):
++        from runtime import geometry
++        from runtime.config import load_recipe
++        from runtime.stage2_ops.models import bind_geometry
++        value = object.__new__(stage2.Session)
++        value.closed = value.failed = False
++        value.prepared = value.current_capture = value.payload = value.keyframe_request = None
++        value.completed_requests, value.shapes_run, value.steady_state_pending, value.timings = 1, set(), False, {}
++        value.geometry = geometry.from_recipe(load_recipe(task, orientation=orientation))
++        value.stage2_audio, value.stage2_keyframe, value.task = "frozen", mode, task
++        value.fixed_prompt, value.torch, value.cpu_offload = stage2.FIXED_PROMPT, RUN_TORCH, offload
++        value.prompt_cache = SimpleNamespace(context_calls=0, receipt=lambda: {"prompt": "fixed"})
++        value.conv_layout_receipt = {"calls": 0}
++        value.base = SimpleNamespace()
++        bind_geometry(value.base, value.geometry)
++        value.calls = [] if calls is None else calls
++        value.models = self.refiner(value, value.calls)
++        return value
++
++    def capture(self, name, task="fl2va", first=None, last=None, sha256=None):
++        directory = self.temp / name
++        directory.mkdir()
++        payload = directory / "stage1_direct_tensors.pt"
++        payload.write_bytes(b"stand-in tensors")
++        row = {"status": "PASS", "same_request": True, "external_anchor_used": False, "task": task,
++               "latent_only_transfer": True, "h3_decoder_calls": 0, "case_id": name, "request_id": name,
++               "prompt": "a prompt", "seed": 7, "source_index": 0, "payload_sha256": transfer.sha256(payload),
++               "input_spec": {"task": task, "first_frame": first and str(first), "last_frame": last and str(last),
++                              "references": []}}
++        if sha256 is not None:
++            row["input_sha256"] = sha256
++        transfer.write_new(directory / "capture.json", row)
++        return directory
++
++    def run_request(self, session, capture):
++        root = self.temp / f"out-{capture.name}"
++        session.prepare(capture.name, root)
++        with mock.patch.object(stage2, "load_payload", lambda row, **kwargs: {"payload": True}):
++            receipt = session.run(capture, root, capture.name)
++        self.assertEqual(json.loads((root / "stage2_result.json").read_text())["status"], "PASS")
++        self.assertIsNone(session.keyframe_request)                 # one request's state only
++        return receipt, root
++
++    def states_call(self, calls):
++        found = [call for call in calls if call[0] == "states"]
++        self.assertEqual(len(found), 1)                             # upstream's states once: the same random draws
++        return found[0]
++
++    TODAY = {"prompt_id", "prompt", "seed", "source_index", "index", "_source_path"}
++
++    def test_off_is_upstream(self):
++        """SOL_H3_STAGE2_KEYFRAME=off: the record, the conditionings and the receipts' first-frame fields are
++        today's: no keyframe is read, no image encoded, nothing conditioned."""
++        source = keyframe_image(self.temp / "first.png", (300, 400))
++        session = self.session("off")
++        receipt, root = self.run_request(session, self.capture("off", first=source))
++        record = next(call[1] for call in session.calls if call[0] == "record")
++        self.assertEqual(set(record), self.TODAY)
++        self.assertEqual(record["_source_path"], "/dev/null")
++        self.assertNotIn("encode", [call[0] for call in session.calls])
++        self.assertEqual(self.states_call(session.calls)[3], [])
++        self.assertEqual(receipt["stage2_keyframe"], "off")
++        self.assertIsNone(receipt["result"]["highres_first_frame"])
++        self.assertEqual(receipt["result"]["spatial_route"]["actual_calls"]["input_video_vae"], 0)
++        self.assertNotIn("keyframe_stretch_s", receipt["result"]["phases_s"])
++        self.assertEqual(sorted(path.name for path in root.iterdir()),
++                         ["final_file_manifest.json", "refined_1344x768_121f.mp4", "stage2_prepare.json",
++                          "stage2_result.json"])
++
++    def test_t2va_ref2va_and_a_last_frame_alone_are_unchanged_by_pin_and_draft(self):
++        last = keyframe_image(self.temp / "last.png", (300, 400))
++        for mode in ("pin", "draft"):
++            for task, capture in (("t2va", dict(task="t2va")), ("ref2va", dict(task="ref2va")),
++                                  ("fl2va", dict(task="fl2va", last=last))):
++                with self.subTest(mode=mode, task=task, last_only=task == "fl2va"):
++                    session = self.session(mode, task=task)
++                    receipt, root = self.run_request(session, self.capture(f"{mode}-{task}", **capture))
++                    record = next(call[1] for call in session.calls if call[0] == "record")
++                    self.assertEqual(set(record), self.TODAY)
++                    self.assertEqual(self.states_call(session.calls)[3], [])
++                    self.assertNotIn("encode", [call[0] for call in session.calls])
++                    self.assertEqual((receipt["stage2_keyframe"], receipt["stage2_keyframe_setting"]), ("off", mode))
++                    self.assertIsNone(receipt["result"]["highres_first_frame"])
++                    self.assertEqual(receipt["result"]["spatial_route"]["actual_calls"]["input_video_vae"], 0)
++                    self.assertFalse(list(root.glob("keyframe_*")))
++
++    def test_pin_holds_the_stretched_keyframe_at_latent_frame_0(self):
++        from PIL import Image
++        for orientation, canvas in (("landscape", (1344, 768)), ("portrait", (768, 1344))):
++            with self.subTest(orientation=orientation):
++                source = keyframe_image(self.temp / f"first-{orientation}.jpg", (300, 400))
++                session = self.session("pin", orientation=orientation)
++                capture = self.capture(f"pin-{orientation}", first=source,
++                                       sha256={"first_frame": transfer.sha256(source)})
++                receipt, root = self.run_request(session, capture)
++                png = root / f"keyframe_first_{canvas[0]}x{canvas[1]}.png"
++                with Image.open(png) as written:
++                    self.assertEqual(written.tobytes(), h3_stretch(source, *canvas).tobytes())
++                record = next(call[1] for call in session.calls if call[0] == "record")
++                self.assertEqual(set(record), self.TODAY | {"_keyframe_png"})
++                self.assertEqual(record["_keyframe_png"], str(png))
++                encodes = [call for call in session.calls if call[0] == "encode"]
++                self.assertEqual(encodes, [("encode", png, canvas)])     # the parent's encode, at this canvas
++                conditionings = self.states_call(session.calls)[3]
++                self.assertEqual(len(conditionings), 1)
++                pin = conditionings[0]
++                height, width = session.geometry["refiner_input"][3:]
++                self.assertEqual((pin.latent_idx, pin.strength, pin.latent.shape, pin.latent.name),
++                                 (0, 1.0, (1, 128, 1, height, width), "image"))
++                self.assertEqual(session.models.image_encode_calls, 1)
++                first = receipt["result"]["highres_first_frame"]
++                self.assertEqual(first, {"mode": "pin", "latent_index": 0, "strength": 1.0, "tokens": [0, 1008],
++                                         "source": str(source), "source_sha256": transfer.sha256(source),
++                                         "png": str(png), "png_sha256": transfer.sha256(png),
++                                         "canvas": list(canvas), "resize": "LANCZOS stretch, as H3's first keyframe",
++                                         "crf": 18})
++                self.assertEqual((receipt["stage2_keyframe"], receipt["stage2_keyframe_setting"]), ("pin", "pin"))
++                self.assertEqual(receipt["result"]["spatial_route"]["actual_calls"]["input_video_vae"], 1)
++                self.assertGreaterEqual(receipt["result"]["phases_s"]["keyframe_stretch_s"], 0)
++
++    def test_draft_holds_the_drafts_own_frame_0(self):
++        source = keyframe_image(self.temp / "first.png", (300, 400))
++        session = self.session("draft")
++        with mock.patch.dict(sys.modules, LTX_CONDITIONING):
++            receipt, root = self.run_request(session, self.capture("draft", first=source))
++        record = next(call[1] for call in session.calls if call[0] == "record")
++        self.assertEqual(set(record), self.TODAY)                   # no image read: nothing to encode
++        self.assertNotIn("encode", [call[0] for call in session.calls])
++        _, video_latent, _, conditionings, seed = self.states_call(session.calls)
++        self.assertEqual(seed, 7)
++        self.assertEqual(len(conditionings), 1)
++        held = conditionings[0]
++        self.assertEqual((held.latent_idx, held.strength, held.latent.shape, held.latent.name),
++                         (0, 1.0, (1, 128, 1, 24, 42), "adapter[frames 0:1].clone"))
++        self.assertEqual(receipt["stage2_keyframe"], "draft")
++        self.assertEqual(receipt["result"]["highres_first_frame"]["tokens"], [0, 1008])
++        self.assertEqual(receipt["result"]["spatial_route"]["actual_calls"]["input_video_vae"], 0)
++        self.assertFalse(list(root.glob("keyframe_*")))
++
++    def test_a_missing_or_changed_first_frame_fails_the_clip_by_name(self):
++        source = keyframe_image(self.temp / "first.png", (300, 400))
++        session = self.session("pin")
++        capture = self.capture("gone", first=self.temp / "gone.png")
++        session.prepare("gone", self.temp / "out-gone")
++        with mock.patch.object(stage2, "load_payload", lambda row, **kwargs: {}), \
++             self.assertRaisesRegex(FileNotFoundError, "first frame of this fl2va clip is gone.*gone.png"):
++            session.run(capture, self.temp / "out-gone", "gone")
++        failed = json.loads((self.temp / "out-gone" / "stage2_result.json").read_text())
++        self.assertEqual((failed["status"], failed["stage2_keyframe"]), ("FAIL", "pin"))
++        self.assertTrue(session.failed)
++        session = self.session("pin")
++        capture = self.capture("changed", first=source, sha256={"first_frame": "0" * 64})
++        session.prepare("changed", self.temp / "out-changed")
++        with mock.patch.object(stage2, "load_payload", lambda row, **kwargs: {}), \
++             self.assertRaisesRegex(RuntimeError, "first frame changed after Stage 1"):
++            session.run(capture, self.temp / "out-changed", "changed")
++        self.assertNotIn("encode", [call[0] for call in session.calls])
++
++    def test_by_default_only_a_keyframes_clips_first_frame_is_pinned(self):
++        """With the setting unset (the default, pin): an fl2va clip with a first frame is pinned, with or without a
++        last frame; a last frame alone, t2va and ref2va run as upstream (upstream's record, no encode, no
++        conditioning, no keyframe file). Set to off, a first frame is not pinned either."""
++        first = keyframe_image(self.temp / "first.png", (300, 400))
++        last = keyframe_image(self.temp / "last.png", (300, 400))
++        cases = (("fl2va", dict(first=first), None, "pin"), ("fl2va", dict(first=first, last=last), None, "pin"),
++                 ("fl2va", dict(last=last), None, "off"), ("t2va", {}, None, "off"), ("ref2va", {}, None, "off"),
++                 ("fl2va", dict(first=first), "off", "off"))
++        for i, (task, frames, value, applied) in enumerate(cases):
++            with self.subTest(task=task, frames=sorted(frames), setting=value):
++                if value is None:
++                    os.environ.pop("SOL_H3_STAGE2_KEYFRAME", None)
++                else:
++                    os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
++                session = self.session(stage2.stage2_keyframe_mode(), task=task)
++                receipt, root = self.run_request(session, self.capture(f"default-{i}", task=task, **frames))
++                pinned = applied == "pin"
++                self.assertEqual((receipt["stage2_keyframe"], receipt["stage2_keyframe_setting"]),
++                                 (applied, value or "pin"))
++                self.assertEqual(len([call for call in session.calls if call[0] == "encode"]), int(pinned))
++                self.assertEqual(len(self.states_call(session.calls)[3]), int(pinned))
++                self.assertEqual(receipt["result"]["spatial_route"]["actual_calls"]["input_video_vae"], int(pinned))
++                self.assertEqual(len(list(root.glob("keyframe_first_*.png"))), int(pinned))
++                record = next(call[1] for call in session.calls if call[0] == "record")
++                self.assertEqual(set(record), self.TODAY | ({"_keyframe_png"} if pinned else set()))
++                if not pinned:
++                    self.assertIsNone(receipt["result"]["highres_first_frame"])
++
++    def test_the_pin_contract_and_the_call_count_are_checked(self):
++        session = self.session("pin")
++        model = session.models
++        self.assertEqual(model.encode_highres_first_frame(None), [])             # no pin: no conditioning
++        self.assertEqual(model.image_encode_calls, 0)
++        model.image_encoder = None
++        with self.assertRaisesRegex(ValueError, "SOL_H3_STAGE2_KEYFRAME=pin"):
++            model.encode_highres_first_frame(self.temp / "k.png")
++        model.image_encoder = "encoder"
++        for wrong in (dict(latent_idx=1), dict(strength=0.9), dict(shape=(1, 128, 2, 24, 42))):
++            def encode(image_path, wrong=wrong):
++                return [VideoConditionByLatentIndex(Latent(wrong.get("shape", (1, 128, 1, 24, 42))),
++                                                    wrong.get("strength", 1.0), wrong.get("latent_idx", 0))]
++            parent = type(model).__mro__[1]
++            with mock.patch.object(parent, "encode_highres_first_frame", lambda self, path: encode(path)), \
++                 self.assertRaisesRegex(RuntimeError, "keyframe pin contract failed"):
++                model.encode_highres_first_frame(self.temp / "k.png")
++        # a pin whose encode never ran (the parent skipped it) fails the request
++        source = keyframe_image(self.temp / "first.png", (300, 400))
++        session = self.session("pin")
++        session.models.first_frame_path = lambda record: None
++        session.prepare("skipped", self.temp / "out-skipped")
++        with mock.patch.object(stage2, "load_payload", lambda row, **kwargs: {}), \
++             self.assertRaisesRegex(RuntimeError, "and one keyframe encode"):
++            session.run(self.capture("skipped", first=source), self.temp / "out-skipped", "skipped")
++
++    # ---- the encoder and the session receipt ---------------------------------------------------------------
++    def stand_in_modules(self, built):
++        class Encoder:
++            def eval(self):
++                built.append("eval")
++                return self
++            def requires_grad_(self, flag):
++                built.append(("requires_grad", flag))
++                return self
++
++        class ImageConditioner:
++            default_image_crf = 18
++            def __init__(self, checkpoint, dtype, device, registry, alloc_trim_strategy):
++                built.append(("conditioner", checkpoint, dtype, device, registry, alloc_trim_strategy))
++                self._encoder_builder = SimpleNamespace(
++                    build=lambda device, dtype: built.append(("build", device, dtype)) or Encoder())
++        base = SimpleNamespace(ModelRegistry=lambda: "registry", AllocatorTrimStrategy=SimpleNamespace(DEFER="defer"),
++                               _module_residency=lambda name, module: {"name": name, "type": type(module).__name__})
++        return base, SimpleNamespace(ImageConditioner=ImageConditioner)
++
++    def test_the_encoder_is_the_parents(self):
++        from runtime.stage2_ops import models as stage2_models
++        for offload, device, placed in ((False, "cuda:0", {"name": "image_encoder", "type": "Encoder"}),
++                                        (True, "device(cpu)", {"offload": "cpu", "name": "image_encoder"})):
++            with self.subTest(offload=offload):
++                built = []
++                base, compat = self.stand_in_modules(built)
++                models_ = SimpleNamespace(dtype="bf16", device="cuda:0", residency={"transformer": {}})
++                with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
++                        stage2_models, "offload_placement", lambda name, module: {"offload": "cpu", "name": name}):
++                    encoder = stage2.build_image_encoder(models_, {"output_video_vae": Path("/vae.safetensors")},
++                                                         torch=RUN_TORCH, base=base, compat=compat,
++                                                         cpu_offload=offload)
++                    self.assertIs(stage2.build_image_encoder(models_, {}, torch=RUN_TORCH, base=base, compat=compat,
++                                                             cpu_offload=offload), encoder)   # once
++                # the conditioner reads the checkpoint for the GPU's dtype and device; the RTX 5090's offload builds
++                # the encoder itself on the CPU, as the audio encoder and the video decoder
++                self.assertEqual(built, [("conditioner", "/vae.safetensors", "bf16", "cuda:0", "registry", "defer"),
++                                         ("build", device, "bf16"), "eval", ("requires_grad", False)])
++                self.assertEqual(models_.image_conditioning_crf, 18)
++                self.assertEqual(models_.residency["image_encoder"], placed)
++
++    def test_under_cpu_offload_the_encoder_is_on_the_gpu_only_for_the_encode(self):
++        """RTX 5090: the encoder waits on the CPU and goes to the GPU for the one encode of a pinned request, then
++        back, also when the encode fails; the moves are timed apart. Text clips and resident sessions move nothing."""
++        source = keyframe_image(self.temp / "first.png", (300, 400))
++        log = []
++        session = self.session("pin", offload=True)
++        model = session.models
++        model.device, model.image_encoder = "cuda:0", Placed("image_encoder", log)
++        parent = type(model).__mro__[1]
++        encode = parent.encode_highres_first_frame
++
++        def logged(self_, path):
++            log.append(("encode", model.image_encoder.where))
++            return encode(self_, path)
++        with mock.patch.object(parent, "encode_highres_first_frame", logged):
++            receipt, _ = self.run_request(session, self.capture("offload", first=source))
++        self.assertEqual(log, [("image_encoder", "to", "cuda:0"), ("encode", "cuda:0"), ("image_encoder", "cpu")])
++        self.assertGreaterEqual(receipt["result"]["phases_s"]["image_encoder_move_s"], 0)
++        self.assertEqual(receipt["result"]["spatial_route"]["actual_calls"]["input_video_vae"], 1)
++        log.clear()
++
++        def failing(self_, path):
++            log.append(("encode", model.image_encoder.where))
++            raise RuntimeError("encode failed")
++        with mock.patch.object(parent, "encode_highres_first_frame", failing), \
++             self.assertRaisesRegex(RuntimeError, "encode failed"):
++            model.encode_highres_first_frame(self.temp / "first.png")
++        self.assertEqual(log, [("image_encoder", "to", "cuda:0"), ("encode", "cuda:0"), ("image_encoder", "cpu")])
++        log.clear()
++        text = self.session("pin", task="t2va", offload=True)                 # no pin: the encoder is never moved
++        text.models.device, text.models.image_encoder = "cuda:0", Placed("image_encoder", log)
++        receipt, _ = self.run_request(text, self.capture("text", task="t2va"))
++        self.assertEqual((log, receipt["result"]["highres_first_frame"]), ([], None))
++        self.assertNotIn("image_encoder_move_s", receipt["result"]["phases_s"])
++        resident = self.session("pin")                                       # no offload: no moves, no move time
++        resident.models.device, resident.models.image_encoder = "cuda:0", Placed("image_encoder", log)
++        receipt, _ = self.run_request(resident, self.capture("resident", first=source))
++        self.assertEqual([entry[0] for entry in log], [])
++        self.assertNotIn("image_encoder_move_s", receipt["result"]["phases_s"])
++
++    def made_session(self, task):
++        """A Session made by its own __init__, which reads the setting and takes the task from the recipe, with
++        stand-in weight files and no models: the session and the image encoder its refiner asks construct() for."""
++        from runtime.config import load_recipe
++        files = Path(tempfile.mkdtemp(prefix=f"weights-{task}-", dir=self.temp))
++        (files / "adapter").mkdir()
++        paths = {"ltx_root": str(files), "adapter_dir": str(files / "adapter")}
++        for key in stage2.REQUIRED_PATHS:
++            if key != "adapter_dir":
++                (files / key).write_text("stand-in")
++                paths[key] = str(files / key)
++        for name in ("config.json", "model.safetensors"):
++            (files / "adapter" / name).write_text("stand-in")
++        seen = {}
++
++        def construct(session):                   # Session._construct without torch: the refiner's construct() call
++            session.torch, session.dist = RUN_TORCH, None
++            refiner = stage2._refiner_class("base", SimpleNamespace(OfficialCompatRefiner=object), session)
++            with mock.patch.object(stage2, "construct", lambda models_, paths_, **kwargs: seen.update(kwargs)):
++                refiner()
++        os.environ.update(SOL_H3_COMPILE_CACHE=str(self.temp / "cache"), SPARK_AUTOTUNE_CACHE_FIX="0")
++        with mock.patch.object(stage2.Session, "_construct", construct), \
++             mock.patch("runtime.fastload.install", lambda *modules: False):
++            session = stage2.Session(paths, str(files / "work"), load_recipe(task))
++        return session, seen["image_encoder"]
++
++    def test_by_default_keyframes_sessions_build_the_encoder_and_no_other_session_does(self):
++        """With the setting unset or empty (the default, pin), a Session made for fl2va builds the image encoder;
++        t2va and ref2va sessions build none. off and draft build none in fl2va either."""
++        for value, task, mode, wanted in ((None, "fl2va", "pin", True), (None, "t2va", "pin", False),
++                                          (None, "ref2va", "pin", False), ("", "fl2va", "pin", True),
++                                          ("", "t2va", "pin", False), ("Off", "fl2va", "off", False),
++                                          ("draft", "fl2va", "draft", False)):
++            with self.subTest(setting=value, task=task):
++                if value is None:
++                    os.environ.pop("SOL_H3_STAGE2_KEYFRAME", None)
++                else:
++                    os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
++                session, image_encoder = self.made_session(task)
++                self.assertEqual((session.stage2_keyframe, session.task, image_encoder), (mode, task, wanted))
++
++    def test_which_sessions_build_the_encoder_and_what_their_receipt_says(self):
++        built = []
++        for mode, task, wanted in (("pin", "fl2va", True), ("pin", "t2va", False), ("pin", "ref2va", False),
++                                   ("draft", "fl2va", False), ("off", "fl2va", False)):
++            with self.subTest(mode=mode, task=task):
++                session = SimpleNamespace(stage2_keyframe=mode, task=task, paths={}, dist=None, compile_enabled=True,
++                                          geometry=None, torch=RUN_TORCH, cpu_offload=True)
++                session.image_encoder_wanted = stage2.Session.image_encoder_wanted.__get__(session)
++                seen = {}
++                cls = stage2._refiner_class("base", SimpleNamespace(OfficialCompatRefiner=object), session)
++                with mock.patch.object(stage2, "construct", lambda models_, paths, **kwargs: seen.update(kwargs)):
++                    cls()
++                self.assertIs(seen["image_encoder"], wanted)
++                self.assertIs(seen["cpu_offload"], True)                 # built on the CPU under offload (RTX 5090)
++                value = object.__new__(stage2.Session)
++                value.stage2_keyframe, value.task, value.session_receipt = mode, task, {"latent_only_transfer": True}
++                value.models = SimpleNamespace(image_encoder="encoder" if wanted else None,
++                                               image_conditioning_crf=18 if wanted else None)
++                value._keyframe_receipt()
++                self.assertEqual(value.session_receipt, {
++                    "latent_only_transfer": not wanted,       # a pin reads the RGB first frame, too
++                    "stage2_keyframe": {"mode": mode, "task": task, "applies_to": "fl2va requests with a first frame",
++                                        "image_encoder": wanted, "image_conditioning_crf": 18 if wanted else None}})
++        # a session made without the encoder builds it when its mode becomes pin (the replay bench's arms)
++        base, compat = self.stand_in_modules(built)
++        value = object.__new__(stage2.Session)
++        value.stage2_keyframe, value.task, value.session_receipt = "pin", "fl2va", {}
++        value.paths, value.base, value.compat, value.torch = {"output_video_vae": "/vae"}, base, compat, RUN_TORCH
++        value.cpu_offload = False
++        value.models = SimpleNamespace(image_encoder=None, image_conditioning_crf=None, dtype="bf16", device="cuda:0",
++                                       residency={})
++        with contextlib.redirect_stdout(io.StringIO()):
++            encoder = value.ensure_image_encoder()
++            self.assertIs(value.ensure_image_encoder(), encoder)
++        self.assertEqual([item[0] for item in built if isinstance(item, tuple)].count("conditioner"), 1)
++        self.assertTrue(value.session_receipt["stage2_keyframe"]["image_encoder"])
++        self.assertIn("image_encoder", value.models.residency)
++
++
++def ltx_core_importable():
++    """The pinned LTX-2's ltx_core (torch only, no media libraries): installed (the Stage2 env), or from
++    SOL_H3_SPARK_LTX_ROOT, else from LTX-2 next to SOL_H3_SPARK_COMFY_ROOT (the install's sources folder)."""
++    root = os.environ.get("SOL_H3_SPARK_LTX_ROOT")
++    if not root and os.environ.get("SOL_H3_SPARK_COMFY_ROOT"):
++        root = str(Path(os.environ["SOL_H3_SPARK_COMFY_ROOT"]).expanduser().parent / "LTX-2")
++    source = Path(root or "/nonexistent").expanduser() / "packages" / "ltx-core" / "src"
++    if source.is_dir() and str(source) not in sys.path:
++        sys.path.append(str(source))
++    try:
++        import torch  # noqa: F401
++        from ltx_core.conditioning import VideoConditionByLatentIndex  # noqa: F401
++        from ltx_core.types import LatentState
++    except ImportError:
++        return False
++    return "frozen" in {field.name for field in fields(LatentState)}
++
++
++@unittest.skipUnless(ltx_core_importable(), "needs torch and the pinned LTX-2's ltx_core (SOL_H3_SPARK_LTX_ROOT)")
++class KeyframePinLtxTests(unittest.TestCase):
++    """The pin with LTX-2's own conditioning, latent tools, noiser and Euler step on the CPU, at the studio's Stage-2
++    shapes, through the refiner's prepare_multimodal_states. The stand-in parent makes its states as the GB200
++    parent does (official_compat_h3_refiner_diagnostic.prepare_multimodal_states): one generator seeded per request,
++    the video state with the conditionings, then the audio state, each by LTX-2's create_noised_state."""
++
++    SIGMAS = (0.909375, 0.725, 0.421875, 0.0)
++
++    def setUp(self):
++        import torch
++        from ltx_core.components.patchifiers import AudioPatchifier, VideoLatentPatchifier
++        from ltx_core.tools import AudioLatentTools, VideoLatentTools
++        from ltx_core.types import AudioLatentShape, VideoLatentShape, VideoPixelShape, VIDEO_SCALE_FACTORS
++        self.torch = torch
++
++        def tools(frames, height, width):
++            pixel = VideoPixelShape(batch=1, frames=frames, height=height, width=width, fps=24)
++            video = VideoLatentTools(VideoLatentPatchifier(patch_size=1),
++                                     VideoLatentShape.from_pixel_shape(pixel, scale_factors=VIDEO_SCALE_FACTORS), 24.0,
++                                     scale_factors=VIDEO_SCALE_FACTORS)
++            audio = AudioLatentTools(AudioPatchifier(patch_size=1), AudioLatentShape.from_video_pixel_shape(pixel))
++            return video, audio
++        self.tools = tools
++
++    @staticmethod
++    def create_noised_state(tools, conditionings, noiser, dtype, device, noise_scale, initial_latent):
++        try:                                                    # LTX-2's own where ltx_pipelines imports
++            from ltx_pipelines.utils.helpers import create_noised_state
++        except ImportError:                                     # its three steps (helpers.create_noised_state)
++            def create_noised_state(tools, conditionings, noiser, dtype, device, noise_scale, initial_latent):
++                state = tools.create_initial_state(device, dtype, initial_latent)
++                for conditioning in conditionings:
++                    state = conditioning.apply_to(latent_state=state, latent_tools=tools)
++                return noiser(state, noise_scale)
++        return create_noised_state(tools=tools, conditionings=conditionings, noiser=noiser, dtype=dtype,
++                                   device=device, noise_scale=noise_scale, initial_latent=initial_latent)
++
++    def refiner(self, mode, video_tools, audio_tools):
++        torch, test = self.torch, self
++        from ltx_core.components.noisers import GaussianNoiser
++
++        class Upstream:
++            def prepare_multimodal_states(self, video_latent, audio_latent, conditionings, seed):
++                generator = torch.Generator(device="cpu").manual_seed(seed)
++                noiser = GaussianNoiser(generator=generator)
++                video = test.create_noised_state(video_tools, conditionings, noiser, torch.bfloat16, "cpu",
++                                                 test.SIGMAS[0], video_latent)
++                audio = test.create_noised_state(audio_tools, [], noiser, torch.bfloat16, "cpu",
++                                                 test.SIGMAS[0], audio_latent)
++                return video, audio, generator
++        session = SimpleNamespace(torch=torch, stage2_audio="frozen",
++                                  keyframe_request=None if mode == "off" else {"mode": mode})
++        cls = stage2._refiner_class(SimpleNamespace(), SimpleNamespace(OfficialCompatRefiner=Upstream), session)
++        return object.__new__(cls)
++
++    def states(self, frames=121, height=768, width=1344, seed=42):
++        from ltx_core.conditioning import VideoConditionByLatentIndex
++        torch = self.torch
++        video_tools, audio_tools = self.tools(frames, height, width)
++        shape = video_tools.target_shape.to_torch_shape()
++        generator = torch.Generator().manual_seed(5)
++        video_latent = torch.randn(*shape, generator=generator).to(torch.bfloat16)
++        audio_latent = torch.randn(*audio_tools.target_shape.to_torch_shape(), generator=generator).to(torch.bfloat16)
++        image = torch.randn(1, shape[1], 1, shape[3], shape[4], generator=generator).to(torch.bfloat16)
++        pin = [VideoConditionByLatentIndex(latent=image, strength=1.0, latent_idx=0)]   # the parent's encode gives this
++        result = {}
++        for mode, conditionings in (("off", []), ("pin", pin), ("draft", [])):
++            result[mode] = self.refiner(mode, video_tools, audio_tools).prepare_multimodal_states(
++                video_latent, audio_latent, conditionings, seed)
++        return result, video_tools, video_latent, image
++
++    def test_frame_0_is_the_image_and_every_other_token_is_unchanged(self):
++        result, tools, video_latent, image = self.states()
++        torch, per_frame = self.torch, tools.patchifier.get_token_count(tools.target_shape._replace(frames=1))
++        self.assertEqual((per_frame, result["off"][0].latent.shape[1]), (1008, 16128))
++        off, pin, draft = (result[mode][0] for mode in ("off", "pin", "draft"))
++        for state in (pin, draft):
++            self.assertEqual(state.latent.shape, off.latent.shape)          # no token added: the same shapes
++            self.assertEqual(state.denoise_mask.shape, off.denoise_mask.shape)
++            self.assertEqual(state.positions.shape, off.positions.shape)
++            self.assertTrue(torch.equal(state.latent[:, per_frame:], off.latent[:, per_frame:]))   # same noise draws
++            self.assertTrue(torch.equal(state.denoise_mask[:, per_frame:], off.denoise_mask[:, per_frame:]))
++            self.assertTrue(torch.equal(state.positions, off.positions))
++            self.assertEqual(state.denoise_mask[:, :per_frame].unique().tolist(), [0.0])   # never noised
++            self.assertIsNone(state.attention_mask)
++        self.assertEqual(off.denoise_mask.unique().tolist(), [1.0])
++        self.assertTrue(torch.equal(pin.latent[:, :per_frame], tools.patchifier.patchify(image)))
++        self.assertTrue(torch.equal(draft.latent[:, :per_frame],
++                                    tools.patchifier.patchify(video_latent)[:, :per_frame]))
++        for mode in ("pin", "draft"):                       # the audio is the same in every mode (frozen here)
++            self.assertTrue(torch.equal(result[mode][1].latent, result["off"][1].latent))
++            self.assertTrue(result[mode][1].frozen)
++
++    def test_frame_0_stays_clean_through_the_three_updates_and_reaches_the_decoder(self):
++        from ltx_core.components.diffusion_steps import EulerDiffusionStep
++        from dataclasses import replace
++        torch = self.torch
++        result, tools, _, image = self.states(frames=17, height=128, width=192)
++        state = result["pin"][0]
++        sigmas, step = torch.tensor(self.SIGMAS), EulerDiffusionStep()
++        generator = torch.Generator().manual_seed(9)
++        for index in range(3):
++            denoised = torch.randn(state.latent.shape, generator=generator).to(state.latent.dtype)   # any prediction
++            # LTX-2's post_process_latent (helpers.py): the transformer's x0 where the mask is 1, the clean latent
++            # where it is 0
++            denoised = (denoised * state.denoise_mask + state.clean_latent.float() * (1 - state.denoise_mask)
++                        ).to(denoised.dtype)
++            state = replace(state, latent=step.step(state.latent, denoised, sigmas, index))
++        latent = tools.unpatchify(tools.clear_conditioning(state)).latent
++        self.assertEqual(tuple(latent.shape), tuple(tools.target_shape.to_torch_shape()))
++        self.assertTrue(torch.equal(latent[:, :, :1], image))
++
++    def test_the_studios_shapes_keep_their_token_counts(self):
++        from runtime import geometry
++        from runtime.config import load_recipe
++        with mock.patch.dict(os.environ):
++            for name in ("SOL_H3_ORIENTATION", "SOL_H3_SECONDS", "SOL_H3_PROMPT_TOKENS"):
++                os.environ.pop(name, None)
++            for orientation in ("landscape", "portrait"):
++                for seconds in (5, 6, 7, 8, 10, 12, 15):
++                    shape = geometry.from_recipe(load_recipe("fl2va", orientation=orientation, seconds=seconds))
++                    tools, _ = self.tools(shape["output_frames"], shape["output_height"], shape["output_width"])
++                    with self.subTest(orientation=orientation, seconds=seconds):
++                        self.assertEqual(tuple(tools.target_shape.to_torch_shape()), tuple(shape["refiner_input"]))
++                        self.assertEqual(tools.patchifier.get_token_count(tools.target_shape._replace(frames=1)), 1008)
 +
 +
  if __name__ == "__main__":
