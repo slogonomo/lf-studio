@@ -7,7 +7,7 @@
 #   lf-studio --check    run the start-up checks only, then exit (0 = would start)
 #   lf-studio --kill     force-stop leftovers: server, pipeline workers, Qwen containers (no checks)
 #   lf-studio --help
-#   lf-studio generate|wait|status|cancel|fetch|guide|mcp ...
+#   lf-studio generate|wait|status|cancel|fetch|upscale|models|guide|mcp ...
 #                            the client (bin/lf-cli, see docs/API.md) with this env file's settings
 #
 # Settings come from ${LFSTUDIO_ENV:-~/.config/lf-studio/env}: one KEY=VALUE per line, shell quoting,
@@ -35,7 +35,7 @@ case "${1:-}" in
     "") ;;
     --check) MODE="check" ;;
     --kill) MODE="kill" ;;
-    generate|wait|status|cancel|fetch|guide|mcp) MODE="client" ;;
+    generate|wait|status|cancel|fetch|upscale|models|guide|mcp) MODE="client" ;;
     -h|--help) sed -n '2,/^set -uo pipefail/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
 esac

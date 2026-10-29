@@ -150,13 +150,14 @@ class CliTest(unittest.TestCase):
     """One fresh stub studio per test (with studio_env's settings), and a working directory for the client."""
     load_s, clip_s = 1, 0.5
     studio_env = {}
+    models = None                  # LFSTUDIO_MODELS (the stub studio's default: sol-h3 alone, the model choice off)
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-cli-"))
         self.work = self.dir / "work"
         self.work.mkdir()
         self.studio = StubStudio(self.dir / "studio", port=free_port(), load_s=self.load_s, clip_s=self.clip_s,
-                                 preload=False, env=self.studio_env).start()
+                                 preload=False, env=self.studio_env, models=self.models).start()
 
     def tearDown(self):
         self.studio.stop()
@@ -770,6 +771,241 @@ class UpscaleTimes(unittest.TestCase):
                     shown = float(m.group(1)) * (60 if m.group(2) == "min" else 3600)
                     self.assertLessEqual(abs(shown - seconds), 45 if m.group(2) == "min" else 180, (text, seconds))
                     self.assertNotIn("untested", text)                     # 4K has run (16:9, once)
+
+
+def video_size(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                          "-of", "csv=p=0", str(path)], capture_output=True, text=True, check=True).stdout
+    return tuple(int(x) for x in out.strip().split(","))
+
+
+TURBO = "lightx2v-turbo"
+
+
+class Models(CliTest):
+    """The model choice (LFSTUDIO_MODELS=sol-h3,lightx2v-turbo): lf-cli models, generate --model with the model's
+    options, checked against the studio's own table before anything is sent, and LightX2V Turbo's clips in status
+    and as files."""
+    models = "sol-h3,lightx2v-turbo"
+
+    def test_models(self):
+        """lf-cli models: each model, what it makes now, its options, what not yet and why, its time per clip (an
+        estimate until a clip has been measured on the studio); --json is the studio's table."""
+        p = self.ok("models")
+        lines = p.stdout.splitlines()
+        self.assertTrue(lines[0].startswith("sol-h3: Sol-H3 (the default), NVIDIA's Sol two-stage pipeline"), lines)
+        self.assertIn("  makes t2va, fl2va or ref2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 "
+                      "or 15 s, landscape or portrait", lines)
+        for line in ("  makes t2va or fl2va (fl2va keyframes: first or first+last), 5 s, landscape or portrait, "
+                     "resolution 576p or 768p, steps 4",
+                     "  option resolution: 576p (the default; 1024x576, 9:16 576x1024), 768p (1344x768, 9:16 768x1344)",
+                     "  option steps: 4 (the default)",
+                     "  not yet: fl2va keyframes last: LightX2V Turbo needs a first frame for now (a last frame alone: "
+                     "use Sol-H3)",
+                     "  not yet: 6, 7, 8, 10, 12 or 15 s: LightX2V Turbo makes 5 s clips for now"):
+            self.assertIn(line, lines)
+        self.assertTrue(any(x.startswith(f"{TURBO}: LightX2V Turbo (experimental), ") for x in lines), lines)
+        self.assertIn("  time per clip: resolution 576p, steps 4, 5 s: about 3:20 (an estimate until one is measured "
+                      "here); resolution 768p, steps 4, 5 s: about 6:00 (an estimate until one is measured here)",
+                      lines)
+        table = json.loads(self.ok("models", "--json").stdout)
+        self.assertTrue(table["model_choice"])
+        self.assertEqual(table["models"], self.studio.state()["models"])
+        jid = json.loads(self.ok("generate", "--prompt", "x", "--model", TURBO, "--wait", "--json").stdout)["id"]
+        self.assertRegex(self.ok("models").stdout, r"resolution 576p, steps 4, 5 s: about 0:0\d \(measured here\)")
+        self.assertRegex(self.ok("status", jid).stdout, rf"^{jid}  done       t2va, landscape, 5 s, seed \d+, {TURBO} "
+                                                        r"576p 4 steps  done in 0:0\d\n$")
+
+    def test_generate_and_save(self):
+        """--model lightx2v-turbo --resolution 768p: the clip's record has the model and its options, the MP4 is
+        1344x768 and is saved under the studio's name for it (file_name); 9:16 at 576p is 576x1024. --model sol-h3
+        makes a Sol-H3 clip as without it, under its name as before."""
+        p = self.ok("generate", "--prompt", "x", "--model", TURBO, "--resolution", "768p", "--seed", 3, "--wait",
+                    "--json")
+        rec = json.loads(p.stdout)
+        self.assertEqual((rec["state"], rec["model"], rec["model_opts"]["resolution"], rec["model_opts"]["steps"]),
+                         ("done", TURBO, "768p", 4))
+        path = Path(rec["path"])
+        self.assertEqual(path.name, f"lf-studio_{TURBO}-768p_t2va_5s_seed3_{rec['id'][:6]}.mp4")
+        self.assertEqual(path.name, rec["file_name"])
+        self.assertEqual(video_size(path), (1344, 768))
+        self.assertIn(f"(t2va, landscape, 5 s, seed 3, {TURBO} 768p 4 steps), next in line", p.stderr)
+        self.assertRegex(p.stderr, r"done in 0:0\d")
+        self.frame("first.png", 48, 84)                                          # 9:16, from the frame's shape
+        p = self.ok("generate", "--prompt", "x", "--model", TURBO, "--option", "steps=4", "--first-frame",
+                    "first.png", "--out", "clips/", "--json")
+        rec = json.loads(p.stdout)
+        self.assertEqual((rec["task"], rec["orientation"], rec["model_opts"]["resolution"], rec["model_opts"]["size"]),
+                         ("fl2va", "portrait", "576p", [576, 1024]))
+        self.assertEqual(video_size(rec["path"]), (576, 1024))
+        self.assertEqual(Path(rec["path"]).parent, self.work / "clips")
+        rec = json.loads(self.ok("generate", "--prompt", "x", "--model", "sol-h3", "--wait", "--json").stdout)
+        self.assertEqual((rec["state"], rec["model"]), ("done", "sol-h3"))
+        self.assertNotIn("model_opts", rec)
+        self.assertEqual(Path(rec["path"]).name, f"lf-studio_t2va_5s_seed{rec['seed']}_{rec['id'][:6]}.mp4")
+
+    def test_refused_before_anything_is_sent(self):
+        """What the model doesn't make (yet), an option it doesn't have or a value it lacks, a model the studio
+        doesn't have, a core field as an option: exit 2 with the reason, and nothing reaches the studio."""
+        self.frame("last.png", 84, 48)
+        self.frame("face.png")
+        for args, words in [
+                (["--model", TURBO, "--seconds", 6], "LightX2V Turbo makes 5 s clips for now; nothing was submitted"),
+                (["--model", TURBO, "--ref", "face.png"], "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) "
+                                                          "clips for now, not Reference (ref2va): use Sol-H3"),
+                (["--model", TURBO, "--last-frame", "last.png"], "LightX2V Turbo needs a first frame for now"),
+                (["--model", TURBO, "--resolution", "1080p"], "resolution must be 576p or 768p for lightx2v-turbo"),
+                (["--model", TURBO, "--steps", 8], "steps must be 4 for lightx2v-turbo"),
+                (["--model", TURBO, "--option", "foo=1"], "foo is not an option of lightx2v-turbo; it takes "
+                                                          "resolution, steps"),
+                (["--model", TURBO, "--option", "seconds=5"], "--option seconds: seconds is a field of every clip"),
+                (["--model", TURBO, "--option", "resolution"], "--option takes NAME=VALUE"),
+                (["--model", TURBO, "--resolution", "768p", "--option", "resolution=576p"],
+                 "resolution is given twice"),
+                (["--resolution", "576p"], "resolution is not an option of sol-h3; it takes none"),
+                (["--model", "fast"], "this studio has no model fast; it has sol-h3 (Sol-H3), lightx2v-turbo "
+                                      "(LightX2V Turbo) (lf-cli models)"),
+                (["--model", "LightX2V"], "--model must be a model id such as sol-h3 or lightx2v-turbo")]:
+            p = self.sol("generate", "--prompt", "x", *args)
+            self.assertEqual(p.returncode, 2, (args, p.stderr))
+            self.assertIn(words, p.stderr, args)
+        self.assertEqual(self.studio.state()["jobs"], [])
+        p = self.sol("generate", "--prompt", "x", "--model", TURBO, "--seconds", 6, "--json")
+        self.assertEqual(json.loads(p.stdout)["error"], "LightX2V Turbo makes 5 s clips for now; nothing was submitted")
+
+    def test_keyframe_shape_of_the_model(self):
+        """The shape warning names the clip's size at the model's resolution."""
+        self.frame("tall.png", 24, 42)
+        p = self.ok("generate", "--prompt", "x", "--model", TURBO, "--first-frame", "tall.png", "--orientation",
+                    "landscape")
+        self.assertIn("warning: --first-frame is 24x42, but a landscape clip is 1024x576", p.stderr)
+        p = self.ok("generate", "--prompt", "x", "--model", TURBO, "--resolution", "768p", "--first-frame",
+                    "tall.png", "--orientation", "landscape")
+        self.assertIn("warning: --first-frame is 24x42, but a landscape clip is 1344x768", p.stderr)
+
+
+class ModelsRunning(CliTest):
+    """A LightX2V Turbo clip while it runs: status follows its steps, cancel says how it stops."""
+    models = "sol-h3,lightx2v-turbo"
+    studio_env = {"STUB_H3TURBO_S": "30"}
+
+    def test_status_and_cancel(self):
+        jid = self.ok("generate", "--prompt", "x", "--model", TURBO).stdout.strip()
+        seen, deadline = set(), time.time() + 60
+        while time.time() < deadline and not any(s.startswith("generating: step") for s in seen):
+            line = self.ok("status", jid).stdout
+            self.assertRegex(line, rf"^{jid}  running    t2va, landscape, 5 s, seed \d+, {TURBO} 576p 4 steps  ")
+            seen.add(line.split("4 steps  ", 1)[1].split(",")[0].strip())
+            time.sleep(0.2)
+        self.assertIn("generating: step 1/4", seen)
+        self.assertLessEqual(seen - {"closing the sol-h3 models first", "encoding the prompt",
+                                     f"loading {TURBO}", "generating: step 1/4", "generating: step 2/4"}, set(), seen)
+        p = self.ok("cancel", jid)
+        self.assertEqual(p.stdout.strip(), f"cancelling {jid} ({TURBO}): its job stops within about 20 s")
+        p = self.sol("wait", jid)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn(f"clip {jid} was cancelled", p.stderr)
+
+
+class ModelsOff(CliTest):
+    """A studio with the model choice off (as by default): one model, Sol-H3; another model or an option is refused
+    before anything is sent; --model sol-h3 makes the clip as without it."""
+
+    def test_off(self):
+        p = self.ok("models")
+        self.assertEqual(p.stdout, "This studio has no model choice: every clip is Sol-H3 (sol-h3), NVIDIA's two-stage "
+                                   "pipeline (its LFSTUDIO_MODELS lists sol-h3 alone, or it is an older version).\n")
+        self.assertEqual(json.loads(self.ok("models", "--json").stdout), {"model_choice": False, "models": []})
+        for args, what in ((["--model", TURBO], f"a {TURBO} clip"), (["--resolution", "576p"], "a clip with options"),
+                           (["--model", "sol-h3", "--steps", 4], "a clip with options")):
+            p = self.sol("generate", "--prompt", "x", *args)
+            self.assertEqual(p.returncode, 2, p.stderr)
+            self.assertIn("this studio has no model choice: it makes Sol-H3 (sol-h3) clips only, without options (its "
+                          f"LFSTUDIO_MODELS lists sol-h3 alone, or it is an older version), so it can't make {what}; "
+                          "leave out --model and the options", p.stderr)
+        self.assertEqual(self.studio.state()["jobs"], [])
+        rec = json.loads(self.ok("generate", "--prompt", "x", "--model", "sol-h3", "--wait", "--json").stdout)
+        self.assertEqual(rec["state"], "done")
+        self.assertNotIn("model", rec)                                   # the records as before the model choice
+        envfile = self.dir / "env"                                       # bin/lf-studio models runs the client
+        envfile.write_text(f"LFSTUDIO_HOST=127.0.0.1\nLFSTUDIO_PORT={self.studio.port}\n")
+        p = subprocess.run(["bash", str(REPO / "bin" / "lf-studio"), "models"], capture_output=True, text=True,
+                           timeout=30, cwd=self.work, env=client_env(LFSTUDIO_ENV=str(envfile)))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(p.stdout.startswith("This studio has no model choice"), p.stdout)
+
+
+class ModelsOldStudio(unittest.TestCase):
+    """An older studio (no "models" in /api/state; its form ignores fields it doesn't know) and one that
+    spark-switchboard has stopped (/api/state is passive: it can't be asked first): never a silent Sol-H3 clip."""
+    JID = "0123456789abcdef0123456789abcdef"
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-cli-"))
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def fake(self, answer):
+        fake = Fake(answer)
+        self.addCleanup(fake.stop)
+        return fake
+
+    def sol(self, fake, *args):
+        return subprocess.run([sys.executable, str(BIN), *map(str, args)], capture_output=True, text=True,
+                              timeout=60, cwd=self.dir, env=client_env(fake.url))
+
+    def test_an_older_studio(self):
+        def answer(method, path, headers, body):
+            if path == "/api/state":
+                return 200, JSON, {"now": 1, "jobs": [], "session": {}, "upscale": False}
+            return 500, JSON, {"error": "not expected"}
+        fake = self.fake(answer)
+        p = self.sol(fake, "generate", "--prompt", "x", "--model", TURBO)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn(f"this studio has no model choice: it makes Sol-H3 (sol-h3) clips only", p.stderr)
+        self.assertEqual([(m, p) for m, p, _, _ in fake.requests], [("GET", "/api/state")])
+        self.assertEqual(fake.requests[0][2]["X-Switchboard-Wait"], "0")            # not held while it starts
+        p = self.sol(fake, "models")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("This studio has no model choice", p.stdout)
+        p = self.sol(fake, "generate", "--prompt", "x")                             # no model: no look first
+        self.assertEqual(p.returncode, 3)
+        self.assertEqual(fake.requests[-1][:2], ("POST", "/api/generate"))
+        self.assertEqual([p for _, p, _, _ in fake.requests].count("/api/state"), 2)
+
+    def test_stopped_by_switchboard(self):
+        """switchboard has the studio stopped: the submit starts it, and an answer without the model (an older
+        studio, or the model choice off) is cancelled at once (exit 2); one with it goes on as usual."""
+        has_model = []
+
+        def answer(method, path, headers, body):
+            if path == "/api/state":
+                return switchboard_error("stopped", "LF Studio is not running")
+            if path == "/api/generate":
+                job = {"id": self.JID, "state": "queued", "ahead": 0, "task": "t2va", "orientation": "landscape",
+                       "seconds": 5, "seed": 1}
+                if has_model:
+                    job.update(model=TURBO, model_opts={"resolution": "768p", "steps": 4})
+                return 200, JSON, {"id": self.JID, "job": job}
+            if path == "/api/cancel":
+                return 200, JSON, {"ok": True, "job": {"id": self.JID, "status": "cancelled"}}
+            return 500, JSON, {"error": "not expected"}
+        fake = self.fake(answer)
+        p = self.sol(fake, "generate", "--prompt", "x", "--model", TURBO, "--resolution", "768p", "--json")
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn(f"so it can't make a {TURBO} clip", p.stderr)
+        self.assertIn(f"spark-switchboard had the studio stopped, so its models could not be read before the submit; "
+                      f"the clip it queued instead ({self.JID}, a Sol-H3 clip) is cancelled", p.stderr)
+        self.assertEqual(json.loads(p.stdout)["id"], self.JID)
+        self.assertEqual([(m, p) for m, p, _, _ in fake.requests],
+                         [("GET", "/api/state"), ("POST", "/api/generate"), ("POST", "/api/cancel")])
+        form = fake.requests[1][3]
+        self.assertIn(b'name="model"\r\n\r\nlightx2v-turbo\r\n', form)
+        self.assertIn(b'name="resolution"\r\n\r\n768p\r\n', form)
+        self.assertEqual(json.loads(fake.requests[2][3]), {"id": self.JID})
+        has_model.append(True)
+        p = self.sol(fake, "generate", "--prompt", "x", "--model", TURBO, "--resolution", "768p")
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, self.JID), p.stderr)
+        self.assertEqual(fake.requests[-1][:2], ("POST", "/api/generate"))
 
 
 class Guide(unittest.TestCase):
