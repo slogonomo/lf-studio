@@ -21,9 +21,9 @@ PHASES = {"upscale_s": "h3_latent_upscale_s", "adapter_s": "h3_ltx_adapter_s", "
           "decode_s": "official_video_vae_decode_s", "mux_s": "h264_encode_mux_s", "verify_s": "output_verify_s"}
 CSV_FIELDS = ["group", "draft", "arm", "repeat", "request_index", "first_in_process", "status", "stage2_s", "wall_s",
               *PHASES, "other_s", "step_s", "peak_alloc_gib", "peak_reserved_gib", "min_memavail_gib", "output_size",
-              "sigmas", "steps", "tiles", "relaxed_checks", "stage2_audio", "patch_sha256", "stage2_code_sha256",
-              "output", "output_sha256", "video_md5", "audio_md5", "same_as_baseline", "same_as_studio", "started",
-              "error"]
+              "sigmas", "steps", "tiles", "relaxed_checks", "stage2_audio", "stage2_keyframe", "patch_sha256",
+              "stage2_code_sha256", "output", "output_sha256", "video_md5", "audio_md5", "same_as_baseline",
+              "same_as_studio", "started", "error"]
 
 
 def load_rows(out):
@@ -87,6 +87,9 @@ def studio_verdict(row, studio, studio_hash, row_hash):
         return ""
     if row.get("stage2_audio") != studio.get("stage2_audio"):
         return f"n/a: Stage-2 audio {row.get('stage2_audio')} here, {studio.get('stage2_audio')} in the studio"
+    here, there = row.get("stage2_keyframe") or "off", studio.get("stage2_keyframe") or "off"
+    if here != there:
+        return f"n/a: keyframe {here} here, {there} in the studio"
     if not warm(row) or not studio.get("warm"):
         return ("n/a: first run in this process" if not warm(row) else
                 "n/a: the studio clip was the first in its process")
@@ -191,7 +194,8 @@ def summarize(out, plan, rows, facts):
                  f"compile cache: {(plan.get('compile_cache') or {}).get('note', 'not recorded')}.")
     if procs:
         lines.append("Processes: " + "; ".join(f"{p['group']} loaded in {p['load_s']} s ({p['stage2_audio']} audio, "
-                                                f"torch {p.get('torch')})" for p in procs) + ".")
+                                                f"keyframe {p.get('stage2_keyframe', 'off')}, torch {p.get('torch')})"
+                                                for p in procs) + ".")
     lows = memguard_lows(out)
     if lows:
         lines.append("Memory guard: " + "; ".join(f"{k} exit {v['exit']}, lowest MemAvailable {v['min_gib']} GiB"

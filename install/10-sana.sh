@@ -240,8 +240,8 @@ if [[ -x "$ENVS/stage1/bin/python" ]]; then
             -m unittest discover -s tests) || die "CPU tests failed"
     fi
 else
-    tests=135
-    [[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && tests=201
+    tests=156
+    [[ "$LFSTUDIO_BACKEND" == rtx5090 ]] && tests=223
     say "no Stage1 env yet ($ENVS/stage1); run this script again after 40-stage1.sh to run the $tests CPU tests"
 fi
 say "done. Next: install/20-weights.sh"

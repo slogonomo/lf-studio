@@ -128,11 +128,32 @@ def stage2_paths(paths_template, task):
     return str(manifest), resolved
 
 
-def build(drafts, arm_specs, *, package, geometry, paths_template, out, label="", stop_at=None, info=None):
-    """The plan: one group per (format, length, canvas), each with its run list."""
-    keys, groups = [], {}
+def keyframe_split(keyframe_arms, keyframe_setting):
+    """How build() splits one format's drafts by task. A process loads Stage 2 for its first draft's task, and Stage 2
+    pins a first frame only in an fl2va session (runtime/stage2.py keyframe_mode_for), so a process mixing tasks
+    would pin its fl2va drafts or not depending on which draft comes first. "task": one process per task (a keyframe
+    arm sets the mode itself). "fl2va": fl2va drafts apart from the others, unless keyframe_setting (the bench's
+    SOL_H3_STAGE2_KEYFRAME, None = unset) is off; unset counts too: the patch's default is pin since 0.5.2. None:
+    tasks mix as before #57."""
+    if keyframe_arms:
+        return "task"
+    return None if (keyframe_setting or "").strip().lower() == "off" else "fl2va"
+
+
+def build(drafts, arm_specs, *, package, geometry, paths_template, out, label="", stop_at=None, info=None,
+          keyframe_setting=None):
+    """The plan: one group per (format, length, canvas), each with its run list, and fl2va drafts in groups of their
+    own unless keyframe_setting is off, or one group per task with a keyframe arm (keyframe_split)."""
+    keys, groups, split = [], {}, None
+    if drafts:
+        native, sigmas = native_geometry(package, geometry, drafts[0]["orientation"], drafts[0]["seconds"])
+        split = keyframe_split(any(armlib.settings(n, sigmas, native)["keyframe"] is not None for n, _ in arm_specs),
+                               keyframe_setting)
+
+    def task_key(d):
+        return d["task"] if split == "task" else "fl2va" if split == "fl2va" and d["task"] == "fl2va" else None
     for d in drafts:
-        fmt = (d["orientation"], d["seconds"])
+        fmt = (d["orientation"], d["seconds"], task_key(d))
         if fmt not in keys:
             keys.append(fmt)
     canvases = []
@@ -144,8 +165,9 @@ def build(drafts, arm_specs, *, package, geometry, paths_template, out, label=""
     order = 0
     for canvas in canvases:
         group_arms = [(n, k) for n, k in arm_specs if armlib.ARMS[n].canvas == canvas]
-        for orientation, seconds in keys:
-            members = [d for d in drafts if (d["orientation"], d["seconds"]) == (orientation, seconds)]
+        for orientation, seconds, task in keys:
+            members = [d for d in drafts
+                       if (d["orientation"], d["seconds"], task_key(d)) == (orientation, seconds, task)]
             native, recipe_sigmas = native_geometry(package, geometry, orientation, seconds)
             for d in members:
                 if list(native["h3"]) != list(d["h3_shape"]):
@@ -163,6 +185,7 @@ def build(drafts, arm_specs, *, package, geometry, paths_template, out, label=""
             geo = armlib.canvas_geometry(native, canvas)
             order += 1
             gid = f"{order}-{orientation}-{seconds}s-{geo['output_width']}x{geo['output_height']}"
+            gid += f"-{task}" if task else ""
             arm_settings = {n: armlib.settings(n, recipe_sigmas, native) for n, _ in group_arms}
             runs = []
 
@@ -187,7 +210,8 @@ def build(drafts, arm_specs, *, package, geometry, paths_template, out, label=""
                            "arms": arm_settings, "drafts": [d["name"] for d in members], "runs": runs,
                            "est_s": round(est)}
     return {"schema": 1, "label": label, "out": str(out), "package": str(package), "stop_at": stop_at,
-            "package_info": info or {}, "drafts": {d["name"]: d for d in drafts},
+            "package_info": info or {}, "keyframe_setting": keyframe_setting, "task_split": split,
+            "drafts": {d["name"]: d for d in drafts},
             "arm_specs": [list(a) for a in arm_specs], "groups": list(groups.values()),
             "est_s": sum(g["est_s"] for g in groups.values())}
 
@@ -207,6 +231,13 @@ def describe(plan):
                      + (f", same as this checkout's patches/lf-studio.patch: "
                         f"{'yes' if pi.get('patch_same_as_repo') else 'no'}" if patch else "")
                      + f"; Stage-2 code {pi.get('stage2_code_sha256', '')[:12]} ({pi.get('stage2_code_files')} files)")
+    split, setting = plan.get("task_split"), plan.get("keyframe_setting")
+    if split:
+        value = setting if setting is not None else "(unset)"
+        lines.append("keyframe: " + ("a keyframe arm, so one process per task" if split == "task" else
+                                     f"SOL_H3_STAGE2_KEYFRAME={value}, so fl2va drafts run in processes of their own "
+                                     "(=off lets tasks share one)")
+                     + "; Stage 2 pins a first frame only in an fl2va session")
     lines.append(f"drafts ({len(plan['drafts'])}):")
     from .drafts import describe as describe_draft
     for d in plan["drafts"].values():
