@@ -3097,14 +3097,10 @@ TURBO, BOTH = "lightx2v-turbo", "sol-h3,lightx2v-turbo"
 LORA4 = "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors"
 NOT_REF2VA = ("LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use "
               "Sol-H3")
-NOT_15S = "LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not 15 s: use Sol-H3"
-# the lengths it makes per size (15 s and 768p 12 s wait for a GPU run), and what a clip outside them gets
-TURBO_SECONDS = {"576p": [5, 6, 7, 8, 10, 12], "768p": [5, 6, 7, 8, 10]}
-NOT_TOGETHER = ("LightX2V Turbo does not make clips with task t2va, seconds 12, orientation landscape, resolution "
-                "768p, steps 4 together yet")
 # the registry's estimates (the job's estimate_s, to 10 s): its eta_s until a clip has been measured
 TURBO_ETA = {"576p/4/5": 200, "576p/4/6": 250, "576p/4/7": 280, "576p/4/8": 310, "576p/4/10": 400, "576p/4/12": 500,
-             "768p/4/5": 350, "768p/4/6": 470, "768p/4/7": 530, "768p/4/8": 600, "768p/4/10": 820}
+             "576p/4/15": 660, "768p/4/5": 350, "768p/4/6": 470, "768p/4/7": 530, "768p/4/8": 600, "768p/4/10": 820,
+             "768p/4/12": 1070, "768p/4/15": 1440}
 REPO_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -3190,6 +3186,24 @@ class ServerParts(unittest.TestCase):
                          ["turbo: option resolution's default '1080p' is not one of its choices"])
         self.assertEqual(problems(steps, other=(dict(steps, type="string", default="4", choices=({"value": "4"},)),)),
                          ["other: option steps is of type string, another model's of type integer"])
+
+    def test_model_refusal_of_values_made_apart(self):
+        """A table of two rows (LightX2V Turbo's before its 15 s and 768p 12 s ran on the GPU: 576p up to 12 s, 768p up
+        to 10 s, 15 s not yet): a value no row has gets its reason, values each made in another row that they are not
+        made together, and a clip one row has in full is offered."""
+        row = {"task": ("t2va", "fl2va"), "orientation": ("landscape", "portrait"), "steps": (4,)}
+        models = {"turbo": {"name": "LightX2V Turbo", "offers": (
+            dict(row, seconds=(5, 6, 7, 8, 10, 12), resolution=("576p",)),
+            dict(row, seconds=(5, 6, 7, 8, 10), resolution=("768p",))),
+            "not_yet": ({"seconds": (15,), "why": "not 15 s"},)}}
+        offered = server_function("offered", MODELS=models)
+        refusal = server_function("model_refusal", MODELS=models, offered=offered)
+        clip = lambda seconds, resolution: dict(task="t2va", seconds=seconds, orientation="landscape",  # noqa: E731
+                                                resolution=resolution, steps=4)
+        self.assertEqual([refusal("turbo", clip(s, r)) for s, r in ((12, "576p"), (10, "768p"), (15, "576p"),
+                                                                     (12, "768p"))],
+                         [None, None, "not 15 s", "LightX2V Turbo does not make clips with task t2va, seconds 12, "
+                                                  "orientation landscape, resolution 768p, steps 4 together yet"])
 
 
 def release_client(ref, directory):
@@ -3449,7 +3463,7 @@ class TurboRegistry(TurboTest):
         self.assertEqual(offered(turbo["capabilities"]), {
             "task": {"t2va": True, "fl2va": True, "ref2va": NOT_REF2VA},
             "frames": {"first": True, "last": True, "first+last": True},
-            "seconds": {5: True, 6: True, 7: True, 8: True, 10: True, 12: True, 15: NOT_15S},
+            "seconds": {s: True for s in (5, 6, 7, 8, 10, 12, 15)},
             "orientation": {"landscape": True, "portrait": True}})
         self.assertEqual(turbo["options"], [
             {"name": "resolution", "label": "Size", "type": "string", "default": "576p",
@@ -3460,9 +3474,8 @@ class TurboRegistry(TurboTest):
             {"name": "steps", "label": "Steps", "type": "integer", "default": 4,
              "choices": [{"value": 4, "offered": True}]}])
         self.assertEqual(turbo["combinations"], [
-            {"task": ["t2va", "fl2va"], "frames": ["first", "last", "first+last"], "seconds": seconds,
-             "orientation": ["landscape", "portrait"], "resolution": [resolution], "steps": [4]}
-            for resolution, seconds in TURBO_SECONDS.items()])
+            {"task": ["t2va", "fl2va"], "frames": ["first", "last", "first+last"], "seconds": [5, 6, 7, 8, 10, 12, 15],
+             "orientation": ["landscape", "portrait"], "resolution": ["576p", "768p"], "steps": [4]}])
         self.assertEqual(turbo["eta_s"], {key: {"s": s, "measured": False} for key, s in TURBO_ETA.items()})
         self.assertIsNone(st["session"]["model"])
         page = self.studio.get("/")[2].decode()
@@ -3562,12 +3575,14 @@ class TurboRun(TurboTest):
 
     def test_a_last_frame_alone_and_the_lengths(self):
         """A last frame alone at 6 s: its job keeps every frame it makes (158), so the clip ends on the frame the last
-        keyframe is anchored to; a 12 s t2va clip keeps the studio's 289 of the 294 made. Each length's time is
-        remembered under its own key."""
+        keyframe is anchored to; a 12 s t2va clip keeps the studio's 289 of the 294 made, a 15 s one 361 of the 362
+        made (its job raises diffusers' 15.0 s for it), also at 768p. Each length's time is remembered under its own
+        key."""
         last = self.done(self.turbo(task="fl2va", seconds=6, files={"last_frame": [("b.png", png())]}))
         t2va = self.done(self.turbo(seconds=12, seed=2))
-        for job, frames in ((last, 158), (t2va, 289)):
-            self.assertEqual((job["status"], Path(job["output"]).name), ("done", f"clip_1024x576_{frames}f.mp4"))
+        long = self.done(self.turbo(seconds=15, resolution="768p", seed=3))
+        for job, size, frames in ((last, "1024x576", 158), (t2va, "1024x576", 289), (long, "1344x768", 361)):
+            self.assertEqual((job["status"], Path(job["output"]).name), ("done", f"clip_{size}_{frames}f.mp4"))
             self.assertEqual(probe(job["output"])["video"]["nb_frames"], str(frames))
         data = json.loads((Path(last["output"]).parent / "job.json").read_text())
         self.assertEqual((data["task"], data["seconds"], data["first_frame"]), ("fl2va", 6, None))
@@ -3577,8 +3592,8 @@ class TurboRun(TurboTest):
         self.assertEqual(encode["argv"][encode["argv"].index("--last") + 1], last["last_frame"])
         self.assertNotIn("--first", encode["argv"])
         times = json.loads((self.studio.state_dir / "load-times.json").read_text())
-        self.assertEqual((times[f"job/{TURBO}/576p/4/6"], times[f"job/{TURBO}/576p/4/12"]),
-                         (last["e2e_s"], t2va["e2e_s"]))
+        self.assertEqual((times[f"job/{TURBO}/576p/4/6"], times[f"job/{TURBO}/576p/4/12"],
+                          times[f"job/{TURBO}/768p/4/15"]), (last["e2e_s"], t2va["e2e_s"], long["e2e_s"]))
 
     def test_fl2va_first_and_last_portrait_768p(self):
         prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second "
@@ -3711,9 +3726,6 @@ class TurboRefusals(TurboTest):
              {"model": TURBO, "ref_images": [{"name": "r.png", "data": b64()}]}, NOT_REF2VA),
             ({"model": TURBO, "seconds": "9"}, None, {"model": TURBO, "seconds": 9},
              "duration must be 5, 6, 7, 8, 10, 12 or 15 seconds"),
-            ({"model": TURBO, "seconds": "15"}, None, {"model": TURBO, "seconds": 15}, NOT_15S),
-            ({"model": TURBO, "seconds": "12", "resolution": "768p"}, None,
-             {"model": TURBO, "seconds": 12, "resolution": "768p"}, NOT_TOGETHER),
             ({"model": TURBO, "resolution": "1080p"}, None, {"model": TURBO, "resolution": "1080p"},
              "resolution must be 576p or 768p for lightx2v-turbo"),
             ({"model": TURBO, "steps": "8"}, None, {"model": TURBO, "steps": 8}, "steps must be 4 for lightx2v-turbo"),
@@ -4031,8 +4043,15 @@ class TurboMemory(TurboTest):
 
     def test_floor_per_size_and_length(self):
         """The setting is a minimum: a clip needs at least what its job's min_free_for says one of its size and length
-        takes (90 GiB at 576p 5 s, 100 at 768p 10 s), so a lower setting does not lower that; at or above it, the
-        setting is the floor."""
+        takes (90 GiB at 576p 5 s, 100 at 768p 10 s; above the default 100, 103 at 768p 12 s and 107 at 768p 15 s), so
+        a lower setting does not lower that; at or above it, the setting is the floor."""
+        for seconds, available, needed in ((15, 105, 107), (12, 102, 103)):
+            self.studio.set_memory(available)
+            job = self.studio.wait([self.turbo(resolution="768p", seconds=seconds, seed=seconds)], timeout=30)[0]
+            self.assertEqual((job["status"], job["error"]), ("failed", (
+                f"ModelJobFailed: not enough free memory for a LightX2V Turbo clip: {available:.1f} GiB available "
+                f"with the models closed, {needed} GiB needed (what a 768p {seconds} s clip needs, more than "
+                "LFSTUDIO_H3TURBO_MIN_FREE_GIB=100); close other apps")))
         self.restart(LFSTUDIO_H3TURBO_MIN_FREE_GIB="80")
         self.studio.set_memory(85)
         job = self.studio.wait([self.turbo()], timeout=30)[0]

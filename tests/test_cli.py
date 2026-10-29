@@ -796,28 +796,29 @@ class Models(CliTest):
         self.assertTrue(lines[0].startswith("sol-h3: Sol-H3 (the default), NVIDIA's Sol two-stage pipeline"), lines)
         self.assertIn("  makes t2va, fl2va or ref2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 "
                       "or 15 s, landscape or portrait", lines)
-        for line in ("  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10 or 12 s, "
-                     "landscape or portrait, resolution 576p, steps 4",
-                     "  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8 or 10 s, "
-                     "landscape or portrait, resolution 768p, steps 4",
+        for line in ("  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 or 15 s, "
+                     "landscape or portrait, resolution 576p or 768p, steps 4",
                      "  option resolution: 576p (the default; 1024x576, 9:16 576x1024), 768p (1344x768, 9:16 768x1344)",
                      "  option steps: 4 (the default)",
                      "  not yet: ref2va: LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not "
                      "Reference (ref2va): use Sol-H3",
-                     "  not yet: 15 s: LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not 15 s: use "
-                     "Sol-H3",
                      "  time per clip, resolution 576p, steps 4: 5 s about 3:20, 6 s about 4:10, 7 s about 4:40, 8 s "
-                     "about 5:10, 10 s about 6:40, 12 s about 8:20 (estimates until one is measured here)",
+                     "about 5:10, 10 s about 6:40, 12 s about 8:20, 15 s about 11:00 (estimates until one is measured "
+                     "here)",
                      "  time per clip, resolution 768p, steps 4: 5 s about 5:50, 6 s about 7:50, 7 s about 8:50, 8 s "
-                     "about 10:00, 10 s about 13:40 (estimates until one is measured here)"):
+                     "about 10:00, 10 s about 13:40, 12 s about 17:50, 15 s about 24:00 (estimates until one is "
+                     "measured here)"):
             self.assertIn(line, lines)
         self.assertTrue(any(x.startswith(f"{TURBO}: LightX2V Turbo (experimental), ") for x in lines), lines)
+        self.assertEqual([x for x in lines if x.startswith("  not yet: ")],
+                         ["  not yet: ref2va: LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, "
+                          "not Reference (ref2va): use Sol-H3"])
         table = json.loads(self.ok("models", "--json").stdout)
         self.assertTrue(table["model_choice"])
         self.assertEqual(table["models"], self.studio.state()["models"])
         jid = json.loads(self.ok("generate", "--prompt", "x", "--model", TURBO, "--wait", "--json").stdout)["id"]
         self.assertRegex(self.ok("models").stdout, r"  time per clip, resolution 576p, steps 4: 5 s about 0:0\d "
-                                                   r"\(measured here\), 6 s about 4:10, .*, 12 s about 8:20 "
+                                                   r"\(measured here\), 6 s about 4:10, .*, 15 s about 11:00 "
                                                    r"\(estimates where not measured here\)\n")
         self.assertRegex(self.ok("status", jid).stdout, rf"^{jid}  done       t2va, landscape, 5 s, seed \d+, {TURBO} "
                                                         r"576p 4 steps  done in 0:0\d\n$")
@@ -853,7 +854,7 @@ class Models(CliTest):
     def test_refused_before_anything_is_sent(self):
         """What the model doesn't make (yet), an option it doesn't have or a value it lacks, a model the studio
         doesn't have, a core field as an option: exit 2 with the reason, and nothing reaches the studio. What it makes
-        since its GPU validation (6 s, a last frame alone) is taken."""
+        since its GPU validation (6 s, a last frame alone) and its GPU runs of 15 s and 768p 12 s is taken."""
         self.frame("last.png", 84, 48)
         self.frame("face.png")
         for args, words in [
@@ -861,11 +862,6 @@ class Models(CliTest):
                                                           "clips for now, not Reference (ref2va): use Sol-H3"),
                 (["--model", TURBO, "--resolution", "1080p"], "resolution must be 576p or 768p for lightx2v-turbo"),
                 (["--model", TURBO, "--steps", 8], "steps must be 4 for lightx2v-turbo"),
-                (["--model", TURBO, "--seconds", 15], "LightX2V Turbo makes clips of up to 12 s for now (10 s at "
-                                                      "768p), not 15 s: use Sol-H3"),
-                (["--model", TURBO, "--resolution", "768p", "--seconds", 12],
-                 "LightX2V Turbo does not make clips with task t2va, seconds 12, orientation landscape, resolution "
-                 "768p, steps 4 together yet"),
                 (["--model", TURBO, "--option", "foo=1"], "foo is not an option of lightx2v-turbo; it takes "
                                                           "resolution, steps"),
                 (["--model", TURBO, "--option", "seconds=5"], "--option seconds: seconds is a field of every clip"),
@@ -887,6 +883,36 @@ class Models(CliTest):
         rec = json.loads(self.ok("generate", "--prompt", "x", "--model", TURBO, "--seconds", 6, "--last-frame",
                                  "last.png", "--wait", "--json").stdout)    # what the GPU validation cleared
         self.assertEqual((rec["state"], rec["task"], rec["seconds"], rec["model"]), ("done", "fl2va", 6, TURBO))
+        for seconds in (12, 15):
+            rec = json.loads(self.ok("generate", "--prompt", "x", "--model", TURBO, "--resolution", "768p",
+                                     "--seconds", seconds, "--wait", "--json").stdout)
+            self.assertEqual((rec["state"], rec["seconds"], rec["model_opts"]["resolution"]), ("done", seconds, "768p"))
+
+    def test_values_made_apart(self):
+        """A studio whose table has values only in different rows (LightX2V Turbo's before its 15 s and 768p 12 s ran
+        on the GPU: 576p up to 12 s, 768p up to 10 s; a fake studio serves it): a clip no row has in full is refused
+        before anything is sent, one a row has is sent."""
+        state = self.studio.state()
+        turbo = next(m for m in state["models"] if m["id"] == TURBO)
+        row = turbo["combinations"][0]
+        turbo["combinations"] = [dict(row, seconds=[5, 6, 7, 8, 10, 12], resolution=["576p"]),
+                                 dict(row, seconds=[5, 6, 7, 8, 10], resolution=["768p"])]
+
+        def answer(method, path, headers, body):
+            if path == "/api/state":
+                return 200, JSON, state
+            return 500, JSON, {"error": "not expected"}
+        fake = Fake(answer)
+        self.addCleanup(fake.stop)
+        p = self.sol("generate", "--prompt", "x", "--model", TURBO, "--resolution", "768p", "--seconds", 12,
+                     url=fake.url)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("LightX2V Turbo does not make clips with task t2va, seconds 12, orientation landscape, "
+                      "resolution 768p, steps 4 together yet", p.stderr)
+        self.assertEqual(fake.paths(), ["/api/state"])
+        p = self.sol("generate", "--prompt", "x", "--model", TURBO, "--resolution", "576p", "--seconds", 12,
+                     url=fake.url)
+        self.assertEqual(fake.paths()[-1], "/api/generate", p.stderr)
 
     def test_keyframe_shape_of_the_model(self):
         """The shape warning names the clip's size at the model's resolution."""

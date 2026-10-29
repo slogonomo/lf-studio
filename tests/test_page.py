@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
-from test_server import (BOTH, NOT_15S, NOT_REF2VA, TURBO, finished_job, history, mp4, png,  # noqa: E402
+from test_server import (BOTH, NOT_REF2VA, TURBO, finished_job, history, mp4, png,  # noqa: E402
                          release_server)
 
 try:
@@ -495,7 +495,7 @@ class UiTestScript(unittest.TestCase):
         default, is picked in a new browser)."""
         out = self.run_ui_test("1", models=BOTH)
         for check in (f"PASS fields unchanged after model -> {TURBO}", "PASS fields unchanged after model -> sol-h3",
-                      f"PASS model {TURBO}: what it doesn't make yet is greyed out with the reason (2)",  # ref2va, 15 s
+                      f"PASS model {TURBO}: what it doesn't make yet is greyed out with the reason (1)",   # Reference
                       "PASS a disabled Upscale button says why (2 disabled)",     # its clip and the fl2va one
                       "PASS clips of another model show it in a tag (1: ['LightX2V Turbo 576p'])",
                       "PASS Generate keeps the models when the format differs"):
@@ -1809,6 +1809,28 @@ def not_yet_table():
     return table
 
 
+# what LightX2V Turbo did not make before its GPU runs of 15 s and 768p 12 s (apart_table)
+NOT_15S = "LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not 15 s: use Sol-H3"
+
+
+def apart_table():
+    """The models' table with LightX2V Turbo as it was before 15 s and 768p 12 s ran on the GPU: 15 s not yet, with its
+    reason, and two rows, 576p up to 12 s and 768p up to 10 s, so 12 s and 768p are each made, but not together; no
+    times for what it did not make. The page must grey out a size at a length (and a length at a size) made apart
+    only: the tests put this table into /api/state."""
+    table = copy.deepcopy(models_table())
+    turbo = next(m for m in table if m["id"] == TURBO)
+    for c in turbo["capabilities"]["seconds"]:
+        if c["value"] == 15:
+            c.update(offered=False, why=NOT_15S)
+    row = turbo["combinations"][0]
+    turbo["combinations"] = [dict(row, seconds=[5, 6, 7, 8, 10, 12], resolution=["576p"]),
+                             dict(row, seconds=[5, 6, 7, 8, 10], resolution=["768p"])]
+    turbo["eta_s"] = {k: v for k, v in turbo["eta_s"].items()
+                      if k not in ("576p/4/15", "768p/4/12", "768p/4/15")}
+    return table
+
+
 class ModelPage(PageTest):
     """For the page tests of the model choice: LightX2V Turbo on (LFSTUDIO_MODELS=sol-h3,lightx2v-turbo), with
     tests/stub/h3turbo_job.py and tests/stub/h3turbo_encode.py standing in for its job and prompt encode."""
@@ -1880,7 +1902,7 @@ class ModelRow(ModelPage):
         before = self.fields()
         self.model(TURBO)
         self.assertEqual(self.fields(), before)
-        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA, "seconds=15": NOT_15S})   # not before a GPU run
+        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA})             # Reference is all it lacks
         self.assertFalse(self.page.is_disabled("#go"))
         self.assertIsNone(self.page.get_attribute("#go", "title"))
         self.assertEqual((self.text("#go"), self.text("#err")), ("Generate · LightX2V Turbo · ~6:40 min est.", ""))
@@ -1894,18 +1916,15 @@ class ModelRow(ModelPage):
                                                  "Sol-H3 models first if they are loaded.")
         self.assertEqual(self.text(".brand p"), "LightX2V Turbo (experimental) · 576×1024 video with sound, on one "
                                                 "DGX Spark")
-        # every length it makes has its estimate, per size; 12 s is 576p's alone (768p greyed, with no time), and
-        # 15 s neither's: picked anyway, Generate says why
-        self.pick("seconds", "5")
-        self.assertEqual(self.sizes(), ["576p 576×1024 · ~3:20 min", "768p 768×1344 · ~5:50 min"])
-        self.pick("seconds", "12")
-        self.assertEqual(self.sizes(), ["576p 576×1024 · ~8:20 min", "768p 768×1344"])
-        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA, "seconds=15": NOT_15S, "resolution=768p": (
-            "LightX2V Turbo does not make clips with task fl2va, seconds 12, orientation portrait, resolution 768p, "
-            "steps 4 together yet")})
-        self.page.click('input[name="seconds"][value="15"] + label', force=True)
-        self.assertEqual((self.checked("seconds"), self.text("#err"), self.page.is_disabled("#go")),
-                         ("15", NOT_15S, True))
+        # every length has its estimate, per size, and nothing more is greyed at any of them
+        for seconds, s576, s768 in (("5", "3:20", "5:50"), ("12", "8:20", "17:50"), ("15", "11:00", "24:00")):
+            self.pick("seconds", seconds)
+            self.assertEqual(self.sizes(), [f"576p 576×1024 · ~{s576} min", f"768p 768×1344 · ~{s768} min"])
+            self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA})
+        self.size("768p")
+        self.assertEqual((self.text("#go"), self.text("#err"), self.page.is_disabled("#go")),
+                         ("Generate · LightX2V Turbo · ~24:00 min est.", "", False))
+        self.size("576p")
         self.pick("seconds", "5")
         self.assertEqual((self.text("#go"), self.text("#lenout")),
                          ("Generate · LightX2V Turbo · ~3:20 min est.", "~3:20 min per clip, estimated"))
@@ -2032,6 +2051,40 @@ class ModelRow(ModelPage):
         self.assertEqual(self.page.eval_on_selector_all("#mseg label", "els => els.map(e => e.innerText.split(/\\s+/)"
                                                                        ".join(' '))"),
                          ["Sol-H3 ~2:05 min", "LightX2V Turbo experimental"])       # no LightX2V Turbo time at 10 s
+
+    def test_a_size_and_length_made_apart(self):
+        """A model's table whose rows make 12 s at 576p only and 768p up to 10 s only, and 15 s not yet (LightX2V
+        Turbo's before those ran on the GPU, put into /api/state: apart_table): at 12 s, 768p is greyed with the reason
+        and has no time; picked anyway, Generate says why; at 10 s it runs; 15 s is greyed with its reason."""
+        table = apart_table()
+
+        def with_table(route):
+            response = route.fetch()
+            route.fulfill(response=response, json=dict(response.json(), models=table))
+
+        self.page.route("**/api/state", with_table)
+        self.page.wait_for_function("MODELS.some(m => (m.combinations || []).length === 2)")    # the table put in
+        self.pick("task", "fl2va")
+        self.pick("orientation", "portrait")
+        self.model(TURBO)
+        apart = ("LightX2V Turbo does not make clips with task fl2va, seconds 12, orientation portrait, resolution "
+                 "768p, steps 4 together yet")
+        self.pick("seconds", "5")
+        self.assertEqual(self.sizes(), ["576p 576×1024 · ~3:20 min", "768p 768×1344 · ~5:50 min"])
+        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA, "seconds=15": NOT_15S})
+        self.pick("seconds", "12")
+        self.assertEqual(self.sizes(), ["576p 576×1024 · ~8:20 min", "768p 768×1344"])
+        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA, "seconds=15": NOT_15S, "resolution=768p": apart})
+        self.assertEqual((self.text("#err"), self.page.is_disabled("#go")), ("", False))
+        self.page.click(f'label[for="mo-{TURBO}-resolution-768p"]', force=True)
+        self.assertEqual((self.checked(f"opt:{TURBO}:resolution"), self.text("#err"), self.page.is_disabled("#go")),
+                         ("768p", apart, True))
+        self.pick("seconds", "10")
+        self.assertEqual((self.text("#go"), self.text("#err"), self.page.is_disabled("#go")),
+                         ("Generate · LightX2V Turbo · ~13:40 min est.", "", False))
+        self.page.click('input[name="seconds"][value="15"] + label', force=True)
+        self.assertEqual((self.checked("seconds"), self.text("#err"), self.page.is_disabled("#go")),
+                         ("15", NOT_15S, True))
 
     def test_generate_sends_the_model_and_its_options(self):
         self.model(TURBO)
