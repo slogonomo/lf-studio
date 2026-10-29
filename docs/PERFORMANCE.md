@@ -480,19 +480,23 @@ upscaler, the adapter and the refiner, the Sol backend check, the writer's frame
 `--dry` prints the exact list per arm.
 
 Arms are runtime patches in the bench, not hooks in the patch. That keeps the studio's runtime free of bench-only
-code, and the bench works with any installed 0.3 or later patch without reinstalling. The keyframe arms are the
-exception: they set the patch's own keyframe mode on the session, so they need a patch with `SOL_H3_STAGE2_KEYFRAME`
-(checked before loading). With a keyframe arm, runs are also grouped by task, one process each: Stage 2 pins only
-in an fl2va session, as in the studio. `keyframe_pin` builds the image encoder once in an fl2va process started without
-`SOL_H3_STAGE2_KEYFRAME=pin` and keeps it; start the run with that setting to have it loaded as in a studio session.
-`add` copies an fl2va clip's first and last frame with its draft and points the copy's `capture.json` at them, so a
-pin still finds them once the studio's trash is emptied (a draft added before this names the studio's own
-file). Such patches could break
+code, and the bench works with any installed 0.3 or later patch without reinstalling. Such patches could break
 silently when the package changes, so the bench checks three times. Before loading: its worker settings against
 the studio's (`runtime/pipeline.py`), and that the runtime modules still have the functions it replaces and the
 recipe's sigmas. Right after loading (Stage 2 loads in ~17 s): that the refiner has every attribute and method an
 arm changes. After each run: that the receipt and the refiner show the arm's settings (see "Arm took effect").
 A deeper change, such as an FP8 Stage 2, may need a hook in the patch.
+
+The keyframe arms are the exception: they set the patch's own keyframe mode on the session, so they need a patch with
+`SOL_H3_STAGE2_KEYFRAME` (checked before loading). Stage 2 pins only in an fl2va session, as in the studio, and a
+process loads Stage 2 for its first draft's task. So with a keyframe arm, runs are grouped by task, one process each.
+Without one, the bench's own `SOL_H3_STAGE2_KEYFRAME` applies to every run, and fl2va drafts get processes of their own
+unless it is `off` (also when it is unset, since the default may become `pin`); `--dry` says so. Otherwise whether an
+fl2va draft is pinned would depend on which draft its process starts with. `keyframe_pin` builds the image encoder once
+in an fl2va process started without `SOL_H3_STAGE2_KEYFRAME=pin` and keeps it; start the run with that setting to have
+it loaded as in a studio session. `add` copies an fl2va clip's first and last frame with its draft and points the copy's
+`capture.json` at them, so a pin still finds them once the studio's trash is emptied (a draft added before this names
+the studio's own file).
 
 ### Reference numbers
 

@@ -22,9 +22,8 @@ PHASES = {"upscale_s": "h3_latent_upscale_s", "adapter_s": "h3_ltx_adapter_s", "
 CSV_FIELDS = ["group", "draft", "arm", "repeat", "request_index", "first_in_process", "status", "stage2_s", "wall_s",
               *PHASES, "other_s", "step_s", "peak_alloc_gib", "peak_reserved_gib", "min_memavail_gib", "output_size",
               "sigmas", "steps", "tiles", "relaxed_checks", "stage2_audio", "stage2_keyframe", "patch_sha256",
-              "stage2_code_sha256",
-              "output", "output_sha256", "video_md5", "audio_md5", "same_as_baseline", "same_as_studio", "started",
-              "error"]
+              "stage2_code_sha256", "output", "output_sha256", "video_md5", "audio_md5", "same_as_baseline",
+              "same_as_studio", "started", "error"]
 
 
 def load_rows(out):

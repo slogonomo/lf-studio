@@ -317,8 +317,8 @@ class PlanTests(Fixture):
         self.add("tall", orientation="portrait")
         p = self.build(["a5", "b5", "c10", "tall"], "baseline:2,steps2_from_0725:1,canvas480_steps2:1")
         ids = [g["id"] for g in p["groups"]]
-        self.assertEqual(ids, ["1-landscape-5s-1344x768", "2-landscape-10s-1344x768", "3-portrait-5s-768x1344",
-                               "4-landscape-5s-832x480", "5-landscape-10s-832x480", "6-portrait-5s-480x832"])
+        self.assertEqual(ids, ["1-landscape-5s-1344x768", "2-landscape-10s-1344x768-fl2va", "3-portrait-5s-768x1344",
+                               "4-landscape-5s-832x480", "5-landscape-10s-832x480-fl2va", "6-portrait-5s-480x832"])
         g1 = p["groups"][0]
         self.assertEqual(g1["drafts"], ["a5", "b5"])
         self.assertEqual(g1["tasks"], ["t2va", "ref2va"])
@@ -342,24 +342,51 @@ class PlanTests(Fixture):
 
     def test_keyframe_arms_run_each_task_in_its_own_process(self):
         """Stage 2 pins a first frame only in an fl2va session, and a process loads Stage 2 for its first draft's task:
-        with a keyframe arm the drafts of one format are grouped by task too; without one, as before."""
+        with a keyframe arm the drafts of one format are grouped by task too, whatever the setting."""
         self.add("a5", task="t2va")
         self.add("b5", task="fl2va")
         self.add("c5", task="ref2va")
-        p = self.build(["a5", "b5", "c5"], "baseline:1,keyframe_pin:1")
-        self.assertEqual([(g["id"], g["task"], g["drafts"]) for g in p["groups"]],
-                         [("1-landscape-5s-1344x768-t2va", "t2va", ["a5"]),
-                          ("2-landscape-5s-1344x768-fl2va", "fl2va", ["b5"]),
-                          ("3-landscape-5s-1344x768-ref2va", "ref2va", ["c5"])])
-        self.assertEqual([g["id"] for g in self.build(["a5", "b5", "c5"], "baseline:1")["groups"]],
-                         ["1-landscape-5s-1344x768"])
+        for setting in (None, "off", "pin"):
+            p = self.build(["a5", "b5", "c5"], "baseline:1,keyframe_pin:1", keyframe_setting=setting)
+            self.assertEqual([(g["id"], g["task"], g["drafts"]) for g in p["groups"]],
+                             [("1-landscape-5s-1344x768-t2va", "t2va", ["a5"]),
+                              ("2-landscape-5s-1344x768-fl2va", "fl2va", ["b5"]),
+                              ("3-landscape-5s-1344x768-ref2va", "ref2va", ["c5"])], setting)
+            self.assertIn("a keyframe arm, so one process per task", plan.describe(p))
+
+    def test_the_keyframe_setting_keeps_fl2va_drafts_apart(self):
+        """Without a keyframe arm, the bench's SOL_H3_STAGE2_KEYFRAME applies to every run (cli.group_env passes it
+        on): with pin, draft or none set (the patch's default may be pin), fl2va drafts get processes of their own,
+        so whether one is pinned doesn't depend on which draft comes first; with off, tasks share a process as before.
+        """
+        self.add("a5", task="t2va")
+        self.add("b5", task="fl2va")
+        self.add("c5", task="ref2va")
+        for setting in ("pin", " Draft ", None, ""):
+            p = self.build(["a5", "b5", "c5"], "baseline:1", keyframe_setting=setting)
+            self.assertEqual([(g["id"], g["task"], g["drafts"]) for g in p["groups"]],
+                             [("1-landscape-5s-1344x768", "t2va", ["a5", "c5"]),
+                              ("2-landscape-5s-1344x768-fl2va", "fl2va", ["b5"])], setting)
+            p = self.build(["b5", "a5"], "baseline:1", keyframe_setting=setting)      # the fl2va draft first
+            self.assertEqual([(g["id"], g["task"], g["drafts"]) for g in p["groups"]],
+                             [("1-landscape-5s-1344x768-fl2va", "fl2va", ["b5"]),
+                              ("2-landscape-5s-1344x768", "t2va", ["a5"])], setting)
+        self.assertIn("SOL_H3_STAGE2_KEYFRAME=pin, so fl2va drafts run in processes of their own",
+                      plan.describe(self.build(["a5", "b5"], "baseline:1", keyframe_setting="pin")))
+        self.assertIn("SOL_H3_STAGE2_KEYFRAME=(unset), so fl2va drafts",
+                      plan.describe(self.build(["a5", "b5"], "baseline:1")))
+        for setting in ("off", " OFF "):
+            p = self.build(["a5", "b5", "c5"], "baseline:1", keyframe_setting=setting)
+            self.assertEqual([(g["id"], g["tasks"]) for g in p["groups"]],
+                             [("1-landscape-5s-1344x768", ["t2va", "fl2va", "ref2va"])], setting)
+            self.assertNotIn("keyframe:", plan.describe(p))
 
     def test_manifests_must_agree_on_stage2(self):
         self.add("a5", task="t2va")
-        self.add("b5", task="fl2va")
-        values = json.loads((self.tmp / "paths-fl2va.json").read_text())
+        self.add("b5", task="ref2va")
+        values = json.loads((self.tmp / "paths-ref2va.json").read_text())
         values["transformer"] = "/models/other"
-        (self.tmp / "paths-fl2va.json").write_text(json.dumps(values))
+        (self.tmp / "paths-ref2va.json").write_text(json.dumps(values))
         with self.assertRaises(ValueError):
             self.build(["a5", "b5"], "baseline")
 
@@ -382,10 +409,11 @@ class PlanTests(Fixture):
 class ScriptTests(Fixture):
     """bench/replay.sh itself: settings from the env file, the memory check, --dry writes nothing."""
 
-    def script(self, *args, extra=None):
+    def script(self, *args, extra=None, env_lines=""):
         env_file = self.tmp / "env"
         env_file.write_text(f'LFSTUDIO_HOME="{self.tmp}"\nLFSTUDIO_SANA="{self.sana}"\n'
-                            f'LFSTUDIO_PATHS="{self.paths_template}"\nSOL_H3_SPARK_RUNTIME_ROOT="{self.rt}"\n')
+                            f'LFSTUDIO_PATHS="{self.paths_template}"\nSOL_H3_SPARK_RUNTIME_ROOT="{self.rt}"\n'
+                            + env_lines)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_", "SOL_H3_"))}
         env.update(LFSTUDIO_ENV=str(env_file), **(extra or {}))
         return subprocess.run(["bash", str(REPO / "bench" / "replay.sh"), *args], capture_output=True, text=True,
@@ -408,6 +436,24 @@ class ScriptTests(Fixture):
         r = self.script("run", "--dry", "--arms", "nope")
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown arm", r.stderr)
+
+    def test_dry_takes_the_keyframe_setting_from_the_env_file(self):
+        """The plan sees the SOL_H3_STAGE2_KEYFRAME its Stage-2 processes get (the env file, through install/env.sh)."""
+        make_case(self.rt, self.geometry, "web_1")
+        make_case(self.rt, self.geometry, "web_2", task="fl2va")
+        for name in ("t5", "f5"):
+            case = "web_1" if name == "t5" else "web_2"
+            task = "t2va" if name == "t5" else "fl2va"
+            r = self.script("add", name, str(self.rt / "outputs" / "webui" / f"session-{task}-landscape-5s" / case))
+            self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.script("run", "--dry", "--arms", "baseline:1", env_lines="SOL_H3_STAGE2_KEYFRAME=pin\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("SOL_H3_STAGE2_KEYFRAME=pin, so fl2va drafts run in processes of their own", r.stdout)
+        self.assertIn("process 1/2 [1-landscape-5s-1344x768-fl2va]", r.stdout)
+        self.assertIn("process 2/2 [2-landscape-5s-1344x768]", r.stdout)
+        r = self.script("run", "--dry", "--arms", "baseline:1", env_lines="SOL_H3_STAGE2_KEYFRAME=off\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("process 1/1 [1-landscape-5s-1344x768]", r.stdout)
 
     def test_run_checks_free_memory_first(self):
         make_case(self.rt, self.geometry, "web_1")
