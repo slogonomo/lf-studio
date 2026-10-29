@@ -5,10 +5,11 @@
 branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
 
 - Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 154 CPU tests pass.
-- Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
-  69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
-  The patch of 0.5.1 also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
-  are unchanged too. The current patch changes the same files (not checked on those two commits).
+- Also checked on `sol-engine` `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
+  69 CPU tests passed with the patch of that date. The files the patch touches are byte-identical at `670482d` and at
+  `62da34b` (2026-10-11) (compared by tree), so it applies there as at the base. `sol-engine` `6e4a440` (2026-10-28)
+  changes `runtime/stage2.py` (its own `prepare_multimodal_states`, which holds the audio frozen), and neither this
+  patch nor 0.5.1's applies there.
 - 19 of the 20 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by lf-studio` comment at its first change. Other changed lines are
@@ -703,8 +704,10 @@ and identity are unchanged, and the image is 5-11% sharper.
   the encoder is loaded as in a studio session. To pass: frame 0 at least 28 dB against the stretched input and face
   SSIM at least 0.8; frames 1-16 hold the identity at least as well as the draft, with no jump from frame 0 to 1 and
   nobody drawn into frame 0; Stage 2 at most 1 s slower and the lowest MemAvailable at most 1 GiB lower; no new
-  compiles; t2va and ref2va bit-identical to `off`. Then a few clips through a test studio. If all of it holds, `pin`
-  becomes the default.
+  compiles; t2va and ref2va bit-identical to `off`. Then clips through a test studio, with `pin` and with `off`
+  (16:9, 9:16, 10 s, 15 s 9:16, first and last frame), where memory counts most: Stage 1 and the resident prompt
+  encoder are loaded too. To pass there: the lowest MemAvailable within 1 GiB of `off`, and the resident encoder still
+  loading during the first 10 s clip (item 4). If all of it holds, `pin` becomes the default.
 - **Deviation.** With `pin`, Stage 2 reads the keyframe image, which Sol-H3-Spark's route does not (see the table).
 
 ### 20. Tests
@@ -757,7 +760,9 @@ Settings: `PipelineReshapeTests` clears the 8 settings it reads (`SOL_H3_RESIDEN
 `SOL_H3_STATIC_SHAPES`, `SOL_H3_DYNAMIC_TEXT_LENGTH`, `SOL_H3_ORIENTATION`, `SOL_H3_SECONDS`), and `QwenReshapeTests`
 clears `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS`. `UserSettingsTests` runs both classes again with a user's own value
 of each of the 8. `tests/test_pipeline.py` clears the three `SOL_H3_RESIDENT_QWEN_*` settings in its tests of where
-the resident encoder starts. Other tests still read `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS`, so
+the resident encoder starts. In `tests/test_stage2_contract.py`, `Stage2KeyframeTests` clears `SOL_H3_STAGE2_KEYFRAME`,
+`SOL_H3_ORIENTATION`, `SOL_H3_SECONDS` and `SOL_H3_PROMPT_TOKENS`, and `KeyframePinLtxTests` clears the last three in
+its test of the studio's shapes. Other tests still read `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS`, so
 `install/10-sana.sh` runs the suite without the settings file's switches. 154 tests in total (upstream: 65).
 
 ## All switches
