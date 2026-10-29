@@ -436,6 +436,35 @@ class StudioModelTests(unittest.TestCase):
               "576p 14 s first frame": ("576p", 14, 61163, 116.77, 27.41, 112.0, 134.4, 605.8, None),
               "768p 10 s first frame": ("768p", 10, 75079, 116.67, 24.47, 153.6, 173.7, 812.5, None)}
 
+    # the later GPU runs past the validation's sequences (2026-10-29: t2va, one each, on a staging studio's own
+    # conditioning of 156 rows; 768p 15 s started lower, with other CPU work on the machine): the same fields
+    LATER = {"576p 15 s t2va": ("576p", 15, 62994, 115.84, 27.33, 117.41, 139.7, 631.9, None),
+             "768p 12 s t2va": ("768p", 12, 88832, 116.74, 22.47, 199.21, 215.7, 1035.7, None),
+             "768p 15 s t2va": ("768p", 15, 109218, 112.04, 14.40, 284.11, 263.1, 1425.0, None)}
+
+    def test_the_later_runs(self):
+        """Past the 75.1k rows the model was fitted on (63.0k-109.2k): the lowest MemAvailable within USE_SPREAD_GIB of
+        the line, a step within 1.5 % of its curve, the registry's estimate within 10 % of the run (here 2 %), and from
+        the clip's floor (min_free_for at the default 100: 100, 103 and 107 GiB) the use measured, taken to the floor's
+        rows, stays above the job's stop plus the spread, and so above the studio's guard (GUARD_GIB)."""
+        use0, per_k = job_module.USE_GIB
+        a, b = job_module.STEP_S
+        for arm, (resolution, seconds, rows, start, low, step, decode, wall, encode) in self.LATER.items():
+            with self.subTest(arm):
+                self.assertEqual(job_module.sequence_rows(resolution, seconds, 0, 156), rows)
+                self.assertLessEqual(abs((start - low) - (use0 + per_k * rows / 1000)), job_module.USE_SPREAD_GIB)
+                n = rows / 1000
+                self.assertLess(abs(step / (a * n + b * n * n) - 1), 0.015)
+                took = wall + job_module.ENCODE_S + job_module.POSTER_S
+                self.assertLess(abs(job_module.estimate_s(resolution, seconds, 4) / took - 1), 0.02)
+                floor = job_module.min_free_for(resolution, seconds, job_module.MIN_FREE_GIB)
+                floor_rows = job_module.sequence_rows(resolution, seconds, *job_module.FLOOR_ROWS)
+                at_floor = (start - low) + per_k * (floor_rows - rows) / 1000
+                self.assertGreaterEqual(floor - at_floor, job_module.ABORT_BELOW_GIB + job_module.USE_SPREAD_GIB)
+                self.assertGreater(floor - at_floor, job_module.GUARD_GIB)
+        self.assertEqual({(r, s): job_module.min_free_for(r, s, 100) for r, s, *_ in self.LATER.values()},
+                         {("576p", 15): 100, ("768p", 12): 103, ("768p", 15): 107})
+
     def test_the_model_fits_the_receipts(self):
         use0, per_k = job_module.USE_GIB
         a, b = job_module.STEP_S

@@ -105,8 +105,9 @@ frames; fl2va a first frame, first and last, or a last frame alone. qwen_canvas 
 "canvas" the generation canvas (576 tokens at 576p, 1008 at 768p); the conditioning must match it.
 
 The studio's model of a clip (the GPU validation's receipts on one DGX Spark, 2026-10-28/29: 15 clips, 576p at 5,
-10 and 14 s, 768p at 5 and 10 s, 4 steps; the rest estimated from them): MemAvailable at its lowest is the start minus
-(USE_GIB[0] + USE_GIB[1] per 1000 rows of the packed sequence, layout_rows), within USE_SPREAD_GIB of every clip;
+10 and 14 s, 768p at 5 and 10 s, 4 steps; the rest estimated from them, and three t2va clips run on 2026-10-29 past
+them, 576p 15 s and 768p 12 and 15 s, within it): MemAvailable at its lowest is the start minus (USE_GIB[0] +
+USE_GIB[1] per 1000 rows of the packed sequence, layout_rows), within USE_SPREAD_GIB of every clip;
 min_free_for is the floor a clip of a size and length needs to start: the setting's, or more where that would not keep
 the job above its abort_below_gib (long 768p clips at the default 100; every clip with a setting below 90: the
 setting is a minimum, and only 0 turns the check off). A step takes STEP_S[0] N + STEP_S[1] N^2 seconds (N: rows /
@@ -197,10 +198,12 @@ MIN_FREE_GIB = 100
 GUARD_GIB = 5
 # the studio's model of a clip on a DGX Spark (the docstring; the GPU validation's receipts): the MemAvailable a clip
 # takes at its lowest, start - (77.8 + 0.186 per 1000 rows), within 1.6 GiB of every one of the 15 clips (21.7k-75.1k
-# rows); a step, 0.848 N + 0.016 N^2 seconds (N = rows / 1000; within 1 s, 21.7k-75.1k rows); the decode, 0.67 s per
-# frame and megapixel (0.64-0.69); the rest of the process (imports, load, LoRA, saving), 23 s (21.8-26.4); the prompt
-# encode, 12 s (9-18 s); 2 s for the poster and the record (an allowance). The floor's rows: two keyframes and 1000
-# conditioning rows (the validation's: 156-1441); the estimate's: one keyframe and 500.
+# rows) and of the three run past them (63.0k-109.2k rows: 576p 15 s, 768p 12 and 15 s, 0.05-1.0 GiB under it); a
+# step, 0.848 N + 0.016 N^2 seconds (N = rows / 1000; within 1 s, 21.7k-75.1k rows; within 1.2 % at 63.0k-109.2k);
+# the decode, 0.67 s per frame and megapixel (0.64-0.69; 0.70-0.71 at 768p 12 and 15 s); the rest of the process
+# (imports, load, LoRA, saving), 23 s (21.8-26.4); the prompt encode, 12 s (9-18 s); 2 s for the poster and the record
+# (an allowance). The floor's rows: two keyframes and 1000 conditioning rows (the validation's: 156-1441); the
+# estimate's: one keyframe and 500.
 USE_GIB = (77.8, 0.186)
 USE_SPREAD_GIB = 1.6
 STEP_S = (0.848, 0.016)
@@ -375,7 +378,8 @@ def min_free_for(resolution, seconds, floor):
 
 def estimate_s(resolution, seconds, steps):
     """Seconds a clip takes in the studio, from its prompt encode to its poster (the server's e2e_s), by the model of
-    the docstring: an estimate (the GPU validation measured 576p at 5, 10 and 14 s and 768p at 5 and 10 s)."""
+    the docstring: an estimate (the GPU validation measured 576p at 5, 10 and 14 s and 768p at 5 and 10 s; the runs
+    past it 576p 15 s and 768p 12 and 15 s, within 2 %)."""
     n = sequence_rows(resolution, seconds, *ESTIMATE_ROWS) / 1000
     width, height = CANVAS[(resolution, "landscape")]
     decode = DECODE_S * frames_for_seconds(seconds) * width * height / 1e6

@@ -664,12 +664,12 @@ class Models(McpTest):
         self.assertTrue(lines[0].startswith("sol-h3: Sol-H3 (the default), "), lines)
         self.assertIn("  not yet: ref2va: LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not "
                       "Reference (ref2va): use Sol-H3", lines)
-        self.assertIn("  not yet: 15 s: LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not 15 s: use "
-                      "Sol-H3", lines)
-        self.assertIn("  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8 or 10 s, "
-                      "landscape or portrait, resolution 768p, steps 4", lines)
+        self.assertNotIn("  not yet: 15 s", "\n".join(lines))
+        self.assertIn("  makes t2va or fl2va (fl2va keyframes: first, last or first+last), 5, 6, 7, 8, 10, 12 or 15 s, "
+                      "landscape or portrait, resolution 576p or 768p, steps 4", lines)
         self.assertIn("  time per clip, resolution 576p, steps 4: 5 s about 3:20, 6 s about 4:10, 7 s about 4:40, 8 s "
-                      "about 5:10, 10 s about 6:40, 12 s about 8:20 (estimates until one is measured here)", lines)
+                      "about 5:10, 10 s about 6:40, 12 s about 8:20, 15 s about 11:00 (estimates until one is measured "
+                      "here)", lines)
         self.assertIn("  option resolution: 576p (the default; 1024x576, 9:16 576x1024), 768p (1344x768, 9:16 "
                       "768x1344)", lines)
 
@@ -722,11 +722,6 @@ class Models(McpTest):
                  "Sol-H3. Nothing was submitted."),
                 ({"model": TURBO, "resolution": "4k"}, "resolution must be 576p or 768p for lightx2v-turbo"),
                 ({"model": TURBO, "options": {"steps": "8"}}, "steps must be 4 for lightx2v-turbo"),
-                ({"model": TURBO, "seconds": 15}, "LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), "
-                                                  "not 15 s: use Sol-H3. Nothing was submitted."),
-                ({"model": TURBO, "resolution": "768p", "seconds": 12},
-                 "LightX2V Turbo does not make clips with task t2va, seconds 12, orientation landscape, resolution "
-                 "768p, steps 4 together yet"),
                 ({"model": TURBO, "options": {"seconds": 5}}, "options seconds: seconds is a field of every clip"),
                 ({"model": TURBO, "options": {"resolution": "768p"}, "resolution": "576p"},
                  "resolution: resolution is given twice"),

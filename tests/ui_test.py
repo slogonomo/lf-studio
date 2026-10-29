@@ -257,8 +257,8 @@ with sync_playwright() as p:
           and all(not remix for s, kind, up, remix in ups if kind == "upscale"),
           f"Upscale only on finished clips with it on ({'on' if on else 'off'}), no Remix or Upscale on an upscale "
           f"({sum(kind == 'upscale' for _, kind, _, _ in ups)} upscales)")
-    # a disabled Upscale button says why (a clip it can't take, as one of another model); clips of another model than
-    # the studio's own name it in a tag of their own
+    # a disabled Upscale button says why (a clip it can't take yet, as one longer than 5 s); clips of another model
+    # than the studio's own name it in a tag of their own
     reasons = pg.evaluate("[...document.querySelectorAll('.job .act.up[aria-disabled=true]:not([hidden])')]"
                           ".map(b => b.title)")
     check(all(reasons), f"a disabled Upscale button says why ({len(reasons)} disabled)")
