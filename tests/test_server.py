@@ -4294,6 +4294,24 @@ class TurboPlainTokens(TurboTest):
         self.turbo(prompt="A man says hello.")
 
 
+class TurboDialogue(TurboTest):
+    """With SOL_H3_PROMPT_TOKENS unset (minimax, the default), a LightX2V Turbo prompt with MiniMax's dialogue tokens
+    runs, and its encode gets it as written (TurboPlainTokens: refused with plain)."""
+
+    def seed(self):
+        super().seed()
+        self.studio.env.pop("SOL_H3_PROMPT_TOKENS", None)
+
+    def test_runs(self):
+        prompt = "A man looks up and says, <d>[English] Hello there.</d>"
+        job = self.done(self.turbo(prompt=prompt))
+        case = Path(job["case_dirs"][0])
+        self.assertEqual((case / "prompt.txt").read_text(), prompt)
+        self.assertEqual(json.loads((case / "qwen" / "conditioning.json").read_text())["prompt"], prompt)
+        encode, = self.runs("encodes.log")
+        self.assertEqual(encode["argv"][encode["argv"].index("--prompt-file") + 1], str(case / "prompt.txt"))
+
+
 class TurboQueue(TurboTest):
     """One queue for every clip, in order (strict FIFO across models), upscales after them; no warm-up after a LightX2V
     Turbo clip."""
