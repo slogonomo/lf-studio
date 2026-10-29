@@ -3,9 +3,9 @@ frames, latents and samples of every length against the patch's runtime/geometry
 those the probe it was ported from recorded on the GPU), the sigmas, the LoRA header rules on stand-in files with the
 real files' key names and shapes (no data: sparse files), the conditioning checks, the studio's settings and
 check_install, the command line, the environment and the progress lines against the Upscale job's
-(upscale/regen2k_job.py), the memory trace, the generation call's arguments per task, --check and --check-install,
-main's receipt when the GPU part finishes, fails, is refused, is aborted for memory or gets SIGTERM (a stand-in
-run()), and --parent (the job dies with the server). No GPU, no weights.
+(upscale/regen2k_job.py), the memory trace, the generation call's arguments per task, the fast load (stand-in
+loaders), --check and --check-install, main's receipt when the GPU part finishes, fails, is refused, is aborted for
+memory or gets SIGTERM (a stand-in run()), and --parent (the job dies with the server). No GPU, no weights.
 
 Where torch is importable (CPU is enough; skipped otherwise): the LoRA hooks against PEFT's arithmetic on tiny
 layers, and against PEFT itself on a tiny MiniMax-H3 transformer when peft and diffusers are there; the tensor checks
@@ -1002,6 +1002,63 @@ class MainTests(Fixture):
         self.assertEqual(receipt["phase"], "step 1/4")
 
 
+def stand_in_loaders(loads):
+    """safetensors.torch and diffusers' three model classes as diffusers uses them: load_file records ("load_file",
+    file, device); from_pretrained records ("from_pretrained", class, subfolder, device_map) and reads its folder's
+    .safetensors files with safetensors.torch.load_file, by attribute when it is called."""
+    st_torch, diffusers = types.ModuleType("safetensors.torch"), types.ModuleType("diffusers")
+
+    def load_file(filename, device="cpu"):
+        loads.append(("load_file", Path(filename).name, str(device)))
+        return {}
+    st_torch.load_file = st_torch.stock_load_file = load_file
+
+    class ModelMixin:
+        @classmethod
+        def from_pretrained(cls, path, subfolder=None, **kwargs):
+            loads.append(("from_pretrained", cls.__name__, subfolder, kwargs.get("device_map")))
+            for file in sorted((Path(path) / subfolder).glob("*.safetensors")):
+                st_torch.load_file(str(file), device="cpu")
+            return cls()
+    for name in job_module.DIRECT_LOAD:
+        setattr(diffusers, name, type(name, (ModelMixin,), {}))
+    return st_torch, diffusers
+
+
+class FastLoadTests(unittest.TestCase):
+    """install_fast_load, the Upscale job's fast load without NVIDIA's adapters: every file through fastload to the
+    GPU, its own fallback through the stock loader to the GPU (once), device_map {"": "cuda"} as a default."""
+
+    def test_files_fallbacks_and_device_map(self):
+        loads = []
+        st_torch, diffusers = stand_in_loaders(loads)
+        fastload = types.SimpleNamespace(ENABLED=True, DIRECT=True)
+
+        def fast(filename, device="cpu"):
+            if "fallback" in filename:
+                return st_torch.load_file(filename, device=device)     # as fastload does without O_DIRECT
+            loads.append(("fastload", Path(filename).name, device))
+            return {}
+        fastload.load_file = fast
+        record = job_module.install_fast_load(fastload, st_torch, diffusers)
+        with tempfile.TemporaryDirectory() as root:
+            for name in ("a.safetensors", "fallback.safetensors"):
+                (Path(root) / "transformer").mkdir(exist_ok=True)
+                (Path(root) / "transformer" / name).write_bytes(b"")
+            diffusers.MiniMaxH3Transformer3DModel.from_pretrained(root, subfolder="transformer")
+            (Path(root) / "vae").mkdir()
+            diffusers.AutoencoderKLMiniMaxH3.from_pretrained(root, subfolder="vae", device_map="auto")
+        self.assertEqual(loads, [("from_pretrained", "MiniMaxH3Transformer3DModel", "transformer", {"": "cuda"}),
+                                 ("fastload", "a.safetensors", "cuda"), ("load_file", "fallback.safetensors", "cuda"),
+                                 ("from_pretrained", "AutoencoderKLMiniMaxH3", "vae", "auto")])
+        self.assertEqual(record, {"mode": "fast", "o_direct": True, "files": 2, "fallbacks": 1})
+
+    def test_the_real_fastload_is_the_upscales(self):
+        fastload = job_module.load_fastload()
+        self.assertEqual(Path(fastload.__file__), REPO / "upscale" / "fastload.py")
+        self.assertTrue(hasattr(fastload, "load_file") and hasattr(fastload, "DIRECT"))
+
+
 def gone(pid):
     """Whether a process has ended (a zombie that its new parent has not reaped yet counts as ended)."""
     try:
@@ -1433,6 +1490,8 @@ class RunTests(unittest.TestCase):
             self.assertIn(phase, receipt["times_s"], phase)
             self.assertIn(phase, receipt["lowest_mem_available_gib"], phase)
         self.assertNotIn("step_5", receipt["times_s"])
+        self.assertIn("import_torch", receipt["times_s"])          # 0 here once an earlier test imported them
+        self.assertIn("import_diffusers", receipt["times_s"])
         self.assertEqual(receipt["lowest_mem_available_gib"]["all"], 100.0)
         self.assertEqual(receipt["load"], {"mode": "standard (cpu)"})
         self.assertEqual(receipt["attention_backend"], "native")

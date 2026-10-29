@@ -59,7 +59,8 @@ largest 8m+1 frames of the 17k+5 made, 121 of 124 at 5 s, and frames / 24 * 3200
 decoded 165,600), audio.pt ({"audio": (1, 2, samples) float32}: the decoded PCM before AAC, trimmed as the MP4 is),
 latents.safetensors ("video" (1, 24, T, H/16, W/16) and "audio" (2, 32, A) float32: every generated frame, normalized)
 and receipt.json (state running, done, failed, refused, aborted or cancelled; the job, the geometry and the layout
-rows, the sigmas, the LoRA's header facts, times per phase, peak GPU memory, lowest MemAvailable, the inputs' sha256,
+rows, the sigmas, the LoRA's header facts, times per phase (torch's and diffusers' imports too: with the load
+they are what a clip per process costs), peak GPU memory, lowest MemAvailable, the inputs' sha256,
 the latents' sha256 per tensor, frame 0 against the stretched first frame (f0_vs_keyframe, PSNR and MAE), versions,
 the load). Progress on stdout: "[lf-studio] phase <name>" for loading, step k/N, decoding and saving, in that order,
 and "[lf-studio] error <text>" last on failure.
@@ -1208,11 +1209,13 @@ def load_models(job, device, recorder, receipt, phase):
     transformer forward is timed as a step and prints its phase line; the transformer's blocks and the VAEs' encoder
     and decoders check the memory floor first."""
     import torch
+    start = time.perf_counter()
     import diffusers
     from diffusers import (AutoencoderKLMiniMaxH3, AutoencoderKLMiniMaxH3Audio, MiniMaxH3Scheduler,
                            MiniMaxH3Transformer3DModel)
     from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3Blocks
     from diffusers.modular_pipelines.minimax_h3.modular_blocks_minimax_h3 import MiniMaxH3DecodeStep
+    receipt["times_s"]["import_diffusers"] = round(time.perf_counter() - start, 3)
     diffusers.utils.logging.disable_progress_bar()
     base, fastload = job["base_model"], None
     if device.type == "cuda" and job["load"] == "fast":
@@ -1290,8 +1293,10 @@ def load_models(job, device, recorder, receipt, phase):
 
 def run(job, receipt, trace):
     """The clip on the GPU (DEVICE). Fills the receipt as it goes (the docstring)."""
+    start = time.perf_counter()
     import numpy as np
     import torch
+    receipt["times_s"]["import_torch"] = round(time.perf_counter() - start, 3)
     device = torch.device(DEVICE)
     if device.type == "cuda":
         torch.cuda.set_device(device.index or 0)
