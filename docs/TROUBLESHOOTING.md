@@ -138,15 +138,16 @@ again: 9-10 s (measured before 0.4; about 1-2 s more with 0.4's static compiles,
 it without changing its token count, avoids it. Before the patch the 4th distinct length in a session crashed the worker
 ("Forward execution thread failed", Dynamo recompile limit); the patch raises the limit.
 
-**A Keyframes clip doesn't keep my image: another face, or its details redrawn.** The draft starts on your first frame,
-but in NVIDIA's route Stage 2, which refines it to 1344×768, refines every frame from 91 % noise, without the image and
-under a fixed generic prompt, so it repaints the first frame too (issue #57; NVIDIA's README guarantees neither the
-keyframes nor the identity). Measured on 6 clips, frame 0 against the image: 23-34 dB PSNR in the draft, 16-23 dB after
-Stage 2. It can also draw people into the first frame of an empty scene. This is fixed by default since 0.5.2, on both
-backends: Stage 2 holds the uploaded first frame (the keyframe pin, [PATCH.md](PATCH.md#19-stage-2-keyframe-pin)).
-Measured on one DGX Spark, frame 0 then matches the image at 30-38 dB (on one RTX 5090 at 32-36 dB), and in some clips
-the next frames keep the face better too. Only the first frame is held: later frames are still refined, so a clip with a
-lot of motion can still drift, and a last frame, Text and Reference clips are not changed. Check that
+**A Keyframes clip doesn't keep my image: another face, or its details redrawn.** The draft starts on your first
+frame, but in NVIDIA's route Stage 2, which refines it to 1344×768, refines every frame from 91 % noise, without the
+image and under a fixed generic prompt, so it repaints the first frame too (issue #57; NVIDIA's README guarantees
+neither the keyframes nor the identity). Measured on 6 clips, frame 0 against the image at the draft's size: 23-34 dB
+PSNR in the draft, 16-23 dB after Stage 2. It can also draw people into the first frame of an empty scene. This is
+fixed by default since 0.5.2, on the DGX Spark and on the RTX 5090: Stage 2 holds the uploaded first frame (the
+keyframe pin, [PATCH.md](PATCH.md#19-stage-2-keyframe-pin)). Measured at the output size, frame 0 then matches the
+image at 30-38 dB instead of 17-23 dB on one DGX Spark, and at 32-36 dB instead of 18-21 dB on one RTX 5090, and in
+some clips the next frames keep the face better too. Only the first frame is held: later frames are still refined, so
+a clip with a lot of motion can still drift, and a last frame, Text and Reference clips are not changed. Check that
 `SOL_H3_STAGE2_KEYFRAME` is not `off` in the settings file.
 
 **The first run of a mode, format or length is much slower.** Its kernels are compiled once into

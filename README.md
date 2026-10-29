@@ -61,14 +61,14 @@ the A/B test of [#38](https://github.com/slogonomo/lf-studio/issues/38) (4 seeds
 the default prompt tokens, a scene that opened with "what" had it in 4 of 4 clips, and none of 4 with "What"
 ([#53](https://github.com/slogonomo/lf-studio/issues/53)).
 
-**Keyframes clips and the first frame:** the draft starts on your first frame, but in NVIDIA's Sol-H3-Spark route Stage
-2, which refines it to 1344×768, never sees the image: it repaints every frame, the first one too, so faces and fine
-detail drift from it ([#57](https://github.com/slogonomo/lf-studio/issues/57)). The studio now holds your first frame in
-Stage 2, on the DGX Spark and on the RTX 5090, as NVIDIA's GB200 version of this Stage 2 does. Measured on one DGX
-Spark, the clip's first frame matches your image at 30-38 dB PSNR instead of 17-23 dB, with no extra time and 608 MiB
-more memory in Keyframes sessions. Later frames are still refined, so clips with a lot of motion can still drift. On one
-RTX 5090: 32-36 dB instead of 18-21 dB, Stage 2 no slower, no more GPU memory at the peak and 608 MiB more RAM.
-`SOL_H3_STAGE2_KEYFRAME=off` turns it off ([details](docs/PATCH.md#19-stage-2-keyframe-pin)).
+**Keyframes clips and the first frame:** the draft starts on your first frame, but in NVIDIA's Sol-H3-Spark route
+Stage 2, which refines it to 1344×768, never sees the image: it repaints every frame, the first one too, so faces and
+fine detail drift from it ([#57](https://github.com/slogonomo/lf-studio/issues/57)). The studio now holds your first
+frame in Stage 2, on the DGX Spark and on the RTX 5090, as NVIDIA's GB200 version of this Stage 2 does. Measured on one
+DGX Spark, the clip's first frame matches your image at 30-38 dB PSNR instead of 17-23 dB, with no extra time and
+608 MiB more resident memory in Keyframes sessions; on one RTX 5090 at 32-36 dB instead of 18-21 dB, Stage 2 no slower,
+no more GPU memory at the peak and 608 MiB more RAM. Later frames are still refined, so clips with a lot of motion can
+still drift. `SOL_H3_STAGE2_KEYFRAME=off` turns it off ([details](docs/PATCH.md#19-stage-2-keyframe-pin)).
 
 **An API for agents and scripts** ([docs/API.md](docs/API.md)): the studio's HTTP API, documented, with a JSON
 submit and a wait that hands over the MP4 as soon as the clip is done; and `bin/lf-cli`, one Python file for other
@@ -155,7 +155,10 @@ H3 was trained with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before
 compile with static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), Stage 1's body blocks compile once per
 session for any prompt length (`SOL_H3_DYNAMIC_TEXT_LENGTH=0` compiles them per length, as upstream does), and a session
 changes its length and orientation in place, one worker rendering several shapes (`LFSTUDIO_RESHAPE=0` loads the models
-again). All of it can be switched back; see [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
+again). Since 0.5.2, on the DGX Spark and on the RTX 5090, Stage 2 holds a Keyframes clip's first frame at latent
+frame 0, encoded from your image; in NVIDIA's Sol-H3-Spark route Stage 2 never sees the image
+(`SOL_H3_STAGE2_KEYFRAME=off` runs that route).
+All of it can be switched back; see [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 
 ## Requirements
 
