@@ -59,7 +59,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 AGENT = f"lf-cli/{VERSION}"
 TASKS = ("t2va", "fl2va", "ref2va")
 ORIENTATIONS = ("landscape", "portrait")
