@@ -343,6 +343,40 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual((job_module.audio_latents(124), job_module.kept_samples(121), 207 * 800), (207, 161333,
                                                                                                     165600))
 
+    def test_keyframe_fit(self):
+        """diffusers 0.40's MiniMaxH3ResizeStep arithmetic: the first keyframe given stretched, the one after it
+        cover-cropped (sizes rounded, cut at (size - canvas) // 2), one of the canvas's size as it is."""
+        fit = job_module.keyframe_fit
+        self.assertEqual(fit((1456, 816), (1024, 576), True), {"fit": "stretch", "stretch": 0.99634})
+        self.assertEqual(fit((1456, 816), (576, 1024), True), {"fit": "stretch", "stretch": 0.31525})
+        self.assertEqual(fit((1024, 576), (1024, 576), True), {"fit": "as is"})
+        self.assertEqual(fit((1024, 576), (1024, 576), False), {"fit": "as is"})
+        self.assertEqual(fit((1200, 900), (1024, 576), False),
+                         {"fit": "cover-crop", "resized": [1024, 768], "crop": [0, 96, 1024, 672], "kept": 0.75})
+        self.assertEqual(fit((900, 1600), (1024, 576), False),
+                         {"fit": "cover-crop", "resized": [1024, 1820], "crop": [0, 622, 1024, 1198],
+                          "kept": 0.3165})
+        self.assertEqual(fit((1000, 563), (1024, 576), False),       # rounded up to cover: one row cut
+                         {"fit": "cover-crop", "resized": [1024, 577], "crop": [0, 0, 1024, 576], "kept": 0.9983})
+        self.assertEqual(fit((2000, 900), (576, 1024), False),
+                         {"fit": "cover-crop", "resized": [2276, 1024], "crop": [850, 0, 1426, 1024], "kept": 0.2531})
+
+    def test_fit_notes(self):
+        canvas = (1024, 576)
+        for size, first, note in (((1456, 816), True, None), ((1280, 800), True, None),
+                                  ((1200, 900), True, "stretched by 1.33333 onto the 1024x576 canvas"),
+                                  ((816, 1456), True, "stretched by 3.17211 onto the 1024x576 canvas: its shapes are "
+                                                      "distorted"),
+                                  ((1000, 563), False, None),
+                                  ((1200, 900), False, "cover-cropped to the 1024x576 canvas: 25 % of it is cut away")):
+            fit = job_module.keyframe_fit(size, canvas, first)
+            got = job_module.fit_note("last", size, canvas, fit)
+            if note is None:
+                self.assertIsNone(got, size)
+            else:
+                self.assertIn(note, got)
+                self.assertTrue(got.startswith(f"the last frame ({size[0]}x{size[1]})"), got)
+
     def test_geometry_of_a_job(self):
         job = {"resolution": "768p", "orientation": "landscape", "seconds": 5, "steps": 4, "shift": [6.0, 3.0],
                "qwen_canvas": "canvas"}
@@ -1379,6 +1413,11 @@ def ffprobe(path):
     return {s["codec_type"]: s for s in json.loads(out)["streams"]}
 
 
+def fit_notes(receipt):
+    """The receipt's notes about how a keyframe was fitted (the tiny LoRA, not one of PRESETS, adds one of its own)."""
+    return [note for note in receipt["notes"] if note.startswith(("the first frame (", "the last frame ("))]
+
+
 @unittest.skipUnless(torch is not None and diffusers is not None and FFMPEG,
                      "needs torch, diffusers 0.40.0 and ffmpeg (CPU is enough)")
 class RunTests(unittest.TestCase):
@@ -1390,7 +1429,7 @@ class RunTests(unittest.TestCase):
         cls.base = make_tiny_base(cls.tmp / "base")
         cls.portrait = make_image(cls.tmp / "portrait.png", (824, 1472), seed=2)
         cls.land = make_image(cls.tmp / "land.png", (1456, 816), seed=5)
-        cls.land_last = make_image(cls.tmp / "land-last.png", (1456, 816), seed=6)
+        cls.land_43 = make_image(cls.tmp / "land-43.png", (1200, 900), seed=6)
         from diffusers import MiniMaxH3Transformer3DModel
         model = MiniMaxH3Transformer3DModel.from_pretrained(cls.base, subfolder="transformer")
         cls.lora = make_tiny_lora(cls.tmp / "lora.safetensors", model)
@@ -1514,10 +1553,16 @@ class RunTests(unittest.TestCase):
         self.assertEqual(status, 0, receipt.get("traceback") or receipt.get("error"))
         self.assert_outputs(receipt, out, (576, 1024))
         self.assertEqual(phases, ["loading", "step 1/4", "step 2/4", "step 3/4", "step 4/4", "decoding", "saving"])
-        self.assertEqual(receipt["images"]["first"], {"size": [824, 1472], "exif_transposed": False,
-                                                      "stretch": 1.00485})
+        keyframe = Image.open(self.portrait).convert("RGB").resize((576, 1024), Image.Resampling.LANCZOS)
+        self.assertEqual(receipt["images"]["first"], {
+            "size": [824, 1472], "exif_transposed": False, "fit": "stretch", "stretch": 1.00485,
+            "prepared_sha256": hashlib.sha256(np.asarray(keyframe).tobytes()).hexdigest()})
+        self.assertEqual(fit_notes(receipt), [])
         self.assertIn("psnr_db", receipt["f0_vs_keyframe"])
         self.assertNotIn("last_vs_keyframe", receipt)
+        self.assertNotIn("last_kept_vs_keyframe", receipt)
+        self.assertIn("encode_1", receipt["times_s"])
+        self.assertNotIn("encode_2", receipt["times_s"])
         self.assertEqual(receipt["audio_noise_seed"], 11 + 0x9E3779B9)
         text = receipt["conditioning"]["rows"]
         self.assertEqual(receipt["layout"], job_module.layout_rows(text, 576, 1024, 124, 1))
@@ -1538,7 +1583,6 @@ class RunTests(unittest.TestCase):
                                                            job_module.expected_sigmas(4, 6)[:-1]])
         from diffusers import AutoencoderKLMiniMaxH3
         vae = AutoencoderKLMiniMaxH3.from_pretrained(self.base, subfolder="vae", torch_dtype=torch.float32).eval()
-        keyframe = Image.open(self.portrait).convert("RGB").resize((576, 1024), Image.Resampling.LANCZOS)
         pixels = torch.from_numpy(np.array(keyframe)).permute(2, 0, 1)[None, :, None].float() / 255.0
         mean = torch.tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1, 1)
         std = torch.tensor((0.229, 0.224, 0.225)).view(1, 3, 1, 1, 1)
@@ -1573,27 +1617,50 @@ class RunTests(unittest.TestCase):
         self.assertEqual(receipt["layout_actual"]["video_rows"], 21312)
         self.assertNotIn("condition_t", receipt["layout_actual"])
         self.assertNotIn("f0_vs_keyframe", receipt)
+        self.assertEqual(receipt["images"], {})
+        self.assertFalse([k for k in receipt["times_s"] if k.startswith("encode")])
         self.assertEqual(receipt["conditioning"]["vision_rows"], 0)
         g = torch.Generator().manual_seed(11)
         self.assertTrue(torch.equal(patchify(torch.randn((1, 24, 37, 36, 64), generator=g)),
                                     seen[0]["hidden_states"][0]))
 
     def test_first_and_last(self):
-        """16:9, first and last frame, audio noise "reference": two keyframes' condition rows, the last frame made
-        against the last keyframe, the audio noise drawn from the clip's generator after the video noise."""
+        """16:9, first and last frame, audio noise "reference": two keyframes' condition rows, the first stretched and
+        the last (4:3 here) cover-cropped as diffusers fitted them, each VAE encode timed, the last frame made and the
+        last one kept against the last keyframe, the audio noise drawn from the clip's generator after the video
+        noise."""
+        import numpy as np
+        from PIL import Image
         seen = []
 
         def grab(index, kwargs):
             if index == 0:
                 seen.append({k: v.detach().clone() for k, v in kwargs.items() if torch.is_tensor(v)})
         status, receipt, phases, out, forwards = self.run_job(
-            "both", frames={"first": self.land, "last": self.land_last}, orientation="landscape", callback=grab,
+            "both", frames={"first": self.land, "last": self.land_43}, orientation="landscape", callback=grab,
             audio_noise="reference")
         self.assertEqual(status, 0, receipt.get("traceback") or receipt.get("error"))
         self.assert_outputs(receipt, out, (1024, 576))
         self.assertEqual(receipt["layout_actual"]["condition"], 2 * 576)
         self.assertEqual(receipt["layout_actual"]["video_rows"], 2 * 576 + 21312)
+        first = Image.open(self.land).convert("RGB").resize((1024, 576), Image.Resampling.LANCZOS)
+        last = Image.open(self.land_43).convert("RGB").resize((1024, 768), Image.Resampling.LANCZOS) \
+            .crop((0, 96, 1024, 672))
+        self.assertEqual(receipt["images"]["first"], {
+            "size": [1456, 816], "exif_transposed": False, "fit": "stretch", "stretch": 0.99634,
+            "prepared_sha256": hashlib.sha256(np.asarray(first).tobytes()).hexdigest()})
+        self.assertEqual(receipt["images"]["last"], {
+            "size": [1200, 900], "exif_transposed": False, "fit": "cover-crop", "resized": [1024, 768],
+            "crop": [0, 96, 1024, 672], "kept": 0.75,
+            "prepared_sha256": hashlib.sha256(np.asarray(last).tobytes()).hexdigest()})
+        self.assertEqual(len(fit_notes(receipt)), 1)
+        self.assertIn("the last frame (1200x900) is cover-cropped to the 1024x576 canvas: 25 % of it is cut away",
+                      fit_notes(receipt)[0])
+        self.assertTrue({"encode_1", "encode_2"} <= set(receipt["times_s"]))
+        self.assertNotIn("encode", receipt["times_s"])
         self.assertEqual(receipt["last_vs_keyframe"]["frame"], 123)
+        self.assertEqual(receipt["last_kept_vs_keyframe"]["frame"], 120)
+        self.assertIn("psnr_db", receipt["last_kept_vs_keyframe"])
         self.assertIn("psnr_db", receipt["f0_vs_keyframe"])
         self.assertNotIn("audio_noise_seed", receipt)
         g = torch.Generator().manual_seed(11)
@@ -1603,10 +1670,22 @@ class RunTests(unittest.TestCase):
         self.assertTrue(torch.equal(torch.randn((414, 32), generator=g), seen[0]["audio_hidden_states"][0]))
 
     def test_a_last_frame_alone(self):
-        status, receipt, phases, out, forwards = self.run_job("last", frames={"last": self.portrait})
+        """A lone last frame is the first keyframe given: stretched, as diffusers (and the studio's Qwen) do, here a
+        16:9 image onto the 9:16 canvas, which the receipt notes."""
+        import numpy as np
+        from PIL import Image
+        status, receipt, phases, out, forwards = self.run_job("last", frames={"last": self.land})
         self.assertEqual(status, 0, receipt.get("traceback") or receipt.get("error"))
         self.assertEqual(receipt["layout_actual"]["condition"], 576)
+        stretched = Image.open(self.land).convert("RGB").resize((576, 1024), Image.Resampling.LANCZOS)
+        self.assertEqual(receipt["images"]["last"], {
+            "size": [1456, 816], "exif_transposed": False, "fit": "stretch", "stretch": 0.31525,
+            "prepared_sha256": hashlib.sha256(np.asarray(stretched).tobytes()).hexdigest()})
+        self.assertEqual(len(fit_notes(receipt)), 1)
+        self.assertIn("the last frame (1456x816) is stretched by 0.31525 onto the 576x1024 canvas",
+                      fit_notes(receipt)[0])
         self.assertEqual(receipt["last_vs_keyframe"]["frame"], 123)
+        self.assertEqual(receipt["last_kept_vs_keyframe"]["frame"], 120)
         self.assertNotIn("f0_vs_keyframe", receipt)
         self.assertEqual(receipt["job"]["keyframes"], ["last"])
 

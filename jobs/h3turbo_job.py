@@ -16,14 +16,16 @@ attention backend (on the CPU with small random-weight models: the same latents 
   its place;
 - the decode blocks run as a second pipeline call, so the latents are saved and the DiT dropped in between.
 Everything else is the stock path. t2va (no keyframe) passes no image, and diffusers' auto blocks run their text-only
-workflow. fl2va passes the first frame as `image` and the last as `last_image` (EXIF transpose, then RGB; diffusers
-stretches each onto the canvas with LANCZOS, VAE-encodes it with its posterior sampled under seed 42 and rounded
-through fp16, noises it to t = 0.999 and holds it there as extra rows in front of the generated video rows). One CPU
-torch.Generator per clip, seeded `seed` (the reference's, inference_minimax_h3.py:1152), draws the keyframe noise
-first, then the video noise. With audio_noise "seed" (the default) the audio noise comes from a generator of its own,
-seeded (seed + 0x9E3779B9) mod 2^63, so a 576p clip and a 768p re-render of one seed share their audio noise;
-"reference" draws it from the clip's generator after the video noise, as diffusers does. No CFG (the checkpoint is
-guidance-distilled): one forward per step.
+workflow. fl2va passes the first frame as `image` and the last as `last_image` (EXIF transpose, then RGB). diffusers
+(MiniMaxH3ResizeStep) stretches the first keyframe given (the first frame, or a lone last frame) onto the canvas with
+LANCZOS; with both, the last is cover-cropped (scaled with LANCZOS to the rounded size that covers the canvas, then
+cut at (size - canvas) // 2), as the studio's Qwen worker does at its own canvas. Each keyframe is VAE-encoded with
+its posterior sampled under seed 42 and rounded through fp16, noised to t = 0.999 and held there as extra rows in
+front of the generated video rows. One CPU torch.Generator per clip, seeded `seed` (the reference's,
+inference_minimax_h3.py:1152), draws the keyframe noise first, then the video noise. With audio_noise "seed" (the
+default) the audio noise comes from a generator of its own, seeded (seed + 0x9E3779B9) mod 2^63, so a 576p clip and
+a 768p re-render of one seed share their audio noise; "reference" draws it from the clip's generator after the video
+noise, as diffusers does. No CFG (the checkpoint is guidance-distilled): one forward per step.
 
 The turbo LoRA. Sigmas: scheduler.set_shift(shift[0]) and audio_scheduler.set_shift(shift[1]), num_inference_steps =
 steps + 1 (the H3 scheduler counts grid points, terminal 0 included; LightX2V's reference does the same); the sigmas
@@ -59,18 +61,24 @@ largest 8m+1 frames of the 17k+5 made, 121 of 124 at 5 s, and frames / 24 * 3200
 decoded 165,600), audio.pt ({"audio": (1, 2, samples) float32}: the decoded PCM before AAC, trimmed as the MP4 is),
 latents.safetensors ("video" (1, 24, T, H/16, W/16) and "audio" (2, 32, A) float32: every generated frame, normalized)
 and receipt.json (state running, done, failed, refused, aborted or cancelled; the job, the geometry and the layout
-rows, the sigmas, the LoRA's header facts, times per phase (torch's and diffusers' imports too: with the load
-they are what a clip per process costs), peak GPU memory, lowest MemAvailable, the inputs' sha256,
-the latents' sha256 per tensor, frame 0 against the stretched first frame (f0_vs_keyframe, PSNR and MAE), versions,
-the load). Progress on stdout: "[lf-studio] phase <name>" for loading, step k/N, decoding and saving, in that order,
-and "[lf-studio] error <text>" last on failure.
+rows, the sigmas, the LoRA's header facts, times per phase (torch's and diffusers' imports too: with the load they
+are what a clip per process costs; encode_1, encode_2 for each keyframe's VAE encode), peak GPU memory, lowest
+MemAvailable, the inputs' sha256, the latents' sha256 per tensor, how each keyframe was fitted to the canvas (images:
+"stretch" with its ratio, or "cover-crop" with the crop box, and the sha256 of the pixels diffusers encoded; a note
+when one is stretched by more than FIT_RANGE allows or mostly cut away), frame 0 against the first keyframe as fitted
+(f0_vs_keyframe, PSNR and MAE), versions, the load). A last keyframe is anchored at the last frame made (123 of 124
+at 5 s), which the MP4 leaves out, as the studio's Sol clips do: it ends 3 frames (0.125 s) before it.
+last_vs_keyframe measures that frame, last_kept_vs_keyframe the MP4's last one. Progress on stdout: "[lf-studio]
+phase <name>" for loading, step k/N, decoding and saving, in that order, and "[lf-studio] error <text>" last on
+failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loaded), 3 aborted for memory, 143
 stopped by SIGTERM.
 --check validates job.json and its inputs without torch (the LoRA's sha256 against PRESETS too), prints the plan and
 exits (0 or 2), writing nothing. --check-install checks the environment (diffusers 0.40.0 and the blocks this job
 calls), the base model and the LoRA files of PRESETS where the LFSTUDIO_H3TURBO_* settings put them (studio_settings),
-without the GPU and without reading weights. --parent PID (the server passes its own): the job is killed when that
-process ends (PR_SET_PDEATHSIG); if that process is gone already, it exits at once (143).
+without the GPU and without reading weights. Those settings are provisional: the server does not read them yet, and
+they go into bin/env.example once it runs this job. --parent PID (the server passes its own): the job is killed when
+that process ends (PR_SET_PDEATHSIG); if that process is gone already, it exits at once (143).
 
 job.json: {"version": 1, "task": "t2va"|"fl2va", "orientation": "landscape"|"portrait", "resolution": "576p"|"768p",
 "seconds": 5-14, "seed": INT, "steps": INT, "lora": FILE, "shift": [VIDEO, AUDIO], "conditioning": FILE (its
@@ -127,6 +135,9 @@ CANVAS = {("576p", "landscape"): (1024, 576), ("576p", "portrait"): (576, 1024),
 # (runtime/qwen.py draft_canvas: the recipe's stage1 width x height), "canvas" the generation canvas (CANVAS)
 QWEN_CANVASES = ("draft", "canvas")
 DRAFT_CANVAS = {"landscape": (672, 384), "portrait": (384, 672)}
+# a keyframe stretched by a ratio outside this range, or cover-cropped to less than its first value, gets a receipt
+# note (the research probe refused a first frame of the other orientation; the studio decides what it allows)
+FIT_RANGE = (0.8, 1.25)
 MIN_SECONDS = 5
 MAX_DURATION_S = 15.0            # diffusers 0.40: MiniMaxH3ModularPipeline.max_duration, of the 17k+5 frames made
 AUDIO_NOISES = ("seed", "reference")
@@ -242,6 +253,36 @@ def qwen_canvas(orientation, resolution, mode):
 def image_tokens(width, height):
     """Qwen's image tokens for a keyframe at (width, height): one per 32x32 pixels (252 at the 672x384 draft)."""
     return (width // 32) * (height // 32)
+
+
+def keyframe_fit(size, canvas, first):
+    """How diffusers 0.40 (MiniMaxH3ResizeStep) puts a keyframe of `size` (w, h) onto `canvas` (w, h): the first
+    keyframe given (`first`: the first frame, or a lone last frame) is stretched, the one after it cover-cropped
+    (LANCZOS to the rounded size that covers the canvas, cut at (size - canvas) // 2); one of the canvas's size is
+    taken as it is. Returns the receipt's record: "fit", and the stretch ratio, or the resized size, the crop box in
+    it and the share of it kept."""
+    (w, h), (cw, ch) = size, canvas
+    if (w, h) == (cw, ch):
+        return {"fit": "as is"}
+    if first:
+        return {"fit": "stretch", "stretch": round((cw / ch) / (w / h), 5)}
+    scale = max(cw / w, ch / h)
+    rw, rh = max(cw, round(w * scale)), max(ch, round(h * scale))
+    left, top = max(0, (rw - cw) // 2), max(0, (rh - ch) // 2)
+    return {"fit": "cover-crop", "resized": [rw, rh], "crop": [left, top, left + cw, top + ch],
+            "kept": round(cw * ch / (rw * rh), 4)}
+
+
+def fit_note(anchor, size, canvas, fit):
+    """A receipt note for a keyframe whose shape is far from the canvas's (outside FIT_RANGE): stretched, its shapes
+    are distorted; cover-cropped, much of it is cut away. None otherwise."""
+    if fit["fit"] == "stretch" and not FIT_RANGE[0] <= fit["stretch"] <= FIT_RANGE[1]:
+        return (f"the {anchor} frame ({size[0]}x{size[1]}) is stretched by {fit['stretch']:g} onto the "
+                f"{canvas[0]}x{canvas[1]} canvas: its shapes are distorted (another orientation than the clip's?)")
+    if fit["fit"] == "cover-crop" and fit["kept"] < FIT_RANGE[0]:
+        return (f"the {anchor} frame ({size[0]}x{size[1]}) is cover-cropped to the {canvas[0]}x{canvas[1]} canvas: "
+                f"{round(100 * (1 - fit['kept']))} % of it is cut away")
+    return None
 
 
 def geometry(job):
@@ -1229,6 +1270,8 @@ def load_models(job, device, recorder, receipt, phase):
     def check_abort(*_):
         recorder.trace.check()
 
+    calls = {}
+
     def timed(label, function):
         @functools.wraps(function)
         def wrapper(*args, **kwargs):
@@ -1236,6 +1279,9 @@ def load_models(job, device, recorder, receipt, phase):
                 recorder.step += 1
                 name = f"step_{recorder.step}"
                 phase(f"step {recorder.step}/{steps}")
+            elif label == "encode":               # once per keyframe: encode_1, encode_2
+                calls[label] = calls.get(label, 0) + 1
+                name = f"{label}_{calls[label]}"
             else:
                 name = label
             with recorder.phase(name):
@@ -1319,12 +1365,16 @@ def run(job, receipt, trace):
         del cond
         images = []
         receipt["images"] = {}
+        canvas = (g["width"], g["height"])
         for anchor in job["keyframes"]:
             image, turned = load_rgb(job[f"{anchor}_frame"])
+            fit = keyframe_fit(image.size, canvas, first=not images)
             images.append(image)
-            receipt["images"][anchor] = {"size": list(image.size), "exif_transposed": turned,
-                                         "stretch": round((g["width"] / g["height"]) / (image.size[0] / image.size[1]),
-                                                          5)}
+            receipt["images"][anchor] = {"size": list(image.size), "exif_transposed": turned, **fit}
+            note = fit_note(anchor, image.size, canvas, fit)
+            if note:
+                receipt.setdefault("notes", []).append(note)
+                say(note)
 
     phase("loading")
     models = load_models(job, device, recorder, receipt, phase)
@@ -1348,6 +1398,8 @@ def run(job, receipt, trace):
     del kwargs
     latents, audio_lat = state.get("latents"), state.get("audio_latents")
     keyframes = state.get("keyframes") or []
+    for anchor, keyframe in zip(job["keyframes"], keyframes):     # the pixels diffusers encoded, as it fitted them
+        receipt["images"][anchor]["prepared_sha256"] = hashlib.sha256(np.asarray(keyframe).tobytes()).hexdigest()
     receipt["layout_actual"] = {
         "sequence": int(state.get("position_ids").shape[0]), "text": int(tags.numel()),
         "condition": int(state.get("num_condition_video_rows") or 0),
@@ -1395,7 +1447,7 @@ def run(job, receipt, trace):
         frames = (videos[:g["keep_frames"]] * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous().cpu() \
             .numpy()
         last = None
-        if "last" in job["keyframes"]:          # the last frame made, where the last keyframe is anchored
+        if "last" in job["keyframes"]:          # the last frame made, where the last keyframe is anchored (not kept)
             last = (videos[-1:] * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous().cpu().numpy()[0]
         audio = result["audio"][0][:, :g["keep_samples"]].float().cpu().numpy()
         rate = int(result["sampling_rate"])
@@ -1413,6 +1465,8 @@ def run(job, receipt, trace):
         receipt["f0_vs_keyframe"] = adherence(frames[0], named["first"])
     if "last" in named:
         receipt["last_vs_keyframe"] = {"frame": receipt["decoded"]["frames"] - 1, **adherence(last, named["last"])}
+        receipt["last_kept_vs_keyframe"] = {"frame": int(frames.shape[0]) - 1,
+                                            **adherence(frames[-1], named["last"])}
     phase("saving")
     with recorder.phase("save_audio"):
         partial = out / f".{AUDIO_FILE}.partial"
