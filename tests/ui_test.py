@@ -105,6 +105,27 @@ with sync_playwright() as p:
     print("loaded shows:", loaded)
     check("·" in loaded or "not loaded" in loaded, "loaded mode/format/length is shown")
 
+    # the model choice (LFSTUDIO_MODELS with more than one model): picking a model changes no other field; what the
+    # selected model doesn't make yet is greyed out with the reason as its title; a pick it can't make disables Generate,
+    # and #err says why. It ends on the model it started with.
+    if pg.is_visible("#msec"):
+        models = pg.evaluate("[...document.querySelectorAll('#mseg input')].map(i => i.value)")
+        first = chosen(pg, "model")
+        fields = lambda: pg.evaluate("['task', 'orientation', 'seconds'].map(val).concat([prompt.value])")  # noqa: E731
+        before = fields()
+        print("models:", models, "| picked:", first)
+        for m in models + [first]:
+            pg.click(f'label[for="m-{m}"]')
+            check(fields() == before, f"fields unchanged after model -> {m}")
+            greyed = pg.evaluate("[...document.querySelectorAll('#f input[aria-disabled=true]')]"
+                                 ".map(i => i.nextElementSibling.title)")
+            check(all(greyed), f"model {m}: what it doesn't make yet is greyed out with the reason ({len(greyed)})")
+            why = pg.evaluate("cantRun()")
+            check(pg.is_disabled("#go") == bool(why) and (not why or pg.text_content("#err") == why),
+                  f"model {m}: Generate {'is off and says why' if why else 'is on'} ({why or 'it makes this pick'})")
+    else:
+        skip("model choice checks (one model on this studio)")
+
     # the header resolution follows the format; fields are independent of each other
     pick(pg, "orientation", "landscape")
     check(pg.text_content("#res") == "1344×768", "header shows 1344×768 for 16:9")
@@ -236,6 +257,13 @@ with sync_playwright() as p:
           and all(not remix for s, kind, up, remix in ups if kind == "upscale"),
           f"Upscale only on finished clips with it on ({'on' if on else 'off'}), no Remix or Upscale on an upscale "
           f"({sum(kind == 'upscale' for _, kind, _, _ in ups)} upscales)")
+    # a disabled Upscale button says why (a clip it can't take, as one of another model); clips of another model than
+    # the studio's own name it in a tag of their own
+    reasons = pg.evaluate("[...document.querySelectorAll('.job .act.up[aria-disabled=true]:not([hidden])')]"
+                          ".map(b => b.title)")
+    check(all(reasons), f"a disabled Upscale button says why ({len(reasons)} disabled)")
+    tags = pg.evaluate("[...document.querySelectorAll('.job .tag.model')].map(t => t.textContent)")
+    check(all(tags), f"clips of another model show it in a tag ({len(tags)}: {sorted(set(tags))})")
     # durations are rounded to whole seconds before they are split (#26): "2:00 min", never "1:60 min"
     times = pg.evaluate("[...document.querySelectorAll('#go, #lenout, #loadtimer, .job .when, .job .ph2')]"
                         ".map(e => e.textContent)")

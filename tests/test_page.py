@@ -17,7 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
-from test_server import finished_job, history, mp4, png  # noqa: E402
+from test_server import (BOTH, NOT_LAST, NOT_LONGER, NOT_REF2VA, TURBO, finished_job, history, mp4, png,  # noqa: E402
+                         release_server)
 
 try:
     from playwright.sync_api import sync_playwright
@@ -29,6 +30,7 @@ except ImportError:
 class PageTest(unittest.TestCase):
     load_s, clip_s, preload = 2, 1, False
     upscale = True                     # the stub studio has the experimental Upscale on (OneRowUpscaleOff: off)
+    models = None                      # LFSTUDIO_MODELS: the model choice off, as by default (ModelPage: on)
 
     @classmethod
     def setUpClass(cls):
@@ -42,7 +44,8 @@ class PageTest(unittest.TestCase):
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="lf-studio-page-"))
-        self.studio = StubStudio(self.dir, load_s=self.load_s, clip_s=self.clip_s, preload=self.preload)
+        self.studio = StubStudio(self.dir, load_s=self.load_s, clip_s=self.clip_s, preload=self.preload,
+                                 models=self.models)
         self.seed()
         self.studio.start()
         self.ctx = self.browser.new_context(viewport={"width": 1280, "height": 900})
@@ -409,16 +412,17 @@ class UiTestScript(unittest.TestCase):
     (LFSTUDIO_API=0, #58), which the page does not use. An fl2va clip before it makes fl2va a mode 'Load selected now'
     can warm up."""
 
-    def run_ui_test(self, reshape, api="1"):
+    def run_ui_test(self, reshape, api="1", models=None):
         root = Path(tempfile.mkdtemp(prefix="lf-studio-uitest-"))
         self.addCleanup(shutil.rmtree, root, True)
         studio = StubStudio(root, load_s=1, clip_s=0.5, preload=False,
-                            env={"LFSTUDIO_RESHAPE": reshape, "LFSTUDIO_API": api})
+                            env={"LFSTUDIO_RESHAPE": reshape, "LFSTUDIO_API": api}, models=models)
         studio.start()
         self.addCleanup(studio.stop)
-        ids = [studio.generate(task="fl2va", files={"first_frame": [("first.png", png())]})[1]["id"],
-               studio.generate()[1]["id"]]
-        self.assertEqual([job["status"] for job in studio.wait(ids)], ["done", "done"])
+        first = [studio.turbo(seed=3)[1]["id"]] if models else []      # a LightX2V Turbo clip before the session
+        ids = first + [studio.generate(task="fl2va", files={"first_frame": [("first.png", png())]})[1]["id"],
+                       studio.generate()[1]["id"]]
+        self.assertEqual([job["status"] for job in studio.wait(ids)], ["done"] * len(ids))
         state = studio.state()
         self.assertEqual((state["reshape"], state["session"]["key"], sorted(state["warmable"]), state["api"]),
                          (reshape == "1", ["t2va", "landscape", 5], ["fl2va", "t2va"], api == "1"))
@@ -430,7 +434,8 @@ class UiTestScript(unittest.TestCase):
 
     def test_reshape_on(self):
         out = self.run_ui_test("1")
-        for check in ("PASS Generate keeps the models when the format differs",
+        for check in ("SKIP model choice checks (one model on this studio)",
+                      "PASS Generate keeps the models when the format differs",
                       "PASS Generate keeps the models when the length differs",
                       "PASS Generate warns about a reload when the mode differs"):
             self.assertIn(check, out)
@@ -440,6 +445,18 @@ class UiTestScript(unittest.TestCase):
 
     def test_api_off(self):
         self.assertIn("PASS Generate keeps the models when the format differs", self.run_ui_test("1", api="0"))
+
+    def test_with_the_model_choice(self):
+        """LightX2V Turbo on (LFSTUDIO_MODELS), with one of its clips in the gallery before the two Sol-H3 clips: the
+        Model row's checks, its clip's tag and its Upscale button's reason, and the rest as before (Sol-H3, the
+        default, is picked in a new browser)."""
+        out = self.run_ui_test("1", models=BOTH)
+        for check in (f"PASS fields unchanged after model -> {TURBO}", "PASS fields unchanged after model -> sol-h3",
+                      f"PASS model {TURBO}: what it doesn't make yet is greyed out with the reason (7)",
+                      "PASS a disabled Upscale button says why (2 disabled)",     # its clip and the fl2va one
+                      "PASS clips of another model show it in a tag (1: ['LightX2V Turbo 576p'])",
+                      "PASS Generate keeps the models when the format differs"):
+            self.assertIn(check, out)
 
     def test_with_an_upscale(self):
         """An upscale of the t2va clip in the gallery (the experimental Upscale, which the stub studio has on). It
@@ -1694,6 +1711,495 @@ class UpscalePageOff(PageTest):
                                                         "e.textContent.trim())"), ["Remix", "Download", "Delete"])
 
 
+def form_fields(request):
+    """The text fields of a multipart POST the page sent, in their order: [(name, value)]; the names of its file
+    fields (sent empty or not) as ("<file>", name)."""
+    boundary = request.headers["content-type"].split("boundary=", 1)[1].strip('"').encode()
+    out = []
+    for part in request.post_data_buffer.split(b"--" + boundary)[1:-1]:
+        head, _, body = part.partition(b"\r\n\r\n")
+        m = re.search(rb'name="([^"]*)"(; filename=)?', head)
+        if m:
+            out.append(("<file>", m.group(1).decode()) if m.group(2) else (m.group(1).decode(), body[:-2].decode()))
+    return out
+
+
+_TABLE = []
+
+
+def models_table():
+    """The models' table a studio with LightX2V Turbo on serves (/api/state "models"), read once from a stub studio."""
+    if not _TABLE:
+        root = Path(tempfile.mkdtemp(prefix="lf-studio-page-"))
+        try:
+            studio = StubStudio(root, preload=False, models=BOTH).start()
+            try:
+                _TABLE.append(studio.state()["models"])
+            finally:
+                studio.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    return _TABLE[0]
+
+
+class ModelPage(PageTest):
+    """For the page tests of the model choice: LightX2V Turbo on (LFSTUDIO_MODELS=sol-h3,lightx2v-turbo), with
+    tests/stub/h3turbo_job.py and tests/stub/h3turbo_encode.py standing in for its job and prompt encode."""
+    load_s, clip_s, models = 1, 0.5, BOTH
+
+    def model(self, mid):
+        self.page.click(f'label[for="m-{mid}"]')
+
+    def size(self, value):
+        self.page.click(f'label[for="mo-{TURBO}-resolution-{value}"]')
+
+    def text(self, sel):
+        """An element's text as it reads, its lines joined by spaces."""
+        return " ".join(self.page.inner_text(sel).split())
+
+    def greyed(self):
+        """What the form shows as not offered: {name=value: the reason (its label's title)}."""
+        return dict(self.page.eval_on_selector_all('#f input[aria-disabled="true"]',
+                                                   "els => els.map(e => [e.name.replace(/^opt:[^:]*:/, '') + '=' + "
+                                                   "e.value, e.nextElementSibling.title])"))
+
+    def fields(self):
+        """The form's own fields: mode, format, length, prompt and seed."""
+        return self.page.evaluate("['task', 'orientation', 'seconds'].map(val).concat([prompt.value, seed.value])")
+
+    def checked(self, name):
+        return self.page.evaluate(f"val('{name}')")
+
+    def sizes(self):
+        """The Size row's choices as they read (hidden: None)."""
+        return None if self.page.is_hidden(f'#mo-{TURBO}-resolution-576p + label') else \
+            self.page.eval_on_selector_all(f'#mopts input[name="opt:{TURBO}:resolution"]',
+                                           "els => els.map(e => e.nextElementSibling.innerText.split(/\\s+/).join(' '))")
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def tags(self, jid):
+        return self.page.eval_on_selector_all(f"{self.card(jid)} .tags .tag", "els => els.map(e => e.textContent)")
+
+
+class ModelRow(ModelPage):
+    """The Model row at the top of the form, built from the studio's table: Sol-H3 (the default) and the experimental
+    LightX2V Turbo with its Size row (576p, the default, or 768p). What LightX2V Turbo doesn't make yet is greyed out
+    with the reason, and no field changes another: a pick it can't make disables Generate, which says why. The header,
+    the times and Generate's label follow the model; the choices persist; Generate sends the model and its options."""
+
+    def test_the_row_and_what_each_model_offers(self):
+        self.assertTrue(self.page.is_visible("#msec"))
+        self.assertEqual(self.page.eval_on_selector_all("#mseg input", "els => els.map(e => [e.value, e.checked])"),
+                         [["sol-h3", True], [TURBO, False]])
+        self.assertEqual(self.page.eval_on_selector_all("#mseg label", "els => els.map(e => e.innerText.split(/\\s+/)"
+                                                                       ".join(' '))"),
+                         ["Sol-H3 ~60 s", "LightX2V Turbo experimental · ~3:20 min"])
+        self.assertEqual(self.page.get_attribute("#msec .lbl", "title"),
+                         "The same seed makes a different clip in another model")
+        self.assertEqual(self.text("#mabout"), "NVIDIA's Sol two-stage pipeline: a MiniMax-H3 draft at 384p refined "
+                                               "by LTX-2.5")
+        self.assertEqual((self.greyed(), self.sizes()), ({}, None))          # Sol-H3 makes everything; no options
+        self.assertEqual(self.text(".brand p"), "MiniMax H3 draft → LTX-2.5 refine · 1344×768 video with sound, on "
+                                                "one DGX Spark")
+        # a pick LightX2V Turbo doesn't make yet: Keyframes, 9:16, 10 s, with a prompt; picking it changes none of it
+        self.pick("task", "fl2va")
+        self.pick("orientation", "portrait")
+        self.pick("seconds", "10")
+        self.page.fill("#prompt", "keep me")
+        before = self.fields()
+        self.model(TURBO)
+        self.assertEqual(self.fields(), before)
+        self.assertEqual(self.greyed(), {"task=ref2va": NOT_REF2VA,
+                                         **{f"seconds={s}": NOT_LONGER for s in (6, 7, 8, 10, 12, 15)}})
+        self.assertTrue(self.page.is_disabled("#go"))
+        self.assertEqual(self.text("#go"), "Generate · not with LightX2V Turbo yet")
+        self.assertEqual((self.text("#err"), self.page.get_attribute("#go", "title")), (NOT_LONGER, NOT_LONGER))
+        self.assertEqual((self.text("#lenout"), self.page.is_hidden("#reloadnote")), ("", True))
+        self.assertEqual(self.sizes(), ["576p 576×1024", "768p 768×1344"])       # no time at 10 s
+        self.assertEqual(self.text("#mabout"), "The full MiniMax-H3 in one stage with LightX2V's turbo LoRA: keeps "
+                                               "the look of your keyframe")
+        self.assertEqual(self.text("#fl .lbl small"), "first or both")
+        self.assertEqual(self.text("#loadrule"), "Each LightX2V Turbo clip loads its model itself, and closes the "
+                                                 "Sol-H3 models first if they are loaded.")
+        # a length it makes: Generate with its estimated time; the header names it with its size
+        self.pick("seconds", "5")
+        self.assertFalse(self.page.is_disabled("#go"))
+        self.assertIsNone(self.page.get_attribute("#go", "title"))
+        self.assertEqual((self.text("#go"), self.text("#err")), ("Generate · LightX2V Turbo · ~3:20 min est.", ""))
+        self.assertEqual(self.text("#lenout"), "~3:20 min per clip, estimated")
+        self.assertEqual(self.text(".brand p"), "LightX2V Turbo (experimental) · 576×1024 video with sound, on one "
+                                                "DGX Spark")
+        self.assertEqual(self.sizes(), ["576p 576×1024 · ~3:20 min", "768p 768×1344 · ~6:00 min"])
+        self.assertEqual(self.checked(f"opt:{TURBO}:resolution"), "576p")
+        self.size("768p")
+        self.assertEqual((self.text("#go"), self.text("#res")), ("Generate · LightX2V Turbo · ~6:00 min est.", "768×1344"))
+        self.pick("orientation", "landscape")
+        self.assertEqual((self.text("#res"), self.sizes()), ("1344×768", ["576p 1024×576 · ~3:20 min",
+                                                                          "768p 1344×768 · ~6:00 min"]))
+        self.assertEqual(self.fields(), ["fl2va", "landscape", "5", "keep me", "42"])
+        # Reference: greyed, picked anyway (it stays picked: no field changes another), Generate says why
+        self.page.click('input[name="task"][value="ref2va"] + label', force=True)
+        self.assertEqual((self.checked("task"), self.text("#err"), self.page.is_disabled("#go")),
+                         ("ref2va", NOT_REF2VA, True))
+        self.assertEqual(self.page.get_attribute('input[name="task"][value="ref2va"] + label', "title"), NOT_REF2VA)
+        self.pick("task", "fl2va")
+        self.assertEqual((self.text("#err"), self.page.is_disabled("#go")), ("", False))
+        # Keyframes: a last frame alone can't run yet; with a first frame it can
+        self.page.set_input_files('input[name="last_frame"]', files=[{"name": "last.png", "mimeType": "image/png",
+                                                                       "buffer": png()}])
+        self.page.wait_for_function("t => document.getElementById('err').textContent === t", arg=NOT_LAST)
+        self.assertTrue(self.page.is_disabled("#go"))
+        self.page.set_input_files('input[name="first_frame"]', files=[{"name": "first.png", "mimeType": "image/png",
+                                                                        "buffer": png()}])
+        self.page.wait_for_function("document.getElementById('err').textContent === ''")
+        self.assertFalse(self.page.is_disabled("#go"))
+        # kept by this browser: the model and its size (each field on its own)
+        self.page.reload()
+        self.page.wait_for_timeout(500)
+        self.assertEqual((self.checked("model"), self.checked(f"opt:{TURBO}:resolution"), self.text("#res")),
+                         (TURBO, "768p", "1344×768"))
+        self.assertEqual(self.page.evaluate("[localStorage['lfstudio.model'], "
+                                            f"localStorage['lfstudio.opt.{TURBO}.resolution']]"), [TURBO, "768p"])
+        self.assertEqual(self.fields(), ["fl2va", "landscape", "5", "keep me", "42"])
+        # back to Sol-H3: nothing greyed, no Size row, its header and times; a length LightX2V Turbo lacks is fine
+        self.model("sol-h3")
+        self.pick("seconds", "10")
+        self.assertEqual((self.greyed(), self.sizes(), self.text("#err"), self.page.is_disabled("#go")),
+                         ({}, None, "", False))
+        self.assertEqual(self.text(".brand p"), "MiniMax H3 draft → LTX-2.5 refine · 1344×768 video with sound, on "
+                                                "one DGX Spark")
+        self.assertEqual((self.text("#go"), self.text("#lenout")), ("Generate · loads the models first",
+                                                                    "~2:05 min per clip"))
+        self.assertEqual(self.text("#fl .lbl small"), "one or both")
+        self.assertEqual(self.page.eval_on_selector_all("#mseg label", "els => els.map(e => e.innerText.split(/\\s+/)"
+                                                                       ".join(' '))"),
+                         ["Sol-H3 ~2:05 min", "LightX2V Turbo experimental"])       # no LightX2V Turbo time at 10 s
+        self.assertTrue(self.page.evaluate("document.getElementById('loadrule').textContent.startsWith('If the mode')"))
+        self.assertEqual(self.page.evaluate("localStorage['lfstudio.model']"), "sol-h3")
+
+    def test_generate_sends_the_model_and_its_options(self):
+        self.model(TURBO)
+        self.size("768p")
+        self.page.fill("#prompt", "a turbo clip")
+        with self.page.expect_request("**/api/generate") as request:
+            self.page.click("#go")
+        sent = form_fields(request.value)
+        self.assertEqual([f for f in sent if f[0] != "<file>"],
+                         [("model", TURBO), ("task", "t2va"), ("orientation", "landscape"), ("seconds", "5"),
+                          ("prompt", "a turbo clip"), ("seed", "42"), ("resolution", "768p"), ("steps", "4")])
+        jid = self.studio.wait_for(lambda s: s["jobs"])["jobs"][0]["id"]
+        job = self.studio.wait([jid])[0]
+        self.assertEqual((job["status"], job["model"], job["model_opts"]["resolution"], job["model_opts"]["size"]),
+                         ("done", TURBO, "768p", [1344, 768]))
+        self.model("sol-h3")
+        self.page.fill("#prompt", "a sol clip")
+        with self.page.expect_request("**/api/generate") as request:
+            self.page.click("#go")
+        self.assertEqual([f for f in form_fields(request.value) if f[0] != "<file>"],
+                         [("model", "sol-h3"), ("task", "t2va"), ("orientation", "landscape"), ("seconds", "5"),
+                          ("prompt", "a sol clip"), ("seed", "42")])
+        jobs = self.studio.wait_for(lambda s: len(s["jobs"]) == 2)["jobs"]
+        sol = self.studio.wait([next(j["id"] for j in jobs if j["id"] != jid)])[0]
+        self.assertEqual(sol["status"], "done")
+        self.assertNotIn("model_opts", sol)
+
+    def test_ctrl_enter_on_a_pick_it_cant_make(self):
+        """Ctrl+Enter submits the form without Generate: a pick the model can't make is not sent either."""
+        self.model(TURBO)
+        self.page.click('input[name="seconds"][value="8"] + label', force=True)
+        self.page.fill("#prompt", "too long")
+        self.page.evaluate("document.getElementById('err').textContent = ''")
+        requests = []
+        self.page.on("request", lambda r: requests.append(r.url) if "/api/generate" in r.url else None)
+        self.page.focus("#prompt")
+        self.page.keyboard.press("Control+Enter")
+        self.page.wait_for_function("t => document.getElementById('err').textContent === t", arg=NOT_LONGER)
+        self.page.wait_for_timeout(300)
+        self.assertEqual(requests, [])
+
+
+class ModelCards(ModelPage):
+    """A LightX2V Turbo clip's card: its model in a tag of its own (none on Sol-H3's cards, which look as before), its
+    Upscale button disabled with the reason, the server's file name for Download; Remix brings each clip's model and
+    options back."""
+
+    def test_cards_and_remix(self):
+        sol = self.studio.generate(seed=21, prompt="a sol clip")[1]["id"]
+        turbo = self.studio.turbo(seed=22, prompt="a turbo clip", orientation="portrait", resolution="768p")[1]["id"]
+        self.assertEqual([j["status"] for j in self.studio.wait([sol, turbo])], ["done", "done"])
+        for jid in (sol, turbo):
+            self.page.wait_for_selector(f"{self.card(jid)} video")
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        self.assertEqual(self.tags(sol), ["Text", "16:9", "5 s"])
+        self.assertEqual(self.tags(turbo), ["Text", "9:16", "5 s", "LightX2V Turbo 768p"])
+        up = f"{self.card(turbo)} .act.up"
+        why = "Upscale of LightX2V Turbo clips comes in a later version"
+        self.assertEqual((self.page.get_attribute(up, "aria-disabled"), self.page.get_attribute(up, "title")),
+                         ("true", why))
+        self.page.click(up, force=True)                                      # the reason, also on a phone
+        self.page.wait_for_function("t => document.getElementById('toast').textContent === t", arg=why)
+        self.assertTrue(self.page.is_hidden("#uppop"))
+        self.assertEqual(self.page.get_attribute(f"{self.card(sol)} .act.up", "aria-disabled"), "false")
+        self.assertEqual(self.page.get_attribute(f"{self.card(turbo)} a.act", "download"),
+                         f"lf-studio_{TURBO}-768p_t2va_5s_seed22_{turbo[:6]}.mp4")
+        self.assertEqual(self.page.get_attribute(f"{self.card(sol)} a.act", "download"), "lf-studio_t2va_5s_seed21.mp4")
+        self.assertIn("incl. model load", self.page.inner_text(f"{self.card(turbo)} .when"))
+        # Remix: the LightX2V Turbo clip's model, size and format come back, and are kept
+        self.page.click(f"{self.card(turbo)} .reuse-all")
+        self.page.wait_for_function("document.getElementById('toast').textContent === 'Settings loaded'")
+        self.assertEqual([self.checked(n) for n in ("model", f"opt:{TURBO}:resolution", "task", "orientation",
+                                                    "seconds")], [TURBO, "768p", "t2va", "portrait", "5"])
+        took = self.page.evaluate(f"fmtS({self.studio.job(turbo)['e2e_s']})")       # measured: no longer estimated
+        self.assertEqual((self.text("#res"), self.text("#go")), ("768×1344", f"Generate · LightX2V Turbo · ~{took}"))
+        self.assertEqual((self.page.input_value("#prompt"), self.page.input_value("#seed")), ("a turbo clip", "22"))
+        self.assertEqual(self.page.evaluate("[localStorage['lfstudio.model'], "
+                                            f"localStorage['lfstudio.opt.{TURBO}.resolution']]"), [TURBO, "768p"])
+        # and the Sol-H3 clip's: Sol-H3, no Size row, its header
+        self.page.click(f"{self.card(sol)} .reuse-all")
+        self.page.wait_for_function("document.getElementById('toast').textContent === 'Settings loaded'")
+        self.assertEqual([self.checked(n) for n in ("model", "orientation")], ["sol-h3", "landscape"])
+        self.assertEqual((self.sizes(), self.text("#res"), self.text("#pipe")),
+                         (None, "1344×768", "MiniMax H3 draft → LTX-2.5 refine"))
+        self.assertEqual(self.page.evaluate("localStorage['lfstudio.model']"), "sol-h3")
+        self.assertEqual(self.page.evaluate(f"localStorage['lfstudio.opt.{TURBO}.resolution']"), "768p")  # its own
+
+
+class ModelRunning(ModelPage):
+    """A LightX2V Turbo clip after a Sol-H3 clip, its stand-ins slowed down: Generate's label says it closes the Sol-H3
+    models first; the card and the status line say where the clip is (closing Sol-H3, encoding the prompt, loading,
+    each step, decoding, saving), Unload is hidden, and the clip's time is used once measured. Cancel stops one."""
+
+    def seed(self):
+        self.studio.env.update(STUB_H3TURBO_S="21", STUB_QWEN_S="3", STUB_CLOSE_S="3")
+
+    def watch(self, jid, until):
+        """The distinct [card's line, its status tag, the status line, the status dot, Unload hidden] seen while the
+        clip runs, until until(its record) holds."""
+        seen, deadline = [], time.time() + 90
+        while time.time() < deadline:
+            row = self.page.evaluate("""id => {const c = document.querySelector(`article[data-id="${id}"]`);
+                const small = c && c.querySelector('.ph2 .small');
+                return [small ? small.textContent : null, c ? c.querySelector('.st').textContent : null,
+                        document.getElementById('loaded').textContent, document.getElementById('status').dataset.s,
+                        document.getElementById('unload').hidden];}""", jid)
+            if not seen or seen[-1] != row:
+                seen.append(row)
+            if until(self.studio.job(jid)):
+                return seen
+            self.page.wait_for_timeout(150)
+        self.fail(f"the clip did not get there: {seen}")
+
+    def test_progress(self):
+        sol = self.studio.generate(seed=31)[1]["id"]
+        self.assertEqual(self.studio.wait([sol])[0]["status"], "done")
+        self.page.wait_for_function("document.getElementById('loaded').textContent.endsWith('ready')")
+        self.assertEqual(self.text("#loaded"), "Sol-H3 · Text · 16:9 · 5 s · ready")
+        self.model(TURBO)
+        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~4:00 min est.")
+        self.page.fill("#prompt", "a slow one")
+        self.page.click("#go")
+        jid = next(j["id"] for j in self.studio.wait_for(lambda s: len(s["jobs"]) == 2)["jobs"] if j["id"] != sol)
+        seen = self.watch(jid, lambda j: j["status"] == "done")
+        status = "LightX2V Turbo · Text · 16:9 · 5 s · 576p · "
+        want = [("Freeing memory · closing the Sol-H3 models", "Freeing memory", status + "closing Sol-H3"),
+                ("Encoding the prompt", "Encoding", status + "encoding the prompt"),
+                ("Loading LightX2V Turbo", "Loading model", status + "loading"),
+                *[(f"Generating · step {i}/4", "Generating", status + f"step {i}/4") for i in (1, 2, 3, 4)],
+                ("Decoding", "Generating", status + "decoding"), ("Saving", "Generating", status + "saving")]
+        # each (card, its tag, the status line) with the status dot busy and no Unload, in this order
+        got = [(small, st, loaded) for small, st, loaded, dot, unload in seen if small and dot == "busy" and unload]
+        self.assertEqual([w for w in want if w not in got], [], seen)
+        self.assertEqual(sorted(want, key=got.index), want, seen)
+        self.page.wait_for_selector(f"{self.card(jid)} video")
+        self.assertEqual(self.text("#loaded"), "not loaded")
+        self.assertRegex(self.text(f"{self.card(jid)} .when"), r" · \d\d s incl. model load$")
+        measured = self.studio.job(jid)["e2e_s"]
+        self.page.wait_for_timeout(2200)                                     # a poll with the measured time
+        self.assertNotIn("est.", self.text("#go"))
+        self.assertEqual(self.text("#go"), "Generate · LightX2V Turbo · ~"
+                         + self.page.evaluate(f"fmtS({measured})"))
+
+    def test_meanwhile_and_cancel(self):
+        jid = self.studio.turbo(seed=32, task="fl2va", orientation="portrait", resolution="768p",
+                                files={"first_frame": [("first.png", png())]})[1]["id"]
+        card = self.card(jid)
+        self.page.wait_for_function("id => (document.querySelector(`article[data-id='${id}'] .ph2 .small`) || "
+                                    "{textContent: ''}).textContent.startsWith('Generating · step')", arg=jid,
+                                    timeout=60000)
+        self.assertRegex(self.text("#loaded"), r"^LightX2V Turbo · Keyframes · 9:16 · 5 s · 768p · step \d/4$")
+        self.assertEqual(self.tags(jid), ["Keyframes", "9:16", "5 s", "LightX2V Turbo 768p"])
+        # meanwhile nothing will be loaded after it: neither model has models to close first
+        self.model(TURBO)
+        self.assertEqual(self.text("#go"), "Generate · LightX2V Turbo · ~3:20 min est.")
+        self.model("sol-h3")
+        self.assertEqual(self.text("#go"), "Generate · loads the models first")
+        # a Sol-H3 clip queued after it: a LightX2V Turbo clip after that one closes its models first
+        sol = self.studio.generate(seed=33)[1]["id"]
+        self.page.wait_for_selector(f'{self.card(sol)}[data-status="queued"]')
+        self.assertEqual(self.text(f"{self.card(sol)} .ph2 .small"), "next up")
+        self.model(TURBO)
+        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~4:00 min est.")
+        self.assertEqual(self.page.get_attribute(f"{card} .cancel", "title"), "Stop this clip")
+        self.page.click(f"{card} .cancel")
+        self.page.wait_for_function("document.getElementById('toast').textContent === 'Stopping the clip'")
+        self.page.wait_for_selector(f'{card}[data-status="cancelled"]', timeout=30000)
+        self.assertEqual(self.text(f"{card} .ph2 .big"), "Cancelled")
+        self.assertEqual(self.studio.wait([sol])[0]["status"], "done")        # the Sol-H3 clip after it runs
+        self.page.wait_for_function("document.getElementById('loaded').textContent === "
+                                    "'Sol-H3 · Text · 16:9 · 5 s · ready'")
+
+
+class ModelOffRecord(PageTest):
+    """A LightX2V Turbo clip made while the model choice was on, on a studio where it is off now: no Model row; its
+    card still names its model, and Remix brings it back as Sol-H3 and says so."""
+    load_s, clip_s = 1, 0.5
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([
+            finished_job("d" * 32, seed=8, model=TURBO, model_opts={"resolution": "576p", "steps": 4,
+                                                                   "size": [1024, 576]})]))
+
+    def test_card_and_remix(self):
+        card = f'article[data-id="{"d" * 32}"]'
+        self.page.wait_for_selector(card)
+        self.assertTrue(self.page.is_hidden("#msec"))
+        self.assertEqual(self.page.eval_on_selector_all(f"{card} .tags .tag", "els => els.map(e => e.textContent)"),
+                         ["Text", "16:9", "5 s", f"{TURBO} 576p"])
+        self.page.click(f"{card} .reuse-all")
+        self.page.wait_for_function("t => document.getElementById('toast').textContent === t",
+                                    arg=f"Settings loaded as Sol-H3 ({TURBO} is off on this studio)")
+        self.assertEqual(self.page.evaluate("val('model')"), "")
+        self.assertIn("loads the models first", self.go_text())
+
+
+# what the page shows and sends, for ModelChoiceOffPage: the form's and the header's texts, Generate, the titles and
+# aria-disabled values shown, the form's text fields and what this browser keeps
+LOOK = """() => {const shown = e => e.getClientRects().length > 0, f = document.getElementById('f');
+  return {form: f.innerText, header: document.querySelector('.top').innerText,
+          go: document.getElementById('go').outerHTML, prompt: document.getElementById('prompt').placeholder,
+          titles: [...f.querySelectorAll('[title]')].filter(shown).map(e => e.title),
+          greyed: [...f.querySelectorAll('[aria-disabled]')].filter(shown).length,
+          sent: [...new FormData(f).entries()].map(([k, v]) => typeof v === 'string' ? [k, v] : [k, v.name]),
+          err: document.getElementById('err').textContent,
+          toast: document.getElementById('toast').textContent,
+          kept: Object.fromEntries(Object.keys(localStorage).sort().map(k => [k, localStorage.getItem(k)]))};}"""
+GALLERY = """() => [...document.querySelectorAll('#jobs .job')].map(c => ({
+  text: c.innerText, status: c.dataset.status, kind: c.dataset.kind || null,
+  buttons: [...c.querySelectorAll('.acts > *')].filter(e => e.offsetWidth).map(e => [e.textContent.trim(), e.title,
+            e.getAttribute('aria-disabled'), e.getAttribute('download')])}))"""
+
+
+@unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")
+class ModelChoiceOffPage(unittest.TestCase):
+    """With the model choice off (LFSTUDIO_MODELS unset, the default) the page is v0.5.1's: side by side with v0.5.1's
+    own server and page (from git; skipped in a copy without that history), seeded with the same clips, in the same
+    browser: the same pixels (light and dark, 1280 px and a phone), and after the same clicks (every mode, format and
+    length, a chip, a Remix of a 9:16 10 s clip and of a Text one, a refused Generate, a Generate and its clip) the same
+    texts, buttons and titles, the same request and the same choices kept in localStorage."""
+    T0 = 1_760_000_000
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pw = sync_playwright().start()
+        cls.browser = cls.pw.webkit.launch()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.pw.stop()
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="lf-studio-page-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        old = release_server("v0.5.1", self.d / "v0.5.1-src")
+        if not old:
+            self.skipTest("v0.5.1 is not in this copy's git history")
+        jobs = [finished_job("a" * 32, created=self.T0, seed=11, prompt="a wide one", e2e_s=61.2),
+                finished_job("b" * 32, orientation="portrait", seconds=10, created=self.T0 + 60, seed=12,
+                             prompt="an upright one", e2e_s=130.4, cold_start_s=101.2),
+                finished_job("c" * 32, created=self.T0 + 120, seed=13, status="failed", prompt="a failed one",
+                             error="RuntimeError: the worker died")]
+        self.studios = {}
+        for name, server in (("now", None), ("v0.5.1", old)):
+            s = StubStudio(self.d / name, load_s=1, clip_s=0.5, preload=False, server=server)
+            (s.state_dir / "jobs.json").write_text(json.dumps(jobs))
+            self.studios[name] = s.start()
+            self.addCleanup(s.stop)
+
+    def page(self, studio, **context):
+        ctx = self.browser.new_context(**({"viewport": {"width": 1280, "height": 900}} | context))
+        self.addCleanup(ctx.close)
+        page = ctx.new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        self.addCleanup(lambda: self.assertEqual(errors, [], "errors in the page"))
+        page.goto(studio.url + "/")
+        page.wait_for_timeout(2500)                                          # two polls
+        return page
+
+    def both(self, fn):
+        """fn(studio) on each: {name: result}; then the same, or the difference shown."""
+        got = {name: fn(s) for name, s in self.studios.items()}
+        self.assertEqual(got["now"], got["v0.5.1"])
+        return got["now"]
+
+    def test_the_same_pixels(self):
+        for context in ({"color_scheme": "light"}, {"color_scheme": "dark"},
+                        {"viewport": {"width": 390, "height": 844}, "is_mobile": True, "device_scale_factor": 2,
+                         "color_scheme": "dark"}):
+            shots = {}
+            for name, s in self.studios.items():
+                page = self.page(s, **context)
+                shots[name] = page.screenshot(full_page=True, animations="disabled")
+                (self.d / f"{name}-{len(shots)}.png").write_bytes(shots[name])
+            self.assertTrue(shots["now"] == shots["v0.5.1"], f"the page looks different ({context})")
+
+    def test_the_same_behaviour(self):
+        def walk(s):
+            page, seen = self.page(s), []
+            look = lambda what: seen.append((what, page.evaluate(LOOK)))     # noqa: E731
+            look("loaded")
+            seen.append(("gallery", page.evaluate(GALLERY)))
+            for name, value in (("task", "fl2va"), ("orientation", "portrait"), ("seconds", "10"), ("task", "ref2va"),
+                                ("seconds", "15"), ("task", "t2va"), ("orientation", "landscape"), ("seconds", "5")):
+                page.click(f'input[name="{name}"][value="{value}"] + label')
+                look(f"{name}={value}")
+            page.fill("#prompt", "")
+            page.click("#chips .chip:nth-child(2)")
+            look("a chip")
+            for jid in ("b" * 32, "a" * 32):                                 # 9:16 at 10 s, then 16:9 at 5 s
+                page.click(f'article[data-id="{jid}"] .reuse-all')
+                page.wait_for_timeout(300)
+                look(f"remix {jid[0]}")
+            page.fill("#prompt", "  ")
+            page.click("#go")
+            look("an empty prompt")
+            page.fill("#prompt", "a new clip")
+            with page.expect_request("**/api/generate") as request:
+                page.click("#go")
+            sent = form_fields(request.value)
+            jid = s.wait_for(lambda st: len(st["jobs"]) == 4)["jobs"][0]["id"]
+            s.wait([jid])
+            page.wait_for_selector(f'article[data-id="{jid}"] video')
+            page.wait_for_timeout(2200)
+            look("its clip")
+            new = page.evaluate(GALLERY)[0]
+            new["text"] = [line for line in new["text"].split("\n") if "seed" not in line]   # its time: left out
+            page.reload()
+            page.wait_for_timeout(1500)
+            look("reloaded")
+            return seen, sent, new
+
+        seen, sent, new = self.both(walk)
+        self.assertEqual([f for f in sent if f[0] != "<file>"], [("task", "t2va"), ("orientation", "landscape"),
+                                                                ("seconds", "5"), ("prompt", "a new clip"),
+                                                                ("seed", "11")])
+        self.assertEqual([b[0] for b in new["buttons"]], ["Remix", "Download", "Upscale", "Delete"])
+        self.assertEqual(len(seen), 16)
+
+
 class MachineTexts(PageTest):
     """LFSTUDIO_BACKEND (docs/RTX5090.md): the header and the note on times name the machine, and the clip-time
     estimates follow its table. Unset = the DGX Spark, as before. tests/test_backend.py checks the table and the
@@ -1712,6 +2218,26 @@ class MachineTexts(PageTest):
         self.assertEqual(self.page.inner_text("#timesnote"), "".join(m["times"]))
         self.pick("seconds", "5")
         self.assertIn(f"~{m['eta']['5']} s per clip", self.page.inner_text("#lenout"))
+
+    def test_the_model_rows_times(self):
+        """With the model choice on, Sol-H3's entry in the Model row shows the machine's time per clip, and LightX2V
+        Turbo's its own (the studio's). LightX2V Turbo is the DGX Spark's only, so the table a Spark studio serves is
+        put into /api/state here: the row is built from the first poll that has it."""
+        table = models_table()
+
+        def with_models(route):
+            response = route.fetch()
+            route.fulfill(response=response, json=dict(response.json(), models=table))
+
+        self.page.route("**/api/state", with_models)
+        self.page.wait_for_selector("#msec", state="visible")
+        m = self.page.evaluate("MACHINES")[self.backend or "spark"]
+        small = lambda mid: self.page.inner_text(f'label[for="m-{mid}"] small')           # noqa: E731
+        for seconds in ("5", "10"):
+            self.pick("seconds", seconds)
+            self.assertEqual(small("sol-h3"), "~" + self.page.evaluate(f"fmtS({m['eta'][seconds]})"))
+            self.assertEqual(small(TURBO), "experimental" + (" · ~3:20 min" if seconds == "5" else ""))
+        self.assertEqual(self.page.inner_text("#machine"), m["name"])
 
 
 class MachineTextsRtx5090(MachineTexts):

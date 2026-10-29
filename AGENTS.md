@@ -87,7 +87,14 @@ hooks. The `Turbo*` classes in `tests/test_server.py` cover the registry in `/ap
 a clip's run, files, record and names, the queue across models, the warm-ups, Cancel in each step, restart, Delete,
 memory, failures, the settings and the launcher's checks; `TurboSeam` checks the job's interface (the real job's too,
 once it is in the copy); `ModelChoiceOff` runs v0.5.1's server from git next to this one with the model choice off
-and compares what they answer. `tests/test_api.py` has the API records (`Model*`).
+and compares what they answer. `tests/test_api.py` has the API records (`Model*`). The `Model*` classes in
+`tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V Turbo doesn't make yet greyed out
+with the reason (no field changes another; Generate is disabled and says why), the header, the times and Generate's
+label per model, the request, the choices kept, the card's model tag, its Upscale button and download name, Remix,
+a clip's progress and the status line, Cancel, and a clip of a model that is off now; `ModelChoiceOffPage` loads this
+page and v0.5.1's (from git) side by side with the model choice off and compares their pixels, texts, requests and
+kept choices after the same clicks; `MachineTexts` checks Sol-H3's times in the Model row per backend.
+`tests/ui_test.py` checks the Model row when a studio has one (`UiTestScript` runs it with a LightX2V Turbo clip).
 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
