@@ -45,12 +45,15 @@ refuses such a conditioning; the Upscale's job does not); its encode.json has "u
 
 ref_text_only_prompt turns a Reference (ref2va) prompt into t2va's three fields: integrated_multimodal_description
 from detailed_description (or, without one, summary without its task tags), each <Subject N> as its definition in
-subject_definitions says it (the short form, up to its first comma, " with " or " wearing ", where the description
-restates the look; the whole definition at the first mention in a summary), overall_soundscape and
-non_diegetic_music as written; subject_definitions, retention_analysis and the task tags go, and so do the media
-references (" in the voice timbre of <Audio N>", " referenced from <Video N>", " in/of/from <Picture N>", then any
-<Picture|Video|Audio N> left). A prompt without those sections is free text: only the labels go. Dialogue is never
-changed.
+subject_definitions says it ("<Subject N> is ...", "<Subject N>: ..." or "<Subject N> - ..."; the short form, up to
+its first comma, " with " or " wearing ", where the description restates the look; the whole definition at the first
+mention in a summary; a definition naming another subject reads that one's short form; a subject without one reads
+"the subject", or "subject N" when several have none), overall_soundscape and non_diegetic_music as written;
+subject_definitions, retention_analysis and the task tags go, and so do the media references ("In <Video N>, " opening
+a sentence, " in the voice timbre of <Audio N>", " referenced from <Video N>", " in/of/from <Picture N>", then any
+<Picture|Video|Audio N> left; one that is a sentence's subject reads "The scene", or "The sound" for <Audio N>). A
+prompt without those sections is free text: only the labels go. Dialogue is never changed: labels in it stay, and
+the notes count them.
 
 Output in --case (a new or empty directory under $SOL_H3_SPARK_RUNTIME_ROOT, which is all the Qwen container sees; the
 frames must be under it too): qwen/conditioning.{pt,json} (the clip's), for fl2va qwen-text/conditioning.{pt,json},
@@ -205,7 +208,9 @@ SECTION_HEAD = re.compile(r"^[ \t]*(%s)[ \t]*:[ \t]*" % "|".join(REF_SECTIONS + 
 REF_ONLY = ("subject_definitions", "summary", "retention_analysis", "detailed_description")
 MEDIA = r"<(?:Picture|Video|Audio) \d+>"
 SUBJECT = re.compile(r"<Subject (\d+)>")
-SUBJECT_DEF = re.compile(r"^\s*<Subject (\d+)>\s+(?:is|are)\s+(.+?)\s*$")
+# a definition: "<Subject N> is ...", "<Subject N>: ...", "<Subject N> - ..." (a speaker tag "(S1)" after the label too)
+SUBJECT_DEF = re.compile(r"^\s*<Subject (\d+)>(?:\s*\(S\d+\))?(?:\s+(?:is|are)\s+|\s*:\s*|\s+[-\u2013\u2014]\s+)"
+                         r"(.+?)\s*$")
 TASK_TAGS = re.compile(r"\[(?:reference generation|keyframe completion|video editing|video continuation|audio reuse|"
                        r"audio reference)(?: \+ [a-z ]+)*\]\s*")
 # the media references, in this order: a voice or timbre taken from a recording, something referenced from a file,
@@ -217,6 +222,11 @@ REF_INLINE = (
     (re.compile(r" (?:referenced|taken|copied) from " + MEDIA), "' referenced from <... N>'"),
     (re.compile(r" (?:shown |seen |as )?(?:in|of|from|like) (?:the soundtrack of )?" + MEDIA), "' in/of/from <... N>'"),
     (re.compile(r"(?:the soundtrack of )?" + MEDIA), "'<Picture|Video|Audio N>'"))
+# a media reference that opens a sentence or clause: "In <Video 1>, the man ..." goes with its preposition and comma;
+# "<Picture 1> shows ..." becomes "The scene shows ..." ("The sound" for <Audio N>)
+LEAD_MEDIA = re.compile(r"(^|[.!?:;\]][ \t]+)(?:[Aa]s (?:shown |seen )?in|[Ii]n|[Ff]rom|[Ll]ike) " + MEDIA
+                        + r",?[ \t]*([a-z]?)")
+MEDIA_SUBJECT = re.compile(r"(^|[.!?:\]][ \t]+)<(Picture|Video|Audio) \d+>(?=[ \t]+[a-z])")
 
 
 def _sections(prompt):
@@ -255,15 +265,62 @@ def _sentence_start(before):
 
 
 def _strip_media(text, counts):
-    """`text` without its media references outside dialogue (REF_INLINE), tidied; counts what went."""
+    """`text` without its media references outside dialogue (LEAD_MEDIA and MEDIA_SUBJECT where one opens a sentence
+    or clause, then REF_INLINE), tidied; counts what went."""
     def edit(piece, before):
-        out = piece
+        def starts(m):          # where the match starts a sentence (not only a clause): what follows is capitalized
+            return m.group(1).strip()[-1:] in tuple(".!?:]") if m.group(1) else _sentence_start(before)
+
+        def lead(m):
+            if not m.group(1) and not before.rstrip().endswith(";") and not _sentence_start(before):
+                return m.group(0)                        # not where a sentence or clause starts: REF_INLINE's
+            counts["'In/From <... N>,' opening a sentence"] = counts.get("'In/From <... N>,' opening a sentence", 0) + 1
+            return m.group(1) + (m.group(2).upper() if starts(m) else m.group(2))
+
+        def subject(m):
+            if not m.group(1) and not _sentence_start(before):
+                return m.group(0)
+            label = "'<Picture|Video|Audio N>' opening a sentence -> 'The scene' / 'The sound'"
+            counts[label] = counts.get(label, 0) + 1
+            return m.group(1) + ("The sound" if m.group(2) == "Audio" else "The scene")
+        out = MEDIA_SUBJECT.sub(subject, LEAD_MEDIA.sub(lead, piece))
         for pattern, label in REF_INLINE:
             out, n = pattern.subn("", out)
             if n:
                 counts[label] = counts.get(label, 0) + n
-        return _tidy(out) if out != piece else piece
+        return re.sub(r",[ \t]*,", ",", _tidy(out)) if out != piece else piece
     return _outside_dialogue(text, edit)
+
+
+def _labels_in_dialogue(text):
+    """How many <Picture|Video|Audio|Subject N> labels `text` has inside dialogue (<d>...</d>), and outside it."""
+    counts, inside = [0, 0], False
+    for line in text.splitlines():
+        pieces, inside = _pieces(line, inside)
+        for piece, in_d in pieces:
+            counts[not in_d] += len(re.findall(MEDIA + r"|<Subject \d+>", piece))
+    return counts
+
+
+def _resolve_definitions(raw, name, notes):
+    """The subjects' {n: (full, short)} with each <Subject M> inside a definition written as M's short form, itself
+    resolved (name(M) for a subject without a definition, or one whose definition leads back to the one being
+    resolved: noted)."""
+    resolved = {}
+
+    def form(n, stack):
+        if n not in resolved:
+            def sub(m):
+                k = m.group(1)
+                if k in stack:
+                    note = f"<Subject {k}>'s definition leads back to itself: it reads '{name(k)}' there"
+                    if note not in notes:
+                        notes.append(note)
+                    return name(k)
+                return form(k, stack | {k})[1] if k in raw else name(k)
+            resolved[n] = tuple(SUBJECT.sub(sub, text) for text in raw[n])
+        return resolved[n]
+    return {n: form(n, {n}) for n in raw}
 
 
 def ref_text_only_prompt(prompt):
@@ -276,19 +333,19 @@ def ref_text_only_prompt(prompt):
         # free text, or t2va's own fields: the labels go, and <Subject N> (nothing defines it) reads "the subject"
         form = "fields" if DESCRIPTION in parts else "free"
         numbers = set(SUBJECT.findall(prompt))
-        subjects = {n: ("the subject" if len(numbers) == 1 else f"subject {n}",) * 2 for n in numbers}
+        subjects, unnamed = {n: ("the subject" if len(numbers) == 1 else f"subject {n}",) * 2 for n in numbers}, {}
         text = prompt
     else:
-        subjects = {}
+        raw = {}
         for line in re.split(r"\n|(?<=[.;])\s+(?=<)", parts.get("subject_definitions", "")):
             m = SUBJECT_DEF.match(line)
             if not m:
                 continue
-            full = _strip_media(m.group(2), {}).strip().rstrip(".; ")
+            full = _strip_media(m.group(2), {}).strip().rstrip(".;, ")
             if full:
-                subjects[m.group(1)] = (full, re.split(r",| with | wearing ", full, maxsplit=1)[0].strip())
+                raw[m.group(1)] = (full, re.split(r",| with | wearing ", full, maxsplit=1)[0].strip())
         if "subject_definitions" in parts:
-            dropped.append(f"subject_definitions ({len(subjects)} subject{'s' * (len(subjects) != 1)})")
+            dropped.append(f"subject_definitions ({len(raw)} subject{'s' * (len(raw) != 1)})")
         dropped += [name for name in ("retention_analysis",) if name in parts]
         body, form = parts.get("detailed_description") or parts.get(DESCRIPTION), "detailed"
         if body:
@@ -302,19 +359,24 @@ def ref_text_only_prompt(prompt):
         fields = [(DESCRIPTION, body)] + [(name, parts[name]) for name in ("overall_soundscape", "non_diegetic_music")
                                           if name in parts]
         text = "\n\n".join(f"{name}: {value}" for name, value in fields)
+        # a subject nothing defines (in the text or in another's definition) reads "the subject", or "subject N" when
+        # there are several such; one defined through another reads that one's short form ("the dog of the woman")
+        undefined = set(SUBJECT.findall(text + "\n".join(full for full, _ in raw.values()))) - set(raw)
+        unnamed = {n: "the subject" if len(undefined) == 1 else f"subject {n}" for n in undefined}
+        subjects = _resolve_definitions(raw, lambda n: unnamed.get(n) or f"subject {n}", notes)
+        subjects.update({n: (name,) * 2 for n, name in unnamed.items()})
     used = set()
 
     def subject(m, before):
         n = m.group(1)
-        if n not in subjects:
-            notes.append(f"<Subject {n}> has no definition: it reads 'the subject'")
-            subjects[n] = ("the subject", "the subject")
+        if n in unnamed and n not in used:
+            notes.append(f"<Subject {n}> has no definition: it reads '{unnamed[n]}'")
         full, short = subjects[n]
         if form == "summary" and n not in used:
-            used.add(n)
             words = full + ("," if "," in full and not m.string[m.end():].lstrip()[:1] in tuple(",.;:!?") else "")
         else:
             words = short
+        used.add(n)
         return words[:1].upper() + words[1:] if _sentence_start(before) else words
 
     def edit(piece, before):
@@ -330,9 +392,11 @@ def ref_text_only_prompt(prompt):
         dropped.append(f"{named} x '<Subject N>' (as its definition)")
     text = _strip_media(text, counts)
     dropped += [f"{n} x {label}" for label, n in counts.items()]
-    left = len(re.findall(MEDIA + r"|<Subject \d+>", text))
-    if left:
-        notes.append(f"{left} label(s) left as written, in dialogue")
+    in_dialogue, outside = _labels_in_dialogue(text)
+    if in_dialogue:
+        notes.append(f"{in_dialogue} label(s) left as written, in dialogue")
+    if outside:
+        notes.append(f"{outside} label(s) left as written outside dialogue")
     text = "\n".join(line.rstrip() for line in text.strip().splitlines()).strip()
     description = text if form == "free" else _sections(text)[1].get(DESCRIPTION, "")
     if not re.sub(r"\[Shot \d+\]", "", description).strip():

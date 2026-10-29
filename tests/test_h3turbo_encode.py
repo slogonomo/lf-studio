@@ -290,6 +290,66 @@ class RefTextOnlyTests(unittest.TestCase):
         self.assertEqual(result["prompt"], "integrated_multimodal_description: A red kite rises over the subject.")
         self.assertEqual(result["notes"], ["<Subject 2> has no definition: it reads 'the subject'"])
 
+    def test_several_undefined_subjects(self):
+        """Each reads "subject N" when more than one has no definition, as in free text."""
+        result = helper.ref_text_only_prompt("subject_definitions: <Subject 1> is a red kite.\ndetailed_description: "
+                                             "<Subject 2> flies <Subject 1> past <Subject 3>.")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: Subject 2 flies a red kite past "
+                                           "subject 3.")
+        self.assertEqual(result["notes"], ["<Subject 2> has no definition: it reads 'subject 2'",
+                                           "<Subject 3> has no definition: it reads 'subject 3'"])
+
+    def test_a_definition_through_another_subject(self):
+        """A definition that names another subject ("the small dog of <Subject 1>") reads that one's short form, in
+        the detailed and in the summary form; no label is left, and the trailing comma of a definition goes."""
+        defs = ("subject_definitions: <Subject 1> is a woman in a red coat, shown in <Picture 1>. <Subject 2> is the "
+                "small dog of <Subject 1>, shown in <Picture 2>.\n")
+        result = helper.ref_text_only_prompt(defs + "summary: [reference generation] <Subject 1> walks <Subject 2> in "
+                                                    "a park.\ndetailed_description: <Subject 1> walks <Subject 2> "
+                                                    "along a path; <Subject 2> barks.")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: A woman in a red coat walks the small "
+                                           "dog of a woman in a red coat along a path; the small dog of a woman in a "
+                                           "red coat barks.")
+        self.assertEqual(result["notes"], [])
+        result = helper.ref_text_only_prompt(defs + "summary: [reference generation] <Subject 1> walks <Subject 2> in "
+                                                    "a park.")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: A woman in a red coat walks the small "
+                                           "dog of a woman in a red coat in a park.")
+        self.assertIsNone(LABEL.search(result["prompt"]))
+        result = helper.ref_text_only_prompt("subject_definitions: <Subject 1> is the woman, shown in <Picture 1>.\n"
+                                             "summary: [reference generation] <Subject 1> waves at the camera.")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: The woman waves at the camera.")
+        # one that leads back to itself: noted, and no label left
+        result = helper.ref_text_only_prompt("subject_definitions: <Subject 1> is the owner of <Subject 2>. "
+                                             "<Subject 2> is the dog of <Subject 1>.\ndetailed_description: "
+                                             "<Subject 2> sits.")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: The dog of subject 1 sits.")
+        self.assertEqual(result["notes"], ["<Subject 1>'s definition leads back to itself: it reads 'subject 1' "
+                                           "there"])
+
+    def test_other_forms_of_a_definition(self):
+        """"<Subject N>: ..." and "<Subject N> - ..." define a subject too."""
+        for sep in (":", " -", " \u2013"):
+            with self.subTest(sep):
+                result = helper.ref_text_only_prompt(f"subject_definitions:\n<Subject 1>{sep} a man in a grey coat\n"
+                                                     f"<Subject 2>{sep} a dog\ndetailed_description: <Subject 1> walks "
+                                                     "<Subject 2> along a path.")
+                self.assertEqual(result["prompt"], "integrated_multimodal_description: A man in a grey coat walks a "
+                                                   "dog along a path.")
+                self.assertIn("subject_definitions (2 subjects)", result["dropped"])
+
+    def test_a_reference_opening_a_sentence(self):
+        """"In <Video 1>, ..." loses its opening and the next word is capitalized; "<Picture 1> shows ..." becomes
+        "The scene shows ..."; the labels left in dialogue alone are counted in the note."""
+        result = helper.ref_text_only_prompt("subject_definitions: <Subject 1> is the woman in <Picture 1>.\n"
+                                             "detailed_description: In <Video 1>, the man dances. <Picture 1> shows "
+                                             "the room with <Subject 1>; from <Picture 2>, a lamp glows. <Audio 1> "
+                                             "plays. She says, <d>[English] Like <Picture 1>.</d>")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: The man dances. The scene shows the "
+                                           "room with the woman; a lamp glows. The sound plays. She says, "
+                                           "<d>[English] Like <Picture 1>.</d>")
+        self.assertEqual(result["notes"], ["1 label(s) left as written, in dialogue"])
+
 
 # a stand-in of the patch's runtime package: runtime.config (load_paths, load_recipe, normalize_case,
 # prompt_tokens_mode) and runtime.pipeline.Worker, whose "qwen" run writes conditioning.pt and conditioning.json as the
