@@ -444,10 +444,11 @@ studio stopped, one clip per process as the studio runs it (its imports and the 
 LightX2V's 4-step v1.3 LoRA, the Qwen conditioning at the 384p draft canvas unless marked. Most prompt conditionings
 came from `bench/h3turbo-encode.sh`, the prompt encode the studio runs; the 10 and 14 s runs and two 5 s runs took a
 studio clip's own conditioning. 15 runs, MemAvailable 116.2-116.9 GiB at each start. These are the job's own times;
-in the studio a clip also waits for the Sol-H3 models to close when they are loaded (about 40 s), and has its poster
-made. The last three rows are a later session on the same machine (2026-10-29, after the staging run of the studio's
-queue below): one Text run each, by hand in the same way, on the conditioning of a 576p Text clip of that staging
-studio (no keyframe, so it holds for every size and length).
+in the studio a clip also waits for the Sol-H3 models to close when they are loaded (6.8 and 7.0 s through the
+studio's queue, below; up to 40 s when a worker doesn't answer), and has its poster made. The last three rows are a
+later session on the same machine (2026-10-29, after the staging run of the studio's queue below): one Text run each, by
+hand in the same way, on the conditioning of a 576p Text clip of that staging studio (no keyframe, so it holds for every
+size and length).
 
 | Clip | Rows | Step (mean) | Decode | The job's process | Lowest MemAvailable | Peak allocated |
 |---|---|---|---|---|---|---|
@@ -517,13 +518,15 @@ studio (no keyframe, so it holds for every size and length).
   the Upscale took its clips: a second studio with its own port and state, driven by `lf-cli`, one clip each). From the
   prompt encode to the poster: 191-204 s for 5 s at 576p (Text, a first frame, first + last, a last frame alone;
   estimate 200 s), 338 s at 768p (350 s), and 399 s for a 10 s clip with a first frame at 576p (400 s), queued after a
-  Sol-H3 clip, whose models it closed first. Given the same prompt, keyframes and seed as the first session's runs by
-  hand, each of these six clips' latents were identical to theirs, bit for bit, and so were the prompt encode's tensors
-  (the conditioning files differ only in the keyframe paths they record). A Cancel during the prompt encode stopped the
-  clip in 8 s, one at the job's first step in 2 s, with no process, Qwen container or GPU memory left behind; the
-  refusals (Reference, and the Upscale of such a clip, which that version did not offer yet) came back with their
-  reasons. In the Upscale's staging run later that day (this version), a 576p Text clip took 188 s and a 768p clip with
-  first and last keyframes 363 s (350 s), its 124 frames kept.
+  Sol-H3 clip, whose models it closed first: 7.0 s from the clip's start to its prompt encode, the close and the
+  memory check (`wall_s` less `e2e_s`; with nothing loaded the two are equal). Given the same prompt, keyframes and seed
+  as the first session's runs by hand, each of these six clips' latents were identical to theirs, bit for bit, and so
+  were the prompt encode's tensors (the conditioning files differ only in the keyframe paths they record). A Cancel
+  during the prompt encode stopped the clip in 8 s, one at the job's first step in 2 s, with no process, Qwen container
+  or GPU memory left behind; the refusals (Reference, and the Upscale of such a clip, which that version did not offer
+  yet) came back with their reasons. In the Upscale's staging run later that day (this version), a 576p Text clip took
+  188 s and a 768p clip with first and last keyframes 363 s (350 s), its 124 frames kept; the first closed a Sol-H3
+  Reference session in 6.8 s.
 
 ## Replay bench: Stage 2 on saved drafts
 

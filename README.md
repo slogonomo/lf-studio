@@ -135,7 +135,8 @@ models` and the MCP tool `models` list what each model makes.
   576p and 5.6 min at 768p (6 min with first and last keyframes), and a 10 s clip at 576p 6.7 min, prompt encode
   included. The studio shows an estimate per size and length until it has measured a clip of its own (about 3:20 at
   576p and 5:50 at 768p for 5 s, 11:00 and 24:00 for 15 s). A clip closes the Sol-H3 models first when they are
-  loaded (about 40 s), and the next Sol-H3 clip loads them again. A 768p clip of 12 s or more needs more free memory
+  loaded (7 s in two staging runs, up to 40 s when a worker doesn't answer), and the next Sol-H3 clip loads them
+  again. A 768p clip of 12 s or more needs more free memory
   to start (103 GiB at 12 s, 107 at 15 s, against 100). 6, 7 and 8 s, 12 s at 576p, and Keyframes clips longer than
   14 s at 576p or 10 s at 768p (only Text ran at those lengths) have not run on the GPU: their times and memory floors
   are estimates from the runs above.

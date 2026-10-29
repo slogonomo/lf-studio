@@ -492,7 +492,7 @@ const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 // its title and stays selectable, so no field changes another; a pick it can't make disables Generate and #err says
 // why. Choices persist per browser: lfstudio.model and lfstudio.opt.<model>.<option>.
 let MODELS=(()=>{try{const t=JSON.parse(($('lf-models')||{}).textContent||'null');return Array.isArray(t)?t:[];}catch(e){return [];}})();
-const CLOSE_S=40;                       // closing the loaded Sol-H3 session first (docs/PERFORMANCE.md: ~40 s)
+const CLOSE_S=7;                        // closing the loaded Sol-H3 session first (docs/PERFORMANCE.md: 6.8-7.0 s)
 const modelOf=id=>MODELS.find(m=>m.id===id);
 const multi=()=>MODELS.length>1;
 const modelDefault=()=>(MODELS.find(m=>m.default)||{}).id||'sol-h3';      // a record without a model is the default's

@@ -472,8 +472,9 @@ Cancel had to kill the encode, the studio also stops the Qwen worker it left (th
 the prompt encode left`).
 
 **A queue of Sol-H3 and LightX2V Turbo clips is slow.** Clips run in order, and each change of model costs time: a
-LightX2V Turbo clip closes the Sol-H3 models first (about 40 s), and the next Sol-H3 clip loads them again (about
-1-2 min). Nothing is warmed up after a LightX2V Turbo clip. Queue clips of one model together.
+LightX2V Turbo clip closes the Sol-H3 models first (about 7 s, up to 40 s when a worker doesn't answer), and the
+next Sol-H3 clip loads them again (about 1-2 min). Nothing is warmed up after a LightX2V Turbo clip. Queue clips of one
+model together.
 
 **The Upscale button of a LightX2V Turbo clip is greyed out.** A 5 s clip of either size can be upscaled (also with
 the model turned off since); other lengths not yet. A Keyframes clip whose prompt was only its keyframe line has no text

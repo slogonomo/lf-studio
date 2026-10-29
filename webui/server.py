@@ -466,7 +466,7 @@ MODELS = {
         # seconds a clip takes, by its options and length, until one has been measured here (remember_job_time): the
         # job's estimate_s (the GPU validation's receipts: the prompt encode, the process and its load, 4 steps by the
         # rows of the clip's sequence, the decode by its frames and pixels; measured at 576p 5, 10, 14 and 15 s and
-        # 768p 5, 10, 12 and 15 s, the rest estimated), to 10 s; +~40 s when the Sol-H3 session must close first.
+        # 768p 5, 10, 12 and 15 s, the rest estimated), to 10 s; +~7 s when the Sol-H3 session must close first.
         # tests/test_server.py TurboSeam checks them against the job, for every clip offered.
         "estimates_s": {"576p/4/5": 200, "576p/4/6": 250, "576p/4/7": 280, "576p/4/8": 310, "576p/4/10": 400,
                         "576p/4/12": 500, "576p/4/15": 660, "768p/4/5": 350, "768p/4/6": 470, "768p/4/7": 530,

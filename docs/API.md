@@ -428,7 +428,7 @@ One clip renders at a time. Measured on one DGX Spark ([PERFORMANCE.md](PERFORMA
 | t2va, the first clip after a change of task (the models load first; also after any change with `LFSTUDIO_RESHAPE=0`) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
 | The first clip of fl2va (first and last frame) / ref2va (an image and a video), 5 s | 115 s / 178 s with `infer.py` |
 | Cancel of a running clip, until the pipeline has closed | about 40 s; the next clip then loads the models again |
-| LightX2V Turbo (experimental), 4 steps ([Models](#models-experimental-lightx2v-turbo)) | In the studio's queue (a staging studio on one DGX Spark, 2026-10-29, one clip each, the prompt encode included): 191-204 s for 5 s at 576p, 338 s at 768p, 399 s for 10 s at 576p. Its job, run by hand on one DGX Spark (2026-10-28/29, one clip per process, its load included, the prompt encode not): 173-190 s for 5 s at 576p, 328-350 s at 768p; 387 s for 10 s at 576p, 813 s at 768p; 606 s for 14 s and 632 s for 15 s at 576p; 1036 s for 12 s and 1425 s for 15 s at 768p ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). The studio shows its estimate per size and length until it has measured a clip (5 s: about 3:20 at 576p, 5:50 at 768p; 15 s: about 11:00 and 24:00), plus about 40 s when the Sol-H3 models must close first |
+| LightX2V Turbo (experimental), 4 steps ([Models](#models-experimental-lightx2v-turbo)) | In the studio's queue (a staging studio on one DGX Spark, 2026-10-29, one clip each, the prompt encode included): 191-204 s for 5 s at 576p, 338 s at 768p, 399 s for 10 s at 576p. Its job, run by hand on one DGX Spark (2026-10-28/29, one clip per process, its load included, the prompt encode not): 173-190 s for 5 s at 576p, 328-350 s at 768p; 387 s for 10 s at 576p, 813 s at 768p; 606 s for 14 s and 632 s for 15 s at 576p; 1036 s for 12 s and 1425 s for 15 s at 768p ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). The studio shows its estimate per size and length until it has measured a clip (5 s: about 3:20 at 576p, 5:50 at 768p; 15 s: about 11:00 and 24:00), plus about 7 s when the Sol-H3 models must close first |
 
 Add the clips queued before it. The first run of a new setting after an install also compiles its kernels once
 (t2va 16:9 15 s: 357 s). The MP4s in one studio's publish folder were 3.2 MB on average and at most 7.7 MB (100
@@ -612,7 +612,8 @@ format, and a prompt of the keyframe line alone works too. A keyframe should hav
 (1024×576 at 576p, ...): one of another shape is stretched or cropped to fit, and `lf-cli` warns about it.
 
 **How it runs:** as a job of its own in the queue, in order with every other clip. It closes the Sol-H3 models first
-when they are loaded (`status` `freeing memory`, `phase` `unloading`; about 40 s), fails at once below
+when they are loaded (`status` `freeing memory`, `phase` `unloading`; 7 s in two staging runs, up to 40 s when a
+worker doesn't answer), fails at once below
 `LFSTUDIO_H3TURBO_MIN_FREE_GIB` of free memory (default 100; "close other apps"; the setting is a minimum: a clip
 needs at least what its job's memory model says one of its size and length takes, 90 GiB at 576p 5 s, 100 at 768p
 10 s, 103 at 768p 12 s and 107 at 768p 15 s, so a lower value does not take it below that), encodes the prompt with a
