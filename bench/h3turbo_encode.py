@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""H3 Turbo (experimental), Phase 0: one clip's prompt conditioning, encoded as the studio's server will encode it for
-an H3 Turbo clip (its encode_prompt), for jobs/h3turbo_job.py to read. GPU: a transient Qwen worker (~15 GiB while it
-lives); run it with the studio and other GPU apps stopped. bench/h3turbo-encode.sh runs it with the studio's settings
-and the Stage-1 Python, in the patched package, as bin/lf-studio runs the server:
+"""The experimental LightX2V Turbo's prompt encode (model id lightx2v-turbo): one clip's prompt conditioning, for
+jobs/h3turbo_job.py to read. The studio's server runs it for every LightX2V Turbo clip (encode_prompt: this server's
+Python in the patched package, LFSTUDIO_H3TURBO_ENCODE_SCRIPT), in a process group of its own. GPU: a transient Qwen
+worker (~15 GiB while it lives). By hand, with the studio and other GPU apps stopped, bench/h3turbo-encode.sh runs it
+with the studio's settings and the Stage-1 Python, in the patched package, as bin/lf-studio runs the server:
 
     bench/h3turbo-encode.sh --case DIR --prompt-file FILE|--prompt-from-case DIR --orientation portrait
         [--first IMG] [--last IMG] [--resolution 576p|768p] [--canvas draft|canvas] [--seed N] [--case-id ID]
@@ -20,8 +21,8 @@ canvas Qwen sees the keyframes at is the recipe's stage1 height and width (runti
 worker starts): --canvas draft keeps the 384p draft canvas every probe number was measured with (672x384 or 384x672:
 252 image tokens per keyframe), --canvas canvas sets it to the generation canvas of --resolution (576 tokens at 576p,
 1008 at 768p). The recipe goes to this Qwen worker only, never to a Stage 1. One worker, then:
-1. the clip's encode: t2va without frames, fl2va with --first and/or --last (a last frame alone is not offered by the
-   studio yet; the patch's Qwen, like diffusers, stretches it as the first keyframe given);
+1. the clip's encode: t2va without frames, fl2va with --first and/or --last (the patch's Qwen, like diffusers,
+   stretches a last frame alone as the first keyframe given);
 2. for fl2va, unless --no-text-only, a t2va encode of text_only_prompt(prompt), the Upscale's text-only input;
 then the worker closes (also on SIGTERM).
 
@@ -35,13 +36,13 @@ angle brackets too ("the composition of Picture 1"): the inline references take 
 N" anywhere else stays, and dialogue (<d>...</d>, what the model speaks) is never changed. What it kept that looks
 like a reference is listed in its notes.
 
-Output in --case (a new or empty directory under $SOL_H3_SPARK_RUNTIME_ROOT, which is all the Qwen container sees;
-the frames must be under it too): qwen/conditioning.{pt,json} (the clip's), for fl2va qwen-text/conditioning.{pt,json},
-qwen-text/prompt.txt and qwen-text/text-only.json (what was dropped, and the notes), qwen-worker/ (the worker's log)
-and encode.json (the canvas, the rows, the times, the sha256 of this helper, its wrapper and the job, and the job.json
-fields that go with it). Each encode's receipt is checked: its task, prompt, shape, payload sha256, the canvas of its
-images and its vision rows (rows - text_tokens = keyframes x (image tokens + 2)). --check validates everything,
-prints the plan and starts nothing, writes nothing.
+Output in --case (a new or empty directory under $SOL_H3_SPARK_RUNTIME_ROOT, which is all the Qwen container sees; the
+frames must be under it too): qwen/conditioning.{pt,json} (the clip's), for fl2va qwen-text/conditioning.{pt,json},
+qwen-text/prompt.txt and qwen-text/text-only.json (what was dropped, and the notes), qwen-worker/ (the worker's log) and
+encode.json (the canvas, the rows, the times, the sha256 of this helper, its wrapper and the job, and the job.json
+fields that go with it, with the job's MODEL). Each encode's receipt is checked: its task, prompt, shape, payload
+sha256, the canvas of its images and its vision rows (rows - text_tokens = keyframes x (image tokens + 2)). --check
+validates everything, prints the plan and starts nothing, writes nothing.
 Exit status: 0 done, 1 an encode failed or its receipt does not match, 2 refused (nothing started), 143 SIGTERM.
 """
 import argparse
@@ -317,8 +318,6 @@ def make_plan(args, environ, job):
             "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "notes": notes,
             "code_sha256": {"helper": file_sha256(__file__), "wrapper": file_sha256(WRAPPER),
                             "job": file_sha256(JOB_SCRIPT)}}
-    if frames and "first" not in frames:
-        plan["notes"].append("a last frame alone: the studio does not offer it yet")
     if task == "fl2va" and not args.no_text_only:
         try:
             plan["text_only"] = text_only_prompt(prompt)
@@ -415,8 +414,9 @@ def encode(plan, Worker, paths, config, case):
     finally:
         worker.close()                                          # the close op, then TERM/KILL of its group
     summary["total_s"] = round(time.monotonic() - start, 2)
-    summary["for_job"] = {"task": plan["task"], "orientation": plan["orientation"], "resolution": plan["resolution"],
-                          "conditioning": str(root / "qwen" / "conditioning.pt"), "qwen_canvas": plan["canvas_mode"],
+    summary["for_job"] = {"model": load_job_module().MODEL, "task": plan["task"], "orientation": plan["orientation"],
+                          "resolution": plan["resolution"], "conditioning": str(root / "qwen" / "conditioning.pt"),
+                          "qwen_canvas": plan["canvas_mode"],
                           "first_frame": plan["frames"].get("first"), "last_frame": plan["frames"].get("last")}
     (root / "encode.json").write_text(json.dumps(summary, indent=1) + "\n")
     return summary

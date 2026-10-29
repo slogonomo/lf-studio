@@ -1,12 +1,13 @@
-"""bench/h3turbo_encode.py (H3 Turbo, Phase 0: a clip's prompt conditioning from a transient Qwen worker, as the
-server's encode_prompt will make it) and its wrapper bench/h3turbo-encode.sh, on the CPU: text_only_prompt on every
+"""bench/h3turbo_encode.py (LightX2V Turbo's prompt encode: a clip's prompt conditioning from a transient Qwen worker,
+which the server's encode_prompt runs) and its wrapper bench/h3turbo-encode.sh, on the CPU: text_only_prompt on every
 form of the keyframe alignment line the studio writes (the prompt guide's examples, read from bin/lf-cli, and the
 page's alignLine(), read from webui/index.html), on the inline references, on lines that only start like an
 alignment line and on dialogue (never changed); the prompt as the server takes it (stripped, its length limit); the
 arguments and the environment it refuses; --check; and the encodes against a stand-in of the patch's runtime
 package (its Worker records the recipe it got and the calls, and writes conditioning files as the Qwen worker does):
 the canvas per job, the clip's encode and the text-only one, the receipt checks, the worker closed in every case.
-Standard library only. (The server's tests will get a stand-in Worker in tests/stub/runtime once the server encodes.)
+Standard library only. (The server's tests run it through its own encode() too: TurboEncodeSeam in
+tests/test_server.py; tests/stub/h3turbo_encode.py stands in for it in the stub studio.)
 """
 import hashlib
 import importlib.util
@@ -322,7 +323,7 @@ class PlanTests(Fixture):
         self.assertNotIn("text_only", plan)
         plan = self.plan("--last", str(self.last), first=False)
         self.assertEqual((plan["task"], plan["keyframes"]), ("fl2va", ["last"]))
-        self.assertIn("a last frame alone", plan["notes"][0])
+        self.assertEqual(plan["notes"], [])          # a last frame alone: the studio offers it
         plan = self.plan("--last", str(self.last), "--no-text-only")
         self.assertEqual(plan["keyframes"], ["first", "last"])
         self.assertNotIn("text_only", plan)
@@ -471,7 +472,8 @@ class ScriptTests(Fixture):
         self.assertEqual(saved["text_only"]["notes"], [])
         self.assertEqual(saved["encodes"]["qwen"]["vision_rows"], 578)
         self.assertEqual(saved["encodes"]["qwen-text"]["vision_rows"], 0)
-        self.assertEqual(saved["for_job"], {"task": "fl2va", "orientation": "landscape", "resolution": "576p",
+        self.assertEqual(saved["for_job"], {"model": "lightx2v-turbo", "task": "fl2va", "orientation": "landscape",
+                                            "resolution": "576p",
                                             "conditioning": str(self.case / "qwen" / "conditioning.pt"),
                                             "qwen_canvas": "canvas", "first_frame": str(self.first),
                                             "last_frame": None})
