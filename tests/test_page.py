@@ -1773,8 +1773,9 @@ class ModelPage(PageTest):
     def sizes(self):
         """The Size row's choices as they read (hidden: None)."""
         return None if self.page.is_hidden(f'#mo-{TURBO}-resolution-576p + label') else \
-            self.page.eval_on_selector_all(f'#mopts input[name="opt:{TURBO}:resolution"]',
-                                           "els => els.map(e => e.nextElementSibling.innerText.split(/\\s+/).join(' '))")
+            self.page.eval_on_selector_all(
+                f'#mopts input[name="opt:{TURBO}:resolution"]',
+                "els => els.map(e => e.nextElementSibling.innerText.split(/\\s+/).join(' '))")
 
     def card(self, jid):
         return f'article[data-id="{jid}"]'
@@ -1834,7 +1835,8 @@ class ModelRow(ModelPage):
         self.assertEqual(self.sizes(), ["576p 576×1024 · ~3:20 min", "768p 768×1344 · ~6:00 min"])
         self.assertEqual(self.checked(f"opt:{TURBO}:resolution"), "576p")
         self.size("768p")
-        self.assertEqual((self.text("#go"), self.text("#res")), ("Generate · LightX2V Turbo · ~6:00 min est.", "768×1344"))
+        self.assertEqual((self.text("#go"), self.text("#res")),
+                         ("Generate · LightX2V Turbo · ~6:00 min est.", "768×1344"))
         self.pick("orientation", "landscape")
         self.assertEqual((self.text("#res"), self.sizes()), ("1344×768", ["576p 1024×576 · ~3:20 min",
                                                                           "768p 1344×768 · ~6:00 min"]))
@@ -2166,6 +2168,8 @@ class ModelChoiceOffPage(unittest.TestCase):
                                 ("seconds", "15"), ("task", "t2va"), ("orientation", "landscape"), ("seconds", "5")):
                 page.click(f'input[name="{name}"][value="{value}"] + label')
                 look(f"{name}={value}")
+            seen.append(("the keyframes label's attributes",            # no data-all with the model choice off
+                         page.evaluate("[...document.querySelector('#fl .lbl small').attributes].map(a => a.name)")))
             page.fill("#prompt", "")
             page.click("#chips .chip:nth-child(2)")
             look("a chip")
@@ -2197,7 +2201,7 @@ class ModelChoiceOffPage(unittest.TestCase):
                                                                 ("seconds", "5"), ("prompt", "a new clip"),
                                                                 ("seed", "11")])
         self.assertEqual([b[0] for b in new["buttons"]], ["Remix", "Download", "Upscale", "Delete"])
-        self.assertEqual(len(seen), 16)
+        self.assertEqual(len(seen), 17)
 
 
 class MachineTexts(PageTest):

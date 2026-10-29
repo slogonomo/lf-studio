@@ -536,6 +536,7 @@ function modelUI(){const on=multi(),m=selModel(),sec=+val('seconds');setHidden($
       setAttr(i,'aria-disabled',why?'true':null);setAttr(i.nextElementSibling,'title',why||null);});
   // the keyframes it takes: "one or both" (all), else those it offers ("first or both")
   const caps=m&&(m.capabilities||{}).frames,fr=caps?caps.filter(c=>c.offered).map(c=>c.value):null,kf=document.querySelector('#fl .lbl small');
+  if(!fr&&!kf.dataset.all)return;    // the model choice off: the label as it is, no attribute added
   if(!kf.dataset.all)kf.dataset.all=kf.textContent;
   setText(kf,!fr||fr.length===caps.length?kf.dataset.all:fr.map(f=>({first:'first','last':'last','first+last':'both'}[f]||f)).join(' or '));}
 // the tag of a clip of another model than the studio's own: its name and options (those that set its size always,

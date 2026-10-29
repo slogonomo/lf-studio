@@ -106,8 +106,8 @@ with sync_playwright() as p:
     check("·" in loaded or "not loaded" in loaded, "loaded mode/format/length is shown")
 
     # the model choice (LFSTUDIO_MODELS with more than one model): picking a model changes no other field; what the
-    # selected model doesn't make yet is greyed out with the reason as its title; a pick it can't make disables Generate,
-    # and #err says why. It ends on the model it started with.
+    # selected model doesn't make yet is greyed out with the reason as its title; a pick it can't make disables
+    # Generate, and #err says why. It ends on the model it started with.
     if pg.is_visible("#msec"):
         models = pg.evaluate("[...document.querySelectorAll('#mseg input')].map(i => i.value)")
         first = chosen(pg, "model")
