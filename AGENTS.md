@@ -91,15 +91,19 @@ and the Stage-1 audio) for it to find, and the server reads MemAvailable from a 
 memory. The `Upscale*` classes in `tests/test_server.py` cover the job type (queue and its limit, Cancel and its
 SIGKILL, Delete and Undo, a request during a Delete's move, restart, warm-up, memory, failure, the checks at run time,
 the settings, the launcher's checks and `--kill`; `UpscaleEveryClip` and `UpscaleEncode` every Sol-H3 clip kind:
-Keyframes with each set of keyframes and Reference with their text encoded first, the input folder and source.json, the
-statuses in order, Cancel during the encode, a failed encode, the memory floor again after it), `TurboUpscale` LightX2V
-Turbo's clips (576p stretched, 768p linked, a last keyframe cut to 121 frames, qwen-text/ or an encode, the model turned
-off), `tests/test_api.py` its API record, the `Upscale*` classes in `tests/test_cli.py` and `tests/test_mcp.py` the
-client, and those in `tests/test_page.py` the button (disabled with the reason on clips it can't take;
-`UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the encode's phase and time, the text an upscale used
-and its clip's model; in cards too narrow for the names, Upscale and Delete show icons, so the buttons keep one row;
-`OneRowUpscaleOff` checks that row with the Upscale off), the popover, the upscale's card and `tests/ui_test.py` with an
-upscale in the gallery.
+Keyframes with each set of keyframes (also a prompt with the page's CRLF line breaks) and Reference with their text
+encoded first, the input folder and source.json, the statuses in order, the clip deleted afterwards (the upscale still
+plays), no t2va manifest, Cancel during the encode, a failed encode, the server's own checks of its receipt
+(`STUB_QWEN_FAIL` `no-conditioning`, `other-prompt`, `other-task`), the memory floor again after it;
+`BadUpscaleSettings` the start's refusals, the prompt encode and its rewrites too), `TurboUpscale` LightX2V Turbo's
+clips (576p stretched, its sound as it is; 768p linked, a last keyframe cut to 121 frames, qwen-text/ or an encode, the
+model turned off), `tests/test_api.py` its API record, the `Upscale*` classes in `tests/test_cli.py` and
+`tests/test_mcp.py` the client, and those in `tests/test_page.py` the button (disabled with the reason on clips it can't
+take; `UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a route has not run on the GPU
+through the studio, the encode's phase and time, the text an upscale used and its clip's model; in cards too narrow for
+the names, Upscale and Delete show icons, so the buttons keep one row; `OneRowUpscaleOff` checks that row with the
+Upscale off), the popover, the upscale's card and `tests/ui_test.py` with an upscale in the gallery (and the popover of
+a Keyframes clip).
 
 The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as by
 default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo on.
@@ -117,8 +121,9 @@ stand-in's, that the real job takes every clip the registry offers and gives its
 tables and answers are the real job's; and `TurboEncodeSeam` the real prompt encode's (the arguments the server gives
 it, its refusal line, the files and keys the server reads); `ModelChoiceOff` runs v0.5.1's server from git next to this
 one with the model choice off and compares what they answer, value by value, and v0.5.1's `lf-cli` with this one;
-`ServerParts` compiles parts of the server (`stop_job`, `registry_problems`, `model_refusal` on a table of two rows)
-from its source with stand-ins, for what a stub studio can't reach on cue. `tests/test_api.py` has the API records
+`ServerParts` compiles parts of the server (`stop_job`, `registry_problems`, `model_refusal` on a table of two rows,
+`link_or_copy` across filesystems, `prepare_video_command` on ffmpeg-made clips) from its source with stand-ins, for
+what a stub studio can't reach on cue. `tests/test_api.py` has the API records
 (`Model*`). The `Model*` classes in `tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V
 Turbo doesn't make yet greyed out with the reason (Reference; with `not_yet_table`, its table before its GPU validation
 put into `/api/state`, also lengths and a last frame alone; with `apart_table`, its table before 15 s and 768p 12 s ran
@@ -185,18 +190,18 @@ the sigmas, the LoRA header rules on sparse stand-in files, the conditioning che
 the command line, the environment and the progress lines against `upscale/regen2k_job.py`'s, the memory trace, the fast
 load with stand-in loaders, `--check`, the receipt when a job is done, fails, is refused, is aborted for memory or gets
 SIGTERM, and `--parent`. Its torch parts (the LoRA hooks against PEFT, the conditioning tensors, and `run()` itself on a
-tiny random-weight MiniMax-H3 at the real 576p
-canvases: t2va, a first frame, first + last and a last frame alone (the MP4 ends on the frame the last keyframe is
-anchored to), the memory abort and SIGTERM; on a small canvas 15 s, past diffusers' stock 15.0 s, with the limit raised
-for that clip and refused without it, and 14 s as stock) need torch and diffusers 0.40.0 and are skipped otherwise; run
-them with the Regen-2K Python, CUDA hidden (the command is in the file's docstring; about 2.5 min, ~6.5 GB of memory: on
-a DGX Spark where a GPU job runs, `systemd-run --user --scope -p MemoryMax=14G` keeps them from taking its memory).
-`tests/test_h3turbo_encode.py` covers `bench/h3turbo_encode.py` and its wrapper, standard library only: the text-only
-rewrite on every alignment-line form the guide and the page write, the Upscale's rewrite of a Reference prompt
-(`ref_text_only_prompt`: the guide's and the page's examples and the other forms) and its `--upscale` encode, the prompt
-as the server takes it, the refusals, `--check`, and the encodes against a stand-in of the patch's `runtime` package
-kept in the test file itself (`TurboEncodeSeam` in `tests/test_server.py` runs it with the server's arguments, the
-Upscale's too).
+tiny random-weight MiniMax-H3 at the real 576p canvases: t2va, a first frame, first + last and a last frame alone (the
+MP4 ends on the frame the last keyframe is anchored to), the memory abort and SIGTERM; on a small canvas 15 s, past
+diffusers' stock 15.0 s, with the limit raised for that clip and refused without it, and 14 s as stock) need torch and
+diffusers 0.40.0 and are skipped otherwise; run them with the Regen-2K Python, CUDA hidden (the command is in the file's
+docstring; about 2.5 min, ~6.5 GB of memory: on a DGX Spark where a GPU job runs, `systemd-run --user --scope -p
+MemoryMax=14G` keeps them from taking its memory). `tests/test_h3turbo_encode.py` covers `bench/h3turbo_encode.py` and
+its wrapper, standard library only: the text-only rewrite on every alignment-line form the guide and the page write, the
+Upscale's rewrite of a Reference prompt (`ref_text_only_prompt`: the guide's and the page's examples, the other forms of
+a definition, one through another subject, a reference opening a sentence) and its `--upscale` encode, the prompt as the
+server takes it, the refusals, `--check`, and the encodes against a stand-in of the patch's `runtime` package kept in
+the test file itself (`TurboEncodeSeam` in `tests/test_server.py` runs it with the server's arguments, the Upscale's
+too).
 
 The patch has its own 135 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 The RTX 5090 patch has 201 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).

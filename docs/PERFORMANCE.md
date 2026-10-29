@@ -304,13 +304,14 @@ What has been measured, and what not yet:
 
 | | Measured | How |
 |---|---|---|
-| LightX2V Turbo 576p Keyframes clips (a first frame), stretched to 768p | **1080p 558-576 s (~9.5 min), 2K 1107 s (16:9) and 1136 s (9:16) (~19 min)**; peak allocated 81.3 / 91.1 GiB; lowest MemAvailable 28.0-28.8 / 15.8-16.6 GiB | research runs on one DGX Spark (2026-10-28): this job with the fast load, `balanced`, the clip's audio, on folders built by hand as the studio now builds them (LANCZOS stretch, a text-only encode of each prompt without its picture references); four clips at 1080p (one 16:9, three 9:16), two at 2K; from the job's start to its MP4 without sound (the studio adds the mux, a few seconds, and closing its models, ~40 s) |
-| The upscale's prompt encode (Sol-H3 Keyframes and Reference clips; a LightX2V Turbo Keyframes clip without its own text) | 9.1-18 s in all, 1.1-1.8 s of it the encode; ~15 GiB while its Qwen worker lives | ten runs of the same helper (`bench/h3turbo_encode.py`) for LightX2V Turbo clips on the GPU, 2026-10-28 |
+| LightX2V Turbo 576p Keyframes clips (a first frame), stretched to 768p | **1080p 558-576 s (~9.5 min), 2K 1107 s (16:9) and 1136 s (9:16) (~19 min)**; peak allocated 81.3 / 91.1 GiB; lowest MemAvailable 28.0-28.8 / 15.8-16.6 GiB | research runs on one DGX Spark (2026-10-28): this job with the fast load, `balanced`, the clip's audio, on folders built by hand much as the studio now builds them, with two differences: the audio was decoded from the clip's AAC track (not its `audio.pt`), and the text alone was a Sol-H3 Text clip's own conditioning, made by the studio for each prompt without its picture references (not `bench/h3turbo_encode.py --upscale`); the LANCZOS stretch as now; four clips at 1080p (one 16:9, three 9:16), two at 2K; from the job's start to its MP4 without sound (the studio adds the mux, a few seconds, and closing its models, ~40 s) |
+| The upscale's prompt encode (Sol-H3 Keyframes and Reference clips; a LightX2V Turbo Keyframes clip without its own text) | 9.1-18 s in all, 1.1-1.8 s of it the encode; ~15 GiB while its Qwen worker lives | the times: ten runs of the same helper (`bench/h3turbo_encode.py`) for LightX2V Turbo clips on the GPU, 2026-10-28; the memory (15.1-15.4 GiB): the receipts of the studio's own Qwen encodes on the same machine |
 | The stretch of a 576p clip to 768p | 0.55-0.92 s | two clips, on the CPU |
 | Sol-H3 Keyframes and Reference clips; LightX2V Turbo 768p clips; a clip cut from 124 frames; 4K of any of these; any of them through the studio itself | **not run on the GPU yet** | expected as a Text clip's times (the same job work), plus the encode where there is one |
 
 So the page shows the Text clip's times for every 5 s clip, plus 15 s in its progress bar for an upscale whose text is
-encoded first.
+encoded first, and its popover says of every clip but a Sol-H3 Text clip that this kind of clip has not been upscaled
+on the GPU through the studio yet.
 
 **The job itself, standard load** (earlier that day, the same staging studio and 16:9 clip, an earlier version of the
 job too; 2K, `balanced`, audio `clip`):
