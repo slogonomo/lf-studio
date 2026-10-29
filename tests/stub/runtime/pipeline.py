@@ -3,8 +3,8 @@
 Loading and generating are `sleep` processes in their own sessions, like the real workers, so the server can stop
 them (a stopped warm-up, a cancelled clip). A pipeline whose worker was stopped by a signal is broken like a real one
 whose workers died: it fails until it is closed and a new one is started. Each clip is a small ffmpeg test pattern
-with a tone, with the requested format and length, next to stand-ins for the real clip's working files the Upscale
-reads (qwen/conditioning.pt and stage1/stage1_direct_tensors.pt).
+with a tone, with the requested format and length (seconds x 24 + 1 frames, as the real clips), next to stand-ins
+for the real clip's working files the Upscale reads (qwen/conditioning.pt and stage1/stage1_direct_tensors.pt).
   STUB_LOAD_S    seconds the loading pass waits before its clip (default 3)
   STUB_CLIP_S    seconds per clip once loaded (default 2)
   STUB_CLOSE_S   seconds close() takes (default 0; the real pipeline needs ~40 s)
@@ -66,11 +66,14 @@ class Pipeline:
             (request / name).parent.mkdir(parents=True, exist_ok=True)       # a real clip's working files (the
             (request / name).write_bytes(b"stub " + name.encode())          # Upscale reads them), as stand-ins
         w, h = self.size
-        out = request / "stage2" / f"refined_{w}x{h}_{self.seconds * 24 + 1}f.mp4"
+        frames = self.seconds * 24 + 1                   # as the real clips: 121 frames at 5 s
+        out = request / "stage2" / f"refined_{w}x{h}_{frames}f.mp4"
         out.parent.mkdir(parents=True, exist_ok=True)
+        # (by the pattern's length, half a frame short of the next frame: no -frames:v, which a test's ffmpeg on PATH
+        # takes for the poster's)
         subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi",
-                        "-i", f"testsrc2=s={w}x{h}:r=24:d={self.seconds}",
-                        "-f", "lavfi", "-i", f"sine=frequency=440:duration={self.seconds}", "-shortest",
+                        "-i", f"testsrc2=s={w}x{h}:r=24:d={(frames - 0.5) / 24:.4f}", "-f", "lavfi",
+                        "-i", f"sine=frequency=440:duration={frames / 24:.4f}",
                         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(out)],
                        check=True, timeout=120)
         return str(out)

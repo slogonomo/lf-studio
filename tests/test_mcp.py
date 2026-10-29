@@ -545,9 +545,9 @@ class Upscale(McpTest):
     def test_errors(self):
         ten = self.clip(seconds=10)
         m = self.mcp()
-        for args, words in (({"id": ten}, "Upscale takes 5 s clips only"), ({"id": "f" * 32}, "no such clip"),
-                            ({"id": "nope"}, "not a clip id"), ({"id": ten, "resolution": "8k"},
-                                                                "resolution must be one of 1080p, 2k, 4k"),
+        for args, words in (({"id": ten}, "Upscale takes 5 s clips for now: other lengths not yet"),
+                            ({"id": "f" * 32}, "no such clip"), ({"id": "nope"}, "not a clip id"),
+                            ({"id": ten, "resolution": "8k"}, "resolution must be one of 1080p, 2k, 4k"),
                             ({"id": ten, "seed": -1}, "seed must be 0 or more"), ({}, "id is required"),
                             ({"id": ten, "steps": 3}, 'unknown argument "steps"'),
                             ({"id": ten, "source": "draft"}, 'unknown argument "source"')):

@@ -756,8 +756,7 @@ class ModelRecord(ApiTest):
                          (name, 0, True))
         self.assertNotIn("job_phase", rec)
         self.assertEqual(rec["urls"], {"video": f"/video/{jid}", "poster": f"/poster/{jid}"})
-        self.assertEqual(rec["upscalable"], {"ok": False, "why": "Upscale of LightX2V Turbo clips comes in a later "
-                                                                 "version"})
+        self.assertEqual(rec["upscalable"], {"ok": True, "clip_audio": True})       # 768p, 121 frames: as it is
         code, headers, data = self.studio.request("GET", f"/api/jobs/{jid}/video")
         self.assertEqual((code, data[4:8], headers["Content-Disposition"]),
                          (200, b"ftyp", f'inline; filename="{name}"'))

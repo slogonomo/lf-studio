@@ -664,8 +664,9 @@ class Upscale(CliTest):
         ten = self.clip(seconds=10)
         p = self.sol("upscale", ten, "--json")
         self.assertEqual(p.returncode, 2, p.stderr)
-        self.assertEqual(json.loads(p.stdout), {"error": "Upscale takes 5 s clips only, for now (NVIDIA's pipeline "
-                                                         "is fixed at 121 frames)", "http_status": 400, "id": ten})
+        self.assertEqual(json.loads(p.stdout), {"error": "Upscale takes 5 s clips for now: other lengths not yet "
+                                                         "(NVIDIA's pipeline is fixed at 121 frames)",
+                                                "http_status": 400, "id": ten})
         p = self.sol("upscale", "f" * 32)
         self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: no such clip\n"))
         for args in (["upscale", ten, "--resolution", "8k"], ["upscale", ten, "--strength", "nvidia"],
