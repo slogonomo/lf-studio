@@ -21,7 +21,8 @@ status 143. With --parent, as the real job, it is killed when that process (the 
   STUB_H3TURBO_ABORT   1: stop at the first step as the real job does when MemAvailable falls below its
                        abort_below_gib (a receipt "aborted", exit status 3)
   STUB_H3TURBO_TERM    "ignore": SIGTERM does nothing, like the real job's handler while a long GPU call runs
-  STUB_H3TURBO_OUTPUT  "none": exit 0 without the MP4; "bad": an MP4 that ffmpeg can't read
+  STUB_H3TURBO_OUTPUT  "none": exit 0 without the MP4; "bad": an MP4 that ffmpeg can't read; "size": the MP4 at the
+                       other orientation's canvas, under the clip's name
   STUB_H3TURBO_LOG     a file each run appends a JSON line to ({"pid", "job", "argv"}), so a test can find a job and
                        its command line
 Standard library only, so it runs under -I with any Python 3.10+.
@@ -295,6 +296,8 @@ def main(argv):
         width, height = CANVAS[(job["resolution"], job["orientation"])]
         frames = kept_frames(frames_for_seconds(job["seconds"]), job["keyframes"])
         name = output_name(job)
+        if os.environ.get("STUB_H3TURBO_OUTPUT") == "size":
+            width, height = height, width
         if os.environ.get("STUB_H3TURBO_OUTPUT") != "none":
             write_mp4(out / name, width, height, frames, os.environ.get("STUB_H3TURBO_OUTPUT"))
         for stand_in in ("audio.pt", "latents.safetensors"):

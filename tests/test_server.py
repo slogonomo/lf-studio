@@ -4659,6 +4659,12 @@ class TurboFailure(TurboTest):
         job = self.failed(STUB_H3TURBO_OUTPUT="bad")
         self.assertEqual(job["error"], f"ModelJobFailed: the LightX2V Turbo job's clip_1024x576_121f.mp4 can't be "
                                        f"read; see {log(job)}")
+        publish = self.dir / "publish"                          # 576x1024 under the name of 1024x576: not taken
+        job = self.failed(STUB_H3TURBO_OUTPUT="size", LFSTUDIO_PUBLISH_DIR=str(publish))
+        self.assertEqual(job["error"], "ModelJobFailed: the LightX2V Turbo job's clip_1024x576_121f.mp4 is 576x1024, "
+                                       "not 1024x576")
+        self.assertNotIn("output", job)
+        self.assertEqual(list(publish.iterdir()), [])
 
     def test_no_python_and_no_lora(self):
         job = self.failed(LFSTUDIO_H3TURBO_PYTHON=str(self.dir / "nothing"))

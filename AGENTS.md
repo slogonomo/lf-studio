@@ -112,16 +112,17 @@ default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py 
 it (the real job's model id, settings, presets, memory floor, lengths and job.json check) and runs it; it prints the
 job's phase lines over `STUB_H3TURBO_S`, writes an MP4 at the clip's canvas with the frames the real job keeps (every
 frame made when the clip has a last frame) and a receipt, ends at once on SIGTERM (or ignores it), dies with the server
-(`--parent`), and fails, stops for memory (exit 3) or writes no or a bad MP4 on its `STUB_H3TURBO_*` hooks.
-`tests/stub/h3turbo_encode.py` stands in for its prompt encode (`LFSTUDIO_H3TURBO_ENCODE_SCRIPT`, by default
-`bench/h3turbo_encode.py`), with `STUB_QWEN_*` hooks. The `Turbo*` classes in `tests/test_server.py` cover the registry
-in `/api/state` and the page, the refusals, a clip's run (a last frame alone, the lengths), files, record and names, the
-queue across models, the warm-ups, Cancel in each step, restart, Delete, memory (the floor per size and length too),
-failures, the settings and the launcher's checks; `TurboSeam` checks the job's interface, the real job's and the
-stand-in's, that the real job takes every clip the registry offers and gives its estimates, and that the stand-in's
-tables and answers are the real job's; and `TurboEncodeSeam` the real prompt encode's (the arguments the server gives
-it, its refusal line, the files and keys the server reads); `ModelChoiceOff` runs v0.5.1's server from git next to this
-one with the model choice off and compares what they answer, value by value, and v0.5.1's `lf-cli` with this one;
+(`--parent`), and fails, stops for memory (exit 3) or writes no MP4, a bad one or one of the wrong size on its
+`STUB_H3TURBO_*` hooks. `tests/stub/h3turbo_encode.py` stands in for its prompt encode
+(`LFSTUDIO_H3TURBO_ENCODE_SCRIPT`, by default `bench/h3turbo_encode.py`), with `STUB_QWEN_*` hooks. The `Turbo*` classes
+in `tests/test_server.py` cover the registry in `/api/state` and the page, the refusals, a clip's run (a last frame
+alone, the lengths, dialogue tokens), files, record and names, the queue across models, the warm-ups, Cancel in each
+step, restart, Delete, memory (the floor per size and length too), failures, the settings and the launcher's checks;
+`TurboSeam` checks the job's interface, the real job's and the stand-in's, that the real job takes every clip the
+registry offers and gives its estimates, and that the stand-in's tables and answers are the real job's; and
+`TurboEncodeSeam` the real prompt encode's (the arguments the server gives it, its refusal line, the files and keys the
+server reads); `ModelChoiceOff` runs v0.5.1's server from git next to this one with the model choice off and
+compares what they answer, value by value, and v0.5.1's `lf-cli` with this one;
 `ServerParts` compiles parts of the server (`stop_job`, `registry_problems`, `model_refusal` on a table of two rows,
 `link_or_copy` across filesystems, `prepare_video_command` on ffmpeg-made clips) from its source with stand-ins, for
 what a stub studio can't reach on cue. `tests/test_api.py` has the API records
