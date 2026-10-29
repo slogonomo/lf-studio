@@ -130,6 +130,11 @@ comparable side by side.
   so the next clip doesn't wait for it. On a separate test studio on the same DGX Spark (2026-10-13) that took the
   lowest point of a load from 14.0-16.3 to 10.3-12.1 GiB (t2va 5 s, fl2va 10 s, a warm-up), about what the next warm
   clip reaches (11.8-12.2 GiB). [PATCH.md](PATCH.md) item 4 has the numbers.
+- Since 0.5.2 a Keyframes session also holds the LTX-2.5 VAE's encoder for the keyframe pin (608 MiB). On a test
+  studio (2026-10-29) a clip's lowest MemAvailable was 11.3 GiB with it against 11.9 GiB without at fl2va 16:9 10 s
+  (the session's first clip) and 18.5 against 19.5 GiB at 9:16 15 s; 5 s Keyframes clips went down to 12.2-12.4 GiB.
+  The resident prompt encoder still loaded during the first clip. The 110 GiB start floor and the 4 GiB guard stay
+  ([PATCH.md](PATCH.md#19-stage-2-keyframe-pin)).
 - Read-ahead into the page cache made the cold start slower (177 → 195 s): 54 GB of Stage 2 read-ahead competed
   with Stage 1's compile for disk and memory.
 
@@ -214,6 +219,7 @@ wait for it. A change of mode still reloads.
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
 | `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip, or right after a change back to 10 s or less |
 | `SOL_H3_DYNAMIC_TEXT_LENGTH` | 1 | 0 = Stage 1's body blocks compile per prompt length, not once per session |
+| `SOL_H3_STAGE2_KEYFRAME` | pin | Stage 2 holds a Keyframes clip's first frame: frame 0 at 30-38 dB against the image instead of 17-23 dB, Stage 2 time unchanged (37.4 s against 37.5 s warm at 5 s, 83.6 s against 83.8 s at 10 s), 608 MiB more resident in Keyframes sessions (the encoder's weights) and a clip's lowest MemAvailable 0.6-1.0 GiB lower (one DGX Spark, 2026-10-29; on one RTX 5090 frame 0 at 32-36 dB instead of 18-21 dB, Stage 2 15.0-15.4 s against 14.9-15.2 s warm at 5 s, the same GPU peak, 608 MiB more RAM; [PATCH.md](PATCH.md#19-stage-2-keyframe-pin)). `off` = upstream: Stage 2 repaints it |
 | `LFSTUDIO_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 | `LFSTUDIO_RESHAPE` (web UI) | 1 | 0 = another length or format closes the session and loads the models again |
 
@@ -522,11 +528,11 @@ the replay. `add` records which kind each clip was.
 | Per-step s | CUDA-event time of each call of the refiner's transformer (one per denoise step) | `step_s` |
 | Memory | torch peak allocated and reserved; lowest MemAvailable, sampled every 0.5 s during the run | `runs.csv` |
 | Settings | each run's sigmas, steps, output size, decoder tiles and upscale factor; the runtime checks it relaxes | `runs.jsonl` |
-| Arm took effect | the receipt shows the arm's step count, Sol-call count, output size, frames and decoder tiles, the refiner held the arm's sigmas, and `profile_step` wrote its profile; otherwise the run fails | `status` |
+| Arm took effect | the receipt shows the arm's step count, Sol-call count, output size, frames and decoder tiles, the refiner held the arm's sigmas, `profile_step` wrote its profile, and a keyframe arm's mode, VAE encodes and frame-0 record are in the receipt; otherwise the run fails | `status` |
 | Patch | SHA-256 of the patch applied to the package (the copy `install/10-sana.sh` keeps) and of the Stage-2 code it runs | `runs.csv` |
 | Output | SHA-256 of the MP4, and MD5 of its decoded video frames and of its decoded audio | `runs.csv` |
 | Same as baseline | decoded video and audio equal to the same draft's first warm baseline run | `runs.csv` |
-| Same as studio | baseline runs: the MP4 equal to the studio's clip of that draft, warm run against warm clip | `runs.csv` |
+| Same as studio | baseline runs: the MP4 equal to the studio's clip of that draft, warm run against warm clip (n/a when the Stage-2 audio or keyframe mode differs from the clip's) | `runs.csv` |
 | Repeats | whether the warm runs of each draft and arm are identical; the first run of each process against the warm one | `summary.md` |
 | GPU clocks | SM clock, temperature, power and throttle reasons from `nvidia-smi` at 1 Hz | `summary.md` |
 | SSIM, PSNR | ffmpeg, every frame, at the draft canvas (672×384 or 384×672): each arm against the baseline, against the `preview` arm when the run has it (how close it stays to the draft), the first run against the warm run (the noise floor), and the studio clip against the baseline | `quality/` |
@@ -558,6 +564,7 @@ edited.
 | `profile_step` | the baseline with torch.profiler around denoise step 1 (timings perturbed) | none |
 | `canvas480`, `canvas480_untiled`, `canvas480_steps2`, `preview480` | refine at 832×480 with the H3 upscaler at ×1.25 (`preview480`: no refine) | the 2×-draft output rule, the upscaler's ×2, the refiner modules' 1344×768 size; the attention-call count for `canvas480_steps2` (2 steps); for `preview480` the denoise (skipped) and the attention-call count (0 steps) |
 | `canvas384`, `preview384` | refine at 672×384, the draft's own size, without the upscaler (`preview384`: no refine) | the same three, with the upscaler skipped; for `preview384` the denoise (skipped) and the attention-call count (0 steps) |
+| `keyframe_off`, `keyframe_pin`, `keyframe_draft`, `keyframe_pin_steps2` | `SOL_H3_STAGE2_KEYFRAME` for the run ([PATCH.md](PATCH.md#19-stage-2-keyframe-pin)): no pin (as before 0.5.2), the first frame held at latent frame 0 (the default since 0.5.2), or the draft's own frame 0; `keyframe_pin_steps2` with the 2-step refine. Only fl2va drafts with a first frame are pinned; the others run as `off` | none; for `keyframe_pin_steps2` the attention-call count (2 steps) |
 
 All other runtime checks stay in force: the capture and payload checks, the shape and dtype checks between the
 upscaler, the adapter and the refiner, the Sol backend check, the writer's frame-count check and the output check.
@@ -570,6 +577,17 @@ the studio's (`runtime/pipeline.py`), and that the runtime modules still have th
 recipe's sigmas. Right after loading (Stage 2 loads in ~17 s): that the refiner has every attribute and method an
 arm changes. After each run: that the receipt and the refiner show the arm's settings (see "Arm took effect").
 A deeper change, such as an FP8 Stage 2, may need a hook in the patch.
+
+The keyframe arms are the exception: they set the patch's own keyframe mode on the session, so they need a patch with
+`SOL_H3_STAGE2_KEYFRAME` (checked before loading). Stage 2 pins only in an fl2va session, as in the studio, and a
+process loads Stage 2 for its first draft's task. So with a keyframe arm, runs are grouped by task, one process each.
+Without one, the bench's own `SOL_H3_STAGE2_KEYFRAME` applies to every run, and fl2va drafts get processes of their own
+unless it is `off` (also when it is unset: the default is `pin` since 0.5.2); `--dry` says so. Otherwise whether an
+fl2va draft is pinned would depend on which draft its process starts with. `keyframe_pin` builds the image encoder once
+in an fl2va process started with `SOL_H3_STAGE2_KEYFRAME=off` or `draft` and keeps it; with the default (`pin`) the
+encoder is loaded from the start, as in a studio session. `add` copies an fl2va clip's first and last frame with its
+draft and points the copy's `capture.json` at them, so a pin still finds them once the studio's trash is emptied (a
+draft added before this names the studio's own file).
 
 ### Reference numbers
 
