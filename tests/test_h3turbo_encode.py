@@ -349,6 +349,12 @@ class RefTextOnlyTests(unittest.TestCase):
                                            "room with the woman; a lamp glows. The sound plays. She says, "
                                            "<d>[English] Like <Picture 1>.</d>")
         self.assertEqual(result["notes"], ["1 label(s) left as written, in dialogue"])
+        # ", as in <Picture 1>." at a sentence's end leaves no comma before the full stop
+        result = helper.ref_text_only_prompt("subject_definitions: <Subject 1> is the man in <Picture 1>.\n"
+                                             "detailed_description: [Shot 1] A two-shot frames <Subject 1> on the "
+                                             "right, as in <Picture 1>. He sits.")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: [Shot 1] A two-shot frames the man on "
+                                           "the right. He sits.")
 
 
 # a stand-in of the patch's runtime package: runtime.config (load_paths, load_recipe, normalize_case,

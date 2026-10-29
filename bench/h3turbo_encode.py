@@ -288,7 +288,7 @@ def _strip_media(text, counts):
             out, n = pattern.subn("", out)
             if n:
                 counts[label] = counts.get(label, 0) + n
-        return re.sub(r",[ \t]*,", ",", _tidy(out)) if out != piece else piece
+        return re.sub(r",[ \t]*(?=[,.;:!?])", "", _tidy(out)) if out != piece else piece    # no ",," or ",."
     return _outside_dialogue(text, edit)
 
 
