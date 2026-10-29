@@ -16,6 +16,16 @@ This repository contains:
   docs/PATCH.md describes every change.
 - Among the modified files, runtime/qwen_ops/media.py contains code derived from FastVideo
   (https://github.com/hao-ai-lab/FastVideo, by Hao AI Lab), licensed under the Apache License, Version 2.0.
+- upscale/regen2k_job.py runs NVIDIA's Open-H3-Regenerate-2K (https://github.com/NVlabs/Sana, branch sol-engine,
+  models/Open-H3-Regenerate-2K; not included) and contains code adapted from it: the LoRA merge arithmetic of
+  adapters.StageMerger and the audio encode of pipeline.encode_silence. Apache License, Version 2.0. Its
+  lean_forward is adapted from MiniMaxH3TransformerBlock.forward and MiniMaxH3AttnProcessor of Diffusers
+  (https://github.com/huggingface/diffusers, 0.40.0, by The HuggingFace Team), Apache License, Version 2.0.
+  upscale/fastload.py, with which it loads the weights, is a copy of runtime/fastload.py from
+  patches/lf-studio.patch: a new file there, lf-studio's own code, not NVIDIA's.
+- install/regen2k_weights.py contains code adapted from that package's download.py (the byte-range read of Sharp's
+  AdaLN table, fetch_curve, and its file hashes), and install/constraints/regen2k-requirements.in starts from its
+  requirements.txt. Apache License, Version 2.0.
 - webui/index.html and bench/prompts/bench.jsonl contain example prompts taken or adapted from NVIDIA's
   Sol-H3-Spark (README.md and examples/prompts.jsonl), Apache License, Version 2.0. The prompt formats and section
   names in webui/index.html follow MiniMax's H3 prompt-writing guides
@@ -27,11 +37,22 @@ Sol-H3-Spark and the Sol Video Inference Engine are by NVIDIA Research:
   Yitong Li, Junsong Chen, Haopeng Li, Haozhe Liu, Jincheng Yu, Ligeng Zhu, Ping Luo, Song Han, Enze Xie.
   arXiv:2606.23743, 2026.
 
+Open-H3-Regenerate-2K, which the experimental Upscale runs, is by NVIDIA Research
+(https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/). NVIDIA asks users to cite the SoL-Refiner paper together
+with that page:
+  SoL-Refiner: Speed-of-Light One-Step Refinement for High-Resolution Video.
+  Haozhe Liu, Tian Ye, Shuchen Xue, Yitong Li, Junsong Chen, Haopeng Li, Jincheng Yu, Duomin Wang, Ruihua Zhang,
+  Lei Zhu, Song Han, Enze Xie. arXiv:2609.37969, 2026.
+  Open-H3-Regenerate-2K: High-Resolution Video Refinement with Few-Step Diffusion. Sensen Gao, Haozhe Liu,
+  Yitong Li, Haopeng Li, Tian Ye, Jia-Wang Bian, Song Han, Enze Xie. Project page, 2026.
+
 Not included here, obtained separately by the user, each under its own terms:
 
 - Model weights: MiniMaxAI/MiniMax-H3, FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA,
   lightx2v/Minimax-h3-Turbo, Comfy-Org/MiniMax-H3, Lightricks/LTX-2.5, LBH-123-AI/Minimax_h3_latent_Upscaler,
-  Efficient-Large-Model/H3-to-LTX-Latent-Adapter. See README.md, "Model terms".
+  Efficient-Large-Model/H3-to-LTX-Latent-Adapter, and for the experimental Upscale
+  Efficient-Large-Model/Open-H3-Regenerate-2K (with the LightX2V Turbo and LMS Sharp LoRAs merged into its LoRA).
+  See README.md, "Model terms".
 - Source dependencies fetched by NVIDIA's prepare.py: FastVideo (Apache-2.0), FlashAttention (BSD-3-Clause),
   ComfyUI (GPL-3.0), Lightricks LTX-2 (LTX-2.x Community License), the LBH-123-AI H3 latent upscaler
   (https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler: MIT since 2026-09-17, commit 40316cf; the

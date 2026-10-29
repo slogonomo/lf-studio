@@ -52,6 +52,11 @@ win over the file.
   dependencies/{fa4,offline-context}
   runtime/               SOL_H3_SPARK_RUNTIME_ROOT: uploads, outputs, compile cache, trash (deleted clips)
   paths-{t2va,fl2va,ref2va}.json, existing-paths.json, fixed-prompt.pt, logs/
+  # only with the optional step 65 (the experimental Upscale):
+  envs/regen2k/          its venv; bin/uv, python/ (uv's CPython 3.11) and cache/uv for it
+  sources/sana-6e4a440/  NVIDIA's Open-H3-Regenerate-2K and Sol-Attn, extracted at the pinned commit
+  Open-H3-Regenerate-2K  a link into it (LFSTUDIO_UPSCALE_PKG)
+  checkpoints/Open-H3-Regenerate-2K/   its weights (LFSTUDIO_UPSCALE_WEIGHTS), files or links
   applied.patch          up to 0.2: the patch install/10-sana.sh applied last (now kept in the checkout's git directory)
 ```
 
@@ -92,11 +97,13 @@ for a mode whose weights were not downloaded.
 | `install/40-stage1.sh` | Stage1 venv (torch 2.12+cu130, FastVideo, fastvideo-kernel built for SM121, cuDNN 9.20) and the isolated FA4 target. | 5-22 min (5.5 min on a fast connection, 22 min in the first install), ~7.6 GB with FA4 |
 | `install/50-stage2.sh` | Stage2 venv (torch 2.13+cu132, LTX-2, ltx-kernels built for SM120/121), the torchaudio CUDA-check fix, the offline-context target. | ~6 min, ~6.2 GB |
 | `install/60-qwen-image.sh` | Docker: NVIDIA's `Dockerfile.qwen` as `sol-h3-spark-qwen:base`, then this repo's `qwen-image/` layer as `sol-h3-spark-qwen`. | ~20 min (mostly pulling NGC PyTorch 25.11), ~21 GB |
+| `install/65-regen2k.sh` | Optional: only for the [experimental Upscale](#experimental-upscale). Its own venv from a hashed lock, NVIDIA's Open-H3-Regenerate-2K, its weights. Nothing to do on the RTX 5090. | -, about 3.2 GB of packages and up to 14.4 GB of weights (est.) |
 | `install/70-manifests.sh` | `prepare.py` once per mode in `LFSTUDIO_TASKS`, writing `paths-<task>.json` with `qwen_python` in the patched checkout. Also applies NVIDIA's FastVideo loader patch. | - |
 | `install/80-prompt-cache.sh` | One-time Stage2 prompt cache (`fixed-prompt.pt`) with NVIDIA's `runtime.cache_builder`. Reads ~37 GB of INT8 weights and uses the GPU for ~20 s. | 16.7 s, 12.6 MB |
 | `install/90-env.sh` | Writes `~/.config/lf-studio/env` and runs `bin/lf-studio --check`. | - |
 
-Run them in order. Don't run 40 and 50 at the same time: two `nvcc` builds at once can run the box out of memory.
+Run them in order, and skip 65 unless you want the [experimental Upscale](#experimental-upscale). Don't run 40 and
+50 at the same time: two `nvcc` builds at once can run the box out of memory.
 After 40, run `install/10-sana.sh` again to run the CPU tests with the new env.
 
 After step 80 the two offline weight files (~37 GB, INT8 Gemma and INT8 connector) are only needed to rebuild the
@@ -146,6 +153,56 @@ Other ways to run it: as an NVIDIA Sync custom app ([nvidia-sync.md](nvidia-sync
 (`LFSTUDIO_PIDFILE`) through which switchboard finds the studio again after its own restart, `--kill` as the
 command that removes leftovers, and the paths whose requests never start a stopped studio (`passive_paths`: the
 health check, and the state, clip records, waits and posters that scripts read).
+
+## Experimental: Upscale
+
+The Upscale ([README](../README.md#experimental-upscale)) is off unless `LFSTUDIO_UPSCALE=1`, and runs on the DGX Spark
+only. It needs one more step after the others (10 for the Sana clone and 20 for the MiniMax-H3 base model come
+first):
+
+```bash
+install/65-regen2k.sh --dry-run      # what it would do
+install/65-regen2k.sh
+echo LFSTUDIO_UPSCALE=1 >> ~/.config/lf-studio/env
+bin/lf-studio --check                # checks the Upscale's environment, package and weights too
+```
+
+Then restart the studio. What the step does:
+
+1. **uv 0.13.4** for aarch64, from its GitHub release, checked against the release's SHA-256, into
+   `$LFSTUDIO_HOME/bin`, and with it CPython 3.11.17 (NVIDIA's code is for Python 3.11) into `$LFSTUDIO_HOME/python`.
+   uv's cache is `$LFSTUDIO_HOME/cache/uv`, and no `uv.toml` of yours is read (`UV_NO_CONFIG=1`).
+2. **NVIDIA's code**: `models/Open-H3-Regenerate-2K` and `techniques/sparse_backends` of NVlabs/Sana at commit
+   `6e4a440`, extracted with `git archive` from the clone that `install/10-sana.sh` made (fetched into it if needed;
+   its checkout and patch are not touched) into `$LFSTUDIO_HOME/sources/sana-6e4a440`.
+   `$LFSTUDIO_HOME/Open-H3-Regenerate-2K` (`LFSTUDIO_UPSCALE_PKG`) links to the first. Nothing of it is patched;
+   `upscale/regen2k_job.py` imports it as it is.
+3. **A new venv**, `$LFSTUDIO_HOME/envs/regen2k`, never a copy of another one: `uv pip install --no-deps
+   --require-hashes` of exactly the packages in `install/freeze/regen2k-lock.txt` (torch 2.11.0+cu130, diffusers
+   0.40.0, transformers 5.6.0, ...; each with its SHA-256; its inputs and where they differ from NVIDIA's
+   `requirements.txt` are in `install/constraints/regen2k-requirements.in`), then NVIDIA's Sol-Attn, `--no-deps`. An
+   import check without the GPU then marks it done (`lf-studio-install.txt` in it). It has no `pip`.
+4. **The weights**: `Efficient-Large-Model/Open-H3-Regenerate-2K` at revision `5809c33` (the 12.5 GB LoRA, the
+   1.2 GB curve branches, the 0.7 GB latent upscaler), each checked against NVIDIA's SHA-256, in
+   `$LFSTUDIO_CHECKPOINTS/Open-H3-Regenerate-2K` (`LFSTUDIO_UPSCALE_WEIGHTS`). A copy with that SHA-256 in your Hugging
+   Face cache (`HF_HUB_CACHE`) is linked rather than copied, as is the studio's own H3-upscaler checkpoint, which is
+   the same file; the rest downloads into that directory, and nothing is written into the cache. Sharp's AdaLN table
+   (32,800 bytes, not in the release) is read by HTTP range from one tensor of `Comfy-Org/MiniMax-H3` at a pinned
+   revision, as NVIDIA's `download.py` does, and checked; unlike there, without your `HF_TOKEN` (the repository is
+   public, and a redirect to Hugging Face's CDN would take the token along). The base model is the studio's MiniMax-H3
+   (`LFSTUDIO_UPSCALE_BASE`, `$LFSTUDIO_CHECKPOINTS/MiniMax-H3`).
+5. `upscale/regen2k_job.py`'s own check of the package and the weights.
+
+Every step stops the script when it fails, and a run again goes on where it stopped. `FORCE=1` builds the venv again:
+the old one is moved aside as `envs/regen2k.<date>` (delete it once the new one works). A venv at that place that
+the script did not make is never touched; it stops instead. `LFSTUDIO_UPSCALE_PYTHON` must stay unset (or name that
+venv's Python): the step builds its own environment only. The sizes above are estimated; the step has not been run end
+to end on a fresh box yet. The Upscale's settings (strength, audio, load, preread, memory floor and guard) are in
+[bin/env.example](../bin/env.example).
+
+To remove it: set `LFSTUDIO_UPSCALE=0` (or delete the line), then remove `envs/regen2k`, `sources/sana-6e4a440`, the
+`Open-H3-Regenerate-2K` link and `checkpoints/Open-H3-Regenerate-2K` under `$LFSTUDIO_HOME`. Files it linked from the
+Hugging Face cache stay there.
 
 ## RTX 5090
 
@@ -220,7 +277,7 @@ pinned) into `~/sol-h3/bin` and GCC 14 from conda-forge into `~/sol-h3/toolchain
 **Start.** `bin/lf-studio` as on the Spark. It skips the Docker checks, and refuses to start below
 `LFSTUDIO_MIN_FREE_GIB` of free RAM (default 42 GiB on the RTX 5090) or `LFSTUDIO_MIN_FREE_VRAM_GIB` of free GPU memory
 (default 25 GiB, from `nvidia-smi`), measured on every mode ([RTX5090.md](RTX5090.md)); 0 turns
-a check off. The page says "on one RTX 5090", with clip times measured there at 3, 5, 10 and 15 s (other lengths
+a check off. The page says "on one RTX 5090", with clip times measured there at 5, 10 and 15 s (other lengths
 interpolated).
 
 Under `~/sol-h3` the RTX 5090 install also has `bin/` (uv, uvx, micromamba), `python/` (uv's CPythons),
@@ -280,6 +337,16 @@ start clean.
 On the RTX 5090 the same: `install/10-sana.sh` (with `LFSTUDIO_BACKEND=rtx5090` in the settings file) finds the earlier
 version of `patches/lf-studio-rtx5090.patch`, reverses it, moves to a new `patches/BASE_COMMIT_RTX5090` if that
 changed, and applies the new one. A new patch file is all an update of the 5090 patch needs.
+
+### After 0.5.0
+
+Clip lengths are 5, 6, 7, 8, 10, 12 and 15 s, on both backends: 3 and 4 s are gone (3 s clips never came out right).
+Nothing needs to change for a working install. Clips you made at 3 or 4 s stay in the history: they play and download
+as before, and Remix loads them at 5 s and says so. A program that asks the studio for 3 or 4 s gets 400 `duration
+must be 5, 6, 7, 8, 10, 12 or 15 seconds (3 and 4 s are no longer offered)`; `lf-cli --seconds 3` stops with a usage
+error (exit 2), and its MCP tool answers `seconds must be one of 5, 6, 7, 8, 10, 12, 15`. A copy of an earlier
+`bin/lf-cli`, or of 0.4's `bin/sol-h3`, on another machine still offers 3 and 4 s; the studio refuses them with the
+400 above (exit 2 from the CLI, a tool error over MCP).
 
 ### From 0.4 to 0.5
 

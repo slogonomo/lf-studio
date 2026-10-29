@@ -299,10 +299,10 @@ class JsonGenerate(ApiTest):
         self.assertNotIn("labels", job)
         code, rec = self.get_job(answer["id"], "?wait=30")
         self.assertEqual(rec["state"], "done")
-        jid = self.submit_ok({"prompt": "x", "task": "t2va", "orientation": "portrait", "seconds": 3, "seed": 0,
+        jid = self.submit_ok({"prompt": "x", "task": "t2va", "orientation": "portrait", "seconds": 6, "seed": 0,
                               "first_frame": None, "ref_images": None})          # null = left out
         job = self.studio.wait([jid], timeout=30)[0]
-        self.assertEqual((job["status"], job["orientation"], job["seconds"], job["seed"]), ("done", "portrait", 3, 0))
+        self.assertEqual((job["status"], job["orientation"], job["seconds"], job["seed"]), ("done", "portrait", 6, 0))
 
     def test_fl2va_object_and_data_uri(self):
         frame = png(40, 30)
@@ -453,8 +453,23 @@ class JsonGenerate(ApiTest):
             self.assertEqual(by_form["error"], by_json["error"])
         self.assertEqual(by_form["error"], "ValueError: prompt is too long (32769 characters; at most 32768)")
         self.assertEqual(self.inputs(), [])
-        jid = self.submit_ok({"prompt": "x" * 32768, "seconds": 3})
+        jid = self.submit_ok({"prompt": "x" * 32768, "seconds": 6})
         self.assertEqual(len(self.studio.job(jid)["prompt"]), 32768)
+
+    def test_lengths_offered(self):
+        """The studio offers 5, 6, 7, 8, 10, 12 and 15 s. 3 and 4 s (up to 0.5.0) get 400 with the lengths offered,
+        from JSON and the form alike, and leave nothing behind; every length offered is taken."""
+        offered = "ValueError: duration must be 5, 6, 7, 8, 10, 12 or 15 seconds"
+        for seconds in (3, 4):
+            for answer in (self.submit({"prompt": "x", "seconds": seconds}),
+                           self.studio.post("/api/generate", {"prompt": "x", "seconds": str(seconds)})):
+                self.assertEqual(answer, (400, {"error": f"{offered} (3 and 4 s are no longer offered)"}))
+        self.assertEqual(self.submit({"prompt": "x", "seconds": 9}), (400, {"error": offered}))
+        self.assertEqual((self.studio.state()["jobs"], self.inputs()), ([], []))
+        lengths = [5, 6, 7, 8, 10, 12, 15]
+        jids = [self.submit_ok({"prompt": "x", "seconds": s}) for s in lengths]
+        self.assertEqual([(j["status"], j["seconds"]) for j in self.studio.wait(jids, timeout=60)],
+                         [("done", s) for s in lengths])
 
     def test_form_answer_and_task_inferred(self):
         code, answer = self.studio.generate()
@@ -497,7 +512,7 @@ class Limits(ApiTest):
         self.assertEqual(self.studio.state()["jobs"], [])
 
     def test_small_bodies(self):
-        for path in ("/api/cancel", "/api/delete", "/api/undelete", "/api/load", "/api/unload"):
+        for path in ("/api/cancel", "/api/delete", "/api/undelete", "/api/load", "/api/unload", "/api/upscale"):
             head = f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
             self.assertEqual(raw(self.studio.port, head + f"Content-Length: {64 * 1024 + 1}\r\n\r\n"),
                              (413, {"error": "request body too large (64 KiB max)"}), path)
@@ -551,6 +566,72 @@ class QueueCapDefault(ApiTest):
                          (429, {"error": "the queue is full (20 clips waiting); try again when one has finished"}))
 
 
+class UpscaleRecord(ApiTest):
+    """An upscale (the experimental Upscale, on in the stub studio) through the API: its record while queued and
+    running, ?wait=, /video, and "upscalable" on a finished clip's record."""
+    load_s, clip_s = 2, 2
+
+    def seed(self):
+        self.studio.env["STUB_UPSCALE_S"] = "2"
+
+    def test_record_wait_and_video(self):
+        jid = self.generate()
+        rec = self.get_job(jid, "?wait=30")[1]
+        self.assertEqual(rec["upscalable"], {"ok": True, "clip_audio": True})
+        code, body = self.studio.upscale(jid, resolution="1080p")
+        self.assertEqual(code, 200, body)
+        uid = body["id"]
+        self.assertEqual((body["job"]["kind"], body["job"]["parent"], body["job"]["resolution"]),
+                         ("upscale", jid, "1080p"))
+        self.assertNotIn("source", body["job"])                               # always from the clip's MP4
+        rec = self.wait_state(uid, lambda r: r["phase"] == "upscaling")
+        self.assertEqual((rec["state"], rec["status"]), ("running", "upscaling"))
+        self.assertIn(rec["upscale_phase"], ("starting", "encoding", "loading", "refine 1/2", "refine 2/2",
+                                             "decoding", "saving", "adding the sound"))
+        self.assertGreaterEqual(rec["elapsed_s"], 0)
+        self.assertNotIn("upscalable", rec)
+        self.assertEqual(self.get_job(uid, "?wait=0.5", "/video")[0], 202)
+        code, rec = self.get_job(uid, "?wait=30")
+        self.assertEqual((code, rec["state"], rec["phase"]), (200, "done", None))
+        self.assertEqual(rec["urls"], {"video": f"/video/{uid}", "poster": f"/poster/{uid}"})
+        self.assertEqual(rec["upscalable"], {"ok": False, "why": "an upscale can't be upscaled again"})
+        code, headers, data = self.studio.request("GET", f"/api/jobs/{uid}/video?wait=5")
+        self.assertEqual((code, headers["Content-Type"], data[4:8]), (200, "video/mp4", b"ftyp"))
+        self.assertEqual(headers["Content-Disposition"],
+                         f'inline; filename="lf-studio_t2va_5s_seed1_{jid[:6]}_1080p_{uid[:6]}.mp4"')
+
+    def test_clips_run_first(self):
+        """ahead counts the jobs that run before: every clip queued runs before an upscale, even one queued later."""
+        parent = self.generate()
+        self.get_job(parent, "?wait=30")
+        a = self.generate(seed=2)
+        self.wait_state(a, lambda r: r["phase"] == "generating")
+        uid = self.studio.upscale(parent)[1]["id"]
+        b, c = self.generate(seed=3), self.generate(seed=4)
+        second = self.studio.upscale(parent, resolution="4k")[1]["id"]
+        self.assertEqual([self.get_job(j)[1]["ahead"] for j in (uid, b, c, second)], [2, 0, 1, 3])
+        rec = self.wait_state(uid, lambda r: r["state"] == "running", timeout=60)
+        self.assertEqual(self.get_job(c, "?wait=1")[1]["state"], "done")   # the clips were done before it began
+        self.assertEqual(self.get_job(second)[1]["ahead"], 0)
+        self.assertIn(rec["phase"], ("starting", "unloading", "upscaling"))
+        self.studio.wait([second], timeout=60)
+
+
+class UpscaleFailedRecord(ApiTest):
+    def seed(self):
+        self.studio.env["STUB_UPSCALE_FAIL"] = "1"
+
+    def test_failed(self):
+        jid = self.generate()
+        self.get_job(jid, "?wait=30")
+        uid = self.studio.upscale(jid)[1]["id"]
+        code, body = self.get_job(uid, "?wait=30", "/video")
+        self.assertEqual(code, 409)
+        self.assertEqual(body["error"],
+                         "the clip failed: UpscaleFailed: OutOfMemoryError: CUDA out of memory (STUB_UPSCALE_FAIL)")
+        self.assertEqual((body["job"]["state"], body["job"]["upscale_phase"]), ("failed", "refine 1/2"))
+
+
 API_OFF = {"error": "the API for programs is off on this studio (LFSTUDIO_API=0)"}
 PAGE = Path(__file__).resolve().parents[1] / "webui" / "index.html"
 
@@ -560,9 +641,9 @@ class ApiOn(ApiTest):
 
     def test_on_by_default(self):
         self.assertIs(self.studio.state()["api"], True)
-        jid = self.submit_ok({"prompt": "x", "seconds": 3})
+        jid = self.submit_ok({"prompt": "x", "seconds": 6})
         code, _, answer = self.studio.request("POST", "/api/generate", json.dumps({"prompt": "y"}).encode(),
-                                              {"Content-Type": "application/json", "X-LFStudio-Client": "lf-cli/0.5.0"})
+                                              {"Content-Type": "application/json", "X-LFStudio-Client": "lf-cli/0.5.1"})
         self.assertEqual(code, 200, answer)
         self.assertEqual(self.get_job(jid)[0], 200)
         self.studio.wait([jid, json.loads(answer)["id"]], timeout=30)
@@ -590,7 +671,7 @@ class ApiOff(ApiTest):
         b = "apioffboundary"
         form = (f'--{b}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nx\r\n--{b}--\r\n').encode()
         self.assert_off("POST", "/api/generate", form, {"Content-Type": f"multipart/form-data; boundary={b}",
-                                                        "X-LFStudio-Client": "lf-cli/0.5.0"})
+                                                        "X-LFStudio-Client": "lf-cli/0.5.1"})
         self.assertEqual(self.studio.state()["jobs"], [])                     # nothing queued, no files kept
         self.assertEqual(self.inputs(), [])
         jid = self.generate()                                                 # the page's form
@@ -602,12 +683,13 @@ class ApiOff(ApiTest):
         self.assertEqual(self.get_job("abc"), (404, {"error": "not found"}))  # not an id: not the API's path
 
     def test_the_page_works(self):
-        """Every endpoint the page calls (webui/index.html), none of them /api/jobs/<id>."""
+        """Every endpoint the page calls (webui/index.html), none of them /api/jobs/<id>. (/api/upscale, the
+        experimental Upscale's: test_upscale_is_the_pages.)"""
         page = PAGE.read_text()
         self.assertNotIn("/api/jobs/", page)
         self.assertEqual(sorted(set(re.findall(r"/api/[a-z]+", page))),
                          ["/api/cancel", "/api/delete", "/api/generate", "/api/inputs", "/api/jobs", "/api/load",
-                          "/api/state", "/api/undelete", "/api/unload"])
+                          "/api/state", "/api/undelete", "/api/unload", "/api/upscale"])
         for path in ("/", "/index.html", "/health"):
             self.assertEqual(self.studio.get(path)[0], 200, path)
         a = self.generate(task="fl2va", files={"first_frame": [("f.png", png())]})
@@ -632,6 +714,16 @@ class ApiOff(ApiTest):
         c = self.generate(seed=3)
         self.assertEqual(self.studio.post("/api/cancel", json_body={"id": c})[0], 200)
         self.assertEqual(self.studio.wait([c], timeout=30)[0]["status"], "cancelled")
+
+    def test_upscale_is_the_pages(self):
+        """POST /api/upscale is not part of the API for programs (the page's Upscale button uses it), like Cancel."""
+        jid = self.generate()
+        self.studio.wait([jid], timeout=30)
+        self.assertIs(self.studio.state()["jobs"][0]["upscalable"]["ok"], True)
+        code, body = self.studio.upscale(jid)
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.studio.wait([body["id"]], timeout=30)[0]["status"], "done")
+        self.assert_off("GET", f"/api/jobs/{body['id']}")
 
 
 class BadApiSetting(unittest.TestCase):

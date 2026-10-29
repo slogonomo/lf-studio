@@ -79,7 +79,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .seg input:focus-visible+label{outline:2px solid var(--acc);outline-offset:1px}
 .seg label small{font-weight:500;font-size:11px;color:var(--faint)}
 .aspect{display:block;border:1.8px solid currentColor;border-radius:3px}
-.len{grid-template-columns:repeat(9,minmax(0,1fr));grid-auto-flow:row}
+.len{grid-template-columns:repeat(7,minmax(0,1fr));grid-auto-flow:row}
 .len label{padding:8px 0;font-variant-numeric:tabular-nums;font-size:13px}
 
 /* drop zones (a real file input sits underneath each) */
@@ -211,6 +211,29 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .toast.undo button{border:0;border-radius:8px;padding:4px 11px;font-weight:700;font-size:13px;cursor:pointer;background:var(--acc);color:var(--accfg)}
 .act.del,.act.cancel{margin-left:auto;color:var(--mut)}
 .act.del:hover,.act.cancel:hover{border-color:var(--bad);color:var(--bad)}
+/* the experimental Upscale: a done clip's Upscale button (aria-disabled, with the reason as its title, for clips it
+   can't take) and its popover; the upscale's own card has no Remix */
+/* cards too narrow for Remix, Download, Upscale and Delete with their names on one row (#19; a phone, or a narrow
+   gallery column: fitButtons sets #jobs.tight) show Upscale and Delete as icons; their names stay in aria-label. (Not
+   a container query: a .job size container made WebKit cancel Remix's scroll to the form in one column.) */
+#jobs.tight .act.up .t,#jobs.tight .act.del .t{display:none}
+#jobs.tight .act.up,#jobs.tight .act.del{min-height:calc(1.5em + 10px)}
+.act.up[aria-disabled=true]{color:var(--faint);cursor:default}
+.act.up[aria-disabled=true]:hover{border-color:var(--line2)}
+.pop{position:absolute;z-index:8;width:min(340px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--line2);
+  border-radius:var(--r);box-shadow:var(--shadow);padding:14px 14px 12px;animation:rise .15s ease-out}
+.pop h3{margin:0;font-size:14.5px;letter-spacing:-.01em}
+.pop h3 small{font-weight:500;color:var(--faint);font-size:12px;margin-left:4px}
+.pop .lbl{margin:13px 0 6px}
+.pop .seg label{min-height:34px;padding:6px 4px}
+.opts{display:grid;gap:2px}
+.opt{display:flex;gap:9px;align-items:flex-start;padding:5px 7px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:600}
+.opt:hover{background:var(--panel2)}
+.opt input{margin:3px 0 0;flex:none;accent-color:var(--acc)}
+.opt small{display:block;font-weight:400;color:var(--mut);font-size:12px;line-height:1.4}
+.pop .note{font-size:12.5px;color:var(--warn);margin:12px 0 0}
+.pop .errtxt{margin-top:6px}
+.pop .row{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
 @media(max-width:420px){.wrap{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}.create,.gallery{padding-left:12px;padding-right:12px}.body{padding-left:11px;padding-right:11px}.act{padding:4px 8px}}   /* phones: Remix, Download and Delete fit on one row of a 320 px screen */
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -249,8 +272,6 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
     <div>
       <div class="lbl">Length <small id="lenout"></small></div>
       <div class="seg len" role="radiogroup" aria-label="Length in seconds">
-        <input type="radio" name="seconds" id="s3" value="3"><label for="s3">3</label>
-        <input type="radio" name="seconds" id="s4" value="4"><label for="s4">4</label>
         <input type="radio" name="seconds" id="s5" value="5"><label for="s5">5</label>
         <input type="radio" name="seconds" id="s6" value="6"><label for="s6">6</label>
         <input type="radio" name="seconds" id="s7" value="7"><label for="s7">7</label>
@@ -315,6 +336,25 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 </section>
 </div>
 </div>
+<div class="pop" id="uppop" role="dialog" aria-labelledby="uptitle" hidden>
+  <h3 id="uptitle">Upscale this clip <small>experimental</small></h3>
+  <div class="lbl" title="Each time in all, from runs on one DGX Spark: reading the clip ~2 min, loading the models (the fast load: ~22 s; ~7.5 min with LFSTUDIO_UPSCALE_LOAD=standard), the refine and the decode">Resolution <small data-standard="in all, with a ~7.5 min load">in all, with a ~22 s load</small></div>
+  <div class="seg" role="radiogroup" aria-label="Resolution">
+    <input type="radio" name="up_res" id="up-1080p" value="1080p"><label for="up-1080p">1080p<small data-standard="~19 min">~10 min</small></label>
+    <input type="radio" name="up_res" id="up-2k" value="2k"><label for="up-2k">2K<small data-standard="~28 min">~19 min</small></label>
+    <input type="radio" name="up_res" id="up-4k" value="4k"><label for="up-4k">4K<small data-standard="~1.2 h">~1.1 h</small></label>
+  </div>
+  <div class="lbl">Strength</div>
+  <div class="opts" role="radiogroup" aria-label="Strength">
+    <label class="opt"><input type="radio" name="up_strength" value="faithful"><span>Faithful<small>Start noise 0.5, 2 steps: redraws the least</small></span></label>
+    <label class="opt"><input type="radio" name="up_strength" value="balanced"><span>Balanced<small>Start noise 0.7, 2 steps</small></span></label>
+    <label class="opt"><input type="radio" name="up_strength" value="full"><span>Full re-generate<small>NVIDIA's setting, one step more: sharpest, but it redraws faces into a different-looking person</small></span></label>
+  </div>
+  <p class="note" id="upportrait" hidden>9:16 comes out upright (2K: 1440×2560). NVIDIA trained its refiner on 16:9 video</p>
+  <p class="note">Unloads the models while it runs</p>
+  <div class="errtxt" id="uperr" role="alert"></div>
+  <div class="row"><button type="button" class="act" id="upclose">Cancel</button><button type="button" class="act pri" id="upgo">Upscale</button></div>
+</div>
 <div class="toast undo" id="undo" aria-live="polite"><span></span><button type="button">Undo</button></div>
 <div class="toast" id="toast" aria-live="polite"></div>
 
@@ -338,13 +378,13 @@ const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","n
 // The machine (LFSTUDIO_BACKEND; the server names it in the lf-studio-backend meta tag and in /api/state
 // "backend"): its name in the header, the note on times, and the seconds per clip once the models are loaded (t2va
 // 16:9). The DGX Spark's are measured (clips over 10 s also reload the prompt encoder each time). The RTX 5090's are
-// measured at 3, 5, 10 and 15 s, the other lengths interpolated (docs/RTX5090.md). JSON between the markers:
-// tests/test_backend.py reads it.
+// measured at 5, 10 and 15 s, the other lengths interpolated (docs/RTX5090.md). One per length offered (5-15 s; 3
+// and 4 s went after 0.5.0). JSON between the markers: tests/test_backend.py reads it.
 const MACHINES=/*machines*/{
 "spark":{"name":"one DGX Spark","times":["Times shown are ","measured on a DGX Spark"," with nothing else running."],
-  "eta":{"3":40,"4":45,"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
+  "eta":{"5":60,"6":70,"7":80,"8":90,"10":125,"12":150,"15":195}},
 "rtx5090":{"name":"one RTX 5090","times":["Times shown are ","measured on an RTX 5090"," (64 GB RAM, desktop running; text clips)."],
-  "eta":{"3":28,"4":28,"5":28,"6":32,"7":36,"8":40,"10":47,"12":55,"15":66}}
+  "eta":{"5":28,"6":32,"7":36,"8":40,"10":47,"12":55,"15":66}}
 }/*machines*/;
 let ETA=MACHINES.spark.eta,machine='spark';
 function applyMachine(b){const m=MACHINES[b];if(!m||b===machine)return;machine=b;ETA=m.eta;
@@ -352,11 +392,32 @@ function applyMachine(b){const m=MACHINES[b];if(!m||b===machine)return;machine=b
   setText(n.firstChild,m.times[0]);setText(n.querySelector('b'),m.times[1]);setText(n.lastChild,m.times[2]);}
 applyMachine((document.querySelector('meta[name="lf-studio-backend"]')||{}).content||'spark');
 const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
+// The experimental Upscale (LFSTUDIO_UPSCALE=1; /api/state "upscale"): an upscale is a job of its own (kind "upscale",
+// parent: the clip). Its expected time for the progress bar, from the job's start: `base` (closing the models ~40 s,
+// the job's start, encoding the final clip ~2 min, its fast load ~22 s, the decode and the MP4) plus `step` per refine
+// step, plus ~8 min with the standard load (j.load: its 2K run took 498 s more in all, 433 s of it the load and 56 s
+// the encode, which loads its VAE through mmap; neither depends on the resolution). From the job's own runs with the
+// fast load on one DGX Spark, a 16:9 clip to each resolution: `base` the run's time less its two steps, plus 40 s;
+// `step` their mean (docs/PERFORMANCE.md). The popover shows upEta for 2 steps with the studio's load (/api/state
+// "upscale_load"): the times in its markup are the fast load's, their data-standard the standard load's.
+const isUp=j=>j.kind==='upscale';
+// size: the output (width, height) of a 16:9 clip; a 9:16 one's is turned (upscale/regen2k_job.py SHAPES), at the same
+// times (the same number of tokens)
+const UPSCALE={"1080p":{name:'1080p',base:315,step:150,size:[1920,1080]},"2k":{name:'2K',base:405,step:380,size:[2560,1440]},
+  "4k":{name:'4K',base:625,step:1685,size:[3840,2160]}};
+const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==='portrait'?[s[1],s[0]]:s).join('×');};
+const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
+  return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0);};
+const STRENGTH={faithful:'Faithful',balanced:'Balanced',full:'Full re-generate'};
+const UP_PHASE={starting:'starting',encoding:'reading the clip',loading:'loading its models',decoding:'decoding',
+  saving:'saving','adding the sound':"adding the clip's sound"};
 // durations: whole seconds first (none, negative or not a number: 0), then minutes and seconds, so 119.6 s reads
-// 2:00 and never 1:60 (#26); fmtS rounds ("45 s", "2:05 min"), clock counts up like a stopwatch (floors)
+// 2:00 and never 1:60 (#26); from an hour on (an upscale) hours too, 1:02:05. fmtS rounds ("45 s", "2:05 min",
+// "1:02:05"), clock counts up like a stopwatch (floors)
 const whole=(s,f)=>Number.isFinite(s=f(+s))?Math.max(0,s):0, mmss=n=>`${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;
-const fmtS=s=>{s=whole(s,Math.round);return s<90?`${s} s`:`${mmss(s)} min`;};
-const clock=s=>mmss(whole(s,Math.floor));
+const hms=n=>n<3600?mmss(n):`${Math.floor(n/3600)}:${mmss(n%3600).padStart(5,'0')}`;
+const fmtS=s=>{s=whole(s,Math.round);return s<90?`${s} s`:s<3600?`${mmss(s)} min`:hms(s);};
+const clock=s=>hms(whole(s,Math.floor));
 // until 0.6: settings this browser kept under solh3.* (up to 0.4) are copied once to lfstudio.*, where those are missing
 try{for(const k of Object.keys(localStorage))if(k.startsWith('solh3.')&&localStorage.getItem('lfstudio.'+k.slice(6))===null)localStorage.setItem('lfstudio.'+k.slice(6),localStorage.getItem(k));}catch(e){}
 const store={get(k,d){try{const v=localStorage.getItem('lfstudio.'+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem('lfstudio.'+k,v)}catch(e){}}};
@@ -373,7 +434,7 @@ function stamp(ts){const d=new Date(ts*1000),n=new Date(),t=d.toLocaleTimeString
   return `${d.toLocaleDateString([],o)}, ${t}`;}
 function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),2200);}
 
-// restore persisted choices (each field on its own)
+// restore persisted choices (each field on its own); a length no longer offered (3 or 4 s, up to 0.5.0) reads 5 s
 setRadio('task',store.get('task','t2va'))||setRadio('task','t2va');
 setRadio('orientation',store.get('orientation','landscape'))||setRadio('orientation','landscape');
 setRadio('seconds',store.get('seconds','5'))||setRadio('seconds','5');
@@ -440,8 +501,9 @@ let state={now:Date.now()/1000,session:{key:null,state:'idle',since:0},jobs:[],s
 const now=()=>Date.now()/1000+skew;                 // server clock (the timers compare with server timestamps)
 const FINISHED=['done','failed','cancelled'],active=j=>!FINISHED.includes(j.status);
 // the mode/format/length that will be loaded once everything already queued has run (a clip being cancelled closes
-// its session)
-function effectiveKey(){const q=state.jobs.filter(j=>active(j)&&!j.cancel_requested);
+// its session). An upscale runs after the queued clips and closes the models: with one queued or running and no clip,
+// nothing will be loaded.
+function effectiveKey(){const q=state.jobs.filter(j=>active(j)&&!j.cancel_requested&&!isUp(j));
   if(q.length){const last=q.reduce((a,b)=>a.created>b.created?a:b);return [last.task,last.orientation,last.seconds||5];}
   if(state.jobs.some(active))return null;
   return state.session.switching_to||(state.session.preloading?state.session.loading_key:state.session.key);}
@@ -521,7 +583,7 @@ function showForm(keyboard){const f=$('f');if(getComputedStyle(f).position==='st
   prompt.focus({preventScroll:true});
   if(window.ResizeObserver){const ro=new ResizeObserver(()=>{if(document.activeElement===prompt)go();});ro.observe(f);
     setTimeout(()=>ro.disconnect(),1500);}}
-function card(j){const d=document.createElement('article');d.className='job';d.dataset.id=j.id;
+function card(j){const d=document.createElement('article');d.className='job';d.dataset.id=j.id;if(isUp(j))d.dataset.kind='upscale';
   const media=document.createElement('div');media.className='media';media.style.aspectRatio=j.orientation==='portrait'?'4 / 5':'16 / 9';   // portrait is pillarboxed so cards stay a sane height
   media.innerHTML='<div class="ph2"><div class="big">0:00</div><div class="bar"><i></i></div><div class="small"></div></div>';
   // a queued or running clip with a keyframe, a reference image or a reference video shows its first one (#30); a
@@ -532,28 +594,34 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   const body=document.createElement('div');body.className='body';
   body.innerHTML=`<div class="tags"><span class="st"></span><span class="tag"></span><span class="tag"></span><span class="tag"></span></div>
    <div class="p" title="Click to expand"></div><div class="info"><span class="when"></span> <span class="seedt">· seed <span class="seedv" tabindex="0" title="Click (or Tab to it) to select, then copy"></span></span></div><div class="errtxt"></div>
-   <div class="acts"><button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt, seed and input files">Remix</button><span class="dl"></span>
+   <div class="acts"><button type="button" class="act pri reuse-all" title="Load this clip's mode, format, length, prompt, seed and input files">Remix</button><span class="dl"></span><button type="button" class="act up" aria-label="Upscale" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/></svg><span class="t">Upscale</span></button>
    <button type="button" class="act cancel" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></svg>Cancel</button>
-   <button type="button" class="act del" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button></div>`;
+   <button type="button" class="act del" aria-label="Delete" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg><span class="t">Delete</span></button></div>`;
 
   const t=body.querySelectorAll('.tags .tag');t[0].textContent=TASK[j.task]||j.task;t[1].textContent=FMT[j.orientation]||j.orientation;t[2].textContent=`${j.seconds||5} s`;
+  // an upscale: "2K upscale", its clip's mode and length; no Remix (its settings are its clip's) and no Upscale
+  if(isUp(j)){t[0].textContent=`${(UPSCALE[j.resolution]||{name:j.resolution}).name} upscale`;t[1].textContent=TASK[j.task]||j.task;
+    body.querySelector('.reuse-all').remove();body.querySelector('.act.up').remove();}
+  else body.querySelector('.act.up').onclick=e=>{if(e.detail>1)return;openUpscale(j.id,e.currentTarget,e.detail===0);};
   const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
-  // new seed (#14); unticked, it keeps the clip's seed
-  body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);setRadio('seconds',j.seconds||5);
+  // new seed (#14); unticked, it keeps the clip's seed. A clip of a length no longer offered (3 or 4 s, up to
+  // 0.5.0) comes back at 5 s, and the message says so
+  if(!isUp(j))body.querySelector('.reuse-all').onclick=e=>{if(e.detail>1)return;setRadio('task',j.task);setRadio('orientation',j.orientation);
+    const gone=!setRadio('seconds',j.seconds||5);if(gone)setRadio('seconds','5');const at=gone?` at 5 s (${j.seconds} s is no longer offered)`:'';
     prompt.value=j.prompt;seed.value=j.seed;
-    [['task',j.task],['orientation',j.orientation],['seconds',j.seconds||5],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
+    [['task',j.task],['orientation',j.orientation],['seconds',val('seconds')],['prompt',j.prompt],['seed',j.seed]].forEach(([k,v])=>store.set(k,v));
     modeUI();updateGo();showForm(e.detail===0);$('err').textContent='';
     zones.forEach(z=>{z.querySelector('input').value='';z.kept=[];z.show();});remixFrom=null;const my=++remixSeq;
-    if(j.task==='t2va'){toast('Settings loaded');return;}
+    if(j.task==='t2va'){toast('Settings loaded'+at);return;}
     // the clip's input files go back into the form (the server reuses them, nothing is uploaded again); a reply
     // for an earlier Remix click is dropped
     fetch('/api/inputs/'+j.id,{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(x=>{if(my!==remixSeq)return;remixFrom=j.id;
       zones.forEach(z=>{z.kept=x.inputs[z.querySelector('input').name]||[];z.show();});
-      if(x.missing.length)$('err').textContent=`Settings loaded. Gone from the server, attach again: ${x.missing.join(', ')}.`;
-      toast(x.missing.length?'Settings loaded, some files are gone':'Settings and files loaded');})
-    .catch(()=>{if(my===remixSeq)$('err').textContent='Settings loaded - the files could not be loaded, attach them again.';});};
+      if(x.missing.length)$('err').textContent=`Settings loaded${at}. Gone from the server, attach again: ${x.missing.join(', ')}.`;
+      toast(x.missing.length?`Settings loaded${at}, some files are gone`:'Settings and files loaded'+at);})
+    .catch(()=>{if(my===remixSeq)$('err').textContent=`Settings loaded${at} - the files could not be loaded, attach them again.`;});};
   // detail 0: Enter/Space, not a pointer. Remix, Cancel and Delete ignore detail 2+, the rest of a double-click whose
   // first click changed what is under the pointer: Cancel of a queued clip shows Delete where Cancel was; Delete of a
   // card moves the next card's Delete or Cancel into its place. Undo hides at once and drops the rest of its
@@ -595,7 +663,7 @@ async function remove(j,keyboard){const del=els[j.id]&&els[j.id].querySelector('
   undoFocus=near&&near.classList.contains('job')?near.querySelector('.del,.reuse-all'):null;
   gone.set(j.id,pollSeq);hideCard(j.id);
   if(!$('undo').classList.contains('show'))undoIds=[];undoIds.push(j.id);
-  showUndo(undoIds.length>1?`${undoIds.length} clips deleted`:'Clip deleted','Undo');render();
+  showUndo(undoIds.length>1?`${undoIds.length} clips deleted`:isUp(j)?'Upscale deleted':'Clip deleted','Undo');render();
   if(keyboard)$('undo').querySelector('button').focus();}  // the card and its focus are gone; Undo is next
 // Cancel takes a queued clip out of the queue at once; a running one is stopped (the server stops its pipeline's
 // workers, so the next clip loads the models again). The card stays as Cancelled, with Remix and Delete. The answer
@@ -608,8 +676,8 @@ async function cancel(id,btn,keyboard){const back=keyboard||document.activeEleme
   btn.disabled=false;
   if(!r||!r.ok||!x.job){toast(x.error||'Could not cancel');if(back)btn.focus();poll();return;}
   cancelAt.set(id,pollSeq);known.set(id,x.job);render();
-  if(back&&els[id])els[id].querySelector('.reuse-all').focus();
-  toast(x.job.status==='cancelled'?'Taken out of the queue':'Stopping the clip · the models load again for the next one');
+  if(back&&els[id])focusIn(els[id],'.reuse-all','.del','.seedv');
+  toast(x.job.status==='cancelled'?'Taken out of the queue':isUp(x.job)?'Stopping the upscale':'Stopping the clip · the models load again for the next one');
   poll();}
 // Undo hides at once, so the rest of a double-click on it reaches what is under the toast: a card, or, with the page
 // scrolled up to the form while Undo showed, Generate (it would queue the draft), the seed toggle or a prompt chip.
@@ -631,41 +699,66 @@ $('undo').querySelector('button').onclick=async e=>{const u=$('undo'),ids=undoId
   if(first&&document.activeElement===document.body)first.querySelector('.del').focus();
   render();poll();};
 function setText(el,t){if(el.textContent!==t)el.textContent=t;}
+// focus the first of these in a card that is there and not hidden (an upscale's card has no Remix)
+function focusIn(d,...sels){for(const sel of sels){const el=d.querySelector(sel);if(el&&!el.hidden){el.focus();return;}}}
 // every job the page has seen, by id: the poll carries the active ones and the newest page, older pages come from
 // /api/jobs as the gallery scrolls (finished clips don't change, so only polled ones are updated afterwards)
 const known=new Map();let olderMore=null,loadingMore=false,fillingGap=false;
-function insert(j){const box=$('jobs'),d=els[j.id]=card(j);d.dataset.created=j.created;
+// All cards have one width (the grid's columns): do a card's buttons with their names fit one row? Measured on a
+// card that shows Upscale, in the frame after the gallery changes size (cards added or grown, the window resized; not
+// inside the observer, whose next change would come in the same frame). Without such a card nothing needs icons.
+let fitting=0;
+function fitButtons(){const box=$('jobs');fitting=0;
+  const row=[...box.querySelectorAll('.job .acts')].find(a=>{const u=a.querySelector('.act.up');return u&&!u.hidden;});
+  if(box.classList.contains('tight'))box.classList.remove('tight');
+  if(!row)return;
+  const mid=new Set([...row.children].filter(e=>e.offsetWidth).map(e=>{const r=e.getBoundingClientRect();return Math.round(r.top+r.height/2);}));
+  if(mid.size>1)box.classList.add('tight');}
+const fitSoon=()=>{if(!fitting)fitting=requestAnimationFrame(fitButtons);};
+if(window.ResizeObserver)new ResizeObserver(fitSoon).observe($('jobs'));else addEventListener('resize',fitSoon);
+function insert(j){const box=$('jobs'),d=els[j.id]=card(j);d.dataset.created=j.created;fitSoon();
   const next=[...box.querySelectorAll('.job')].find(x=>+x.dataset.created<j.created);
   if(next)box.insertBefore(d,next);else box.append(d);return d;}
 function update(d,j,queue,s,t){
   const del=d.querySelector('.del');del.hidden=active(j);
-  del.title=`Move this clip and its input files to the trash (removed for good after ${state.trash_days??7} days)${j.published?', with its copy in the publish folder':''}`;
+  del.title=`Move this ${isUp(j)?'upscale':'clip and its input files'} to the trash (removed for good after ${state.trash_days??7} days)${j.published?', with its copy in the publish folder':''}`;
   // Cancel: on queued and running clips until the server has the request (cancel_requested: it is being stopped)
   const stop=d.querySelector('.cancel'),cancelling=active(j)&&!!j.cancel_requested,hide=!active(j)||cancelling;
-  if(hide&&!stop.hidden&&document.activeElement===stop)d.querySelector(active(j)?'.reuse-all':'.del').focus();   // keep the keyboard on the card
+  if(hide&&!stop.hidden&&document.activeElement===stop)focusIn(d,active(j)?'.reuse-all':'.del','.del','.seedv');   // keep the keyboard on the card
   stop.hidden=hide;
-  stop.title=j.status==='queued'?'Take this clip out of the queue (the card stays, with Remix)'
+  stop.title=isUp(j)?(j.status==='queued'?'Take this upscale out of the queue':'Stop this upscale')
+    :j.status==='queued'?'Take this clip out of the queue (the card stays, with Remix)'
     :'Stop this clip. The models load again for the next clip (about 1-2 min).';
+  // Upscale, on a finished clip when the server has it on: the clips it can't take show the reason (a click says it too)
+  const ub=d.querySelector('.act.up');
+  if(ub){const u=j.upscalable,show=!!state.upscale&&j.status==='done'&&!!u;ub.hidden=!show;
+    if(show){const off=!u.ok;if(ub.getAttribute('aria-disabled')!==String(off))ub.setAttribute('aria-disabled',String(off));
+      const tip=off?u.why:'Upscale to 1080p, 2K or 4K (experimental)';if(ub.title!==tip)ub.title=tip;}}
   if(d.dataset.status!==j.status)d.dataset.status=j.status;
   const loading=/load|retry|starting/.test(j.status),stEl=d.querySelector('.st');
   const cls=j.status==='done'?'ok':j.status==='failed'?'bad':j.status==='cancelled'?'off':'wait';
   if(stEl.className!=='st '+cls)stEl.className='st '+cls;
   setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='cancelled'?'Cancelled':cancelling?'Cancelling'
-    :j.status==='queued'?'Queued':loading?'Loading models':'Generating');
-  const when=stamp(j.created);
+    :j.status==='queued'?'Queued':isUp(j)?'Upscaling':loading?'Loading models':'Generating');
+  const when=stamp(j.created)+(isUp(j)?` · ${STRENGTH[j.strength]||j.strength}`:'');
   setText(d.querySelector('.when'),j.e2e_s?`${when} · ${j.includes_model_load?`${fmtS(j.e2e_s)} incl. model load`:j.cold_start_s?`made in ${fmtS(j.e2e_s)} · +${fmtS(j.cold_start_s)} model load`:`made in ${fmtS(j.e2e_s)}`}`:when);
   setText(d.querySelector('.errtxt'),j.status==='cancelled'?'':j.error||(j.first_error?'Recovered after: '+j.first_error:''));
   const media=d.querySelector('.media');
   if(j.status==='done'&&!media.dataset.done){media.dataset.done='1';            // the <video> is created exactly once
     media.textContent='';const v=document.createElement('video');v.controls=true;v.preload='none';v.playsInline=true;
     v.poster='/poster/'+j.id;v.src='/video/'+j.id;media.append(v);
-    const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.download=`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;a.textContent='Download';
+    const a=document.createElement('a');a.className='act';a.href='/video/'+j.id;a.textContent='Download';
+    a.download=isUp(j)?`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}_${String(j.parent).slice(0,6)}_${j.resolution}_${String(j.id).slice(0,6)}.mp4`:`lf-studio_${j.task}_${j.seconds||5}s_seed${j.seed}.mp4`;
     d.querySelector('.dl').replaceWith(a);}
   else if(!media.dataset.done){const ph=media.querySelector('.ph2'),big=ph.querySelector('.big'),small=ph.querySelector('.small'),bar=ph.querySelector('.bar');
     if(j.status==='failed'){setText(big,'Failed');setText(small,'details below');bar.hidden=true;}
     else if(j.status==='cancelled'){setText(big,'Cancelled');setText(small,j.started?'stopped before it was done':'taken out of the queue');bar.hidden=true;}
     else if(cancelling){setText(big,'Cancelling');setText(small,'stopping the pipeline');bar.hidden=true;}
-    else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading?'starts after the warm-up':'next up');bar.hidden=true;}
+    else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading&&!isUp(j)?'starts after the warm-up':'next up');bar.hidden=true;}
+    else if(isUp(j)){bar.hidden=false;const el=t-(j.started||j.created),eta=upEta(j);
+      setText(big,clock(el));
+      setText(small,j.status==='upscaling'?`Upscaling · ${UP_PHASE[j.upscale_phase]||j.upscale_phase||'starting'}`:j.status==='freeing memory'?'Freeing memory · closing the models':'Starting');
+      const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
     else{bar.hidden=false;const t0=j.phase_since||j.started||j.created,el=t-t0,eta=loading?(j.load_eta||240):(ETA[j.seconds||5]||60);
       setText(big,clock(el));
       setText(small,loading?(j.status.startsWith('retry')?'Worker error - reloading the models':`Loading models, then your clip · last time ${fmtS(eta)}`)
@@ -676,9 +769,12 @@ function render(){const s=state.session,k=s.key,t=now();
   const sState=s.state||'idle',st=$('status');if(st.dataset.s!==sState)st.dataset.s=sState;
   setText($('loaded'),s.switching_to&&sState!=='loading'&&sState!=='reshaping'?`switching to ${keyText(s.switching_to)}`
     :sState==='reshaping'&&s.loading_key?`changing to ${keyText(s.loading_key)}`
-    :sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`:(sState==='idle'?'not loaded':sState));
+    :sState==='loading'&&s.loading_key?`${s.preloading?'warming up':'loading'} ${keyText(s.loading_key)}`:k?`${keyText(k)}${sState==='busy'?' · generating':sState==='ready'?' · ready':' · '+sState}`
+    :sState==='idle'&&state.jobs.some(j=>isUp(j)&&active(j)&&j.status!=='queued')?'closed for an upscale':(sState==='idle'?'not loaded':sState));
   setText($('loadtimer'),sState==='loading'||sState==='reshaping'||s.switching_to&&sState==='unloading'?clock(t-s.since):'');
   $('unload').hidden=!k&&sState==='idle';
+  if(up.id&&!els[up.id])closeUpscale(false);                             // its clip's card is gone
+  else placeUpscale();                                                   // cards above it can come and go
   for(const [id,seq] of gone)if(state.seq>seq)gone.delete(id);          // answered after the delete: server wins
   for(const [id,seq] of restored)if(state.seq>seq)restored.delete(id);   // a poll sent before an Undo lists it
   const listed=state.deleted||{},deleted=new Set(Object.keys(listed).filter(id=>!restored.has(id)));
@@ -692,7 +788,7 @@ function render(){const s=state.session,k=s.key,t=now();
   $('nojobs').hidden=known.size>0;
   const done=state.done??state.jobs.filter(j=>j.status==='done').length,run=state.jobs.filter(active).length;
   setText($('count'),known.size?`${done} clip${done===1?'':'s'}${run?` · ${run} in progress`:''}`:'');
-  const queue=state.jobs.filter(j=>j.status==='queued').sort((a,b)=>a.created-b.created);
+  const queue=state.jobs.filter(j=>j.status==='queued').sort((a,b)=>(isUp(a)-isUp(b))||a.created-b.created);   // clips first
   state.jobs.forEach(j=>update(els[j.id]||insert(j),j,queue,s,t));
   $('more').hidden=!(olderMore??state.more);
   // After missed polls (a sleeping laptop, a throttled background tab) clips that finished meanwhile can have left
@@ -723,6 +819,49 @@ async function loadMore(){const more=$('more');if(loadingMore||more.hidden)retur
   if(got&&!more.hidden&&more.getBoundingClientRect().top<innerHeight+600)setTimeout(loadMore,50);}
 $('more').onclick=loadMore;
 if('IntersectionObserver' in window)new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))loadMore();},{rootMargin:'600px'}).observe($('more'));
+// Upscale (experimental): a popover under the card's button with the resolution and strength, starting at the
+// server's defaults (/api/state "upscale_defaults"). It queues the upscale as a card of its own (newest first: at the
+// top). Escape, Cancel or a click elsewhere closes it, and focus goes back to the button.
+const up={id:null,btn:null},pop=$('uppop');
+const upPick=(n,v)=>{const el=pop.querySelector(`input[name="${n}"][value="${v}"]`);if(el)el.checked=true;};
+const upVal=n=>{const el=pop.querySelector(`input[name="${n}"]:checked`);return el?el.value:null;};
+function openUpscale(id,btn,keyboard){const j=known.get(id);if(!j)return;
+  if(btn.getAttribute('aria-disabled')==='true'){toast(btn.title);return;}           // the reason, also on a phone
+  if(up.id===id&&!pop.hidden){closeUpscale(true);return;}
+  const dflt=state.upscale_defaults||{resolution:'2k',strength:'balanced'};
+  upPick('up_res',dflt.resolution);upPick('up_strength',dflt.strength);
+  // each size's title: its output for this clip's orientation; a 9:16 clip says how it comes out, and that its 4K has
+  // not run yet (16:9 has, once: docs/PERFORMANCE.md)
+  pop.querySelectorAll('input[name="up_res"]').forEach(i=>{pop.querySelector(`label[for="${i.id}"]`).title=
+    upSize(i.value,j.orientation)+(i.value==='4k'&&j.orientation==='portrait'?
+      " · the studio's 4K upscale has not been run with a 9:16 clip yet":'');});
+  $('upportrait').hidden=j.orientation!=='portrait';
+  const std=state.upscale_load==='standard';              // the times with the studio's load (LFSTUDIO_UPSCALE_LOAD)
+  pop.querySelectorAll('small[data-standard]').forEach(e=>{if(e.dataset.fast==null)e.dataset.fast=e.textContent;
+    setText(e,std?e.dataset.standard:e.dataset.fast);});
+  setText($('uperr'),'');$('upgo').disabled=false;up.id=id;up.btn=btn;pop.hidden=false;placeUpscale();
+  const r=pop.getBoundingClientRect();if(r.bottom>innerHeight||r.top<0)pop.scrollIntoView({block:'nearest'});   // a short window
+  if(keyboard)pop.querySelector('input[name="up_res"]:checked').focus({preventScroll:true});}
+function placeUpscale(){if(pop.hidden||!up.btn)return;const r=up.btn.getBoundingClientRect(),cw=document.documentElement.clientWidth;
+  const w=pop.offsetWidth,h=pop.offsetHeight,above=r.bottom+h+8>innerHeight&&r.top-h-8>0;
+  pop.style.left=Math.max(16,Math.min(r.left,cw-w-16))+scrollX+'px';
+  pop.style.top=(above?r.top-h-6:r.bottom+6)+scrollY+'px';}
+function closeUpscale(back){if(pop.hidden&&!up.id)return;pop.hidden=true;const b=up.btn;up.id=up.btn=null;
+  if(back&&b&&b.isConnected)b.focus();}
+$('upclose').onclick=()=>closeUpscale(true);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!pop.hidden){e.preventDefault();
+  closeUpscale(pop.contains(document.activeElement)||document.activeElement===up.btn);}});   // keyboard: back to the button
+document.addEventListener('pointerdown',e=>{if(!pop.hidden&&!pop.contains(e.target)&&!(up.btn&&up.btn.contains(e.target)))closeUpscale(false);});
+addEventListener('resize',placeUpscale);
+$('upgo').onclick=async e=>{if(e.detail>1)return;const id=up.id,j=known.get(id),go=$('upgo');if(!j)return;
+  const body={id,resolution:upVal('up_res'),strength:upVal('up_strength')};
+  if(j.upscalable&&j.upscalable.clip_audio===false)body.audio='silence';   // the clip has no Stage-1 audio to use
+  go.disabled=true;let r,x;
+  try{r=await postJSON('/api/upscale',body);x=await r.json().catch(()=>({}));}catch(err){x={error:'Could not reach the server'};}
+  if(up.id!==id)return;                                                  // closed meanwhile
+  if(!r||!r.ok||!x.job){setText($('uperr'),x.error||'Could not queue the upscale');go.disabled=false;return;}
+  closeUpscale(true);known.set(x.job.id,x.job);update(els[x.job.id]||insert(x.job),x.job,[],state.session,now());
+  toast(`${UPSCALE[body.resolution].name} upscale queued · its card is at the top`);poll();};
 async function poll(){const seq=++pollSeq;
   try{const r=await fetch('/api/state',{cache:'no-store'}),x=await r.json();if(seq<state.seq)return;   // an older answer
     state=x;state.seq=seq;if(state.now)skew=state.now-Date.now()/1000;applyMachine(state.backend||'spark');render();}catch(e){}}

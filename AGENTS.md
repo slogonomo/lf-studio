@@ -11,6 +11,15 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
 - `bin/lf-cli`: the client for agents and scripts, a CLI and an MCP server (`lf-cli mcp`) in one file. People copy
   it to other machines, so it stays standard-library only, Python 3.9 syntax, and reads no other file of this repo.
   `docs/API.md` documents it and the HTTP API.
+- `upscale/regen2k_job.py`: the experimental Upscale's GPU job, one upscale per process, run in its own env with
+  NVIDIA's Open-H3-Regenerate-2K (its docstring says what is NVIDIA's and what it changes). Standard library outside its
+  torch functions, so the server and the tests import it without torch. `upscale/fastload.py`, its loader, is a copy of
+  the patch's `runtime/fastload.py`: change the patch's file and copy it (`tests/test_upscale.py` checks that they are
+  the same, byte for byte). The server runs it as a job of its own (`POST /api/upscale`, `run_upscale`; off unless
+  `LFSTUDIO_UPSCALE=1`), and reads the `LFSTUDIO_UPSCALE_*` settings with its `studio_settings`, as `bin/lf-studio
+  --check` does. The page's Upscale button and popover, `lf-cli upscale` and the MCP tool `upscale` use the endpoint;
+  `install/65-regen2k.sh` (optional) builds its environment from the hashed lock `install/freeze/regen2k-lock.txt` and
+  fetches its weights (`install/regen2k_weights.py`).
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
@@ -51,6 +60,21 @@ gives each run its own runtime root, state directory and port under a temp direc
 non-zero exit status) if the port is in use or its server stops by itself, so nothing goes to another studio on that
 port. Add a test there for every server change.
 
+The stub studio has the experimental Upscale on (`LFSTUDIO_UPSCALE=1`), with `tests/stub/upscale_job.py` standing in
+for `upscale/regen2k_job.py` (`LFSTUDIO_UPSCALE_SCRIPT`): it prints the job's phase lines over `STUB_UPSCALE_S`, ends
+at once on SIGTERM (or ignores it with `STUB_UPSCALE_TERM=ignore`), dies with the server (`--parent`), writes a small
+121-frame MP4 without sound and a receipt (none, or one ffmpeg can't read, with `STUB_UPSCALE_OUTPUT`), and fails
+with `STUB_UPSCALE_FAIL=1`. The stub runtime writes stand-ins for a clip's working files (`qwen/conditioning.pt` and
+the Stage-1 audio) for it to find, and the server reads MemAvailable from a file the stub studio writes
+(`LFSTUDIO_TEST_MEMINFO`; `StubStudio.set_memory`), so the memory floor and guard are tested without the machine's
+memory. The `Upscale*` classes in `tests/test_server.py` cover the job type (queue and its limit, Cancel and its
+SIGKILL, Delete and Undo, a request during a Delete's move, restart, warm-up, memory, failure, the checks at run
+time, the settings, the launcher's checks and `--kill`), `tests/test_api.py` its API record, the `Upscale*` classes
+in `tests/test_cli.py` and `tests/test_mcp.py` the client, and those in `tests/test_page.py` the button (disabled
+with the reason on clips it can't take; in cards too narrow for the names, Upscale and Delete show icons, so the
+buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off), the popover, the upscale's card and
+`tests/ui_test.py` with an upscale in the gallery.
+
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
 `Sol-H3-RTX5090` with a stand-in `runtime/offload.py`; no Docker; the RAM floor; the GPU memory floor driven by a fake
@@ -59,7 +83,10 @@ page's per-backend texts without a browser (its `MACHINES` table, and its `apply
 installed); and every install script's `--dry-run` under both backends, with fake `uname`, `nvidia-smi`, `gcc`,
 `docker` and `sg` on PATH and everything in a temp directory; on the RTX 5090 also the caches under `$LFSTUDIO_HOME`,
 the GCC 14 toolchain kept on `FORCE=1`, the adoption of a venv whose fake `pip freeze` is the reference freeze, and
-the dated prompt-cache backup. Add a test there for every backend change.
+the dated prompt-cache backup. Add a test there for every backend change. It also covers `install/65-regen2k.sh` (its
+dry run, and runs with a fake uv: a failed step stops it and leaves the venv unmarked, #74) and
+`install/regen2k_weights.py` (with a stand-in `huggingface_hub` and a fake Hugging Face for the range reads, which
+must never send a token, also through a redirect).
 
 `tests/test_old_names.py` covers the names up to 0.4 that work until 0.6: the old setting names in the environment
 and the settings file (and that the four `OLD_SETTINGS` lists agree), the old places, the shims, the launcher's check
@@ -70,6 +97,19 @@ files, the install steps and the page's old localStorage keys. It goes with them
 store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch, a `run` with a stand-in Stage-2
 process, stopping it under `bench/memguard-run.sh`, the report, the quality step and the SyncNet table. It takes
 `runtime/geometry.py` from the patch itself.
+
+`tests/test_upscale.py` covers `upscale/regen2k_job.py` on the CPU (and that `upscale/fastload.py` is the patch's
+`runtime/fastload.py`): job.json, the clip's and the weights' files (5 s 16:9 and 9:16 MP4s made by ffmpeg), the shape
+table (with every orientation the patches make), the portrait entries for NVIDIA's dicts, the upscale route and
+`check_package`, the text check on stand-in tensors, the command lines (the mux run with ffmpeg) and the environment,
+the progress lines, the memory trace, `--check`, the receipt when a job is done, fails, is refused or gets SIGTERM,
+`--parent` (the job dies with the server), and `run()` with a stand-in torch and a stand-in of NVIDIA's `open_h3`, with
+both loads (fast and standard: stand-ins for safetensors, diffusers and `fastload` record every load, which the fast
+load must have replaced before the first one): a 16:9 clip makes the same calls into NVIDIA's code as before the job
+took 9:16, a 9:16 one its portrait route (the same with either load). With `LFSTUDIO_UPSCALE_PKG` naming NVIDIA's real
+package it also checks the files the job pins and the entries it was written against (read, not imported). Its torch
+tests (the merger, the lean block forward against a stock-style block, the tensor checks, the column crop) run where
+torch is importable (CPU is enough) and are skipped otherwise.
 
 The patch has its own 135 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 The RTX 5090 patch has 201 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).

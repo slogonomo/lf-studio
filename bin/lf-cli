@@ -4,13 +4,18 @@
 One file, standard library only, Python 3.9 or later: copy it to any machine that can reach the studio.
 
   lf-cli generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
-         [--orientation landscape|portrait] [--seconds 3|4|5|6|7|8|10|12|15] [--seed N]
+         [--orientation landscape|portrait] [--seconds 5|6|7|8|10|12|15] [--seed N]
          [--first-frame FILE|URL] [--last-frame FILE|URL] [--ref FILE|URL]...
          [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
   lf-cli wait ID [--out PATH] [--poster] [--timeout S]
   lf-cli status [ID]
   lf-cli cancel ID
   lf-cli fetch ID [--out PATH] [--poster] [--wake]
+  lf-cli upscale ID [--resolution 1080p|2k|4k] [--strength faithful|balanced|full]
+         [--audio clip|silence] [--seed N] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
+                                experimental: a finished 5 s text clip, 16:9 or 9:16, to 1080p, 2K or 4K, on a
+                                studio with LFSTUDIO_UPSCALE=1 (about 10 min to 1.6 h in all, 4K over an hour, with
+                                a ~22 s load; ~8 min more with LFSTUDIO_UPSCALE_LOAD=standard)
   lf-cli guide                  the prompt guide for H3
   lf-cli mcp                    an MCP server on stdin/stdout (Claude Code, Hermes, Codex, ...)
   common options, before or after the command: --url URL  --json  --quiet
@@ -54,13 +59,18 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 AGENT = f"lf-cli/{VERSION}"
 TASKS = ("t2va", "fl2va", "ref2va")
 ORIENTATIONS = ("landscape", "portrait")
-DURATIONS = (3, 4, 5, 6, 7, 8, 10, 12, 15)
+DURATIONS = (5, 6, 7, 8, 10, 12, 15)    # 3 and 4 s went after 0.5.0
 SIZES = {"landscape": (1344, 768), "portrait": (768, 1344)}
 FINISHED = ("done", "failed", "cancelled")
+# the experimental Upscale (POST /api/upscale, docs/API.md): what a request may ask for; the studio's defaults are
+# 2k, its LFSTUDIO_UPSCALE_STRENGTH and LFSTUDIO_UPSCALE_AUDIO, and the clip's seed
+UPSCALE_RESOLUTIONS = ("1080p", "2k", "4k")
+UPSCALE_STRENGTHS = ("faithful", "balanced", "full")
+UPSCALE_AUDIO = ("clip", "silence")
 FRAMES = ("first_frame", "last_frame")
 IMG = (".png", ".jpg", ".jpeg", ".webp")
 VID = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
@@ -108,7 +118,7 @@ final 1344x768 video uses a fixed prompt of its own.
 - `ref2va`:
   - up to 9 images, 3 videos (2-15 s each) and 3 audio files, 12 files in total;
   - at least one image or video.
-- `seconds`: 3, 4, 5, 6, 7, 8, 10, 12 or 15.
+- `seconds`: 5, 6, 7, 8, 10, 12 or 15.
   - H3 was trained on 4-15 s; NVIDIA validated 5 s.
   - Every time in the prompt must fall inside the clip.
 - `orientation`: landscape (1344x768) or portrait (768x1344; portrait is not quality-validated).
@@ -276,15 +286,16 @@ sound), `<Video 1>` and `<Audio 2>` (the WAV). The prompt must then use those nu
 """
 
 INSTRUCTIONS = (
-    "LF Studio makes short video clips with sound on one DGX Spark or RTX 5090: 3-15 s, 1344x768 (landscape) or "
-    "768x1344 (portrait), 24 fps. One clip renders at a time: on a DGX Spark about 40 s for a 3 s clip to 3:15 for a "
+    "LF Studio makes short video clips with sound on one DGX Spark or RTX 5090: 5-15 s, 1344x768 (landscape) or "
+    "768x1344 (portrait), 24 fps. One clip renders at a time: on a DGX Spark about 1 min for a 5 s clip to 3:15 for a "
     "15 s clip once the models are loaded, plus about 1-2 min when they must load first (a different task than the "
     "last clip; a new format or length of the same task keeps them loaded and adds up to about 30 s the first time), "
     "plus any queue. Call prompt_guide once and write the prompt in H3's structured format: nothing rewrites it. Then "
     "call generate: it uploads your files (paths on this machine or http(s) URLs), waits up to wait_s seconds and, "
     "when the clip is done, saves the MP4 here and returns its absolute path, its studio URL and a poster frame. "
     "If it answers that the clip is still running, call wait with the id. Cancelling a tool call does not cancel the "
-    "clip; use cancel for that.")
+    "clip; use cancel for that. A studio with the experimental Upscale on also takes upscale: a finished 5 s text "
+    "clip (16:9 or 9:16) to 1080p, 2K or 4K, which takes about 10 min to 1.6 h or more.")
 
 
 # ---- small things ------------------------------------------------------------------------------------------------
@@ -305,12 +316,25 @@ def parse_json(data):
         return None
 
 
+def is_upscale(rec):
+    return rec.get("kind") == "upscale"
+
+
 def clip_desc(rec):
+    if is_upscale(rec):
+        return (f"{rec.get('resolution')} upscale of {str(rec.get('parent'))[:8]}, {rec.get('strength')}, "
+                f"{rec.get('task')}, {rec.get('seconds')} s, seed {rec.get('seed')}")
     return f"{rec.get('task')}, {rec.get('orientation')}, {rec.get('seconds')} s, seed {rec.get('seed')}"
 
 
+def noun(rec):
+    """What a record is, for a sentence: Clip, or Upscale for the experimental Upscale's jobs."""
+    return "Upscale" if is_upscale(rec or {}) else "Clip"
+
+
 PHASE_TEXT = {"starting": "starting", "generating": "generating", "saving": "saving the clip",
-              "retrying": "retrying after a worker error", "cancelling": "cancelling", "running": "running"}
+              "retrying": "retrying after a worker error", "cancelling": "cancelling", "running": "running",
+              "unloading": "closing the studio's models for the upscale"}
 
 
 def phase_text(rec):
@@ -323,6 +347,8 @@ def phase_text(rec):
         if phase == "loading":
             eta = rec.get("load_eta")
             return "loading models, then generating" + (f" (about {mmss(eta)} in all)" if eta else "")
+        if phase == "upscaling":
+            return "upscaling" + (f": {rec['upscale_phase']}" if rec.get("upscale_phase") else "")
         return PHASE_TEXT.get(phase, phase or "running")
     if state == "done":
         return f"done in {mmss(rec['wall_s'])}" if rec.get("wall_s") is not None else "done"
@@ -343,7 +369,11 @@ def labels_text(rec):
 
 
 def clip_name(rec):
-    """The name the studio downloads a clip as (when its answer has none)."""
+    """The name the studio downloads a clip as (when its answer has none); an upscale's is its clip's (the parent's id)
+    with the resolution and its own id after it."""
+    if is_upscale(rec):
+        return (f"lf-studio_{rec.get('task')}_{rec.get('seconds')}s_seed{rec.get('seed')}_"
+                f"{str(rec.get('parent'))[:6]}_{rec.get('resolution')}_{rec.get('id', '')[:6]}.mp4")
     return f"lf-studio_{rec.get('task')}_{rec.get('seconds')}s_seed{rec.get('seed')}_{rec.get('id', '')[:6]}.mp4"
 
 
@@ -854,6 +884,35 @@ def submit(studio, req, hold, sent=None):
     raise error
 
 
+def upscale_body(jid, resolution=None, strength=None, audio=None, seed=None):
+    """POST /api/upscale's JSON: the clip and only the choices given (the studio fills in its defaults)."""
+    body = {"id": jid}
+    for key, value in (("resolution", resolution), ("strength", strength), ("audio", audio), ("seed", seed)):
+        if value is not None:
+            body[key] = value
+    return body
+
+
+def submit_upscale(studio, body, hold):
+    """POST /api/upscale (experimental): queue an upscale of a finished clip as a job of its own. switchboard holds
+    the request up to `hold` seconds while it starts the studio, as for generate (a 503 from it means nothing was
+    queued). Returns the studio's answer {"id", "job"}. Raises Fail."""
+    headers = {"Content-Type": "application/json", "X-Switchboard-Wait": str(int(max(0, min(3600, hold))))}
+    try:
+        status, rh, raw = studio.call("POST", "/api/upscale", [json.dumps(body).encode()], headers, hold + 60)
+    except Unreachable as error:
+        if error.stage == "answer":
+            error.message += "; the upscale may have been queued all the same (check with: lf-cli status)"
+        raise
+    obj = parse_json(raw)
+    if status == 200 and isinstance(obj, dict) and obj.get("id"):
+        return obj
+    error = refusal(status, rh, raw)
+    if isinstance(error, Busy):
+        error.message += f" The upscale was NOT queued; try again in about {error.retry or 60} s."
+    raise error
+
+
 # ---- waiting and saving ------------------------------------------------------------------------------------------
 PARTS = set()          # .part files being written (the MCP server removes them if it has to exit)
 
@@ -1086,14 +1145,15 @@ def fetch_clip(studio, jid, saver, wake, wake_hold):
 
 # ---- state of the studio -----------------------------------------------------------------------------------------
 STATUS_PHASES = {"starting": "starting", "loading models + generating": "loading", "generating": "generating",
-                 "retrying after a worker error": "retrying"}
+                 "retrying after a worker error": "retrying", "freeing memory": "unloading", "upscaling": "upscaling"}
 
 
 def overview(studio):
     """The queue and the newest 5 finished clips (GET /api/state), as records with state, phase, ahead, elapsed_s."""
     st = studio.json("GET", "/api/state", timeout=15)
     jobs = [dict(j) for j in st.get("jobs") or [] if isinstance(j, dict)]
-    queued = sorted((j for j in jobs if j.get("status") == "queued"), key=lambda j: j.get("created") or 0)
+    queued = sorted((j for j in jobs if j.get("status") == "queued"),            # clips first, then upscales
+                    key=lambda j: (is_upscale(j), j.get("created") or 0))
     for j in jobs:
         status = j.get("status")
         j["phase"] = None
@@ -1209,8 +1269,9 @@ def finish_wait(studio, jid, args, output, saver, deadline):
         print(f"lf-cli: {hint}", file=sys.stderr, flush=True)
         output.result(jid, {"error": hint, "http_status": None, "id": jid, "job": info})
         return 4
-    why = f"clip {jid} failed: {info.get('error') or 'no reason given'}" if state == "failed" else \
-        f"clip {jid} was cancelled"
+    what = noun(info).lower()
+    why = f"{what} {jid} failed: {info.get('error') or 'no reason given'}" if state == "failed" else \
+        f"{what} {jid} was cancelled"
     print(f"lf-cli: {why}", file=sys.stderr, flush=True)
     if output.json:
         print(json.dumps({"error": why, "http_status": None, "id": jid, "job": info}), flush=True)
@@ -1275,6 +1336,36 @@ def cmd_fetch(studio, args, output):
     return finish_wait(studio, jid, args, output, cli_saver(args.out, args.poster), None)
 
 
+def cmd_upscale(studio, args, output):
+    jid = check_id(args.id)
+    if not 0 <= args.hold <= 3600:
+        raise Fail("--hold must be 0-3600 seconds", 2)
+    if args.seed is not None and not 0 <= args.seed < 2 ** 63:
+        raise Fail("--seed must be 0 or more (a 63-bit integer)", 2)
+    wait = args.wait or args.out is not None or args.poster
+    saver = cli_saver(args.out, args.poster) if wait else None
+    why = saver and saver.unwritable()
+    if why:
+        raise Fail(f"can't save the upscale there: {why}; nothing was queued (--out picks another place)", 2)
+    body = upscale_body(jid, args.resolution, args.strength, args.audio, args.seed)
+    try:
+        answer = submit_upscale(studio, body, args.hold)
+    except Fail as error:
+        error.jid = error.jid or jid
+        raise
+    except KeyboardInterrupt:
+        print("lf-cli: interrupted during the request; the upscale may or may not have been queued (check with: "
+              "lf-cli status)", file=sys.stderr, flush=True)
+        return 130
+    uid, rec = answer["id"], answer.get("job") or {"id": answer["id"]}
+    output.track(rec)
+    if not wait:
+        output.result(uid, rec)
+        return 0
+    deadline = time.time() + args.timeout if args.timeout > 0 else None
+    return finish_wait(studio, uid, args, output, saver, deadline)
+
+
 def cmd_status(studio, args, output):
     jid = check_id(args.id) if args.id else None
     sb = studio.switchboard()
@@ -1305,6 +1396,8 @@ def cmd_cancel(studio, args, output):
     job = answer.get("job") or {}
     if job.get("status") == "cancelled":
         text = f"cancelled {jid}"
+    elif is_upscale(job):
+        text = f"cancelling upscale {jid}: its job stops within about 20 s"
     else:
         text = f"cancelling {jid}: it stops once the pipeline has closed (about 40 s)"
     output.result(text, answer)
@@ -1396,6 +1489,28 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["id"], "additionalProperties": False, "properties": {
          "id": STR, "out": OUT, "poster": POSTER,
          "wake": {"type": "boolean", "default": False, "description": "Start the studio if it is stopped"}}}},
+    {"name": "upscale", "title": "Upscale a clip (experimental)",
+     "description": (
+         "Experimental, on a studio with the Upscale on (LFSTUDIO_UPSCALE=1): upscale a finished clip to 1080p, 2K "
+         "(2560x1440, the default) or 4K with NVIDIA's Open-H3-Regenerate-2K, as a new job with an id of its own. For "
+         "now only 5 s text clips (t2va), 16:9 or 9:16 (a 9:16 clip comes out upright: 2K is 1440x2560; NVIDIA "
+         "trained its refiner on 16:9). It runs after the clips queued, closes the studio's models while it "
+         "runs (the next clip, or the studio's warm-up, loads them again) and takes long: on a DGX Spark about 10 min "
+         "at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps (4K has run once, with a 16:9 clip; not yet with a "
+         "9:16 one), reading the clip (~2 min) and the load (~22 s; ~7.5 min on a studio with "
+         "LFSTUDIO_UPSCALE_LOAD=standard) included. "
+         "strength: faithful (start noise 0.5, 2 steps) redraws the least, balanced (0.7, 2 steps) more, full "
+         "(NVIDIA's setting, 3 steps) is the sharpest but redraws faces into a different-looking person; the default "
+         "is the studio's. audio: what the picture is refined against, the clip's own (clip) or silence; the result "
+         "keeps the clip's sound either way. Waits up to wait_s and saves the MP4 when it is done; else call wait with "
+         "the id it returns. Each call queues another upscale; cancel stops one."),
+     "inputSchema": {"type": "object", "required": ["id"], "additionalProperties": False, "properties": {
+         "id": {"type": "string", "description": "The finished clip's id"},
+         "resolution": {"type": "string", "enum": list(UPSCALE_RESOLUTIONS), "default": "2k"},
+         "strength": {"type": "string", "enum": list(UPSCALE_STRENGTHS), "description": "Default: the studio's"},
+         "audio": {"type": "string", "enum": list(UPSCALE_AUDIO), "description": "Default: the studio's"},
+         "seed": {"type": "integer", "minimum": 0, "description": "The refine's seed; default the clip's"},
+         "wait_s": WAIT_S, "out": OUT, "poster": POSTER}}},
     {"name": "prompt_guide", "title": "H3 prompt guide",
      "description": ("The H3 prompt guide: formats per task, dialogue tags, keyframe lines, reference labels, "
                      "examples. Read it before writing a prompt."),
@@ -1545,7 +1660,8 @@ class McpServer:
         self.version = None                           # the protocol version agreed at initialize (legacy era)
         self.clips = []                               # Submission, oldest first
         self.handlers = {"generate": self.t_generate, "wait": self.t_wait, "status": self.t_status,
-                         "cancel": self.t_cancel, "fetch": self.t_fetch, "prompt_guide": self.t_guide}
+                         "cancel": self.t_cancel, "fetch": self.t_fetch, "upscale": self.t_upscale,
+                         "prompt_guide": self.t_guide}
 
     # -- transport
     def log(self, text):
@@ -1719,8 +1835,12 @@ class McpServer:
             saved_poster = saver.save_poster(path, poster)
             if saved_poster:
                 data["poster_path"] = str(saved_poster)
-        text = (f"{prefix}Clip {jid} is done: saved {path} ({megabytes(n)}, {rec.get('seconds')} s {rec.get('task')} "
-                f"{rec.get('orientation')}, seed {rec.get('seed')}).")
+        if is_upscale(rec):
+            text = (f"{prefix}Upscale {jid} is done: saved {path} ({megabytes(n)}, {rec.get('resolution')} of clip "
+                    f"{rec.get('parent')}, {rec.get('strength')}).")
+        else:
+            text = (f"{prefix}Clip {jid} is done: saved {path} ({megabytes(n)}, {rec.get('seconds')} s "
+                    f"{rec.get('task')} {rec.get('orientation')}, seed {rec.get('seed')}).")
         if rec.get("labels"):
             text += f" Labels: {labels_text(rec)}."
         result = text_result(text, data)
@@ -1735,13 +1855,14 @@ class McpServer:
         if state == "done":
             return self.done_result(jid, info, saver, prefix)
         if state == "failed":
-            return text_result(f"{prefix}Clip {jid} failed: {info.get('error') or 'no reason given'}", info, error=True)
+            return text_result(f"{prefix}{noun(info)} {jid} failed: {info.get('error') or 'no reason given'}", info,
+                               error=True)
         if state == "cancelled":
-            return text_result(f"{prefix}Clip {jid} was cancelled.", info)
+            return text_result(f"{prefix}{noun(info)} {jid} was cancelled.", info)
         what = phase_text(info)
         if state == "running" and info.get("elapsed_s") is not None:
             what += f", {mmss(info['elapsed_s'])} since it started"
-        return text_result(f'{prefix}Clip {jid} is {what}. Call wait with id "{jid}" to keep waiting.', info)
+        return text_result(f'{prefix}{noun(info)} {jid} is {what}. Call wait with id "{jid}" to keep waiting.', info)
 
     def wait_outcome(self, jid, deadline, saver, call, prefix=""):
         try:
@@ -1957,9 +2078,31 @@ class McpServer:
             raise
         job = answer.get("job") or {}
         if job.get("status") == "cancelled":
-            return text_result(f"Clip {jid} was cancelled (it had not started).", job)
+            return text_result(f"{noun(job)} {jid} was cancelled (it had not started).", job)
+        if is_upscale(job):
+            return text_result(f"Upscale {jid} is being cancelled: its job stops within about 20 s.", job)
         return text_result(f"Clip {jid} is being cancelled: it stops once the pipeline has closed (about 40 s); the "
                            "next clip then loads the models again.", job)
+
+    def t_upscale(self, args, call):
+        jid, t0 = check_id(args["id"]), time.time()
+        budget = self.budget(args.get("wait_s"))
+        saver = self.saver(args.get("out"), args.get("poster", True))
+        call.set_phase("queueing the upscale (held while the studio starts)")
+        body = upscale_body(jid, args.get("resolution"), args.get("strength"), args.get("audio"), args.get("seed"))
+        try:
+            answer = submit_upscale(self.studio, body, max(0.0, budget - 15))
+        except Fail as error:
+            error.message = error.message.replace("try again in about", "call upscale again in about").replace(
+                "check with: lf-cli status", "call status without an id to see it")
+            raise
+        uid, rec = answer["id"], answer.get("job") or {"id": answer["id"], "kind": "upscale", "state": "queued"}
+        self.log(f"queued upscale {uid} of clip {jid}")
+        call.check()
+        prefix = f"Queued upscale {uid} of clip {jid} ({rec.get('resolution')}, {rec.get('strength')}). "
+        if args.get("wait_s") == 0 or time.time() >= t0 + budget:
+            return self.outcome(uid, rec.get("state", "queued"), rec, saver, prefix)
+        return self.wait_outcome(uid, t0 + budget, saver, call, prefix)
 
     def t_guide(self, args, call):
         return {"content": [{"type": "text", "text": GUIDE}], "isError": False}
@@ -1995,7 +2138,7 @@ def parser():
     g.add_argument("--task", choices=TASKS, help="default: fl2va with frames, ref2va with --ref, else t2va")
     g.add_argument("--orientation", choices=ORIENTATIONS,
                    help="default: from the first keyframe's shape, else landscape")
-    g.add_argument("--seconds", type=int, choices=DURATIONS, metavar="S", help="3, 4, 5, 6, 7, 8, 10, 12 or 15 "
+    g.add_argument("--seconds", type=int, choices=DURATIONS, metavar="S", help="5, 6, 7, 8, 10, 12 or 15 "
                                                                               "(default 5)")
     g.add_argument("--seed", type=int, metavar="N", help="default: random")
     g.add_argument("--first-frame", metavar="FILE|URL", help="fl2va: the first frame (an image)")
@@ -2026,13 +2169,33 @@ def parser():
     f.add_argument("--poster", action="store_true", help="also save the poster frame as <out stem>.jpg")
     f.add_argument("--wake", action="store_true",
                    help="start the studio if spark-switchboard has stopped it (it needs most of the machine's memory)")
+    u = sub.add_parser("upscale", parents=[common],
+                       help="experimental: upscale a finished 5 s text clip, 16:9 or 9:16, to 1080p, 2K or 4K (with "
+                            "--wait or --out: and save it)")
+    u.add_argument("id", help="the finished clip")
+    u.add_argument("--resolution", choices=UPSCALE_RESOLUTIONS, help="default 2k (2560x1440, or 1440x2560 for 9:16)")
+    u.add_argument("--strength", choices=UPSCALE_STRENGTHS,
+                   help="how much it may redraw (default: the studio's); full redraws faces into another person")
+    u.add_argument("--audio", choices=UPSCALE_AUDIO,
+                   help="what the picture is refined against (default: the studio's); the result has the clip's "
+                        "sound either way")
+    u.add_argument("--seed", type=int, metavar="N", help="the refine's seed (default: the clip's)")
+    u.add_argument("--wait", action="store_true", help="wait for the upscale and save the MP4 (into the current "
+                                                       "directory unless --out)")
+    u.add_argument("--out", metavar="PATH", help="the MP4 file, or a directory for it (implies --wait)")
+    u.add_argument("--poster", action="store_true", help="also save the poster frame as <out stem>.jpg")
+    u.add_argument("--timeout", type=float, default=0, metavar="S", help="give up waiting after S seconds (exit 4; "
+                                                                         "the upscale keeps running); 0 = no limit")
+    u.add_argument("--hold", type=float, default=HOLD_S, metavar="S",
+                   help=f"how long spark-switchboard may hold the request while it starts the studio (default "
+                        f"{HOLD_S})")
     sub.add_parser("guide", parents=[common], help="print the prompt guide for H3")
     sub.add_parser("mcp", parents=[common], help="run the MCP server on stdin/stdout")
     return ap
 
 
 COMMANDS = {"generate": cmd_generate, "wait": cmd_wait, "status": cmd_status, "cancel": cmd_cancel,
-            "fetch": cmd_fetch, "guide": cmd_guide}
+            "fetch": cmd_fetch, "upscale": cmd_upscale, "guide": cmd_guide}
 
 
 # Until 0.6 the settings may have their names up to 0.4, SOLH3_X for LFSTUDIO_X.

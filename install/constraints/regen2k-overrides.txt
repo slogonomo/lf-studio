@@ -1,0 +1,5 @@
+# Overrides for install/constraints/regen2k-requirements.in (uv pip compile --override): NVIDIA's triton pin over
+# torch 2.11.0's own (3.6.0), and cuDNN 9.20.0.48 over torch's 9.19.0.56, the cuDNN LF Studio's Stage 1 uses on
+# the DGX Spark (install/40-stage1.sh), as 9.19 was not tried on GB10 (sm_121).
+triton==3.7.0
+nvidia-cudnn-cu13==9.20.0.48

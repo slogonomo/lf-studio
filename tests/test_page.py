@@ -28,6 +28,7 @@ except ImportError:
 @unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")
 class PageTest(unittest.TestCase):
     load_s, clip_s, preload = 2, 1, False
+    upscale = True                     # the stub studio has the experimental Upscale on (OneRowUpscaleOff: off)
 
     @classmethod
     def setUpClass(cls):
@@ -112,7 +113,8 @@ class Durations(PageTest):
         want = {0: ("0 s", "0:00"), 0.4: ("0 s", "0:00"), 0.5: ("1 s", "0:00"), 59.4: ("59 s", "0:59"),
                 59.5: ("60 s", "0:59"), 59.6: ("60 s", "0:59"), 89.4: ("89 s", "1:29"), 89.5: ("1:30 min", "1:29"),
                 119.4: ("1:59 min", "1:59"), 119.5: ("2:00 min", "1:59"), 119.6: ("2:00 min", "1:59"),
-                120: ("2:00 min", "2:00"), 3599.4: ("59:59 min", "59:59"), 3599.6: ("60:00 min", "59:59"),
+                120: ("2:00 min", "2:00"), 3599.4: ("59:59 min", "59:59"), 3599.6: ("1:00:00", "59:59"),
+                3600: ("1:00:00", "1:00:00"), 4300.4: ("1:11:40", "1:11:40"),     # an upscale: hours, as its timer
                 -3: ("0 s", "0:00"), -0.4: ("0 s", "0:00")}
         got = self.page.evaluate(f"{json.dumps(list(want))}.map(s => [fmtS(s), clock(s)])")
         self.assertEqual(dict(zip(want, map(tuple, got))), want)
@@ -343,9 +345,9 @@ class LoadSelectedNow(PageTest):
 
     def test_switch_shows_in_the_status(self):
         self.studio.wait_for(lambda s: s["session"]["state"] == "ready", timeout=30)
-        self.pick("seconds", "3")
+        self.pick("seconds", "6")
         self.page.click("#loadnow")
-        self.page.wait_for_function("document.getElementById('loaded').textContent.startsWith('switching to Text · 16:9 · 3 s')")
+        self.page.wait_for_function("document.getElementById('loaded').textContent.startsWith('switching to Text · 16:9 · 6 s')")
         self.assertFalse(self.page.is_visible("#loadnow"))
         self.assertIn("loads these models first", self.go_text())
         self.page.wait_for_function("document.getElementById('loaded').textContent.includes('warming up')")
@@ -439,6 +441,24 @@ class UiTestScript(unittest.TestCase):
     def test_api_off(self):
         self.assertIn("PASS Generate keeps the models when the format differs", self.run_ui_test("1", api="0"))
 
+    def test_with_an_upscale(self):
+        """An upscale of the t2va clip in the gallery (the experimental Upscale, which the stub studio has on). It
+        closed the models, so the Generate checks run without a session."""
+        root = Path(tempfile.mkdtemp(prefix="lf-studio-uitest-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        studio = StubStudio(root, load_s=1, clip_s=0.5, preload=False)
+        studio.start()
+        self.addCleanup(studio.stop)
+        jid = studio.generate()[1]["id"]
+        studio.wait([jid])
+        uid = studio.upscale(jid)[1]["id"]
+        self.assertEqual(studio.wait([uid])[0]["status"], "done")
+        result = subprocess.run([sys.executable, str(UI_TEST), studio.url + "/", "--shots", str(root / "shots")],
+                                capture_output=True, text=True, timeout=300)
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-2000:])
+        self.assertIn("PASS Upscale only on finished clips with it on (on), no Remix or Upscale on an upscale "
+                      "(1 upscales)", result.stdout)
+
 
 class ReleaseReviewPage(PageTest):
     """From the whole-release review: Undo vs a poll that still lists the clip as deleted, clips restored elsewhere
@@ -518,6 +538,70 @@ class ReleaseReviewPage(PageTest):
         self.assertEqual(self.page.evaluate("!!document.activeElement.closest('article.job')"), True)
 
 
+class OldLengths(PageTest):
+    """3 and 4 s went after 0.5.0: the page offers 5-15 s, a length kept from 0.5.0 reads 5 s, and clips of 3 and 4 s
+    made before still list and play, and Remix brings them back at 5 s without an error. Their Upscale button is
+    disabled with the reason (5 s clips only)."""
+
+    def seed(self):
+        old = self.dir / "old"
+        old.mkdir()
+        (old / "3.mp4").write_bytes(mp4(3))
+        (old / "4.mp4").write_bytes(mp4(4))
+        (old / "first.png").write_bytes(png())
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([
+            finished_job("3" * 32, seconds=3, output=str(old / "3.mp4"), created=1, prompt="three seconds"),
+            finished_job("4" * 32, task="fl2va", seconds=4, output=str(old / "4.mp4"), created=2,
+                         first_frame=str(old / "first.png"), prompt="four seconds")]))
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def test_lengths_offered(self):
+        offered = self.page.eval_on_selector_all('input[name="seconds"]', "els => els.map(e => e.value)")
+        self.assertEqual(offered, ["5", "6", "7", "8", "10", "12", "15"])
+        self.assertEqual(self.page.eval_on_selector_all(".len label", "els => els.map(e => e.textContent)"), offered)
+        self.page.evaluate("localStorage.setItem('lfstudio.seconds', '3')")       # kept by a 0.5.0 page
+        other = self.ctx.new_page()                                           # (a reload here would cancel a poll)
+        other.goto(self.studio.url + "/")
+        self.assertEqual(other.evaluate("val('seconds')"), "5")
+        self.assertEqual(other.inner_text("#lenout"), "~60 s per clip")
+        other.close()
+
+    def test_old_clips_list_play_and_remix_at_5_s(self):
+        for jid, seconds in (("3" * 32, 3), ("4" * 32, 4)):
+            card = self.card(jid)
+            self.page.wait_for_selector(f"{card} video")
+            self.assertEqual(self.page.eval_on_selector_all(f"{card} .tags .tag", "els => els.map(e => e.textContent)")[2],
+                             f"{seconds} s")
+            self.assertEqual(self.page.get_attribute(f"{card} video", "src"), f"/video/{jid}")
+            self.assertIn(f"_{seconds}s_", self.page.get_attribute(f"{card} a.act", "download"))
+            self.assertEqual(self.page.evaluate("id => fetch('/video/' + id).then(r => r.status)", jid), 200)
+        up = f"{self.card('3' * 32)} .act.up"                                   # the Upscale takes 5 s clips only
+        self.page.wait_for_selector(f'{up}[aria-disabled="true"]', state="attached")
+        self.assertEqual(self.page.get_attribute(up, "title"),
+                         "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)")
+        self.pick("seconds", "10")
+        self.page.click(f"{self.card('3' * 32)} .reuse-all")                   # t2va, 3 s
+        self.page.wait_for_function("document.getElementById('toast').textContent"
+                                    " === 'Settings loaded at 5 s (3 s is no longer offered)'")
+        self.assertEqual(self.page.evaluate("[val('task'), val('seconds'), store.get('seconds')]"), ["t2va", "5", "5"])
+        self.assertEqual(self.page.input_value("#prompt"), "three seconds")
+        self.assertEqual(self.page.inner_text("#err"), "")
+        self.page.click(f"{self.card('4' * 32)} .reuse-all")                   # fl2va, 4 s, with its first frame
+        self.page.wait_for_function("document.querySelectorAll('#fl .thumbs img.kept').length === 1")
+        self.page.wait_for_function("document.getElementById('toast').textContent"
+                                    " === 'Settings and files loaded at 5 s (4 s is no longer offered)'")
+        self.assertEqual(self.page.evaluate("[val('task'), val('seconds')]"), ["fl2va", "5"])
+        self.assertEqual(self.page.inner_text("#err"), "")
+        self.page.click("#go")
+        jobs = self.studio.wait_for(lambda s: len(s["jobs"]) == 3)["jobs"]
+        new = self.studio.wait([next(j["id"] for j in jobs if j["id"] not in ("3" * 32, "4" * 32))])[0]
+        self.assertEqual((new["status"], new["task"], new["seconds"], new["prompt"]), ("done", "fl2va", 5, "four seconds"))
+        self.assertEqual(Path(new["first_frame"]).name, "first.png")
+        self.assertEqual(self.page.inner_text("#err"), "")
+
+
 class RemixSeed(PageTest):
     """#14: Remix loads the clip's seed and leaves "New random seed every run" as it is."""
 
@@ -536,6 +620,7 @@ class RemixSeed(PageTest):
     def test_ticked_stays_ticked_and_draws_a_new_seed(self):
         self.page.check("#autoroll")
         a = self.remix(777)
+        self.page.wait_for_function("document.getElementById('toast').textContent === 'Settings loaded'")  # 5 s: as is
         self.assertTrue(self.page.is_checked("#autoroll"))
         self.assertEqual(self.page.input_value("#seed"), "777")
         new = self.generate_from_page(a)                                    # Remix, then Generate in the same tab
@@ -723,7 +808,8 @@ class RemixScroll(PageTest):
 
 
 class SeedText(PageTest):
-    """#15: the seed is plain text next to the time; Remix, Download and Delete share one row."""
+    """#15: the seed is plain text next to the time; Remix, Download, Upscale and Delete share one row (a 10 s clip:
+    its Upscale shows, disabled; the stub studio has the experimental Upscale on)."""
 
     def test_seed_in_the_info_line_and_one_row_of_buttons(self):
         ok = self.studio.generate(prompt="a long prompt " * 30, seed=2034940401, seconds=10)[1]["id"]
@@ -734,7 +820,8 @@ class SeedText(PageTest):
         for width in (1280, 390, 320):        # 320: the narrowest phone card (266 px, #19)
             self.page.set_viewport_size({"width": width, "height": 900})
             self.page.wait_for_timeout(300)
-            for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", "Delete"]),
+            up = ["Upscale"] if self.upscale else []
+            for jid, seed, buttons in ((ok, "2034940401", ["Remix", "Download", *up, "Delete"]),
                                        (bad, "2147483646", ["Remix", "Delete"])):
                 card = f'article[data-id="{jid}"]'
                 self.assertTrue(self.page.inner_text(f"{card} .when"))
@@ -874,7 +961,8 @@ class SeedText(PageTest):
 
 
 class PhoneWidth(PageTest):
-    """#19: no sideways scroll on a phone, and the card buttons still share one row."""
+    """#19: no sideways scroll on a phone, and the card buttons still share one row: in cards too narrow for their
+    names, Upscale and Delete show their icons only (with their names as aria-label)."""
 
     def test_no_sideways_scroll_and_one_row_of_buttons(self):
         ok = self.studio.generate(prompt="a long prompt " * 30, seed=2034940401)[1]["id"]
@@ -892,12 +980,22 @@ class PhoneWidth(PageTest):
                 return [document.documentElement.scrollWidth, cw, wide]; }""")
             self.assertLessEqual(scroll, client, f"sideways scroll at {width} px: {wide}")
             self.assertEqual(wide, [], f"wider than the screen at {width} px")
-            for jid, buttons in ((ok, ["Remix", "Download", "Delete"]), (bad, ["Remix", "Delete"])):
+            up = ["Upscale"] if self.upscale else []
+            for jid, buttons in ((ok, ["Remix", "Download", *up, "Delete"]), (bad, ["Remix", "Delete"])):
                 row = self.page.eval_on_selector_all(
                     f'article[data-id="{jid}"] .acts > *', "els => els.filter(e => e.offsetWidth).map(e => "
-                                                           "[e.textContent.trim(), Math.round(e.getBoundingClientRect().top)])")
-                self.assertEqual([name for name, _ in row], buttons, width)
-                self.assertEqual(len({top for _, top in row}), 1, f"one row at {width} px: {row}")
+                                                           "[e.textContent.trim(), Math.round(e.getBoundingClientRect().top), "
+                                                           "e.innerText.trim(), e.getAttribute('aria-label')])")
+                self.assertEqual([name for name, *_ in row], buttons, width)
+                self.assertEqual(len({top for _, top, *_ in row}), 1, f"one row at {width} px: {row}")
+                tight = self.page.evaluate("document.getElementById('jobs').classList.contains('tight')")
+                for name, _, shown, label in row:
+                    if name in ("Upscale", "Delete"):        # the name as text, or as aria-label beside an icon
+                        self.assertEqual((shown, label), ("" if tight else name, name), width)
+                if not self.upscale:                         # without Upscale the names fit even at 300 px
+                    self.assertFalse(tight, width)
+                elif width <= 340 or width == 600:           # no room for the names on a small phone; room at 600
+                    self.assertEqual(tight, width <= 340, width)
 
     def test_a_long_file_name_in_an_error_wraps(self):
         """The form panel scrolls on its own, so check it too: an error naming a long upload must wrap."""
@@ -913,6 +1011,18 @@ class PhoneWidth(PageTest):
                                                                                           e.clientWidth])""")
         for el, scroll, client in widths:
             self.assertLessEqual(scroll, client, f"#{el} scrolls sideways: {widths}")
+
+
+class OneRowUpscaleOff(PageTest):
+    """The one row of card buttons with the experimental Upscale off, as every studio runs by default: Remix,
+    Download and Delete, with their names, at every width (#15, #19)."""
+    upscale = False
+
+    def seed(self):
+        self.studio.env["LFSTUDIO_UPSCALE"] = "0"
+
+    test_seed_in_the_info_line_and_one_row_of_buttons = SeedText.test_seed_in_the_info_line_and_one_row_of_buttons
+    test_no_sideways_scroll_and_one_row_of_buttons = PhoneWidth.test_no_sideways_scroll_and_one_row_of_buttons
 
 
 class CancelCards(PageTest):
@@ -949,12 +1059,12 @@ class CancelCards(PageTest):
     def test_focus_stays_on_the_card_when_a_poll_hides_cancel(self):
         """Cancel focused, then the clip finishes, or another tab cancels it: focus moves to Delete or Remix,
         not to the page."""
-        a = self.studio.generate(prompt="finishes by itself", seconds=3)[1]["id"]
+        a = self.studio.generate(prompt="finishes by itself", seconds=6)[1]["id"]
         self.status(a, "loading models + generating")
         self.page.focus(f"{self.card(a)} .cancel")
         self.status(a, "done")
         self.assertEqual(self.page.evaluate("document.activeElement.textContent.trim()"), "Delete")
-        b = self.studio.generate(prompt="cancelled elsewhere", seed=3, seconds=3)[1]["id"]
+        b = self.studio.generate(prompt="cancelled elsewhere", seed=3, seconds=6)[1]["id"]
         self.status(b, "generating")
         self.page.focus(f"{self.card(b)} .cancel")
         self.assertEqual(self.studio.post("/api/cancel", json_body={"id": b})[0], 200)     # another tab
@@ -968,7 +1078,7 @@ class CancelCards(PageTest):
         self.status(b, "queued")
         self.assertEqual(self.visible(a), ["Remix", "Cancel"])
         self.assertEqual(self.visible(b), ["Remix", "Cancel"])
-        self.assertEqual(self.visible("1" * 32), ["Remix", "Download", "Delete"])   # finished cards: no Cancel
+        self.assertEqual(self.visible("1" * 32), ["Remix", "Download", "Upscale", "Delete"])   # finished: no Cancel
         self.assertEqual(self.visible("2" * 32), ["Remix", "Delete"])
         self.assertIn("models load again", self.page.get_attribute(f"{self.card(a)} .cancel", "title"))
         self.assertIn("out of the queue", self.page.get_attribute(f"{self.card(b)} .cancel", "title"))
@@ -1338,6 +1448,252 @@ class QueuePicture(PageTest):
                     self.assertGreaterEqual(ratio, least, f"{part} on the {scheme} {jid == a and 'running' or 'queued'} card")
 
 
+class UpscaleCards:
+    """For the page tests of the experimental Upscale (the stub studio has it on, with tests/stub/upscale_job.py as
+    its job)."""
+    load_s, clip_s = 1, 0.5
+
+    def card(self, jid):
+        return f'article[data-id="{jid}"]'
+
+    def visible(self, jid):
+        return self.page.eval_on_selector_all(f"{self.card(jid)} .acts > *",
+                                              "els => els.filter(e => e.offsetWidth).map(e => e.textContent.trim())")
+
+    def done_clip(self, **kw):
+        jid = self.studio.generate(**kw)[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        self.page.wait_for_selector(f"{self.card(jid)} video")
+        return jid
+
+    def open_popover(self, jid):
+        self.page.click(f"{self.card(jid)} .act.up")
+        self.page.wait_for_selector("#uppop", state="visible")
+
+    def checked(self, name):
+        return self.page.eval_on_selector(f'#uppop input[name="{name}"]:checked', "e => e.value")
+
+
+class UpscalePage(UpscaleCards, PageTest):
+    """The button on finished clips (disabled, with the reason, on the ones it can't take), the popover and its
+    request, and the upscale's own card: tags, the player, Download and Delete, without Remix."""
+
+    def test_button_popover_and_card(self):
+        ok = self.done_clip(prompt="the clip to upscale", seed=31)
+        ten = self.done_clip(prompt="too long", seconds=10, seed=32)
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        up = f"{self.card(ok)} .act.up"
+        self.assertEqual((self.page.get_attribute(up, "aria-disabled"), self.page.get_attribute(up, "title")),
+                         ("false", "Upscale to 1080p, 2K or 4K (experimental)"))
+        self.assertEqual(self.visible(ok), ["Remix", "Download", "Upscale", "Delete"])
+        why = self.page.get_attribute(f"{self.card(ten)} .act.up", "title")
+        self.assertEqual((self.page.get_attribute(f"{self.card(ten)} .act.up", "aria-disabled"), why),
+                         ("true", "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"))
+        self.page.click(f"{self.card(ten)} .act.up", force=True)             # aria-disabled: the reason, also on a
+                                                                               # phone
+        self.page.wait_for_function("t => document.getElementById('toast').textContent === t", arg=why)
+        self.assertTrue(self.page.is_hidden("#uppop"))
+        # the popover: the server's defaults, the expected times, one line on the models; Escape closes it
+        self.open_popover(ok)
+        self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "balanced"])
+        self.assertIsNone(self.page.query_selector('#uppop input[name="up_source"]'))      # one source: the clip's MP4
+        text = self.page.inner_text("#uppop")
+        for words in ("1080p\n~10 min", "2K\n~19 min", "4K\n~1.1 h", "in all, with a ~22 s load",
+                      "Faithful", "Start noise 0.5, 2 steps", "Balanced", "Full re-generate", "redraws faces",
+                      "Unloads the models while it runs"):
+            self.assertIn(words, text)
+        self.assertNotIn("draft", text)
+        self.assertNotIn("9:16", text)                                       # the note is for 9:16 clips
+        self.assertNotIn("untested", text)                                   # 4K has run (16:9, docs/PERFORMANCE.md)
+        self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
+                         ["1920×1080", "2560×1440", "3840×2160"])
+        # the progress bar's expected seconds (docs/PERFORMANCE.md): the fast load, ~8 min more with the standard load
+        # (the record's "load"); a record of an older studio's upscale from the draft counts as any other
+        self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, load: 'fast'},
+            {resolution: '2k', steps: 3}, {resolution: '1080p', steps: 2},
+            {resolution: '2k', steps: 2, load: 'standard'}, {resolution: '4k', steps: 2},
+            {resolution: '1080p', steps: 2, source: 'draft'}].map(upEta)"""), [1165, 1545, 615, 1665, 3995, 615])
+        # its times are upEta's for 2 steps with the studio's load (/api/state upscale_load), and follow it each time
+        # it opens (one evaluate: no poll in between)
+        self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
+            upEta({resolution: r, steps: 2, load})))"""), [615, 1115, 1165, 1665, 3995, 4495])
+        self.page.keyboard.press("Escape")
+        self.assertTrue(self.page.is_hidden("#uppop"))
+        times = self.page.evaluate("""id => {
+            const btn = document.querySelector(`article[data-id="${id}"] .act.up`), seen = [];
+            for (const load of ['standard', 'fast', 'standard', undefined]) {
+              state.upscale_load = load; openUpscale(id, btn);
+              seen.push([...document.querySelectorAll('#uppop small[data-standard]')].map(e => e.textContent));
+              closeUpscale(false);
+            }
+            state.upscale_load = 'fast'; return seen;}""", ok)
+        fast = ["in all, with a ~22 s load", "~10 min", "~19 min", "~1.1 h"]
+        standard = ["in all, with a ~7.5 min load", "~19 min", "~28 min", "~1.2 h"]
+        self.assertEqual(times, [standard, fast, standard, fast])
+        self.page.focus(up)                                                   # the keyboard: Enter opens it, focus
+        self.page.keyboard.press("Enter")                                     # on the resolution; Escape returns
+        self.page.wait_for_selector("#uppop", state="visible")
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "up-2k")
+        self.page.keyboard.press("Escape")
+        self.assertTrue(self.page.evaluate(f"document.activeElement === document.querySelector('{up}')"))
+        self.page.click(f"{up} svg")                                          # the button toggles it, its icon too
+        self.page.wait_for_selector("#uppop", state="visible")
+        self.page.click(f"{up} svg")
+        self.page.wait_for_selector("#uppop", state="hidden")
+        self.open_popover(ok)                                                 # a click elsewhere closes it
+        self.page.click("#jobs .job .p")
+        self.page.wait_for_selector("#uppop", state="hidden")
+        # 1080p, faithful: a card of its own at the top, with the clip's prompt
+        self.open_popover(ok)
+        self.page.click('#uppop label[for="up-1080p"]')
+        self.page.click('#uppop input[name="up_strength"][value="faithful"]')
+        with self.page.expect_request("**/api/upscale") as request:
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data), {"id": ok, "resolution": "1080p", "strength": "faithful"})
+        self.page.wait_for_function("document.getElementById('toast').textContent.startsWith('1080p upscale queued')")
+        self.assertTrue(self.page.is_hidden("#uppop"))
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.assertEqual({k: job[k] for k in ("parent", "resolution", "strength", "audio")},
+                         {"parent": ok, "resolution": "1080p", "strength": "faithful", "audio": "clip"})
+        uid, card = job["id"], self.card(job["id"])
+        self.assertEqual(self.page.get_attribute("#jobs .job", "data-id"), uid)          # the newest: at the top
+        self.assertEqual(self.page.get_attribute(card, "data-kind"), "upscale")
+        tags = self.page.eval_on_selector_all(f"{card} .tags .tag", "els => els.map(e => e.textContent)")
+        self.assertEqual(tags, ["1080p upscale", "Text", "5 s"])
+        self.assertEqual(self.page.inner_text(f"{card} .p"), "the clip to upscale")
+        self.assertIn("Faithful", self.page.inner_text(f"{card} .when"))
+        self.assertIsNone(self.page.query_selector(f"{card} .reuse-all"))   # no Remix
+        self.assertIsNone(self.page.query_selector(f"{card} .act.up"))      # an upscale is not upscaled again
+        self.page.wait_for_selector(f"{card} video", timeout=30000)
+        self.assertEqual(self.visible(uid), ["Download", "Delete"])
+        self.assertEqual(self.page.get_attribute(f"{card} a.act", "download"),
+                         f"lf-studio_t2va_5s_seed31_{ok[:6]}_1080p_{uid[:6]}.mp4")
+        self.assertEqual(self.page.inner_text(f"{card} .st"), "Done")
+        self.assertIn("Move this upscale to the trash", self.page.get_attribute(f"{card} .del", "title"))
+        self.page.click(f"{card} .del")                                     # its own Undo toast
+        self.page.wait_for_selector(card, state="detached")
+        self.page.wait_for_function("document.querySelector('#undo span').textContent === 'Upscale deleted'")
+
+    def test_without_the_clips_stage1_audio_and_a_refusal(self):
+        """No Stage-1 audio: the request asks for silence. A refusal shows in the popover, which stays open."""
+        ok = self.done_clip(prompt="files gone", seed=51)
+        case = Path(self.studio.job(ok)["output"]).parents[1]
+        (case / "stage1" / "stage1_direct_tensors.pt").unlink()
+        self.page.wait_for_timeout(2200)                                     # a poll with the new upscalable
+        self.open_popover(ok)
+        self.page.route("**/api/upscale", lambda route: route.fulfill(
+            status=409, content_type="application/json", body=json.dumps({"error": "the clip is busy, try later"})))
+        self.page.click("#upgo")
+        self.page.wait_for_function("document.getElementById('uperr').textContent === 'the clip is busy, try later'")
+        self.assertTrue(self.page.is_visible("#uppop"))
+        self.assertFalse(self.page.is_disabled("#upgo"))
+        self.page.unroute("**/api/upscale")
+        self.page.click("#upgo")
+        self.page.wait_for_selector("#uppop", state="hidden")
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.assertEqual(job["audio"], "silence")
+        self.studio.wait([job["id"]], timeout=30)
+
+
+class UpscalePortrait(UpscaleCards, PageTest):
+    """A 5 s 9:16 clip: the button on, the popover's sizes upright with its note, and the upscale's card upright."""
+
+    def test_a_9x16_clip(self):
+        tall = self.done_clip(prompt="an upright one", orientation="portrait", seed=61)
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        self.assertEqual(self.page.get_attribute(f"{self.card(tall)} .act.up", "aria-disabled"), "false")
+        self.open_popover(tall)
+        self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
+                         ["1080×1920", "1440×2560",
+                          "2160×3840 · the studio's 4K upscale has not been run with a 9:16 clip yet"])
+        self.assertTrue(self.page.is_visible("#upportrait"))
+        text = self.page.inner_text("#uppop")
+        for words in ("9:16 comes out upright (2K: 1440×2560). NVIDIA trained its refiner on 16:9 video",
+                      "1080p\n~10 min", "2K\n~19 min", "4K\n~1.1 h"):        # the same times: the same tokens
+            self.assertIn(words, text)
+        with self.page.expect_request("**/api/upscale") as request:
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data), {"id": tall, "resolution": "2k", "strength": "balanced"})
+        self.page.wait_for_selector("#uppop", state="hidden")
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        card = self.card(job["id"])
+        self.page.wait_for_selector(f"{card} video", timeout=30000)
+        self.assertEqual(self.page.eval_on_selector_all(f"{card} .tags .tag", "els => els.map(e => e.textContent)"),
+                         ["2K upscale", "Text", "5 s"])
+        self.assertEqual(self.page.eval_on_selector(f"{card} .media", "e => e.style.aspectRatio"), "4 / 5")  # as its clip's
+        self.assertEqual(self.page.get_attribute(f"{card} a.act", "download"),
+                         f"lf-studio_t2va_5s_seed61_{tall[:6]}_2k_{job['id'][:6]}.mp4")
+        self.open_popover(tall)                                               # and back on a 16:9 clip: no note
+        self.page.keyboard.press("Escape")
+        wide = self.done_clip(prompt="a wide one", seed=62)
+        self.page.wait_for_timeout(2200)
+        self.open_popover(wide)
+        self.assertTrue(self.page.is_hidden("#upportrait"))
+        self.assertEqual(self.page.get_attribute('#uppop label[for="up-2k"]', "title"), "2560×1440")
+
+
+class UpscaleRunning(UpscaleCards, PageTest):
+    """While an upscale runs (its stand-in job takes 60 s): its phase and timer, the status says why no models are
+    loaded, Generate loads them first; Cancel stops it and leaves Delete."""
+
+    def seed(self):
+        self.studio.env["STUB_UPSCALE_S"] = "60"
+
+    def test_running_upscale_and_cancel(self):
+        ok = self.done_clip(prompt="a long one", seed=41)
+        uid = self.studio.upscale(ok, resolution="4k")[1]["id"]
+        card = self.card(uid)
+        self.page.wait_for_function(f"(document.querySelector('{card} .ph2 .small') || {{}}).textContent "
+                                    "=== 'Upscaling · refine 1/2'", timeout=30000)
+        self.assertEqual(self.page.inner_text(f"{card} .st"), "Upscaling")
+        self.assertEqual(self.page.eval_on_selector_all(f"{card} .tags .tag", "els => els.map(e => e.textContent)"),
+                         ["4K upscale", "Text", "5 s"])
+        self.assertRegex(self.page.inner_text(f"{card} .ph2 .big"), r"^0:\d\d$")
+        self.assertEqual(self.visible(uid), ["Cancel"])
+        self.assertEqual(self.page.get_attribute(f"{card} .cancel", "title"), "Stop this upscale")
+        self.assertEqual(self.page.inner_text("#loaded"), "closed for an upscale")
+        self.assertIn("loads the models first", self.go_text())
+        self.page.focus(f"{card} .cancel")
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_selector(f'{card}[data-status="cancelled"]', timeout=20000)
+        self.assertEqual(self.visible(uid), ["Delete"])
+        self.assertEqual(self.page.inner_text(f"{card} .ph2 .big"), "Cancelled")
+        self.assertEqual(self.studio.job(uid)["status"], "cancelled")
+
+
+class UpscaleDefaults(UpscaleCards, PageTest):
+    """The popover starts at the server's defaults (/api/state upscale_defaults: LFSTUDIO_UPSCALE_STRENGTH) and shows
+    the times with its load (upscale_load: LFSTUDIO_UPSCALE_LOAD=standard, ~8 min more)."""
+
+    def seed(self):
+        self.studio.env.update(LFSTUDIO_UPSCALE_STRENGTH="full", LFSTUDIO_UPSCALE_LOAD="standard")
+
+    def test_the_servers_strength_and_load(self):
+        ok = self.done_clip(prompt="defaults")
+        self.open_popover(ok)
+        self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "full"])
+        text = self.page.inner_text("#uppop")
+        for words in ("1080p\n~19 min", "2K\n~28 min", "4K\n~1.2 h", "in all, with a ~7.5 min load"):
+            self.assertIn(words, text)
+
+
+class UpscalePageOff(PageTest):
+    """LFSTUDIO_UPSCALE=0: no Upscale button anywhere."""
+    load_s, clip_s = 1, 0.5
+
+    def seed(self):
+        self.studio.env["LFSTUDIO_UPSCALE"] = "0"
+
+    def test_no_button(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid], timeout=60)
+        self.page.wait_for_selector(f'article[data-id="{jid}"] video')
+        self.page.wait_for_timeout(2200)
+        self.assertEqual(self.page.eval_on_selector_all(f'article[data-id="{jid}"] .acts > *',
+                                                        "els => els.filter(e => e.offsetWidth).map(e => "
+                                                        "e.textContent.trim())"), ["Remix", "Download", "Delete"])
+
+
 class MachineTexts(PageTest):
     """LFSTUDIO_BACKEND (docs/RTX5090.md): the header and the note on times name the machine, and the clip-time
     estimates follow its table. Unset = the DGX Spark, as before. tests/test_backend.py checks the table and the
@@ -1348,6 +1704,7 @@ class MachineTexts(PageTest):
         self.studio.env.pop("LFSTUDIO_BACKEND", None)
         if self.backend:
             self.studio.env["LFSTUDIO_BACKEND"] = self.backend
+            self.studio.env["LFSTUDIO_UPSCALE"] = "0"           # the experimental Upscale is the DGX Spark's only
 
     def test_texts(self):
         m = self.page.evaluate("MACHINES")[self.backend or "spark"]

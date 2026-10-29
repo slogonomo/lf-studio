@@ -183,11 +183,11 @@ class CliTest(unittest.TestCase):
 class Generate(CliTest):
     def test_wait_and_save(self):
         """9.2 #1: generate --wait --out saves the MP4; stdout is its absolute path and nothing else."""
-        p = self.ok("generate", "--prompt", "a test clip", "--seconds", 3, "--wait", "--out", "c.mp4")
+        p = self.ok("generate", "--prompt", "a test clip", "--seconds", 6, "--wait", "--out", "c.mp4")
         out = self.work / "c.mp4"
         self.assertEqual(p.stdout, f"{out}\n")
-        self.assertAlmostEqual(duration(out), 3.04, delta=0.1)
-        self.assertRegex(p.stderr, r"queued [0-9a-f]{8} \(t2va, landscape, 3 s, seed \d+\), next in line")
+        self.assertAlmostEqual(duration(out), 6.04, delta=0.1)
+        self.assertRegex(p.stderr, r"queued [0-9a-f]{8} \(t2va, landscape, 6 s, seed \d+\), next in line")
         self.assertRegex(p.stderr, r"done in 0:0\d")
         self.assertEqual([f.name for f in self.work.iterdir()], ["c.mp4"])     # no .part left behind
 
@@ -267,6 +267,9 @@ class Generate(CliTest):
                 (["--first-frame", "a.gif"], "unsupported file type .gif"),
                 (["--first-frame", "missing.png"], "no such file: missing.png"),
                 (["--seconds", 9], re.compile(r"invalid choice: '?9'?")),     # Python 3.14 quotes the value
+                (["--seconds", 3], re.compile(r"invalid choice: '?3'? \(choose from '?5'?, '?6'?, '?7'?, '?8'?, "
+                                              r"'?10'?, '?12'?, '?15'?\)")),   # 3 and 4 s went after 0.5.0
+                (["--seconds", 4], re.compile(r"invalid choice: '?4'?")),
                 (["--task", "t2va", "--first-frame", "f.png"], "t2va takes no files"),
                 (["--first-frame", "f.png", "--ref", "f.png"], "can't go together"),
                 (["--task", "ref2va", "--first-frame", "f.png"], "--first-frame is used only by fl2va"),
@@ -527,7 +530,7 @@ class Switchboard(unittest.TestCase):
         method, path, headers, body = fake.requests[-1]
         self.assertEqual((method, path, headers["X-Switchboard-Wait"]), ("POST", "/api/generate", "900"))
         self.assertEqual(headers["Accept"], "application/json")
-        self.assertTrue(headers["User-Agent"].startswith("lf-cli/0.5.0"))
+        self.assertTrue(headers["User-Agent"].startswith("lf-cli/0.5.1"))
         self.assertEqual(headers["X-LFStudio-Client"], headers["User-Agent"])    # #58: a studio with the API off
         self.assertNotIn("Authorization", headers)                               # DECISIONS 2: no credentials
         p = self.sol(fake, "fetch", jid, "--wake")
@@ -565,6 +568,25 @@ class Switchboard(unittest.TestCase):
                       p.stderr)
         self.assertEqual(json.loads(p.stdout)["job"]["phase"], "generating")
 
+    def test_upscale_while_stopped(self):
+        """An upscale is held like a submit (X-Switchboard-Wait, --hold), with only the choices given; switchboard's
+        503 means nothing was queued."""
+        jid = "0123456789abcdef0123456789abcdef"
+
+        def answer(method, path, headers, body):
+            if path == "/__switchboard/status":
+                return 200, JSON, {"state": "stopped", "paused": None, "message": "LF Studio is not running"}
+            return switchboard_error("waiting", "LF Studio will start once memory is free", retry=120)
+        fake = self.fake(answer)
+        p = self.sol(fake, "upscale", jid, "--resolution", "4k", "--hold", 30)
+        self.assertEqual(p.returncode, 3, p.stderr)
+        self.assertIn("LF Studio will start once memory is free The upscale was NOT queued; try again in about 120 s.",
+                      p.stderr)
+        method, path, headers, body = fake.requests[-1]
+        self.assertEqual((method, path, headers["X-Switchboard-Wait"], headers["Content-Type"]),
+                         ("POST", "/api/upscale", "30", "application/json"))
+        self.assertEqual(json.loads(body), {"id": jid, "resolution": "4k"})
+
     def test_loading_is_retried(self):
         """A switchboard 503 "loading" while waiting is retried (5 s later), then the MP4 arrives."""
         jid = "0123456789abcdef0123456789abcdef"
@@ -586,6 +608,170 @@ class Switchboard(unittest.TestCase):
         self.assertIn("done in 1:01", p.stderr)
 
 
+class Upscale(CliTest):
+    """lf-cli upscale: the experimental Upscale (the stub studio has it on, with a stand-in job of about 1 s)."""
+
+    def clip(self, **kw):
+        jid = self.studio.generate(**kw)[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        return jid
+
+    def test_wait_and_save(self):
+        """--wait --out <dir>/ saves it under the studio's name for it: the clip's, with the resolution and the
+        upscale's own id after it."""
+        jid = self.clip(seed=7)
+        p = self.ok("upscale", jid, "--resolution", "1080p", "--strength", "faithful", "--audio", "silence",
+                    "--seed", 99, "--out", "up/", "--poster")
+        up = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        out = self.work / "up" / f"lf-studio_t2va_5s_seed7_{jid[:6]}_1080p_{up['id'][:6]}.mp4"
+        self.assertEqual(p.stdout, f"{out}\n")
+        self.assertEqual(out.read_bytes()[4:8], b"ftyp")
+        self.assertEqual(out.with_suffix(".jpg").read_bytes()[:2], b"\xff\xd8")
+        self.assertRegex(p.stderr, rf"queued [0-9a-f]{{8}} \(1080p upscale of {jid[:8]}, faithful, t2va, 5 s, seed 7\), "
+                                   r"next in line")
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.assertEqual({k: job[k] for k in ("parent", "resolution", "strength", "audio", "refine_seed", "status")},
+                         {"parent": jid, "resolution": "1080p", "strength": "faithful", "audio": "silence",
+                          "refine_seed": 99, "status": "done"})
+        p = self.ok("upscale", jid, "--json")                                  # the studio's defaults; no wait
+        rec = json.loads(p.stdout)
+        self.assertEqual((rec["kind"], rec["parent"], rec["state"], rec["resolution"], rec["strength"], rec["audio"]),
+                         ("upscale", jid, "queued", "2k", "balanced", "clip"))
+        p = self.ok("wait", rec["id"], "--json")
+        self.assertEqual(Path(json.loads(p.stdout)["path"]).name,
+                         f"lf-studio_t2va_5s_seed7_{jid[:6]}_2k_{rec['id'][:6]}.mp4")
+        lines = self.ok("status").stdout.splitlines()
+        self.assertTrue(lines[0].startswith(f"{rec['id']}  done       2k upscale of {jid[:8]}, balanced"), lines)
+
+    def test_a_9x16_clip(self):
+        """A 5 s 9:16 clip upscales as a 16:9 one does (the studio decides; the help says so), upright."""
+        jid = self.clip(orientation="portrait", seed=8)
+        p = self.ok("upscale", jid, "--wait", "--out", "up/")
+        up = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.assertEqual((up["orientation"], Path(up["output"]).name), ("portrait", "regen_1440x2560_121f.mp4"))
+        self.assertEqual(Path(p.stdout.strip()).name, f"lf-studio_t2va_5s_seed8_{jid[:6]}_2k_{up['id'][:6]}.mp4")
+        self.assertIn("upscale a finished 5 s text clip, 16:9 or 9:16, to 1080p, 2K or 4K",
+                      " ".join(self.ok("--help").stdout.split()))
+        self.assertIn("default 2k (2560x1440, or 1440x2560 for 9:16)", " ".join(self.ok("upscale", "--help")
+                                                                                 .stdout.split()))
+        usage = " ".join(load_cli().__doc__.split())
+        self.assertIn("a finished 5 s text clip, 16:9 or 9:16, to 1080p, 2K or 4K, on a studio", usage)
+        self.assertNotIn("untested", usage)                                  # 4K has run (16:9, docs/PERFORMANCE.md)
+
+    def test_refusals(self):
+        """The studio's refusals are exit 2 with its words; argparse checks the choices."""
+        ten = self.clip(seconds=10)
+        p = self.sol("upscale", ten, "--json")
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertEqual(json.loads(p.stdout), {"error": "Upscale takes 5 s clips only, for now (NVIDIA's pipeline "
+                                                         "is fixed at 121 frames)", "http_status": 400, "id": ten})
+        p = self.sol("upscale", "f" * 32)
+        self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: no such clip\n"))
+        for args in (["upscale", ten, "--resolution", "8k"], ["upscale", ten, "--strength", "nvidia"],
+                     ["upscale", "nonsense"], ["upscale", ten, "--seed", -1], ["upscale", ten, "--hold", 9999],
+                     ["upscale", ten, "--source", "final"]):                  # no --source: the clip's MP4 only
+            p = self.sol(*args)
+            self.assertEqual(p.returncode, 2, (args, p.stderr))
+        self.assertEqual([j.get("kind") for j in self.studio.state()["jobs"]], [None])     # nothing was queued
+        if os.geteuid() != 0:
+            ro = self.work / "ro"
+            ro.mkdir()
+            ro.chmod(0o555)
+            self.addCleanup(lambda: ro.exists() and ro.chmod(0o755))
+            p = self.sol("upscale", self.clip(seed=3), "--out", "ro/")
+            self.assertEqual(p.returncode, 2, p.stderr)
+            self.assertIn(f"can't save the upscale there: no permission to write to {ro}; nothing was queued",
+                          p.stderr)
+
+
+class UpscaleRunning(CliTest):
+    """An upscale that takes a while (its stand-in job: 30 s): --timeout, status, cancel and wait."""
+    studio_env = {"STUB_UPSCALE_S": "30"}
+
+    def test_timeout_status_cancel(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid], timeout=60)
+        p = self.sol("upscale", jid, "--resolution", "4k", "--wait", "--timeout", 3)
+        self.assertEqual(p.returncode, 4, p.stderr)
+        uid = p.stdout.strip()
+        self.assertRegex(uid, r"^[0-9a-f]{32}$")
+        self.assertIn(f"Keep waiting with: lf-cli wait {uid}", p.stderr)
+        self.assertRegex(p.stderr, r"\n(closing the studio's models for the upscale|upscaling(: [a-z /0-9]+)?)\n")
+        rec = json.loads(self.ok("status", uid, "--json").stdout)
+        self.assertEqual((rec["state"], rec["phase"]), ("running", "upscaling"))
+        self.assertRegex(self.ok("status", uid).stdout, rf"^{uid}  running    4k upscale of {jid[:8]}, balanced, t2va, "
+                                                        r"5 s, seed \d+  upscaling: [a-z /0-9]+, 0:\d\d since it started\n$")
+        self.assertEqual(self.ok("cancel", uid).stdout,
+                         f"cancelling upscale {uid}: its job stops within about 20 s\n")
+        p = self.sol("wait", uid)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(f"upscale {uid} was cancelled", p.stderr)
+
+
+class UpscaleOff(CliTest):
+    studio_env = {"LFSTUDIO_UPSCALE": "0"}
+
+    def test_off(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid], timeout=60)
+        p = self.sol("upscale", jid)
+        self.assertEqual((p.returncode, p.stdout), (2, ""), p.stderr)
+        self.assertEqual(p.stderr, "lf-cli: the experimental Upscale is off on this studio (LFSTUDIO_UPSCALE=1 turns "
+                                   "it on)\n")
+
+
+class UpscaleTimes(unittest.TestCase):
+    """The upscale times in lf-cli (its usage, the MCP instructions and the upscale tool) and docs/API.md agree with
+    the page's estimates (webui/index.html: UPSCALE and upEta, from docs/PERFORMANCE.md), and the popover's labels
+    with upEta for 2 steps, with either load."""
+
+    def page_model(self):
+        page = (REPO / "webui" / "index.html").read_text()
+        table = {res: (int(base), int(step)) for res, base, step in
+                 re.findall(r'"(\w+)":\{name:\'[^\']*\',base:(\d+),step:(\d+)[,}]', page)}
+        standard = int(re.search(r"j\.load==='standard'\?(\d+):0", page).group(1))
+        self.assertEqual(set(table), {"1080p", "2k", "4k"})
+        self.assertIn("return u.base+(j.steps||2)*u.step+(j.load==='standard'?", page)     # nothing else counts
+
+        def eta(res, steps, load="fast"):
+            base, step = table[res]
+            return base + steps * step + (standard if load == "standard" else 0)
+        return page, eta, standard
+
+    def test_the_range_and_the_standard_load(self):
+        _, eta, standard = self.page_model()
+        shortest = min(eta(res, 2) for res in ("1080p", "2k", "4k"))                    # faithful or balanced
+        longest = max(eta(res, 3) for res in ("1080p", "2k", "4k"))                     # full
+        self.assertEqual((round(shortest / 60), round(longest / 3600, 1), round(standard / 60)), (10, 1.6, 8))
+        cli = load_cli()
+        api = " ".join((REPO / "docs" / "API.md").read_text().split())
+        usage = " ".join(cli.__doc__.split())
+        self.assertIn("about 10 min to 1.6 h in all, 4K over an hour, with a ~22 s load", usage)
+        self.assertIn("~8 min more with LFSTUDIO_UPSCALE_LOAD=standard", usage)
+        self.assertIn("which takes about 10 min to 1.6 h or more", cli.INSTRUCTIONS)
+        self.assertIn("An upscale takes about 10 min to 1.6 h in all", api)
+        self.assertIn("~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`", api)
+        self.assertIn("An upscale takes about 10 min to 1.6 h, far longer than any `wait_s`", api)
+        tool = next(t for t in cli.TOOLS if t["name"] == "upscale")["description"]
+        self.assertIn("about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps", tool)
+        self.assertEqual([round(eta(res, 2) / 60) for res in ("1080p", "2k")], [10, 19])         # 615 s, 1165 s
+        self.assertEqual(round(eta("4k", 2) / 3600, 1), 1.1)                                     # 3995 s
+        for text in (usage, cli.INSTRUCTIONS, tool, api):                   # 4K has run end to end (16:9)
+            self.assertNotIn("untested", text)
+            self.assertNotIn("not yet run end to end", text)
+
+    def test_the_popover_labels(self):
+        page, eta, _ = self.page_model()
+        for res in ("1080p", "2k", "4k"):
+            label = re.search(rf'<label for="up-{res}"[^>]*>[^<]*<small data-standard="([^"]*)">([^<]*)</small>', page)
+            for load, text in (("fast", label.group(2)), ("standard", label.group(1))):
+                with self.subTest(res=res, load=load):
+                    seconds, m = eta(res, 2, load=load), re.match(r"~(\d+(?:\.\d)?) (min|h)", text)
+                    shown = float(m.group(1)) * (60 if m.group(2) == "min" else 3600)
+                    self.assertLessEqual(abs(shown - seconds), 45 if m.group(2) == "min" else 180, (text, seconds))
+                    self.assertNotIn("untested", text)                     # 4K has run (16:9, once)
+
+
 class Guide(unittest.TestCase):
     def test_guide(self):
         """9.2 #10: guide prints the prompt guide; docs/API.md carries the same text between its markers."""
@@ -600,6 +786,19 @@ class Guide(unittest.TestCase):
         m = re.search(r"<!-- prompt-guide:start -->(.*)<!-- prompt-guide:end -->", text, re.S)
         self.assertIsNotNone(m, "docs/API.md has no prompt-guide markers")
         self.assertEqual(m.group(1).strip(), cli.GUIDE.strip())
+
+    def test_lengths_offered(self):
+        """3 and 4 s went after 0.5.0: the guide, the usage, generate --help and the MCP instructions name 5-15 s."""
+        cli = load_cli()
+        self.assertEqual(cli.DURATIONS, (5, 6, 7, 8, 10, 12, 15))
+        self.assertIn("- `seconds`: 5, 6, 7, 8, 10, 12 or 15.\n", cli.GUIDE)
+        self.assertIn("[--seconds 5|6|7|8|10|12|15]", cli.__doc__)
+        self.assertIn(": 5-15 s,", cli.INSTRUCTIONS)
+        self.assertNotRegex(cli.INSTRUCTIONS, r"\b3 s\b")
+        p = subprocess.run([sys.executable, str(BIN), "generate", "--help"], capture_output=True, text=True,
+                           timeout=30, env=client_env())
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("--seconds S 5, 6, 7, 8, 10, 12 or 15 (default 5)", " ".join(p.stdout.split()))
 
     def test_examples_follow_the_rules(self):
         """The guide's examples keep its own rules, since agents copy them: the ref2va example's
@@ -626,7 +825,7 @@ class SwitchboardIntegration(unittest.TestCase):
                      f"/poster/{jid}"):
             self.assertTrue(any(fnmatch.fnmatch(path, p) for p in patterns), path)
         for path in (f"/video/{jid}", f"/input/{jid}/first_frame/0", f"/api/inputs/{jid}", f"/still/{jid}",
-                     "/api/generate", "/api/cancel", "/"):
+                     "/api/generate", "/api/cancel", "/api/upscale", "/"):
             self.assertFalse(any(fnmatch.fnmatch(path, p) for p in patterns), path)
 
 
@@ -851,7 +1050,7 @@ class Source(unittest.TestCase):
         shutil.copy(BIN, d / "lf-cli")
         p = subprocess.run([sys.executable, "-I", str(d / "lf-cli"), "--version"], capture_output=True, text=True,
                            cwd=d, timeout=30, env=client_env())
-        self.assertEqual((p.returncode, p.stdout.strip()), (0, "lf-cli 0.5.0"))
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, "lf-cli 0.5.1"))
         self.assertEqual(sorted(x.name for x in d.iterdir()), ["lf-cli"])
 
 
