@@ -20,9 +20,14 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   the patch's `runtime/fastload.py`: change the patch's file and copy it (`tests/test_upscale.py` checks that they are
   the same, byte for byte). The server runs it as a job of its own (`POST /api/upscale`, `run_upscale`; off unless
   `LFSTUDIO_UPSCALE=1`), and reads the `LFSTUDIO_UPSCALE_*` settings with its `studio_settings`, as `bin/lf-studio
-  --check` does. The page's Upscale button and popover, `lf-cli upscale` and the MCP tool `upscale` use the endpoint;
-  `install/65-regen2k.sh` (optional) builds its environment from the hashed lock `install/freeze/regen2k-lock.txt` and
-  fetches its weights (`install/regen2k_weights.py`); `--env-only` builds the environment alone.
+  --check` does. It takes every finished 5 s clip of the models' `"upscale"` tables in `MODELS` through an input folder
+  the server builds per upscale (`upscale_sources`, `build_input`: the clip's MP4, audio and text alone, linked, a
+  LightX2V Turbo clip's MP4 stretched or cut to 121 frames, `source.json`), job.json `"case"`; a Keyframes or Reference
+  clip's text alone is encoded first by `bench/h3turbo_encode.py --upscale` (`encode_upscale_text`), whose
+  `text_only_prompt` and `ref_text_only_prompt` write it (`upscale_text`). The page's Upscale button and popover,
+  `lf-cli upscale` and the MCP tool `upscale` use the endpoint; `install/65-regen2k.sh` (optional) builds its
+  environment from the hashed lock `install/freeze/regen2k-lock.txt` and fetches its weights
+  (`install/regen2k_weights.py`); `--env-only` builds the environment alone.
 - `install/66-h3turbo.sh` (optional) sets up the experimental LightX2V Turbo model: it checks the base model (refusing
   one without the VAE's weights), uses the Upscale's environment (or runs `65-regen2k.sh --env-only`; it never touches
   a venv itself), fetches LightX2V's turbo LoRA files at a pinned revision (`install/h3turbo_weights.py`, standard
@@ -75,20 +80,26 @@ gives each run its own runtime root, state directory and port under a temp direc
 non-zero exit status) if the port is in use or its server stops by itself, so nothing goes to another studio on that
 port. Add a test there for every server change.
 
-The stub studio has the experimental Upscale on (`LFSTUDIO_UPSCALE=1`), with `tests/stub/upscale_job.py` standing in
-for `upscale/regen2k_job.py` (`LFSTUDIO_UPSCALE_SCRIPT`): it prints the job's phase lines over `STUB_UPSCALE_S`, ends
-at once on SIGTERM (or ignores it with `STUB_UPSCALE_TERM=ignore`), dies with the server (`--parent`), writes a small
-121-frame MP4 without sound and a receipt (none, or one ffmpeg can't read, with `STUB_UPSCALE_OUTPUT`), and fails
-with `STUB_UPSCALE_FAIL=1`. The stub runtime writes stand-ins for a clip's working files (`qwen/conditioning.pt` and
-the Stage-1 audio) for it to find, and the server reads MemAvailable from a file the stub studio writes
+The stub studio has the experimental Upscale on (`LFSTUDIO_UPSCALE=1`), with `tests/stub/upscale_job.py` standing in for
+`upscale/regen2k_job.py` (`LFSTUDIO_UPSCALE_SCRIPT`): it prints the job's phase lines over `STUB_UPSCALE_S`, ends at
+once on SIGTERM (or ignores it with `STUB_UPSCALE_TERM=ignore`), dies with the server (`--parent`), writes a small
+121-frame MP4 without sound and a receipt (none, or one ffmpeg can't read, with `STUB_UPSCALE_OUTPUT`), and fails with
+`STUB_UPSCALE_FAIL=1`; it refuses (exit 2) an input folder the real job would (the real job's `case_inputs`, 121 frames,
+a conditioning that is not t2va's). The stub runtime writes stand-ins for a clip's working files (`qwen/conditioning.pt`
+and the Stage-1 audio) for it to find, and the server reads MemAvailable from a file the stub studio writes
 (`LFSTUDIO_TEST_MEMINFO`; `StubStudio.set_memory`), so the memory floor and guard are tested without the machine's
 memory. The `Upscale*` classes in `tests/test_server.py` cover the job type (queue and its limit, Cancel and its
-SIGKILL, Delete and Undo, a request during a Delete's move, restart, warm-up, memory, failure, the checks at run
-time, the settings, the launcher's checks and `--kill`), `tests/test_api.py` its API record, the `Upscale*` classes
-in `tests/test_cli.py` and `tests/test_mcp.py` the client, and those in `tests/test_page.py` the button (disabled
-with the reason on clips it can't take; in cards too narrow for the names, Upscale and Delete show icons, so the
-buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off), the popover, the upscale's card and
-`tests/ui_test.py` with an upscale in the gallery.
+SIGKILL, Delete and Undo, a request during a Delete's move, restart, warm-up, memory, failure, the checks at run time,
+the settings, the launcher's checks and `--kill`; `UpscaleEveryClip` and `UpscaleEncode` every Sol-H3 clip kind:
+Keyframes with each set of keyframes and Reference with their text encoded first, the input folder and source.json, the
+statuses in order, Cancel during the encode, a failed encode, the memory floor again after it), `TurboUpscale` LightX2V
+Turbo's clips (576p stretched, 768p linked, a last keyframe cut to 121 frames, qwen-text/ or an encode, the model turned
+off), `tests/test_api.py` its API record, the `Upscale*` classes in `tests/test_cli.py` and `tests/test_mcp.py` the
+client, and those in `tests/test_page.py` the button (disabled with the reason on clips it can't take;
+`UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the encode's phase and time, the text an upscale used
+and its clip's model; in cards too narrow for the names, Upscale and Delete show icons, so the buttons keep one row;
+`OneRowUpscaleOff` checks that row with the Upscale off), the popover, the upscale's card and `tests/ui_test.py` with an
+upscale in the gallery.
 
 The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as by
 default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo on.
@@ -179,9 +190,11 @@ for that clip and refused without it, and 14 s as stock) need torch and diffuser
 them with the Regen-2K Python, CUDA hidden (the command is in the file's docstring; about 2.5 min, ~6.5 GB of memory: on
 a DGX Spark where a GPU job runs, `systemd-run --user --scope -p MemoryMax=14G` keeps them from taking its memory).
 `tests/test_h3turbo_encode.py` covers `bench/h3turbo_encode.py` and its wrapper, standard library only: the text-only
-rewrite on every alignment-line form the guide and the page write, the prompt as the server takes it, the refusals,
-`--check`, and the encodes against a stand-in of the patch's `runtime` package kept in the test file itself
-(`TurboEncodeSeam` in `tests/test_server.py` runs it with the server's arguments).
+rewrite on every alignment-line form the guide and the page write, the Upscale's rewrite of a Reference prompt
+(`ref_text_only_prompt`: the guide's and the page's examples and the other forms) and its `--upscale` encode, the prompt
+as the server takes it, the refusals, `--check`, and the encodes against a stand-in of the patch's `runtime` package
+kept in the test file itself (`TurboEncodeSeam` in `tests/test_server.py` runs it with the server's arguments, the
+Upscale's too).
 
 The patch has its own 135 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 The RTX 5090 patch has 201 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).

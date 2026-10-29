@@ -141,11 +141,16 @@ clip with MiniMax-H3 at 1080p, 2K (2560×1440, or 1440×2560 for a 9:16 clip) or
 its own, with the clip's own sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and the MCP
 tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
 
-- **Only 5 s text clips (t2va) for now, 16:9 or 9:16.** NVIDIA's pipeline is fixed at 121 frames, and Keyframes and
-  Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with the
-  reason. NVIDIA's code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA
-  file changed). It has as many tokens as 16:9, and in the one clean run so far (1080p) it took the same time as a
-  16:9 clip. 2K has run too; **9:16 has not run at 4K yet**, and NVIDIA trained its refiner on 16:9 video.
+- **5 s clips for now, 16:9 or 9:16, of every mode and model**: Sol-H3's Text, Keyframes and Reference clips and
+  LightX2V Turbo's Text and Keyframes clips. NVIDIA's pipeline is fixed at 121 frames, so other lengths are not yet
+  (their cards show the button disabled, with the reason). The job refines against text alone: a Keyframes or
+  Reference clip's prompt is encoded first without its pictures (its keyframe line, or its references, taken out;
+  ~15 s more). A LightX2V Turbo clip at 576p is stretched to 768p first, and one with a last keyframe (124 frames)
+  gives its first 121. Only the Text clips' and LightX2V Turbo 576p Keyframes clips' route has run on the GPU so far
+  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). NVIDIA's code is written
+  for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA file changed). It has as many
+  tokens as 16:9, and in the one clean run so far (1080p) it took the same time as a 16:9 clip. 2K has run too;
+  **9:16 has not run at 4K yet**, and NVIDIA trained its refiner on 16:9 video.
 - **It is slow.** On one DGX Spark a 2-step upscale takes about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K
   (26 min at 2K with 3 steps): ~2 min reading the clip, the refine (2.5 min per step at 1080p, 6.3 min at 2K, 28 min at
   4K: there most of the time), the decode (2-3 min, 6.6 min at 4K) and the load. The models load in ~22 s with LF
@@ -162,7 +167,8 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
   defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
 
-Not yet: Keyframes and Reference clips, lengths other than 5 s, and NVIDIA's faster Sol-Attn forward. Setup:
+Not yet: lengths other than 5 s, keeping a Keyframes clip's first frame (your picture) in the upscale, and NVIDIA's
+faster Sol-Attn forward. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
 
