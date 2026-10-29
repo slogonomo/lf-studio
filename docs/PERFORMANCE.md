@@ -374,6 +374,63 @@ runs above did (128-133 s).
 - Not tried: NVIDIA's `sol_engine` forward (Sol-Attn sparse attention, MXFP8; NVIDIA lists ~150 GB for it) and its
   fast VAE decoder.
 
+## Experimental LightX2V Turbo
+
+Measured on one DGX Spark (GB10) on 2026-10-28/29: the studio's own job, `jobs/h3turbo_job.py`, run by hand with the
+studio stopped, one clip per process as the studio runs it (its imports and the fast load in every run), 4 steps with
+LightX2V's 4-step v1.3 LoRA, the Qwen conditioning at the 384p draft canvas unless marked. Most prompt conditionings
+came from `bench/h3turbo-encode.sh`, the prompt encode the studio runs; the 10 and 14 s runs and two 5 s runs took a
+studio clip's own conditioning. 15 runs, MemAvailable 116.2-116.9 GiB at each start. These are the job's own times;
+in the studio a clip also waits for the Sol-H3 models to close when they are loaded (about 40 s), and has its poster
+made.
+
+| Clip | Rows | Step (mean) | Decode | The job's process | Lowest MemAvailable | Peak allocated |
+|---|---|---|---|---|---|---|
+| 576p 5 s t2va, 16:9 and 9:16 (2 runs) | 21.7-21.9k | 25.9-26.8 s | 47.1-47.2 s | 172.6-176.5 s | 33.0-34.8 GiB | 77.0 GiB |
+| 576p 5 s, a first frame (3 runs, one at canvas tokens) | 22.8-23.1k | 28.0-28.5 s | 46.8-49.3 s | 181.4-189.7 s | 33.7-35.7 GiB | 77.1-77.2 GiB |
+| 576p 5 s, a last frame alone | 22.7k | 27.1 s | 47.1 s | 178.3 s | 36.2 GiB | 77.1 GiB |
+| 576p 5 s, first and last (4 runs) | 23.5k | 28.5 s | 46.8-47.1 s | 184.2-184.7 s | 33.7-35.1 GiB | 77.3 GiB |
+| 768p 5 s t2va | 37.9k | 54.6 s | 87.3 s | 327.5 s | 32.2 GiB | 79.7 GiB |
+| 768p 5 s, a first frame at canvas tokens | 40.2k | 59.9 s | 87.0 s | 350.3 s | 32.1 GiB | 80.1 GiB |
+| 576p 10 s, a first frame | 43.5k | 67.0 s | 95.2 s | 386.5 s (6.4 min) | 31.5 GiB | 80.6 GiB |
+| 576p 14 s, a first frame | 61.2k | 112.0 s | 134.4 s | 605.8 s (10.1 min) | 27.4 GiB | 83.6 GiB |
+| 768p 10 s, a first frame | 75.1k | 153.6 s | 173.7 s | 812.5 s (13.5 min) | 24.5 GiB | 86.0 GiB |
+
+- **Rows** are the packed sequence the transformer attends over: the conditioning, the keyframes' rows (576 each at
+  576p, 1008 at 768p), the audio and the video latents (576 or 1008 per latent frame: 37 at 5 s, 72 at 10 s, 102 at
+  14 s). A step grows with them a little faster than linearly: 0.848 N + 0.016 N² seconds for N thousand rows fits
+  every run within 1 s.
+- **The process around the steps and the decode** took 21.8-26.4 s per clip: torch and Diffusers imported (2-5 s on
+  the first run, 1.6-1.7 s after), the fast load 17.6-18.1 s for 18 files, the LoRA's 312 hooks 0.3 s, the latents
+  saved, the MP4 written (0.4-1.0 s). The prompt encode, a transient Qwen worker of its own, took 9.1-17.8 s (ready
+  after 6.5-11.8 s, then 1-5 s per encode).
+- **Memory.** The model takes ~72 GiB once loaded; MemAvailable came down 80-92 GiB at its lowest, in the steps, and
+  linearly with the rows: start − (77.8 + 0.186 GiB per thousand rows), within 1.6 GiB of every run. The decode runs
+  after the transformer is dropped. The studio needs 100 GiB free to start a clip (`LFSTUDIO_H3TURBO_MIN_FREE_GIB`;
+  768p 10 s, the most, would come down to 7.8 GiB from there, above the job's own 6 GiB stop and the studio's 5 GiB
+  guard). By the same line a 768p clip of 12 s or more would not stay above them from 100 GiB, so it needs more (the
+  job's `min_free_for`: 103 GiB at 12 s, 107 at 15 s).
+- **The same as the probe it was ported from:** given the probe's conditioning, image and seed, the job's latents
+  and MP4 were identical to the probe's, bit for bit, also in the studio's own environment; and the prompt encode's
+  conditioning was identical, byte for byte, to the studio's own encode of the same clip, for a Keyframes and a Text
+  clip.
+- **Keyframes.** Frame 0 matched the first frame at 29.1-35.6 dB PSNR (against the frame as it was fitted to the
+  canvas). The Qwen conditioning at the clip's canvas (576 or 1008 image tokens per keyframe instead of 252) gave the
+  same frame 0 as the draft canvas's run of the same clip (29.56 against 29.60 dB at 576p, 35.6 against 35.6 at
+  768p) with steps 1-3 % longer, so the draft canvas stays the default (`LFSTUDIO_H3TURBO_QWEN_CANVAS`). The prompt
+  guide's alignment line and the page's gave the same results (within 0.2 dB). A last frame alone and both frames
+  worked; the model anchors the last frame to the last frame it makes (frame 123 of 124 at 5 s: 30.9-34.3 dB against
+  the last image), and the studio's usual length, 121 frames, ended 3 frames before it (18.4-26.4 dB). So a clip with
+  a last frame keeps every frame made now ([API.md](API.md#models-experimental-lightx2v-turbo)).
+- **Lengths.** 10 and 14 s ran (576p and 768p at 10 s, 576p at 14 s). 15 s was refused by Diffusers 0.40: the
+  studio's 15 s is 362 frames, 15.08 s, past its 15.0 s; 14 s (345 frames) is the longest it takes as it is. The job
+  now raises that limit for a 15 s clip alone, as Sol-H3 draws the same 362 frames with the same transformer; checked
+  on the CPU with a small random-weight model, not run on the GPU yet.
+- **Not measured:** 6, 7, 8 and 12 s, 768p beyond 10 s, 15 s at either size, and the studio's queue around the job.
+  The studio's estimates for them (`eta_s`) come from the runs above: the prompt encode (12 s), the process (23 s), 4
+  steps by the rows, the decode at 0.67 s per frame and megapixel, and 2 s for the poster: 200 s for 5 s at 576p and
+  350 s at 768p, 400 and 820 s for 10 s, 660 and 1440 s for 15 s; within 8 % of every run above.
+
 ## Replay bench: Stage 2 on saved drafts
 
 `bench/duration.sh` and `bench/first-clip.sh` time whole sessions. `bench/replay.sh` replays one stage, Stage 2, on

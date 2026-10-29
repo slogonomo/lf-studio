@@ -385,12 +385,17 @@ choice: it makes Sol-H3 (sol-h3) clips only`. The studio has LightX2V Turbo off,
 choice (`lf-cli models` says which models it has). `lf-cli` and the MCP server check this before they submit, so no
 Sol-H3 clip is made in its place.
 
-**400 `LightX2V Turbo makes 5 s clips for now`, `... makes Text (t2va) and Keyframes (fl2va) clips for now, not
-Reference (ref2va): use Sol-H3`, `... needs a first frame for now (a last frame alone: use Sol-H3)`,
+**400 `LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3`,
 `resolution must be 576p or 768p for lightx2v-turbo`, `steps must be 4 for lightx2v-turbo`.** What LightX2V Turbo
 makes is a table in the studio, and these are not in it yet; the page greys them out with the same reason. Use
 Sol-H3 for them. `resolution is an option of lightx2v-turbo; sol-h3 takes none`: the option goes with
-`"model": "lightx2v-turbo"` only.
+`"model": "lightx2v-turbo"` only. (Before its GPU validation it also refused 6-15 s and a last frame alone, `LightX2V
+Turbo makes 5 s clips for now` and `... needs a first frame for now`; it makes those now.)
+
+**A LightX2V Turbo clip with a last frame is 3 frames longer** (124 frames at 5 s, `clip_..._124f.mp4`, where its
+other clips and Sol-H3's have 121). The model anchors the last frame to the last frame it makes, so such a clip keeps
+every frame made and ends on your last frame; the studio's usual length would end 3 frames (0.125 s) before it. At 6 to
+12 s it is 2 to 7 frames longer, at 15 s one (362), with its sound as long.
 
 **400 `lightx2v-turbo needs SOL_H3_PROMPT_TOKENS=minimax for a prompt with MiniMax's tokens (<d>, ...)`.** The
 studio's settings tokenize prompts as plain text (`SOL_H3_PROMPT_TOKENS=plain`), which splits `<d>` and the other
@@ -398,9 +403,11 @@ tokens into text that H3 never saw; LightX2V Turbo's job refuses such a conditio
 Remove the setting (minimax is the default), or write the prompt without those tokens.
 
 **`not enough free memory for a LightX2V Turbo clip: N GiB available with the models closed, 100 GiB needed
-(LFSTUDIO_H3TURBO_MIN_FREE_GIB); close other apps`.** The studio closed the Sol-H3 models, and something else still
-holds the memory. Close it and try again. In the research probe the job came down to 35 GiB of MemAvailable at its
-lowest at 576p and 31 GiB at 768p, from 108.5 GiB at its start (5 s, one DGX Spark).
+(LFSTUDIO_H3TURBO_MIN_FREE_GIB); close other apps`** (or `107 GiB needed (LFSTUDIO_H3TURBO_MIN_FREE_GIB, 7 more at
+768p 15 s)`). The studio closed the Sol-H3 models, and something else still holds the memory. Close it and try
+again. On one DGX Spark the job took 80-92 GiB of MemAvailable at its lowest (from about 117 GiB: 24.5 GiB left at
+768p 10 s, the most it used); a 768p clip of 12 s or more is estimated to take more, so it needs 103 GiB free at 12 s
+and 107 at 15 s ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)).
 
 **`stopped: MemAvailable was below 5 GiB for 3 s (...; LFSTUDIO_H3TURBO_GUARD_GIB)`**, or `stopped by its job:
 MemAvailable fell below 6 GiB`. The studio's guard, or the job's own (exit status 3), stopped it before the machine

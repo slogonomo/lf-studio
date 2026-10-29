@@ -110,15 +110,21 @@ in a research probe on one DGX Spark (11 Keyframes clips of 5 s), frame 0 matche
 top of the prompt card, and agents and scripts name the model (`lf-cli generate --model lightx2v-turbo`, the MCP tool
 `generate`); `lf-cli models` and the MCP tool `models` list what each model makes.
 
-- **What it makes, for now:** Text and Keyframes (a first frame, or a first and a last frame), 5 s, 16:9 or 9:16, at
-  576p (1024×576, the default) or 768p (1344×768). Reference, a last frame alone and 6-15 s show greyed out, with the
-  reason. The aim is everything Sol-H3 makes; what each model makes is a table in the studio, so offering more is a
-  change of that table once a GPU run has validated it.
-- **It is slower.** Not measured in the studio yet. In the probe, with the model already loaded, generating a 5 s
-  clip took 160 s at 576p and 320 s at 768p; the studio adds the prompt encode and the model's load to each clip (its
-  estimates until it has measured one: about 3:20 and 6:00). A clip closes the Sol-H3 models first when they are
-  loaded (about 40 s), and the next Sol-H3 clip loads them again.
-- **Not yet:** upscaling its clips, keeping its model loaded between clips, other lengths and Reference.
+- **What it makes:** Text and Keyframes (a first frame, a last frame alone, or both), 5, 6, 7, 8, 10, 12 or 15 s,
+  16:9 or 9:16, at 576p (1024×576, the default) or 768p (1344×768). Reference shows greyed out, with the reason. What
+  each model makes is a table in the studio, so offering more is a change of that table once a GPU run has validated
+  it. A clip with a last frame ends on it: it keeps every frame the model makes (124 at 5 s, 5.17 s, where other clips
+  keep the studio's 121), because the model anchors the last frame to its last one. 15 s makes 362 frames, a little
+  over the 15.0 s that Diffusers takes; the job lifts that limit for those clips only.
+- **It is slower.** Measured on one DGX Spark (its job run by hand, one clip per process, 4 steps): the job took
+  2.9-3.2 min for a 5 s clip at 576p and 5.5-5.8 min at 768p, 6.4 and 13.5 min for 10 s, and 10.1 min for 14 s at
+  576p, the longest run; the prompt encode adds 9-18 s
+  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-lightx2v-turbo)). The studio shows an
+  estimate per size and length until it has measured a clip of its own (about 3:20 at 576p and 5:50 at 768p for 5 s,
+  11:00 and 24:00 for 15 s). A clip closes the Sol-H3 models first when they are loaded (about 40 s), and the next
+  Sol-H3 clip loads them again. A 768p clip of 12 s or more needs more free memory to start (103 GiB at 12 s, 107 at
+  15 s, against 100); 768p beyond 10 s and 15 s at either size have not run on the GPU yet.
+- **Not yet:** upscaling its clips, keeping its model loaded between clips, and Reference.
 
 With the setting off the studio is as it was. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-lightx2v-turbo); the API:

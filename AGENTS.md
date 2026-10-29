@@ -27,13 +27,14 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   one without the VAE's weights), uses the Upscale's environment (or runs `65-regen2k.sh --env-only`; it never touches
   a venv itself), fetches LightX2V's turbo LoRA files at a pinned revision (`install/h3turbo_weights.py`, standard
   library, pinned sizes and SHA-256, no token) and runs the job's `--check-install`.
-- `jobs/h3turbo_job.py`: the experimental H3 Turbo's GPU job (the full MiniMax-H3 in one stage with a LightX2V turbo
-  LoRA, one clip per process in the Regen-2K environment; its docstring is the spec), not run by the server yet;
-  `bench/h3turbo-encode.sh` (`bench/h3turbo_encode.py`) makes its prompt conditioning with a transient Qwen worker, as
-  the server will. Its `LFSTUDIO_H3TURBO_*` settings (`studio_settings`, read by its `--check-install`) are
-  provisional: they go into `bin/env.example` and the server's docstring when the server runs the job. Tests:
-  `tests/test_h3turbo_job.py` (its torch parts with the Regen-2K Python, CUDA hidden) and
-  `tests/test_h3turbo_encode.py`.
+- `jobs/h3turbo_job.py`: the experimental LightX2V Turbo's GPU job (model id `lightx2v-turbo`, its `MODEL`: the full
+  MiniMax-H3 in one stage with a LightX2V turbo LoRA, one clip per process in the Regen-2K environment; its docstring
+  is the spec). Standard library outside its torch functions: the server loads it (`LFSTUDIO_H3TURBO_SCRIPT`) for its
+  settings (`studio_settings`, as `bin/lf-studio --check` does), presets, memory floor per size and length
+  (`min_free_for`), `job.json` check and file names, and runs it per clip (`run_model_job`). Its `estimate_s` is the
+  source of the registry's `estimates_s` (a test keeps them equal). `bench/h3turbo_encode.py` is its prompt encode,
+  which the server runs before it (`encode_prompt`, `LFSTUDIO_H3TURBO_ENCODE_SCRIPT`; a transient Qwen worker);
+  `bench/h3turbo-encode.sh` runs it by hand with the studio's settings.
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
@@ -89,35 +90,38 @@ with the reason on clips it can't take; in cards too narrow for the names, Upsca
 buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off), the popover, the upscale's card and
 `tests/ui_test.py` with an upscale in the gallery.
 
-The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as
-by default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo
-on. `tests/stub/h3turbo_job.py` stands in for its job, `jobs/h3turbo_job.py` (`LFSTUDIO_H3TURBO_SCRIPT`): the server
-loads it (the real job's settings, presets and job.json check) and runs it; it prints the job's phase lines over
-`STUB_H3TURBO_S`, writes an MP4 at the clip's canvas and length and a receipt, ends at once on SIGTERM (or ignores
-it), dies with the server (`--parent`), and fails, stops for memory (exit 3) or writes no or a bad MP4 on its
-`STUB_H3TURBO_*` hooks. `tests/stub/h3turbo_encode.py` stands in for its prompt encode
-(`LFSTUDIO_H3TURBO_ENCODE_SCRIPT`, by default the h3-turbo work's `bench/h3turbo_encode.py`), with `STUB_QWEN_*`
-hooks. The `Turbo*` classes in `tests/test_server.py` cover the registry in `/api/state` and the page, the refusals,
-a clip's run, files, record and names, the queue across models, the warm-ups, Cancel in each step, restart, Delete,
-memory, failures, the settings and the launcher's checks; `TurboSeam` checks the job's interface (the real job's too,
-once it is in the copy) and `TurboEncodeSeam` the real prompt encode's (skipped until it is in the copy: the arguments
-the server gives it, its refusal line, the files and keys the server reads); `ModelChoiceOff` runs v0.5.1's server
-from git next to this one with the model choice off and compares what they answer, value by value, and v0.5.1's
-`lf-cli` with this one; `ServerParts` compiles parts of the server (`stop_job`, `registry_problems`) from its source
-with stand-ins, for what a stub studio can't reach on cue. `tests/test_api.py` has the API records (`Model*`). The
-`Model*` classes in `tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V Turbo doesn't
-make yet greyed out with the reason (no field changes another; Generate is disabled and says why), the header, the times
-and Generate's label per model, the request, the choices kept, the card's model tag, its Upscale button and download
-name, Remix, a clip's progress and the status line, Cancel, and a clip of a model that is off now; `ModelChoiceOffPage`
-loads this page and v0.5.1's (from git) side by side with the model choice off and compares their pixels, texts,
-requests and kept choices after the same clicks; `MachineTexts` checks Sol-H3's times in the Model row per backend.
-`tests/ui_test.py` checks the Model row when a studio has one (`UiTestScript` runs it with a LightX2V Turbo clip).
-The client: `Models`, `ModelsRunning`, `ModelsOff` and `ModelsOldStudio` in `tests/test_cli.py` (`lf-cli models`,
-`generate --model` with the model's options and its files, every refusal before anything is sent, the shape warning
-at the model's size, status and cancel while a clip runs, a studio with the model choice off, an older studio and one
-that spark-switchboard has stopped: fake servers), and `Models` and `ModelsOff` in `tests/test_mcp.py` (the `models`
-tool, `generate` with a model, the repeat key with the model and its options, the refusals; `FakeStudio` has the
-stopped studio).
+The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as by
+default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo on.
+`tests/stub/h3turbo_job.py` stands in for its job, `jobs/h3turbo_job.py` (`LFSTUDIO_H3TURBO_SCRIPT`): the server loads
+it (the real job's model id, settings, presets, memory floor, lengths and job.json check) and runs it; it prints the
+job's phase lines over `STUB_H3TURBO_S`, writes an MP4 at the clip's canvas with the frames the real job keeps (every
+frame made when the clip has a last frame) and a receipt, ends at once on SIGTERM (or ignores it), dies with the server
+(`--parent`), and fails, stops for memory (exit 3) or writes no or a bad MP4 on its `STUB_H3TURBO_*` hooks.
+`tests/stub/h3turbo_encode.py` stands in for its prompt encode (`LFSTUDIO_H3TURBO_ENCODE_SCRIPT`, by default
+`bench/h3turbo_encode.py`), with `STUB_QWEN_*` hooks. The `Turbo*` classes in `tests/test_server.py` cover the registry
+in `/api/state` and the page, the refusals, a clip's run (a last frame alone, the lengths), files, record and names, the
+queue across models, the warm-ups, Cancel in each step, restart, Delete, memory (the floor per size and length too),
+failures, the settings and the launcher's checks; `TurboSeam` checks the job's interface, the real job's and the
+stand-in's, that the real job takes every clip the registry offers and gives its estimates, and that the stand-in's
+tables and answers are the real job's; and `TurboEncodeSeam` the real prompt encode's (the arguments the server gives
+it, its refusal line, the files and keys the server reads); `ModelChoiceOff` runs v0.5.1's server from git next to this
+one with the model choice off and compares what they answer, value by value, and v0.5.1's `lf-cli` with this one;
+`ServerParts` compiles parts of the server (`stop_job`, `registry_problems`) from its source with stand-ins, for what a
+stub studio can't reach on cue. `tests/test_api.py` has the API records (`Model*`). The `Model*` classes in
+`tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V Turbo doesn't make yet greyed out
+with the reason (Reference; with `not_yet_table`, its table before its GPU validation put into `/api/state`, also
+lengths and a last frame alone: no field changes another, Generate is disabled and says why), the header, the times per
+size and length and Generate's label per model, the request, the choices kept, the card's model tag, its Upscale button
+and download name, Remix, a clip's progress and the status line, Cancel, and a clip of a model that is off now;
+`ModelChoiceOffPage` loads this page and v0.5.1's (from git) side by side with the model choice off and compares their
+pixels, texts, requests and kept choices after the same clicks; `MachineTexts` checks Sol-H3's times in the Model row
+per backend. `tests/ui_test.py` checks the Model row when a studio has one (`UiTestScript` runs it with a LightX2V Turbo
+clip). The client: `Models`, `ModelsRunning`, `ModelsOff` and `ModelsOldStudio` in `tests/test_cli.py` (`lf-cli models`,
+`generate --model` with the model's options and its files, every refusal before anything is sent, the shape warning at
+the model's size, status and cancel while a clip runs, a studio with the model choice off, an older studio and one that
+spark-switchboard has stopped: fake servers), and `Models` and `ModelsOff` in `tests/test_mcp.py` (the `models` tool,
+`generate` with a model, the repeat key with the model and its options, the refusals; `FakeStudio` has the stopped
+studio).
 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
@@ -160,18 +164,22 @@ tests (the merger, the lean block forward against a stock-style block, the tenso
 torch is importable (CPU is enough) and are skipped otherwise.
 
 `tests/test_h3turbo_job.py` covers `jobs/h3turbo_job.py` on the CPU: job.json and its refusals, the geometry (every
-length against the patch's `runtime/geometry.py`, the layout rows against the research probe's GPU receipts), how a
-keyframe is fitted to the canvas, the sigmas, the LoRA header rules on sparse stand-in files, the conditioning
-checks, the settings and `--check-install`, the command line, the environment and the progress lines against
-`upscale/regen2k_job.py`'s, the memory trace, the fast load with stand-in loaders, `--check`, the receipt when a job
-is done, fails, is refused, is aborted for memory or gets SIGTERM, and `--parent`. Its torch parts (the LoRA hooks
-against PEFT, the conditioning tensors, and `run()` itself on a tiny random-weight MiniMax-H3 at the real 576p
-canvases: t2va, a first frame, first + last, a last frame alone, the memory abort and SIGTERM) need torch and
-diffusers 0.40.0 and are skipped otherwise; run them with the Regen-2K Python, CUDA hidden (the command is in the
-file's docstring; about 2-3 min). `tests/test_h3turbo_encode.py` covers `bench/h3turbo_encode.py` and its wrapper,
-standard library only: the text-only rewrite on every alignment-line form the guide and the page write, the prompt
-as the server takes it, the refusals, `--check`, and the encodes against a stand-in of the patch's `runtime` package
-kept in the test file itself (the server's tests get one in `tests/stub/runtime/` when the server encodes).
+length against the patch's `runtime/geometry.py`, the frames a clip with a last frame keeps, the layout rows against the
+research probe's GPU receipts), the studio's model of a clip (memory floor per size and length, estimates) against the
+GPU validation's receipts, how a keyframe is fitted to the canvas, the sigmas, the LoRA header rules on sparse stand-in
+files, the conditioning checks, the settings and `--check-install`, the command line, the environment and the progress
+lines against `upscale/regen2k_job.py`'s, the memory trace, the fast load with stand-in loaders, `--check`, the receipt
+when a job is done, fails, is refused, is aborted for memory or gets SIGTERM, and `--parent`. Its torch parts (the LoRA
+hooks against PEFT, the conditioning tensors, and `run()` itself on a tiny random-weight MiniMax-H3 at the real 576p
+canvases: t2va, a first frame, first + last and a last frame alone (the MP4 ends on the frame the last keyframe is
+anchored to), the memory abort and SIGTERM; on a small canvas 15 s, past diffusers' stock 15.0 s, with the limit raised
+for that clip and refused without it, and 14 s as stock) need torch and diffusers 0.40.0 and are skipped otherwise; run
+them with the Regen-2K Python, CUDA hidden (the command is in the file's docstring; about 2.5 min, ~6.5 GB of memory: on
+a DGX Spark where a GPU job runs, `systemd-run --user --scope -p MemoryMax=14G` keeps them from taking its memory).
+`tests/test_h3turbo_encode.py` covers `bench/h3turbo_encode.py` and its wrapper, standard library only: the text-only
+rewrite on every alignment-line form the guide and the page write, the prompt as the server takes it, the refusals,
+`--check`, and the encodes against a stand-in of the patch's `runtime` package kept in the test file itself
+(`TurboEncodeSeam` in `tests/test_server.py` runs it with the server's arguments).
 
 The patch has its own 135 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 The RTX 5090 patch has 201 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).

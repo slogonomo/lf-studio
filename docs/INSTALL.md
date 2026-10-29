@@ -251,6 +251,15 @@ Every step stops the script when it fails, and a run again goes on where it stop
 end on a fresh box yet. LightX2V Turbo's settings (its Python, base model, LoRA folder, the prompt encoder's canvas,
 the memory floor and guard) are in [bin/env.example](../bin/env.example).
 
+The studio runs two programs of this repo for each LightX2V Turbo clip: `bench/h3turbo_encode.py`, its prompt encode (a
+transient Qwen worker, with the studio's own Python in the patched package), then `jobs/h3turbo_job.py`, the clip itself
+on the GPU in the environment above. A clip needs 100 GiB of free memory once the Sol-H3 models are closed
+(`LFSTUDIO_H3TURBO_MIN_FREE_GIB`), more for a 768p clip of 12 s or more (103 GiB at 12 s, 107 at 15 s); an idle DGX
+Spark has about 117. Both can be run by hand with the studio stopped
+([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo) says how they were measured): `bench/h3turbo-encode.sh`
+with the studio's settings, then the job with a `job.json` as its docstring describes (`--check` checks one without the
+GPU).
+
 To remove it: take `lightx2v-turbo` out of `LFSTUDIO_MODELS` (or delete the line), then delete the two files above
 from `checkpoints/Minimax-h3-Turbo` (not NVIDIA's ref2va LoRA next to them) and, if the Upscale doesn't use it,
 `envs/regen2k` as described for the Upscale. Its clips stay in the history; Remix brings them back as Sol-H3 clips.
