@@ -311,20 +311,21 @@ whose prompt is only its keyframe line (or a Reference prompt of references alon
 words of what happens in it.
 
 **An upscale of a Keyframes or Reference clip sits at "Encoding the prompt" or fails there.** Such a clip's prompt is
-encoded first without its pictures (a transient Qwen worker, 9-18 s, ~15 GiB), the same encode LightX2V Turbo uses;
-its log is `encode.log` in the upscale's folder, the text it encoded `prompt-text-only.txt`, its summary
-`input/encode.json` and its Qwen worker's log `input/qwen-worker/`. `the prompt encode failed: ...` names the encode's
-own error (a Qwen container that did not start, for example: the same causes as a LightX2V Turbo clip's encode,
-below). `the prompt encode's conditioning is not of the text asked for: its prompt differs` (or `task`) means its
-receipt, `input/qwen/conditioning.json`, is of another text than `prompt-text-only.txt`: compare the two. A Cancel
-stops it at once; a Qwen worker it leaves behind is stopped by the studio. The encode needs the t2va path manifest:
-without it the Upscale button of such a clip says so (`... which needs the t2va path manifest (run
-install/70-manifests.sh)`). A Reference prompt is rewritten as text alone (its subjects as their definitions, its media
-labels out); if the result reads oddly, `prompt-text-only.txt` shows what the upscale used.
+encoded first without its pictures (a transient Qwen worker, 9-18 s, 9.1-9.2 s in the Upscale's GPU runs, ~15 GiB), the
+same encode LightX2V Turbo uses; its log is `encode.log` in the upscale's folder, the text it encoded
+`prompt-text-only.txt`, its summary `input/encode.json` and its Qwen worker's log `input/qwen-worker/`. `the prompt
+encode failed: ...` names the encode's own error (a Qwen container that did not start, for example: the same causes as a
+LightX2V Turbo clip's encode, below). `the prompt encode's conditioning is not of the text asked for: its prompt
+differs` (or `task`) means its receipt, `input/qwen/conditioning.json`, is of another text than `prompt-text-only.txt`:
+compare the two. A Cancel stops it at once; a Qwen worker it leaves behind is stopped by the studio. The encode needs
+the t2va path manifest: without it the Upscale button of such a clip says so (`... which needs the t2va path manifest
+(run install/70-manifests.sh)`). A Reference prompt is rewritten as text alone (its subjects as their definitions, its
+media labels out); if the result reads oddly, `prompt-text-only.txt` shows what the upscale used.
 
 **The upscale of a LightX2V Turbo clip is shorter than the clip.** A LightX2V Turbo clip with a last keyframe has 124
-frames (5.17 s), ending on that keyframe; the Upscale's job takes 121, so the upscale is its first 121 frames and its
-sound is cut with them (the popover says so). A 576p clip is stretched to 768p first, as the popover says too.
+frames (5.17 s), ending on that keyframe; the Upscale's job takes 121, so the upscale is its first 121 frames (5.04 s)
+and its sound is cut with them (the popover says so). It ends 3 frames before your last keyframe; keeping them is
+issue #85. A 576p clip is stretched to 768p first, as the popover says too.
 
 **`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
 `missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's

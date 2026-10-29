@@ -478,10 +478,13 @@ clip, from its MP4, to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regene
 Text, Keyframes and Reference clips, and LightX2V Turbo's Text and Keyframes clips at either size. Other lengths (6 to
 15 s) are not yet: NVIDIA's pipeline is fixed at 121 frames. NVIDIA's code is written for 16:9 (1344×768): the job
 takes a 9:16 clip (768×1344) through it with the shapes turned, without changing NVIDIA's files, and the result is
-upright (1080×1920, 1440×2560 or 2160×3840). 9:16 has run on the GPU at 1080p (as fast as 16:9) and 2K, not yet at
-4K, and NVIDIA trained its refiner on 16:9 video. Only Sol-H3 Text clips have been upscaled on the GPU through the
-studio so far: the other clips' routes below have not, and their times are expected to be a Text clip's
-([PERFORMANCE.md](PERFORMANCE.md)); the page's popover says so for them.
+upright (1080×1920, 1440×2560 or 2160×3840). 9:16 has run on the GPU at 1080p and 2K, as fast as 16:9, not yet at 4K,
+and NVIDIA trained its refiner on 16:9 video. Through the studio on one DGX Spark (2026-10-29), a Sol-H3 Keyframes clip
+(9:16), a Sol-H3 Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with a last keyframe have been
+upscaled to 1080p, and the Keyframes clip to 2K, each in a Text clip's time plus its encode
+([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). LightX2V Turbo's 768p Text clips and its
+other Keyframes clips (576p, or without a last keyframe) have not been upscaled through the studio yet: their times are
+expected to be a Text clip's, and the page's popover says so for them.
 
 The job refines the clip against a prompt conditioning of text alone, and against the clip's audio (`audio` `clip`).
 Each upscale gets an input folder of its own (`<upscale case>/input/`, in the shape of a Sol-H3 clip's working files;
@@ -494,18 +497,19 @@ its `source.json` says what came from where, how, and each file's sha256), which
 | Sol-H3 Reference (ref2va) | linked | its prompt with the references taken out, as t2va's three fields (each `<Subject N>` as its definition says it; `subject_definitions`, `retention_analysis` and the media labels go; dialogue as written), encoded first | Stage 1's |
 | LightX2V Turbo Text, 768p | linked | its own (`qwen/`) | its `turbo/audio.pt` (the PCM before AAC), linked |
 | LightX2V Turbo Text, 576p | stretched to 768p (LANCZOS, ~1 s; never cropped), its sound copied as it is | its own | its `audio.pt` |
-| LightX2V Turbo Keyframes | as its Text clips (stretched, never cropped, so a 576p clip stays on its keyframe's grid); one with a last keyframe (124 frames at 5 s, 5.17 s) cut to its first 121: the last 3 frames, up to the last keyframe, are left out, and its sound is cut with them | its prompt without the keyframe line, encoded with the clip (`qwen-text/`); for a clip without it, encoded first | its `audio.pt` |
+| LightX2V Turbo Keyframes | as its Text clips (stretched, never cropped, so a 576p clip stays on its keyframe's grid); one with a last keyframe (124 frames at 5 s, 5.17 s) cut to its first 121: the last 3 frames, up to the last keyframe, are left out (keeping them: issue #85), and its sound is cut with them | its prompt without the keyframe line, encoded with the clip (`qwen-text/`); for a clip without it, encoded first | its `audio.pt` |
 
 The encode at upscale time is LightX2V Turbo's prompt encode (`bench/h3turbo_encode.py --upscale`, with the model on or
 off): a transient Qwen worker (~15 GiB while it lives) after the studio's models have closed, 9-18 s with its start
-(measured with LightX2V Turbo's prompt encode on a DGX Spark; status `encoding the prompt`, `phase` `encoding`,
-`upscale_phase` `prompt`); Cancel stops it at once. It follows `SOL_H3_PROMPT_TOKENS` as the clip did, and needs the
-t2va path manifest (`install/70-manifests.sh`). The text it encodes has LF line breaks (a prompt from the page has
-CRLF ones). Its log is `<upscale case>/encode.log`; its summary `input/encode.json` and its Qwen worker's log
-`input/qwen-worker/`. The server then checks its receipt (`input/qwen/conditioning.json`: task t2va, the text asked
-for), and the memory floor again once its memory is back. A Keyframes clip whose prompt is nothing but its keyframe
-line, or a Reference prompt that is nothing but references, has no text left to refine against: it can't be upscaled
-(400). The result always gets the clip's own sound (copied; for a clip cut to 121 frames, cut with it).
+(measured with LightX2V Turbo's prompt encode on a DGX Spark; 9.1-9.2 s in the Upscale's own runs; status `encoding the
+prompt`, `phase` `encoding`, `upscale_phase` `prompt`); Cancel stops it at once (5.4 s in its one GPU run). It follows
+`SOL_H3_PROMPT_TOKENS` as the clip did, and needs the t2va path manifest (`install/70-manifests.sh`). The text it
+encodes has LF line breaks (a prompt from the page has CRLF ones). Its log is `<upscale case>/encode.log`; its summary
+`input/encode.json` and its Qwen worker's log `input/qwen-worker/`. The server then checks its receipt
+(`input/qwen/conditioning.json`: task t2va, the text asked for), and the memory floor again once its memory is back. A
+Keyframes clip whose prompt is nothing but its keyframe line, or a Reference prompt that is nothing but references, has
+no text left to refine against: it can't be upscaled (400). The result always gets the clip's own sound (copied; for a
+clip cut to 121 frames, cut with it).
 
 ```bash
 curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: application/json' \
@@ -617,15 +621,15 @@ or a load at each change. `POST /api/load` with `"model": "lightx2v-turbo"` answ
 clip; there is nothing to load ahead`.
 
 **Time:** its job, run by hand on one DGX Spark (2026-10-28/29, 4 steps, one clip per process with the model's load),
-took 173-190 s for 5 s at 576p and 328-350 s at 768p, 387 s and 813 s for 10 s, and 606 s for 14 s at 576p; in one
-Text run each (2026-10-29), 632 s for 15 s at 576p, and 1036 s and 1425 s for 12 and 15 s at 768p. Its prompt encode
-took 9-18 s. In the studio's queue (a staging studio on one DGX Spark, 2026-10-29, one clip each), a 5 s clip took
-191-204 s at 576p and 338 s at 768p, and a 10 s clip at 576p 399 s, from the prompt encode to the poster
-([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). Until it has measured a clip of a size and length, the
-studio shows its estimate for it, from those runs (`eta_s`: about 3:20 at 576p and 5:50 at 768p for 5 s, 6:40 and 13:40
-for 10 s, 11:00 and 24:00 for 15 s), and the clip's own time after that. 6, 7 and 8 s, 12 s at 576p, and Keyframes
-clips longer than 14 s at 576p or 10 s at 768p (only Text ran at those lengths) have not run on the GPU: their times and
-memory floors are estimates.
+took 173-190 s for 5 s at 576p and 328-350 s at 768p, 387 s and 813 s for 10 s, and 606 s for 14 s at 576p; in one Text
+run each (2026-10-29), 632 s for 15 s at 576p, and 1036 s and 1425 s for 12 and 15 s at 768p. Its prompt encode took
+9-18 s. In the studio's queue (staging studios on one DGX Spark, 2026-10-29, one clip each), a 5 s clip took 188-204 s
+at 576p and 338 s at 768p (363 s with first and last keyframes), and a 10 s clip at 576p 399 s, from the prompt encode
+to the poster ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). Until it has measured a clip of a size and
+length, the studio shows its estimate for it, from those runs (`eta_s`: about 3:20 at 576p and 5:50 at 768p for 5 s,
+6:40 and 13:40 for 10 s, 11:00 and 24:00 for 15 s), and the clip's own time after that. 6, 7 and 8 s, 12 s at 576p, and
+Keyframes clips longer than 14 s at 576p or 10 s at 768p (only Text ran at those lengths) have not run on the GPU: their
+times and memory floors are estimates.
 
 **Files and names:** a LightX2V Turbo clip downloads as
 `lf-studio_lightx2v-turbo-<resolution>_<task>_<seconds>s_seed<seed>_<id6>.mp4`, and its `LFSTUDIO_PUBLISH_DIR` copy
