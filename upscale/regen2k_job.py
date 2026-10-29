@@ -67,15 +67,16 @@ and ref2va need a text-only encode of the prompt (their conditioning interleaves
 (3 to 15 s) changes to NVIDIA's fixed length: follow-ups.
 
 Measured on a DGX Spark (GB10), 2026-10-28: this job run by a staging studio with nothing else loaded, 5 s clips,
-balanced (2 steps from 0.7), the clip's audio, standard forward and VAE, cuDNN attention, one run each. A 16:9 clip
-with the fast load, 1080p / 2K / 4K: encode_video 131 / 129 / 133 s, load 21.5 / 21.6 / 21.7 s (the LoRA merge 2.8 s
-of it), steps of 151+149 / 379+380 / 1684+1688 s, decode 108 / 182 / 396 s, MP4 3.5 / 15 / 12.7 s; 574.2 / 1122.6 /
-3958.1 s from the job's start to the MP4; peak allocated 81.29 / 91.08 / 94.46 GiB, lowest MemAvailable 27.4 / 15.7
-/ 11.1 GiB. At 2K the video is the same, bit for bit, as with the standard load (the same clip and seed), which took
-1620.7 s: encode_video 185 s, load 455 s (the merge 74 s of it), the refine and decode as above. A 9:16 clip with the
-fast load at 1080p: steps of 143+144 s, 553.9 s, peak 81.26 GiB, as 16:9 (the same number of tokens); at 2K it ran
-too, beside other work on the machine (not a clean measurement); at 4K not yet. The bench wrapper it is derived from:
-docs/PERFORMANCE.md.
+balanced (2 steps from 0.7), the clip's audio, standard forward and VAE, cuDNN attention, one run each. A 16:9 clip with
+the fast load (the job as it was just before it took 9:16; its calls into NVIDIA's code for 16:9 are unchanged,
+tests/test_upscale.py), 1080p / 2K / 4K: encode_video 131 / 129 / 133 s, load 21.5 / 21.6 / 21.7 s (the LoRA merge 2.8 s
+of it), steps of 151+149 / 379+380 / 1684+1688 s (at 4K every block ran lean_forward, 16 chunks), decode 108 / 182 /
+396 s, MP4 3.5 / 15 / 12.7 s; 574.2 / 1122.6 / 3958.1 s from the job's start to the MP4; peak allocated 81.29 / 91.08
+/ 94.46 GiB, lowest MemAvailable 27.4 / 15.7 / 11.1 GiB. At 2K the video is the same, bit for bit, as with the standard
+load (the same clip and seed), which took 1620.7 s: encode_video 185 s, load 455 s (the merge 74 s of it), the refine
+and decode as above. A 9:16 clip with the fast load at 1080p: steps of 143+144 s, 553.9 s, peak 81.26 GiB, as 16:9 (the
+same number of tokens); at 2K it ran too, beside other work on the machine (not a clean measurement); at 4K not yet. The
+bench wrapper it is derived from: docs/PERFORMANCE.md.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
 cancelled; the clip's orientation (from its MP4), times per stage, the latent grids the upscaler ran to, steps, sigmas,

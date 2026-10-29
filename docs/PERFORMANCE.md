@@ -242,11 +242,12 @@ through cuDNN, about 90 TFLOPS) and its released VAE, the LoRA merged once in pl
 checked). The numbers come from three kinds of runs, kept apart here: the studio's own job (`upscale/regen2k_job.py`)
 in a staging studio with nothing else loaded, with the fast load (its default) and, earlier, with the standard load;
 the bench wrapper the job was made from (the same NVIDIA code and changes, the studio stopped), with the standard load;
-and that bench wrapper with the fast load. Each has one run per resolution it was measured at.
+and that bench wrapper with the fast load. Each has one run per resolution and orientation it was measured at.
 
-**The job itself, fast load** (staging studio; one 16:9 clip (1344×768) to each resolution, one after the other, the
-same clip and seed; `balanced`: 2 steps from 0.7, audio `clip`; the stages from the job's `receipt.json`, the total
-from the studio's record):
+**The job itself, fast load** (staging studio, with the job as it was just before it took 9:16 clips: its calls into
+NVIDIA's code for a 16:9 clip are unchanged since, which `tests/test_upscale.py` checks; one 16:9 clip (1344×768) to
+each resolution, one after the other, the same clip and seed; `balanced`: 2 steps from 0.7, audio `clip`; the stages
+from the job's `receipt.json`, the total from the studio's record):
 
 | Stage | 1080p (1920×1080) | 2K (2560×1440) | 4K (3840×2160) |
 |---|---|---|---|
@@ -261,15 +262,16 @@ from the studio's record):
 | Peak GPU memory allocated (in the refine) | 81.29 GiB | 91.08 GiB | 94.46 GiB |
 | Lowest MemAvailable: in the refine; in the load | 27.4; 37.1 GiB | 15.7; 37.2 GiB | 11.1; 36.9 GiB |
 
-The job's start is when the studio takes it from the queue (`started` in its record; the request came 5-6 s before),
-its end the MP4 with the clip's sound (`wall_s`). No studio models were loaded, so there was nothing to close first.
-4.9-5.0 GiB were allocated before the decode (the DiT freed). The two loads give the same result: the 2K run's video
-stream is MD5-identical to that of the standard-load run below (the same clip and seed).
+The job's start is when the studio takes it from the queue (`started` in its record; the request came 5.4-6.4 s
+before), its end the MP4 with the clip's sound (`wall_s`). No studio models were loaded, so there was nothing to close
+first. 4.9-5.0 GiB were allocated before the decode (the DiT freed). The two loads give the same result: the 2K run's
+video stream is MD5-identical to that of the standard-load run below (the same clip and seed).
 
-**9:16, the job with the fast load** (the same staging studio and settings, later that day; one 9:16 clip (768×1344),
-another prompt and seed). The job takes it through NVIDIA's code with the shapes turned: at 2K its upscaler goes
-straight to the portrait grid (latents 48×84 → 90×160, pixels 1440×2560; `upscale_route` `[[160, 90]]` in the
-receipt), at 1080p to `[[120, 68]]`. The outputs were 1440×2560 and 1080×1920, 121 frames, with the clip's sound.
+**9:16, the job with the fast load** (the same staging studio and settings, later that day, with the job as it takes
+9:16 clips; one 9:16 clip (768×1344), another prompt and seed). The job takes it through NVIDIA's code with the shapes
+turned: at 2K its upscaler goes straight to the portrait grid (latents 48×84 → 90×160, pixels 1440×2560; `upscale_route`
+`[[160, 90]]` in the receipt), at 1080p to `[[120, 68]]`. The outputs were 1440×2560 and 1080×1920, 121 frames, with the
+clip's sound.
 
 | Stage | 1080p (1080×1920) | 2K (1440×2560): **CPU work alongside, not a clean measurement** |
 |---|---|---|
@@ -283,17 +285,19 @@ receipt), at 1080p to `[[120, 68]]`. The outputs were 1440×2560 and 1080×1920,
 | Peak GPU memory allocated | 81.26 GiB | 91.06 GiB |
 | Lowest MemAvailable (in the refine) | 28.5 GiB | 9.9 GiB |
 
-During the 2K run's refine, CPU test suites (a browser test run and a CPU model-plan check) ran on the same machine,
-so its step times, its total and its lowest MemAvailable are not clean measurements, and nothing here is estimated
-from them. The 1080p run had the machine to itself and came out as the 16:9 one did, within the spread of the runs so
-far (143-144 s per step against 149-151 s, and 144 s in the bench; peak 81.26 against 81.29 GiB; lowest MemAvailable
-28.5 against 27.4 GiB). That fits the counts: the latent grids are the 16:9 ones turned, so the refine has the same
-number of tokens at each resolution (133,200 video rows at 2K, for example), the decode the same number of 256 px
-tiles and the upscaler the same scale factors. The page and the client show the 16:9 times for a 9:16 clip. **9:16 at
-4K has not run**; there the upscaler goes through the 2K grid (turned), as for 16:9.
+The 2K run did not have the machine to itself, from its start: MemAvailable was 111.9 GiB when the job started
+(112.4 GiB before the studio was up), against 116.1-116.9 GiB at the start of the job's other runs here, and its load
+took 25.9 s against 21.5-21.9 s; during its refine CPU test suites (a browser test run and a CPU model-plan check) ran
+on the same machine. So none of its times or memory figures are clean measurements, and nothing here is estimated from
+them. The 1080p run had the machine to itself and came out as the 16:9 one did, within the spread of the runs so far
+(143-144 s per step against 149-151 s, and 144 s in the bench; peak 81.26 against 81.29 GiB; lowest MemAvailable 28.5
+against 27.4 GiB). That fits the counts: the latent grids are the 16:9 ones turned, so the refine has the same number of
+tokens at each resolution (133,200 video rows at 2K, for example), the decode the same number of 256 px tiles and the
+upscaler the same scale factors. The page and the client show the 16:9 times for a 9:16 clip. **9:16 at 4K has not
+run**; there the upscaler goes through the 2K grid (turned), as for 16:9.
 
-**The job itself, standard load** (earlier that day, the same staging studio and 16:9 clip; 2K, `balanced`, audio
-`clip`):
+**The job itself, standard load** (earlier that day, the same staging studio and 16:9 clip, an earlier version of the
+job too; 2K, `balanced`, audio `clip`):
 
 | Stage | Time |
 |---|---|

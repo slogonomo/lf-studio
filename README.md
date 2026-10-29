@@ -116,7 +116,7 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
 - **It is slow.** On one DGX Spark a 2-step upscale takes about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K
   (26 min at 2K with 3 steps): ~2 min reading the clip, the refine (2.5 min per step at 1080p, 6.3 min at 2K, 28 min at
   4K: there most of the time), the decode (2-3 min, 6.6 min at 4K) and the load. The models load in ~22 s with LF
-  Studio's O_DIRECT loader (`LFSTUDIO_UPSCALE_LOAD=fast`, the default; measured in the studio's job, with the same
+  Studio's O_DIRECT loader (`LFSTUDIO_UPSCALE_LOAD=fast`, the default; measured in the studio's job; at 2K the same
   video as NVIDIA's loading, bit for bit), or in ~7.5 min with NVIDIA's own loading (`LFSTUDIO_UPSCALE_LOAD=standard`,
   the fallback; 455 s in the job's 2K run). **4K is the slowest by far** and needs the most memory: the studio's job
   has run it end to end once, a 16:9 clip in 66 min (94.5 GiB on the GPU at its peak); a 9:16 clip has not been

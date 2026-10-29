@@ -303,22 +303,22 @@ the job itself (in its one 4K run so far, a 16:9 clip, MemAvailable came down to
 `worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
 
 **It sits at "Upscaling · loading its models" for minutes.** With the fast load (`LFSTUDIO_UPSCALE_LOAD=fast`, the
-default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (21.5-21.9 s measured in the studio's
-job); "reading the clip" before it takes ~2 min from the final clip, and the refine and decode after it ~7-22 min at
-1080p and 2K, ~63 min at 4K ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). Minutes at
-loading mean the standard load (`LFSTUDIO_UPSCALE_LOAD=standard`, NVIDIA's loaders through mmap: ~7.5 min, 455 s
-measured), or files the fast load could not read with O_DIRECT and read through mmap instead: `worker.log` in the
-upscale's `regen/` folder says `fast load: N files, M of them through mmap`, and its `receipt.json` has the same as
-`"load"`. All of them through mmap, and `O_DIRECT off` in `worker.log`, mean `SPARK_FAST_SAFETENSORS=0` or
-`SPARK_DIRECT_IO=0` in the studio's settings: the job inherits the patch's switches (the studio's start log warns about
-it).
+default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (21.5-21.9 s in the studio's job, its
+clean runs); "reading the clip" before it takes ~2 min from the final clip, and the refine and decode after it ~7-22 min
+at 1080p and 2K and ~63-91 min at 4K, with 2 or 3 steps
+([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). Minutes at loading mean the standard load
+(`LFSTUDIO_UPSCALE_LOAD=standard`, NVIDIA's loaders through mmap: ~7.5 min, 455 s measured), or files the fast load
+could not read with O_DIRECT and read through mmap instead: `worker.log` in the upscale's `regen/` folder says
+`fast load: N files, M of them through mmap`, and its `receipt.json` has the same as `"load"`. All of them through mmap,
+and `O_DIRECT off` in `worker.log`, mean `SPARK_FAST_SAFETENSORS=0` or `SPARK_DIRECT_IO=0` in the studio's settings: the
+job inherits the patch's switches (the studio's start log warns about it).
 
 **An upscale fails while it loads its models.** With the fast load, the default, try `LFSTUDIO_UPSCALE_LOAD=standard`
 (NVIDIA's own loading, ~7.5 min) and restart the studio; the fast load has run in the studio's job only a few times so
-far (five upscales on one DGX Spark), so its `worker.log` is worth a report. `LFSTUDIO_UPSCALE_PREREAD=1` at start is
-refused with the fast load (`only with LFSTUDIO_UPSCALE_LOAD=standard`): it fills the page cache, which the fast load
-reads past. An upscale waits while any clip is queued, also one queued after it, since it closes the studio's models;
-the next clip loads them again, and with `LFSTUDIO_PRELOAD=1` the studio warms them up again once the upscale is done.
+far, on one DGX Spark, so its `worker.log` is worth a report. `LFSTUDIO_UPSCALE_PREREAD=1` at start is refused with the
+fast load (`only with LFSTUDIO_UPSCALE_LOAD=standard`): it fills the page cache, which the fast load reads past. An
+upscale waits while any clip is queued, also one queued after it, since it closes the studio's models; the next clip
+loads them again, and with `LFSTUDIO_PRELOAD=1` the studio warms them up again once the upscale is done.
 
 **An upscale of a 9:16 clip fails at once with `NVIDIA's package is not the one this wrapper was written for
 (6e4a440): {'open_h3/pipeline.py': ...}`.** The job takes a 9:16 clip through NVIDIA's code with the shapes turned,
