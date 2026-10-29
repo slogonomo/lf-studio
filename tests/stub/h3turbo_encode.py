@@ -4,7 +4,7 @@ of the patched runtime): no Docker, no GPU, no Qwen.
 
     python -I -B tests/stub/h3turbo_encode.py --case DIR --prompt-file FILE --orientation O [--first IMG]
         [--last IMG] [--resolution 576p|768p] [--canvas draft|canvas] [--seed N] [--case-id ID] [--no-text-only]
-        [--package DIR]
+        [--package DIR] [--upscale]
 
 The server runs it as it runs the real one (LFSTUDIO_H3TURBO_ENCODE_SCRIPT; tests/stub/studio.py sets that), with its
 own Python, in a process group of its own, its output in <case>/encode.log. It takes the real one's arguments and
@@ -12,11 +12,14 @@ writes what the real one writes in --case: qwen/conditioning.{pt,json} (the clip
 receipt with the task, the prompt, the rows, and the canvas the keyframes were seen at in prepared_media), for fl2va
 (unless --no-text-only) qwen-text/conditioning.{pt,json}, qwen-text/prompt.txt and qwen-text/text-only.json (the
 prompt without its keyframe references: alignment lines and <Picture N> go, a simpler rewrite than the real one's),
-qwen-worker/ (a log) and encode.json (the canvas, the image tokens, the times). It takes STUB_QWEN_S seconds;
+qwen-worker/ (a log) and encode.json (the canvas, the image tokens, the times). With --upscale (the Upscale's
+text-only encode, run_upscale) it encodes the prompt as given as t2va and refuses keyframes, as the real one does. It
+takes STUB_QWEN_S seconds;
 SIGTERM (Cancel) ends it at once with exit status 143, as the real one closes its worker and exits. Exit status: 0
 done, 1 failed ("[h3turbo-encode] failed: ..."), 2 refused ("[h3turbo-encode] refused: ..."), 143 SIGTERM.
   STUB_QWEN_S       seconds the encode takes (default 0.5)
-  STUB_QWEN_FAIL    1: fail as a Qwen worker that died (exit 1)
+  STUB_QWEN_FAIL    1: fail as a Qwen worker that died (exit 1); "receipt": fail as an encode whose receipt does not
+                    match what was asked (exit 1, the real one's line)
   STUB_QWEN_TERM    "ignore": SIGTERM does nothing (a worker that does not answer)
   STUB_QWEN_LOG     a file each run appends a JSON line to ({"pid", "argv"})
   STUB_QWEN_WORKER_S  start a stand-in of its transient Qwen worker, as runtime.pipeline.Worker starts the real one:
@@ -99,6 +102,7 @@ def main(argv):
     p.add_argument("--case-id")
     p.add_argument("--no-text-only", action="store_true")
     p.add_argument("--package", type=Path)
+    p.add_argument("--upscale", action="store_true")
     args = p.parse_args(argv[1:])
     signal.signal(signal.SIGTERM, signal.SIG_IGN if os.environ.get("STUB_QWEN_TERM") == "ignore"
                   else lambda signum, frame: sys.exit(128 + signum))
@@ -112,6 +116,9 @@ def main(argv):
             return 2
     prompt = args.prompt_file.read_text(encoding="utf-8")
     frames = {anchor: str(path) for anchor, path in (("first", args.first), ("last", args.last)) if path}
+    if args.upscale and frames:
+        print(f"{TAG} refused: --upscale encodes text alone: no --first or --last", flush=True)
+        return 2
     for path in frames.values():
         if not Path(path).is_file():
             print(f"{TAG} refused: {path}: no such file", flush=True)
@@ -142,6 +149,9 @@ def main(argv):
         if os.environ.get("STUB_QWEN_FAIL") == "1":
             print(f"{TAG} failed: RuntimeError: Worker exited with code 1 (STUB_QWEN_FAIL)", flush=True)
             return 1
+        if os.environ.get("STUB_QWEN_FAIL") == "receipt":
+            print(f"{TAG} failed: the qwen/ encode does not match: ['prompt']", flush=True)
+            return 1
     finally:
         if worker is not None:             # the real one's worker.close(): the close op, then TERM to its group
             worker.stdin.close()
@@ -151,6 +161,7 @@ def main(argv):
                "orientation": args.orientation, "resolution": args.resolution, "canvas_mode": args.canvas,
                "qwen_canvas": list(size), "image_tokens": (size[0] // 32) * (size[1] // 32) if frames else 0,
                "keyframes": list(frames), "frames": frames, "package": str(args.package), "ready_s": 0.1,
+               "use": "upscale" if args.upscale else "clip",
                "encodes": {"qwen": {"rows": encode(case / "qwen", task, prompt, frames, size, args.seed)}}}
     if text_only:
         rows = encode(case / "qwen-text", "t2va", text_only["prompt"], {}, size, args.seed)

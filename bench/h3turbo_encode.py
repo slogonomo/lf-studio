@@ -7,7 +7,7 @@ with the studio's settings and the Stage-1 Python, in the patched package, as bi
 
     bench/h3turbo-encode.sh --case DIR --prompt-file FILE|--prompt-from-case DIR --orientation portrait
         [--first IMG] [--last IMG] [--resolution 576p|768p] [--canvas draft|canvas] [--seed N] [--case-id ID]
-        [--no-text-only] [--check]
+        [--no-text-only] [--upscale] [--check]
 
 The prompt is taken as the server takes one: --prompt and --prompt-file without leading or trailing whitespace (a
 file's last newline too), at most PROMPT_MAX characters, valid text; --prompt-from-case takes an earlier clip's prompt
@@ -35,6 +35,22 @@ composition of <Picture N>", " in/of/from <Picture N>", each with the guide's "(
 angle brackets too ("the composition of Picture 1"): the inline references take those as well, but a bare "Picture
 N" anywhere else stays, and dialogue (<d>...</d>, what the model speaks) is never changed. What it kept that looks
 like a reference is listed in its notes.
+
+The experimental Upscale runs it too (webui/server.py run_upscale, with --upscale): for a clip whose conditioning is
+not text alone (a Sol-H3 Keyframes or Reference clip, or a LightX2V Turbo Keyframes clip without qwen-text/), the
+server writes the clip's text-only prompt (text_only_prompt for fl2va, ref_text_only_prompt for ref2va) and has it
+encoded as t2va into the upscale's input folder. --upscale takes no --first or --last, and follows
+SOL_H3_PROMPT_TOKENS as the clip did, without the refusal of MiniMax's tokens in plain mode (LightX2V Turbo's job
+refuses such a conditioning; the Upscale's job does not); its encode.json has "use": "upscale" and no "for_job".
+
+ref_text_only_prompt turns a Reference (ref2va) prompt into t2va's three fields: integrated_multimodal_description
+from detailed_description (or, without one, summary without its task tags), each <Subject N> as its definition in
+subject_definitions says it (the short form, up to its first comma, " with " or " wearing ", where the description
+restates the look; the whole definition at the first mention in a summary), overall_soundscape and
+non_diegetic_music as written; subject_definitions, retention_analysis and the task tags go, and so do the media
+references (" in the voice timbre of <Audio N>", " referenced from <Video N>", " in/of/from <Picture N>", then any
+<Picture|Video|Audio N> left). A prompt without those sections is free text: only the labels go. Dialogue is never
+changed.
 
 Output in --case (a new or empty directory under $SOL_H3_SPARK_RUNTIME_ROOT, which is all the Qwen container sees; the
 frames must be under it too): qwen/conditioning.{pt,json} (the clip's), for fl2va qwen-text/conditioning.{pt,json},
@@ -178,6 +194,152 @@ def text_only_prompt(prompt):
     return {"prompt": text, "dropped": dropped + [f"{n} x '{label}'" for label, n in counts.items()], "notes": notes}
 
 
+# ---------------------------------------------------------------- a Reference prompt's text (standard library only)
+
+# the six sections of a ref2va prompt (the prompt guide, section 5), and t2va's first field (a ref2va prompt written
+# as t2va's fields): each name at the start of a line, its text after the colon and on the lines below
+REF_SECTIONS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape",
+                "non_diegetic_music")
+DESCRIPTION = "integrated_multimodal_description"
+SECTION_HEAD = re.compile(r"^[ \t]*(%s)[ \t]*:[ \t]*" % "|".join(REF_SECTIONS + (DESCRIPTION,)), re.M)
+REF_ONLY = ("subject_definitions", "summary", "retention_analysis", "detailed_description")
+MEDIA = r"<(?:Picture|Video|Audio) \d+>"
+SUBJECT = re.compile(r"<Subject (\d+)>")
+SUBJECT_DEF = re.compile(r"^\s*<Subject (\d+)>\s+(?:is|are)\s+(.+?)\s*$")
+TASK_TAGS = re.compile(r"\[(?:reference generation|keyframe completion|video editing|video continuation|audio reuse|"
+                       r"audio reference)(?: \+ [a-z ]+)*\]\s*")
+# the media references, in this order: a voice or timbre taken from a recording, something referenced from a file,
+# " in/of/from <Picture N>" (and "the soundtrack of"), then any label left
+REF_INLINE = (
+    (re.compile(r",? (?:in|with|using) the (?:clear, )?(?:[a-z-]+ )?voice(?: timbre)? (?:referenced )?(?:of|from) "
+                + MEDIA), "' in the voice (timbre) of <Audio N>'"),
+    (re.compile(r",? ?(?:in|following|matching) the (?:voice )?timbre of " + MEDIA), "' in the timbre of <Audio N>'"),
+    (re.compile(r" (?:referenced|taken|copied) from " + MEDIA), "' referenced from <... N>'"),
+    (re.compile(r" (?:shown |seen |as )?(?:in|of|from|like) (?:the soundtrack of )?" + MEDIA), "' in/of/from <... N>'"),
+    (re.compile(r"(?:the soundtrack of )?" + MEDIA), "'<Picture|Video|Audio N>'"))
+
+
+def _sections(prompt):
+    """A prompt cut at its section names -> (the text before the first one, {name: text}); later repeats of a name
+    are added to its text."""
+    marks = list(SECTION_HEAD.finditer(prompt))
+    found = {}
+    for i, mark in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(prompt)
+        text = prompt[mark.end():end].strip()
+        found[mark.group(1)] = (found[mark.group(1)] + "\n" + text).strip() if mark.group(1) in found else text
+    return (prompt[:marks[0].start()] if marks else prompt).strip(), found
+
+
+def _outside_dialogue(text, edit):
+    """`text` with edit(piece, before) applied to each piece outside dialogue (<d>...</d>), line by line; `before`:
+    the text before the piece on its line."""
+    out, inside = [], False
+    for line in text.splitlines(keepends=True):
+        pieces, inside_after = _pieces(line, inside)
+        done = ""
+        for piece, in_d in pieces:
+            done += piece if in_d else edit(piece, done)
+        out.append(done)
+        inside = inside_after
+    return "".join(out)
+
+
+def _sentence_start(before):
+    """Whether text that comes after `before` (on its line) starts a sentence: nothing before it, or a full stop, a
+    shot tag ("[Shot 1] ") or the end of a line of dialogue that ends one."""
+    before = before.rstrip()
+    if before.endswith(DIALOGUE_CLOSE):
+        before = before[:-len(DIALOGUE_CLOSE)].rstrip()
+    return not before or before[-1] in ".!?]:"
+
+
+def _strip_media(text, counts):
+    """`text` without its media references outside dialogue (REF_INLINE), tidied; counts what went."""
+    def edit(piece, before):
+        out = piece
+        for pattern, label in REF_INLINE:
+            out, n = pattern.subn("", out)
+            if n:
+                counts[label] = counts.get(label, 0) + n
+        return _tidy(out) if out != piece else piece
+    return _outside_dialogue(text, edit)
+
+
+def ref_text_only_prompt(prompt):
+    """A ref2va prompt as text alone, in t2va's three fields, for the Upscale's t2va encode (the docstring): {"prompt":
+    text, "form": "detailed" | "summary" | "fields" | "free", "dropped": [what went], "notes": [what stayed that looks
+    like a label]}. Dialogue is never changed. ValueError when nothing is left of the description."""
+    counts, notes, dropped = {}, [], []
+    preamble, parts = _sections(prompt)
+    if not any(name in parts for name in REF_ONLY):
+        # free text, or t2va's own fields: the labels go, and <Subject N> (nothing defines it) reads "the subject"
+        form = "fields" if DESCRIPTION in parts else "free"
+        numbers = set(SUBJECT.findall(prompt))
+        subjects = {n: ("the subject" if len(numbers) == 1 else f"subject {n}",) * 2 for n in numbers}
+        text = prompt
+    else:
+        subjects = {}
+        for line in re.split(r"\n|(?<=[.;])\s+(?=<)", parts.get("subject_definitions", "")):
+            m = SUBJECT_DEF.match(line)
+            if not m:
+                continue
+            full = _strip_media(m.group(2), {}).strip().rstrip(".; ")
+            if full:
+                subjects[m.group(1)] = (full, re.split(r",| with | wearing ", full, maxsplit=1)[0].strip())
+        if "subject_definitions" in parts:
+            dropped.append(f"subject_definitions ({len(subjects)} subject{'s' * (len(subjects) != 1)})")
+        dropped += [name for name in ("retention_analysis",) if name in parts]
+        body, form = parts.get("detailed_description") or parts.get(DESCRIPTION), "detailed"
+        if body:
+            dropped += ["summary"] if parts.get("summary") else []
+        else:
+            body, n = TASK_TAGS.subn("", parts.get("summary", ""))
+            form = "summary"
+            dropped += ["the summary's task tags"] * bool(n)
+        if preamble:
+            body = preamble + "\n" + body
+        fields = [(DESCRIPTION, body)] + [(name, parts[name]) for name in ("overall_soundscape", "non_diegetic_music")
+                                          if name in parts]
+        text = "\n\n".join(f"{name}: {value}" for name, value in fields)
+    used = set()
+
+    def subject(m, before):
+        n = m.group(1)
+        if n not in subjects:
+            notes.append(f"<Subject {n}> has no definition: it reads 'the subject'")
+            subjects[n] = ("the subject", "the subject")
+        full, short = subjects[n]
+        if form == "summary" and n not in used:
+            used.add(n)
+            words = full + ("," if "," in full and not m.string[m.end():].lstrip()[:1] in tuple(",.;:!?") else "")
+        else:
+            words = short
+        return words[:1].upper() + words[1:] if _sentence_start(before) else words
+
+    def edit(piece, before):
+        out, pos = "", 0
+        for m in SUBJECT.finditer(piece):
+            out += piece[pos:m.start()]
+            out += subject(m, before + out)
+            pos = m.end()
+        return out + piece[pos:]
+    named = len(SUBJECT.findall(text))
+    text = _outside_dialogue(text, edit)
+    if named:
+        dropped.append(f"{named} x '<Subject N>' (as its definition)")
+    text = _strip_media(text, counts)
+    dropped += [f"{n} x {label}" for label, n in counts.items()]
+    left = len(re.findall(MEDIA + r"|<Subject \d+>", text))
+    if left:
+        notes.append(f"{left} label(s) left as written, in dialogue")
+    text = "\n".join(line.rstrip() for line in text.strip().splitlines()).strip()
+    description = text if form == "free" else _sections(text)[1].get(DESCRIPTION, "")
+    if not re.sub(r"\[Shot \d+\]", "", description).strip():
+        raise ValueError("nothing is left of the prompt without its references")
+    return {"prompt": text, "form": form, "dropped": dropped, "notes": notes}
+
+
 def one_line(text, limit=120):
     return " ".join(str(text).split())[:limit]
 
@@ -230,6 +392,9 @@ def parse_args(argv):
     parser.add_argument("--seed", type=int, default=42, help="recorded in conditioning.json (42)")
     parser.add_argument("--case-id", help="the case id Qwen records (default: the --case directory's name)")
     parser.add_argument("--no-text-only", action="store_true", help="fl2va: no text-only encode")
+    parser.add_argument("--upscale", action="store_true",
+                        help="the Upscale's text-only encode: t2va of the prompt as given (no --first or --last), "
+                             "SOL_H3_PROMPT_TOKENS as set")
     parser.add_argument("--package", type=Path, default=Path.cwd(),
                         help="the patched Sol-H3-Spark package (default: the working directory)")
     parser.add_argument("--check", action="store_true", help="validate, print the plan; start nothing, write nothing")
@@ -287,6 +452,8 @@ def make_plan(args, environ, job):
     except UnicodeEncodeError:
         raise Refused("the prompt is not valid text (an unpaired UTF-16 surrogate, or bytes that are not UTF-8 in "
                       "--prompt)") from None
+    if args.upscale and (args.first or args.last):
+        raise Refused("--upscale encodes text alone: no --first or --last")
     frames = {}
     for anchor, path in (("first", args.first), ("last", args.last)):
         if path is not None:
@@ -317,6 +484,7 @@ def make_plan(args, environ, job):
             "frames": {anchor: str(path) for anchor, path in frames.items()}, "manifest": str(manifest),
             "package": str(package), "runtime_root": str(runtime), "prompt": prompt,
             "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "notes": notes,
+            "use": "upscale" if args.upscale else "clip",
             "code_sha256": {"helper": file_sha256(__file__), "wrapper": file_sha256(WRAPPER),
                             "job": file_sha256(JOB_SCRIPT)}}
     if task == "fl2va" and not args.no_text_only:
@@ -349,7 +517,7 @@ def runtime_side(plan):
         raise Refused(str(error)) from None
     job = load_job_module()
     found = [token for token in job.MINIMAX_PROMPT_TOKENS if token in plan["prompt"]]
-    if mode != "minimax" and found:
+    if mode != "minimax" and found and plan["use"] != "upscale":
         raise Refused(f"SOL_H3_PROMPT_TOKENS={mode} would split MiniMax's tokens {found} into text tokens H3 never "
                       "saw; jobs/h3turbo_job.py refuses such a conditioning")
     if plan["canvas_mode"] == "canvas":
@@ -415,6 +583,9 @@ def encode(plan, Worker, paths, config, case):
     finally:
         worker.close()                                          # the close op, then TERM/KILL of its group
     summary["total_s"] = round(time.monotonic() - start, 2)
+    if plan["use"] == "upscale":                        # the Upscale's input: no LightX2V Turbo job reads it
+        (root / "encode.json").write_text(json.dumps(summary, indent=1) + "\n")
+        return summary
     summary["model"] = load_job_module().MODEL          # the job's model id (not a job.json field)
     summary["for_job"] = {"task": plan["task"], "orientation": plan["orientation"], "resolution": plan["resolution"],
                           "conditioning": str(root / "qwen" / "conditioning.pt"), "qwen_canvas": plan["canvas_mode"],

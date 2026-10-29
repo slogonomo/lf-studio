@@ -2,7 +2,9 @@
 which the server's encode_prompt runs) and its wrapper bench/h3turbo-encode.sh, on the CPU: text_only_prompt on every
 form of the keyframe alignment line the studio writes (the prompt guide's examples, read from bin/lf-cli, and the page's
 alignLine() for each set of keyframes, read from webui/index.html), on the inline references, on lines that only start
-like an alignment line and on dialogue (never changed); the prompt as the server takes it (stripped, its length limit);
+like an alignment line and on dialogue (never changed); ref_text_only_prompt, a Reference prompt as t2va's three fields
+for the Upscale (the guide's and the page's examples, the summary form, free text, t2va's own fields, a prompt with
+nothing left); --upscale (the Upscale's encode: text alone, plain tokens allowed); the prompt as the server takes it (stripped, its length limit);
 the arguments and the environment it refuses; --check; and the encodes against a stand-in of the patch's runtime package
 (its Worker records the recipe it got and the calls, and writes conditioning files as the Qwen worker does): the canvas
 per job, the clip's encode and the text-only one, the receipt checks, the worker closed in every case. Standard library
@@ -190,6 +192,103 @@ class TextOnlyTests(unittest.TestCase):
         for prompt in (first, first + "\n\n", "<Picture 1>", "  \n"):
             with self.assertRaisesRegex(ValueError, "nothing is left"):
                 helper.text_only_prompt(prompt)
+
+
+def guide_reference_example():
+    """The prompt guide's ref2va example (bin/lf-cli GUIDE, the same as docs/API.md's)."""
+    text = (REPO / "bin" / "lf-cli").read_text()
+    found = re.findall(r"\n(ref2va, [^\n]*):\n\n```text\n(.*?)\n```", text, re.S)
+    assert len(found) == 1, found
+    return found[0][1]
+
+
+def page_reference_example():
+    """The page's ref2va example (webui/index.html's EX.ref2va)."""
+    page = (REPO / "webui" / "index.html").read_text()
+    return json.loads('"' + re.search(r'ref2va:"(subject_definitions:.*?)"\}', page).group(1) + '"')
+
+
+LABEL = re.compile(r"<(?:Picture|Video|Audio|Subject) \d+>")
+
+
+def dialogue(text):
+    return re.findall(r"<d>.*?</d>", text, re.S)
+
+
+class RefTextOnlyTests(unittest.TestCase):
+    """ref_text_only_prompt: a Reference prompt as t2va's three fields, for the Upscale's text-only encode."""
+
+    def test_the_guides_example(self):
+        prompt = guide_reference_example()
+        result = helper.ref_text_only_prompt(prompt)
+        text = result["prompt"]
+        self.assertEqual(result["form"], "detailed")
+        self.assertEqual([line.split(":")[0] for line in text.split("\n\n")],
+                         ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"])
+        self.assertIsNone(LABEL.search(text), text)
+        self.assertEqual(dialogue(text), dialogue(prompt))                  # what the model speaks, unchanged
+        self.assertIn("frames the woman (S1), the woman with short red hair", text)
+        self.assertIn("says, <d>[English] Welcome back.", text)            # "in the ... voice referenced from" goes
+        for gone in ("subject_definitions", "retention_analysis", "summary", "[reference generation", "fully_preserved",
+                     "voice-timbre reference"):
+            self.assertNotIn(gone, text)
+        self.assertTrue(text.startswith("integrated_multimodal_description: The target video is a live-action"))
+        self.assertTrue(text.endswith("overall_soundscape: Soft wind and the hush of falling snow, with distant "
+                                      "traffic on wet pavement.\n\nnon_diegetic_music: N/A"))
+        self.assertEqual(result["dropped"], ["subject_definitions (1 subject)", "retention_analysis", "summary",
+                                             "1 x '<Subject N>' (as its definition)",
+                                             "1 x ' in the voice (timbre) of <Audio N>'"])
+        self.assertEqual(result["notes"], [])
+        self.assertLess(len(text), len(prompt))
+
+    def test_the_pages_example(self):
+        """The sections on one line each, two definitions in one line, the subject opening a sentence."""
+        result = helper.ref_text_only_prompt(page_reference_example())
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: [Shot 1] A static medium shot. The "
+                                           "person faces the camera and says, <d>[English] Welcome to the garden.</d>"
+                                           "\n\noverall_soundscape: Quiet outdoor ambience.\n\nnon_diegetic_music: N/A")
+
+    def test_one_line_definitions_and_the_summary(self):
+        """Without detailed_description the summary is the description: its task tags go, and each subject is its
+        whole definition at its first mention, its short form after it."""
+        prompt = ("subject_definitions: <Subject 1> is the man in <Picture 1>, wearing a grey suit. <Subject 2> is the "
+                  "dog in <Video 1>.\nsummary: [reference generation + audio reference] <Subject 1> walks <Subject 2> "
+                  "through a park and talks in the voice timbre of <Audio 1>. <Subject 1> laughs.\n"
+                  "retention_analysis: <Subject 1>: fully_preserved.")
+        result = helper.ref_text_only_prompt(prompt)
+        self.assertEqual(result["form"], "summary")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: The man, wearing a grey suit, walks the "
+                                           "dog through a park and talks. The man laughs.")
+        self.assertIn("the summary's task tags", result["dropped"])
+        self.assertIn("subject_definitions (2 subjects)", result["dropped"])
+
+    def test_free_text_and_t2va_fields(self):
+        """No Reference sections: only the labels go (dialogue keeps its own); t2va's own fields stay fields."""
+        free = "A singer like <Picture 1> sings on a stage in the timbre of <Audio 1>. <d>[English] Hi <Picture 1>.</d>"
+        result = helper.ref_text_only_prompt(free)
+        self.assertEqual((result["form"], result["prompt"]),
+                         ("free", "A singer sings on a stage. <d>[English] Hi <Picture 1>.</d>"))
+        self.assertEqual(result["notes"], ["1 label(s) left as written, in dialogue"])
+        fields = ("integrated_multimodal_description: [Shot 1] <Subject 1> shown in <Picture 1> waves.\n\n"
+                  "overall_soundscape: Birds.\n\nnon_diegetic_music: N/A")
+        result = helper.ref_text_only_prompt(fields)
+        self.assertEqual((result["form"], result["prompt"]),
+                         ("fields", "integrated_multimodal_description: [Shot 1] The subject waves.\n\n"
+                                    "overall_soundscape: Birds.\n\nnon_diegetic_music: N/A"))
+        self.assertEqual(result["notes"], [])
+
+    def test_nothing_left(self):
+        for prompt in ("<Picture 1> <Audio 1>", "  ", "subject_definitions: <Subject 1> is <Picture 1>.\nsummary: "
+                       "[reference generation]\noverall_soundscape: Wind.", "detailed_description: [Shot 1] <Video 1>"):
+            with self.subTest(prompt):
+                with self.assertRaisesRegex(ValueError, "nothing is left of the prompt without its references"):
+                    helper.ref_text_only_prompt(prompt)
+
+    def test_an_undefined_subject(self):
+        result = helper.ref_text_only_prompt("subject_definitions: <Subject 1> is a red kite.\ndetailed_description: "
+                                             "<Subject 1> rises over <Subject 2>.")
+        self.assertEqual(result["prompt"], "integrated_multimodal_description: A red kite rises over the subject.")
+        self.assertEqual(result["notes"], ["<Subject 2> has no definition: it reads 'the subject'"])
 
 
 # a stand-in of the patch's runtime package: runtime.config (load_paths, load_recipe, normalize_case,
@@ -500,6 +599,25 @@ class ScriptTests(Fixture):
         data = dict(json.loads(json.dumps(saved["for_job"])), seconds=5, seed=7, steps=4, lora="/l/lora.safetensors",
                     shift=[6, 3], paths={"base_model": "/b"})
         self.assertEqual(job.parse_job(data, str(self.case / "turbo"))["keyframes"], ["first"])
+
+    def test_the_upscales_encode(self):
+        """--upscale: the prompt as given, as t2va; MiniMax's tokens in plain mode are the studio's choice, not
+        refused; keyframes are; encode.json says what it is for and has no for_job."""
+        (self.tmp / "speech.txt").write_text("integrated_multimodal_description: A man says: <d>[English] Hi.</d>")
+        args = self.args("--prompt-file", str(self.tmp / "speech.txt"), "--upscale", first=False)
+        result = self.run_helper(*args, env={"SOL_H3_PROMPT_TOKENS": "plain"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([e["event"] for e in self.events()], ["start", "run", "close"])
+        case = self.events()[1]["case"]
+        self.assertEqual((case["task"], case["prompt"]), ("t2va", (self.tmp / "speech.txt").read_text()))
+        saved = json.loads((self.case / "encode.json").read_text())
+        self.assertEqual((saved["use"], saved["task"], saved["prompt_tokens"]), ("upscale", "t2va", "plain"))
+        self.assertNotIn("for_job", saved)
+        self.assertEqual(saved["encodes"]["qwen"]["vision_rows"], 0)
+        self.assertFalse((self.case / "qwen-text").exists())
+        result = self.run_helper(*self.args("--upscale", "--case", str(self.case.parent / "other")))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("refused: --upscale encodes text alone: no --first or --last", result.stdout)
 
     def test_t2va(self):
         result = self.run_helper(*self.args(first=False))
