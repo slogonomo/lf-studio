@@ -55,17 +55,18 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   "file_name" (the name /video/<id> downloads as). POST /api/load takes "model": a LightX2V Turbo clip loads its model
   itself (409). A LightX2V Turbo clip is a job of its own in the same queue, in order with every other clip
   (run_model_job): it closes the Sol-H3 session and stops a warm-up (status "freeing memory"), refuses to start below
-  LFSTUDIO_H3TURBO_MIN_FREE_GIB, encodes the prompt with a transient Qwen worker (LFSTUDIO_H3TURBO_ENCODE_SCRIPT,
-  status "encoding the prompt"; for fl2va also the prompt without its keyframe references, "text_only", for a later
-  Upscale), then runs its job (LFSTUDIO_H3TURBO_SCRIPT with LFSTUDIO_H3TURBO_PYTHON; status "loading models +
-  generating", "generating" from its first step, "job_phase" from its "[lf-studio] phase" lines) in a process group
-  of its own, both under one pipeline_call, so Cancel stops either; LFSTUDIO_H3TURBO_GUARD_GIB guards it. No retry,
-  no warm-up afterwards (nor at start after one). Its record has "model", "model_opts" (the options, the size, the
-  LoRA, the Qwen canvas and its image tokens) and the job's times and memory; its files go into
-  <session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case_id>/ (qwen/, qwen-text/, turbo/), its name
-  has the model and the options: lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. It can't be
-  upscaled yet. With LFSTUDIO_MODELS unset (sol-h3 only) everything is as before: no "models", no new keys in the
-  records or the session, the page as it is; "model": "sol-h3" is taken, another model is refused.
+  LFSTUDIO_H3TURBO_MIN_FREE_GIB, encodes the prompt with a transient Qwen worker (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, status
+  "encoding the prompt"; for fl2va also the prompt without its keyframe references, "text_only", for a later Upscale:
+  null when nothing is left of it, a prompt of keyframe lines alone), then runs its job (LFSTUDIO_H3TURBO_SCRIPT with
+  LFSTUDIO_H3TURBO_PYTHON; status "loading models + generating", "generating" from its first step, "job_phase" from its
+  "[lf-studio] phase" lines) in a process group of its own, both under one pipeline_call, so Cancel stops either;
+  LFSTUDIO_H3TURBO_GUARD_GIB guards it. No retry, no warm-up afterwards (nor at start after one). Its record has
+  "model", "model_opts" (the options, the size, the LoRA, the Qwen canvas and its image tokens) and the job's times and
+  memory; its files go into <session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case_id>/ (qwen/,
+  qwen-text/, turbo/), its name has the model and the options:
+  lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. It can't be upscaled yet. With LFSTUDIO_MODELS
+  unset (sol-h3 only) everything is as before: no "models", no new keys in the records or the session, the page as it
+  is; "model": "sol-h3" is taken, another model is refused.
 
 For agents and scripts (#29; docs/API.md):
 - POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
@@ -449,11 +450,30 @@ def models_setting(value, backend):
     return tuple(m for m in MODELS if m in asked), None
 
 
+OPTION_KINDS = {"string": str, "integer": int}     # an option's "type" -> the type of its values (JSON's)
+
+
 def registry_problems():
-    """What is wrong with MODELS' tables (a bug; the server stops): a row without a dimension of the model or with a
-    value it can't have, or a value not offered without a reason."""
-    found = []
+    """What is wrong with MODELS' tables (a bug; the server stops): an option of a type the requests can't carry (the
+    form and JSON carry strings and integers: json_form, check_model, lf-cli), with a value or default not of its
+    type or a default not among its choices, or of another type than an option of the same name of another model; a
+    row without a dimension of the model or with a value it can't have, or a value not offered without a reason."""
+    found, kinds = [], {}
     for mid, m in MODELS.items():
+        for o in m["options"]:
+            kind = OPTION_KINDS.get(o.get("type"))
+            if kind is None:
+                found.append(f"{mid}: option {o['name']} has type {o.get('type')!r}, not "
+                             f"{' or '.join(OPTION_KINDS)}")
+                continue
+            values = [c["value"] for c in o["choices"]]
+            found += [f"{mid}: option {o['name']}: {v!r} is not of its type, {o['type']}"
+                      for v in values + [o["default"]] if type(v) is not kind]
+            if o["default"] not in values:
+                found.append(f"{mid}: option {o['name']}'s default {o['default']!r} is not one of its choices")
+            if kinds.setdefault(o["name"], o["type"]) != o["type"]:
+                found.append(f"{mid}: option {o['name']} is of type {o['type']}, another model's of type "
+                             f"{kinds[o['name']]}")
         dims = dict(END_STATE, **{o["name"]: tuple(c["value"] for c in o["choices"]) for o in m["options"]})
         for row in m["offers"]:
             if set(row) != set(dims):
@@ -1437,7 +1457,8 @@ def stop_job(job):
                 proc = work["process"]
                 if proc is not None and proc.pid in sent and (termed is None or termed[0] != proc.pid):
                     termed = (proc.pid, time.time())
-                if (termed and termed[0] == proc.pid and time.time() - termed[1] > GPU_JOB_STOP_S
+                # proc is None between a job's GPU processes (after one, before its pipeline call returns)
+                if (termed and proc is not None and termed[0] == proc.pid and time.time() - termed[1] > GPU_JOB_STOP_S
                         and proc.poll() is None):
                     log(f"cancel: {work['labels'][0]} {proc.pid} is still there {GPU_JOB_STOP_S} s after SIGTERM: "
                         "SIGKILL")
@@ -1865,6 +1886,7 @@ def stop_gpu_job():
 TURBO_LABELS = ("the LightX2V Turbo job", "the running LightX2V Turbo clip")
 ENCODE_LABELS = ("the LightX2V Turbo prompt encode", "the running LightX2V Turbo prompt encode")
 ENCODE_LINE = re.compile(r"\[h3turbo-encode\] (failed|refused): (.*)")
+NO_TEXT_ONLY = "--no-text-only"     # the encode's flag that skips the text-only input; its refusal names it
 
 
 def encode_line(line):
@@ -1926,8 +1948,10 @@ def encode_prompt(job, case, conf):
     h3-turbo work's bench/h3turbo_encode.py) with this server's Python in the patched package, as a GPU process of its
     own (gpu_process: Cancel and shutdown stop it, and it stops its transient Qwen worker): the prompt and the
     keyframes, seen at the LFSTUDIO_H3TURBO_QWEN_CANVAS canvas, into <case>/qwen/, and for fl2va the prompt without its
-    keyframe references into <case>/qwen-text/ (the input of a later Upscale). Its log is <case>/encode.log. Returns
-    (the conditioning, the encode's summary: encode.json)."""
+    keyframe references into <case>/qwen-text/ (the input of a later Upscale; job["text_only"]). A prompt that is
+    nothing but its keyframe references has no such text: the encode refuses it, naming --no-text-only, and runs again
+    with it (text_only null). After an encode that ended badly, stop_encode_worker. Its log is <case>/encode.log.
+    Returns (the conditioning, the encode's summary: encode.json)."""
     opts, prompt_file, log_path = job["model_opts"], case / "prompt.txt", case / "encode.log"
     prompt_file.write_text(job["prompt"], encoding="utf-8")
     command = [sys.executable, "-I", "-B", str(H3TURBO_ENCODE), "--case", str(case), "--prompt-file", str(prompt_file),
@@ -1937,11 +1961,29 @@ def encode_prompt(job, case, conf):
         if job.get(f"{anchor}_frame"):
             command += [f"--{anchor}", job[f"{anchor}_frame"]]
     env = dict(os.environ, LFSTUDIO_PATHS=PATHS_TEMPLATE)
-    code, seen = gpu_process(command, env, PKG, log_path, encode_line, None, ENCODE_LABELS,
-                             (conf["guard_gib"], "LightX2V Turbo's prompt encode"), ModelJobFailed,
-                             f"cannot start the prompt encode {H3TURBO_ENCODE}",
-                             f"encoding the prompt of {job['case_id']} (pid {{pid}}): Qwen canvas "
-                             f"{conf['qwen_canvas']}")
+
+    def encode(command):
+        code, seen = gpu_process(command, env, PKG, log_path, encode_line, None, ENCODE_LABELS,
+                                 (conf["guard_gib"], "LightX2V Turbo's prompt encode"), ModelJobFailed,
+                                 f"cannot start the prompt encode {H3TURBO_ENCODE}",
+                                 f"encoding the prompt of {job['case_id']} (pid {{pid}}): Qwen canvas "
+                                 f"{conf['qwen_canvas']}")
+        if code not in (0, 2):             # killed (the guard, a SIGKILL after Cancel or shutdown) or failed; a
+            stop_encode_worker(case)       # refusal (2) started nothing
+        return code, seen
+
+    code, seen = encode(command)
+    text_only = job["task"] == "fl2va"
+    if code == 2 and text_only and NO_TEXT_ONLY in (seen.get("error") or ""):
+        # The prompt is nothing but its keyframe references (the guide's first-frame line, the page's alignLine()):
+        # nothing is left for the text-only encode, which only a later Upscale reads, and the encode refused before
+        # it started anything. The clip itself needs no text-only input: encode it without one (text_only null).
+        log(f"{job['case_id']}: the prompt encode refused the text-only input ({seen['error']}): encoding the clip "
+            "without it")
+        if job.get("cancel_requested"):
+            raise Cancelled("cancelled during the prompt encode")
+        text_only = False
+        code, seen = encode(command + [NO_TEXT_ONLY])
     what = "refused the clip" if code == 2 else "failed"
     if seen.get("error"):
         seen["error"] = f"the prompt encode {what}: {seen['error']}"
@@ -1962,7 +2004,39 @@ def encode_prompt(job, case, conf):
             dropped = None
         job["text_only"] = {"prompt": (case / "qwen-text" / "prompt.txt").read_text(encoding="utf-8"),
                             "dropped": dropped}
+    elif job["task"] == "fl2va" and not text_only:
+        job["text_only"] = None            # no text without the keyframe references: it can't be upscaled later
     return conditioning, summary
+
+
+def stop_encode_worker(case):
+    """After a prompt encode that ended badly: stop the transient Qwen worker it may have left. runtime.pipeline.Worker
+    starts that worker (qwen_python.sh, its Docker container) in a session of its own as the encode's child, so it is
+    not in the encode's process group (the guard's and Cancel's SIGKILL) and not a child of this server
+    (signal_workers). An encode killed that way can't close it, and it lives on, with Qwen's ~17 GiB, until it next
+    reads its stdin: after its start (6-13 s) or the encode under way, while the next clip may load already. Found by
+    its command line (runtime.worker --module qwen --options <case>/qwen-worker/options.json, the case as given or
+    resolved, as bin/lf-studio's cleanup finds the pipeline's workers), its group gets SIGTERM once: qwen_python.sh
+    stops its container in a TERM trap, which a second signal would cut short. An encode that closed its worker
+    itself leaves nothing to find. Returns the groups signalled."""
+    wanted = {str(root / "qwen-worker" / "options.json") for root in (case, case.resolve())}
+    sent = []
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            argv = (d / "cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+            pgrp = int((d / "stat").read_text().rsplit(")", 1)[1].split()[2])
+        except (OSError, ValueError, IndexError):
+            continue
+        after = dict(zip(argv, argv[1:]))   # each argument -> the one after it
+        if (pgrp == int(d.name) and "runtime.worker" in argv and after.get("--module") == "qwen"
+                and after.get("--options") in wanted):
+            log(f"stopping the Qwen worker the prompt encode left (process group {pgrp})")
+            with contextlib.suppress(OSError):
+                os.killpg(pgrp, signal.SIGTERM)
+                sent.append(pgrp)
+    return sent
 
 
 def turbo_job_data(job, out, conf, module, conditioning):
@@ -3086,6 +3160,8 @@ class H(BaseHTTPRequestHandler):
                 model = want.get("model") or DEFAULT_MODEL          # sol-h3 when not given, as before
             except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
                 return self.send(400, {"error": "expected JSON {task, orientation, seconds}"})
+            if not isinstance(model, str):
+                return self.send(400, {"error": "model must be a string"})
             if model != SOL_H3:
                 if model not in ENABLED:
                     return self.send(400, {"error": f"{model} is off on this studio (LFSTUDIO_MODELS)"

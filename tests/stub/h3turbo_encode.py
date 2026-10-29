@@ -19,6 +19,11 @@ done, 1 failed ("[h3turbo-encode] failed: ..."), 2 refused ("[h3turbo-encode] re
   STUB_QWEN_FAIL    1: fail as a Qwen worker that died (exit 1)
   STUB_QWEN_TERM    "ignore": SIGTERM does nothing (a worker that does not answer)
   STUB_QWEN_LOG     a file each run appends a JSON line to ({"pid", "argv"})
+  STUB_QWEN_WORKER_S  start a stand-in of its transient Qwen worker, as runtime.pipeline.Worker starts the real one:
+                    a child in a session of its own whose command line names runtime.worker --module qwen --options
+                    <case>/qwen-worker/options.json (the case resolved), its pid in qwen-worker/worker.pid. Like the
+                    real one, it does not read its stdin while it starts (these seconds), then ends at EOF: when this
+                    process closes it (at its end, on SIGTERM, on a failure) or is gone (killed)
 Standard library only, so it runs under -I with any Python 3.10+.
 """
 import argparse
@@ -27,6 +32,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -37,6 +43,10 @@ CANVAS = {("576p", "landscape"): (1024, 576), ("576p", "portrait"): (576, 1024),
 DRAFT_CANVAS = {"landscape": (672, 384), "portrait": (384, 672)}
 PICTURE = re.compile(r"\s*(?:shown in |with the composition of |(?:in|of|from) )?<Picture \d+>")
 OPENINGS = ("For the target video", "How the reference pictures align")
+WORKER = ("import signal, sys, time\n"
+          "signal.signal(signal.SIGTERM, signal.SIG_DFL)   # not STUB_QWEN_TERM's SIG_IGN, which a child inherits\n"
+          "time.sleep(float(sys.argv[1]))     # starting: its stdin is not read yet\n"
+          "sys.stdin.read()                   # then it ends at EOF\n")
 
 
 def text_only_prompt(prompt):
@@ -120,10 +130,23 @@ def main(argv):
     (case / "qwen-worker" / "worker.log").write_text("stub Qwen worker\n")
     print(f"{TAG} {time.strftime('%H:%M:%S')} starting the Qwen worker (canvas {size[0]}x{size[1]})", file=sys.stderr,
           flush=True)
-    time.sleep(float(os.environ.get("STUB_QWEN_S", "0.5")))
-    if os.environ.get("STUB_QWEN_FAIL") == "1":
-        print(f"{TAG} failed: RuntimeError: Worker exited with code 1 (STUB_QWEN_FAIL)", flush=True)
-        return 1
+    worker = None
+    if os.environ.get("STUB_QWEN_WORKER_S"):
+        worker = subprocess.Popen(
+            [sys.executable, "-c", WORKER, os.environ["STUB_QWEN_WORKER_S"], "runtime.worker", "--module", "qwen",
+             "--options", str(case.resolve() / "qwen-worker" / "options.json")],
+            stdin=subprocess.PIPE, start_new_session=True)
+        (case / "qwen-worker" / "worker.pid").write_text(f"{worker.pid}\n")
+    try:
+        time.sleep(float(os.environ.get("STUB_QWEN_S", "0.5")))
+        if os.environ.get("STUB_QWEN_FAIL") == "1":
+            print(f"{TAG} failed: RuntimeError: Worker exited with code 1 (STUB_QWEN_FAIL)", flush=True)
+            return 1
+    finally:
+        if worker is not None:             # the real one's worker.close(): the close op, then TERM to its group
+            worker.stdin.close()
+            os.killpg(worker.pid, signal.SIGTERM)
+            worker.wait()
     summary = {"case": str(case), "case_id": args.case_id or case.name, "seed": args.seed, "task": task,
                "orientation": args.orientation, "resolution": args.resolution, "canvas_mode": args.canvas,
                "qwen_canvas": list(size), "image_tokens": (size[0] // 32) * (size[1] // 32) if frames else 0,

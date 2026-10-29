@@ -379,10 +379,12 @@ runs with `phase` `generating` from the start; its first clip at a shape the ses
 A clip that loads the models has neither key. Paths in the record (`first_frame`, `references`, `output`,
 `published`, `case_dirs`) are paths on the Spark, for information only. A LightX2V Turbo clip also stores `model`,
 `model_opts` (its options, its size and what its job used: `{"resolution", "steps", "size": [w, h], "lora",
-"qwen_canvas", "image_tokens"}`), `job_phase` while it runs (its job's own step: `starting`, `loading`, `step 2/4`,
-`decoding`, `saving`), and when done `phases_s`, `load_s`, `peak_gib` and `low_mem_gib` from its job; an fl2va one
-also `text_only` (its prompt without the keyframe references, for a later Upscale: `{"prompt", "dropped"}`).
-Sol-H3 clips store none of these: their records are as before the model choice.
+"qwen_canvas", "image_tokens"}`), `job_phase` once its job runs (its job's own step: `starting`, `loading`, `step
+2/4`, `decoding`, `saving`; gone when it is done, kept where a failed or cancelled clip stopped), and when done
+`phases_s`, `load_s`, `peak_gib` and `low_mem_gib` from its job; an fl2va one also `text_only` (its prompt without
+the keyframe references, for a later Upscale: `{"prompt", "dropped"}`, or `null` for a prompt that is nothing but
+its keyframe lines, such as the guide's first-frame line alone). Sol-H3 clips store none of these: their records are
+as before the model choice.
 
 A done fl2va clip, abbreviated:
 
@@ -443,8 +445,8 @@ clips).
   Behind switchboard this path never starts the studio, and it sends the MP4 the moment the clip is done.
 - **`GET /video/<id>`**: the MP4 (`video/mp4`) with `Content-Disposition: inline;
   filename="lf-studio_<task>_<seconds>s_seed<seed>_<id6>.mp4"` (a LightX2V Turbo clip:
-  `lf-studio_lightx2v-turbo-<resolution>_<task>_<seconds>s_seed<seed>_<id6>.mp4`, as its record's `file_name`). `Range` requests get 206. 404 `no such video`. Behind
-  switchboard it starts a stopped studio.
+  `lf-studio_lightx2v-turbo-<resolution>_<task>_<seconds>s_seed<seed>_<id6>.mp4`, as its record's `file_name`).
+  `Range` requests get 206. 404 `no such video`. Behind switchboard it starts a stopped studio.
 - **`GET /poster/<id>`**: a JPEG of the frame at about 1 s, 640 pixels wide. 404 `no poster`. Behind switchboard it
   never starts the studio (with this version's integration file).
 
@@ -839,8 +841,8 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
   plus 1 s per 2 MB, plus 15 s per reference video), so `generate` still answers within `wait_s`. The upload runs
   on its own: a call that is cancelled or times out still submits the clip, and `status` without an id shows it.
 - **An identical `generate` to the same MCP server process within 30 minutes** (the same arguments, the model and
-  its options included, and the same file contents) returns the earlier clip instead of making another: "Already submitted as <id> ...". Change the
-  seed, or pass `again: true`, for another take. A clip that failed, was cancelled or was deleted is made again; a
+  its options included, and the same file contents) returns the earlier clip instead of making another: "Already
+  submitted as <id> ...". Change the seed, or pass `again: true`, for another take. A clip that failed, was cancelled or was deleted is made again; a
   studio that is starting, stopped or unreachable keeps the earlier clip. The server remembers these calls in
   memory only: after a host restart or in a new host session, the same call makes a new clip, so look for the
   earlier one first with `status` (no id: the newest clips) or its id.

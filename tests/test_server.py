@@ -3,6 +3,7 @@
 python3 -m unittest discover -s tests -v      (needs python3 >= 3.10 and ffmpeg; the server uses the standard
 library only)
 """
+import ast
 import base64
 import concurrent.futures
 import contextlib
@@ -18,7 +19,9 @@ import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import time
+import types
 import unittest
 import urllib.error
 import zlib
@@ -3112,6 +3115,75 @@ def release_server(ref, directory):
     return directory / "webui" / "server.py"
 
 
+def server_function(name, **names):
+    """A function of webui/server.py compiled on its own from the server's source, with `names` as its globals (the
+    server can't be imported without a studio's settings): for what a stub studio can't reach on cue."""
+    tree = ast.parse((REPO_DIR / "webui" / "server.py").read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    namespace = dict(names)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "webui/server.py", "exec"), namespace)
+    return namespace[name]
+
+
+class ServerParts(unittest.TestCase):
+    """Parts of the server on their own (server_function), with stand-ins for what they use."""
+
+    def test_stop_job_between_gpu_processes(self):
+        """stop_job after it signalled a GPU process that has ended, while the job's pipeline call has not returned
+        (work["process"] None: an upscale's mux, the receipt read, a LightX2V Turbo clip between its steps): no
+        AttributeError, and its SIGKILL went once, to that process only."""
+        for stop_s, kills in ((3600, []), (-1, [(4242, signal.SIGKILL)])):
+            with self.subTest(GPU_JOB_STOP_S=stop_s):
+                job, calls, killed = {"status": "running", "case_id": "web_x"}, [], []
+                work = {"job": job, "process": types.SimpleNamespace(pid=4242, poll=lambda: None),
+                        "labels": ("the job", "the running job")}
+
+                def signal_workers(sent):
+                    calls.append(set(sent))
+                    if len(calls) == 1:
+                        return [4242]                      # the GPU process gets its SIGTERM
+                    if len(calls) == 2:
+                        work["process"] = None             # it has ended; the pipeline call goes on
+                    else:
+                        job["status"] = "cancelled"
+                    return []
+                stop_job = server_function(
+                    "stop_job", lock=threading.Lock(), stopping=threading.Event(), work=work, time=time,
+                    FINISHED=("done", "failed", "cancelled"), signal_workers=signal_workers, log=lambda *a: None,
+                    GPU_JOB_STOP_S=stop_s, contextlib=contextlib, signal=signal,
+                    os=types.SimpleNamespace(killpg=lambda *a: killed.append(a)))
+                stop_job(job)                              # returns once the job has finished
+                self.assertEqual((len(calls), killed), (3, kills))
+
+    def test_registry_problems(self):
+        """registry_problems refuses an option the requests can't carry (only strings and integers: json_form,
+        check_model, lf-cli) and values or a default not of its type, besides the tables' own problems."""
+        end = {"task": ("t2va", "fl2va"), "seconds": (5, 6)}
+
+        def problems(*options, other=()):
+            def model(opts):
+                dims = {o["name"]: tuple(c["value"] for c in o["choices"]) for o in opts}
+                return {"options": opts, "offers": (dict(end, **dims),), "not_yet": ()}
+            models = {"sol-h3": model(()), "turbo": model(options), **({"other": model(other)} if other else {})}
+            return server_function("registry_problems", MODELS=models, END_STATE=end,
+                                   OPTION_KINDS={"string": str, "integer": int})()
+        size = {"name": "resolution", "type": "string", "default": "576p",
+                "choices": ({"value": "576p"}, {"value": "768p"})}
+        steps = {"name": "steps", "type": "integer", "default": 4, "choices": ({"value": 4}, {"value": 8})}
+        self.assertEqual(problems(size, steps), [])
+        self.assertEqual(problems(dict(size, type="number", default=0.5, choices=({"value": 0.5},))),
+                         ["turbo: option resolution has type 'number', not string or integer"])
+        self.assertEqual(problems(dict(steps, choices=({"value": 4}, {"value": "8"}))),
+                         ["turbo: option steps: '8' is not of its type, integer"])
+        self.assertEqual(problems(dict(steps, default=True, choices=({"value": True}, {"value": 4}))),
+                         ["turbo: option steps: True is not of its type, integer",
+                          "turbo: option steps: True is not of its type, integer"])
+        self.assertEqual(problems(dict(size, default="1080p")),
+                         ["turbo: option resolution's default '1080p' is not one of its choices"])
+        self.assertEqual(problems(steps, other=(dict(steps, type="string", default="4", choices=({"value": "4"},)),)),
+                         ["other: option steps is of type string, another model's of type integer"])
+
+
 def cli(url, *args):
     """bin/lf-cli with these arguments against `url`: (exit status, stdout)."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_"))}
@@ -3197,6 +3269,10 @@ class ModelChoiceOff(unittest.TestCase):
         self.assertEqual(s.post("/api/load", json_body={"task": "t2va", "orientation": "landscape", "seconds": 5,
                                                         "model": TURBO}),
                          (400, {"error": f"{TURBO} is off on this studio (LFSTUDIO_MODELS)"}))
+        for model in (["x"], {"a": 1}, 5):
+            self.assertEqual(s.post("/api/load", json_body={"task": "t2va", "orientation": "landscape", "seconds": 5,
+                                                            "model": model}),
+                             (400, {"error": "model must be a string"}))
         self.assertEqual(s.state()["jobs"], [])
         a = s.post("/api/generate", json_body={"prompt": "x", "model": "sol-h3", "seed": 3})[1]["id"]
         b = s.generate(model="sol-h3", seed=4)[1]["id"]
@@ -3205,6 +3281,28 @@ class ModelChoiceOff(unittest.TestCase):
             self.assertEqual(job["status"], "done")
             self.assertFalse({"model", "model_opts", "file_name"} & set(job))
         self.assertNotIn("LightX2V Turbo", s.log.read_text())
+
+
+def qwen_worker(test, jid):
+    """The pid of the stand-in Qwen worker (STUB_QWEN_WORKER_S) of LightX2V Turbo clip `jid`'s prompt encode, once it
+    runs; killed at the test's end if it is still there."""
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        dirs = test.studio.job(jid).get("case_dirs") or []
+        pid_file = Path(dirs[0]) / "qwen-worker" / "worker.pid" if dirs else None
+        if pid_file and pid_file.is_file() and pid_file.read_text().endswith("\n"):
+            pid = int(pid_file.read_text())
+            test.addCleanup(lambda: alive(pid) and os.killpg(pid, signal.SIGKILL))
+            return pid
+        time.sleep(0.05)
+    test.fail(f"no stand-in Qwen worker for {jid}")
+
+
+def gone_soon(test, pid, within=5):
+    deadline = time.time() + within
+    while alive(pid) and time.time() < deadline:
+        time.sleep(0.05)
+    test.assertFalse(alive(pid), f"process {pid} is still there")
 
 
 class TurboTest(UpscaleTest):
@@ -3419,6 +3517,32 @@ class TurboRun(TurboTest):
         self.assertEqual(self.studio.get(f"/still/{jid}")[1]["Content-Type"], "image/jpeg")
         self.assertEqual(self.done(self.turbo(task="fl2va", seed=2, files={"first_frame": [("a.png", png())]}))[
             "model_opts"]["image_tokens"], 252)                                   # a first frame alone
+
+    def test_fl2va_prompt_of_keyframe_lines_alone(self):
+        """A prompt that is nothing but its keyframe line (the guide's first-frame line, the page's alignLine()) has no
+        text-only prompt: the encode refuses that part before it starts anything, and the server encodes the clip
+        again without it (--no-text-only), so the clip is made; its text_only is null (no later Upscale)."""
+        guide = "For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
+        page = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; "
+                "Picture 2 aligns with the 5.00-second mark.")
+        clips = ((guide, {"first_frame": [("a.png", png())]}),
+                 (page, {"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}))
+        for seed, (prompt, files) in enumerate(clips, 1):
+            with self.subTest(prompt=prompt):
+                jid = self.turbo(task="fl2va", prompt=prompt, files=files, seed=seed)
+                job = self.done(jid)
+                self.assertIsNone(job["text_only"])
+                self.assertIsNone(json.loads(self.studio.get(f"/api/jobs/{jid}")[2])["text_only"])
+                case = Path(job["case_dirs"][0])
+                self.assertFalse((case / "qwen-text").exists())
+                self.assertTrue((case / "qwen" / "conditioning.pt").is_file())
+                first, again = [r["argv"] for r in self.runs("encodes.log") if job["case_id"] in r["argv"]]
+                self.assertNotIn("--no-text-only", first)
+                self.assertEqual(again, first + ["--no-text-only"])
+                self.assertIn(f"{job['case_id']}: the prompt encode refused the text-only input (nothing is left of "
+                              "the prompt without its keyframe references (--no-text-only skips the text-only "
+                              "encode)): encoding the clip without it", self.studio.log.read_text())
+        self.assertEqual(len(self.runs("turbo-jobs.log")), 2)
 
     def test_progress(self):
         """The status while it runs: freeing memory, encoding the prompt, loading (the job's own load), then
@@ -3690,6 +3814,7 @@ class TurboCancel(TurboTest):
         self.assertLess(time.time() - t0, 5)
         for key in ("error", "output", "published", "cancel_requested", "saving"):
             self.assertNotIn(key, job)
+        self.assertTrue(job["job_phase"].startswith("step"), job["job_phase"])      # where it stopped (docs/API.md)
         self.assertFalse(alive(pid))
         receipt = json.loads((Path(job["case_dirs"][0]) / "turbo" / "receipt.json").read_text())
         self.assertEqual((receipt["state"], receipt["exit_status"]), ("cancelled", 143))
@@ -3711,6 +3836,30 @@ class TurboCancel(TurboTest):
         self.assertFalse(alive(pid))
         self.assertIn(f"cancel: the LightX2V Turbo job {pid} is still there 20 s after SIGTERM: SIGKILL",
                       self.studio.log.read_text())
+
+    def test_an_encode_that_ignores_sigterm(self):
+        """An encode that does not end on SIGTERM gets SIGKILL 20 s later, and the server stops the transient Qwen
+        worker it could not close; one that ends on SIGTERM closes its worker itself."""
+        self.restart(STUB_QWEN_S="60", STUB_QWEN_WORKER_S="90", STUB_QWEN_TERM="ignore")
+        jid = self.turbo()
+        pid = self.waiting_for(jid, "encodes.log")
+        worker = qwen_worker(self, jid)
+        self.assertEqual(self.cancel(jid)[0], 200)
+        job = self.studio.wait([jid], timeout=40)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertFalse(alive(pid))
+        gone_soon(self, worker)
+        log = self.studio.log.read_text()
+        self.assertIn(f"cancel: the LightX2V Turbo prompt encode {pid} is still there 20 s after SIGTERM: SIGKILL", log)
+        self.assertIn(f"stopping the Qwen worker the prompt encode left (process group {worker})", log)
+        self.restart(STUB_QWEN_TERM="")
+        jid = self.turbo(seed=2)
+        self.waiting_for(jid, "encodes.log")
+        worker = qwen_worker(self, jid)
+        self.assertEqual(self.cancel(jid)[0], 200)
+        self.assertEqual(self.studio.wait([jid], timeout=30)[0]["status"], "cancelled")
+        self.assertFalse(alive(worker))
+        self.assertEqual(self.studio.log.read_text().count("stopping the Qwen worker the prompt encode left"), 1)
 
     def test_restart_while_running(self):
         """A server killed hard takes the job with it (--parent); the clip reads failed after the restart."""
@@ -3791,6 +3940,23 @@ class TurboMemory(TurboTest):
         self.assertFalse(alive(pid))
         self.assertIn("LightX2V Turbo: MemAvailable 1.0 GiB, below 5 GiB for 3 s: stopping its job (SIGKILL)",
                       self.studio.log.read_text())
+
+    def test_guard_during_the_encode(self):
+        """The guard stops the prompt encode (SIGKILL to its group), and the server stops the transient Qwen worker it
+        leaves (a group of its own, a grandchild of the server), which would otherwise hold its memory until it next
+        reads its stdin."""
+        self.restart(STUB_QWEN_S="30", STUB_QWEN_WORKER_S="60")
+        jid = self.turbo()
+        self.waiting_for(jid, "encodes.log")
+        worker = qwen_worker(self, jid)
+        self.studio.set_memory(1)
+        job = self.studio.wait([jid], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", (
+            "ModelJobFailed: stopped: MemAvailable was below 5 GiB for 3 s (1.0 GiB; LFSTUDIO_H3TURBO_GUARD_GIB)")))
+        gone_soon(self, worker)
+        self.assertIn(f"stopping the Qwen worker the prompt encode left (process group {worker})",
+                      self.studio.log.read_text())
+        self.assertEqual(self.runs("turbo-jobs.log"), [])
 
     def test_the_jobs_own_stop(self):
         self.restart(STUB_H3TURBO_ABORT="1")
