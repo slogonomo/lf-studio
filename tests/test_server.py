@@ -9,6 +9,7 @@ import concurrent.futures
 import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -3184,13 +3185,43 @@ class ServerParts(unittest.TestCase):
                          ["other: option steps is of type string, another model's of type integer"])
 
 
-def cli(url, *args):
-    """bin/lf-cli with these arguments against `url`: (exit status, stdout)."""
+def release_client(ref, directory):
+    """An earlier release's bin/lf-cli (git show) under `directory`, or None where git or the release is not there."""
+    try:
+        r = subprocess.run(["git", "-C", str(REPO_DIR), "show", f"{ref}:bin/lf-cli"], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode:
+        return None
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "lf-cli").write_bytes(r.stdout)
+    return directory / "lf-cli"
+
+
+def cli(url, *args, client=None, stderr=False):
+    """bin/lf-cli (or `client`, another copy) with these arguments against `url`: (exit status, stdout), with
+    `stderr` (exit status, stdout, stderr)."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_"))}
     env.update(LFSTUDIO_URL=url, PYTHONDONTWRITEBYTECODE="1")
-    run = subprocess.run([sys.executable, str(REPO_DIR / "bin" / "lf-cli"), *args], env=env, capture_output=True,
-                         text=True, timeout=120)
-    return run.returncode, run.stdout
+    run = subprocess.run([sys.executable, str(client or REPO_DIR / "bin" / "lf-cli"), *args], env=env,
+                         capture_output=True, text=True, timeout=120)
+    return (run.returncode, run.stdout, run.stderr) if stderr else (run.returncode, run.stdout)
+
+
+def normalized(value, *places, ids=()):
+    """`value` (JSON-able, or text) with what two studios and two runs can't share made alike: `places` (a studio's
+    root and address, an output directory: replaced by their order), clip ids (those in the text and `ids`, also by
+    their first 6 or 8 characters), case ids, the time stamps in names, times and durations (any number with a
+    decimal point, m:ss)."""
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    for i, place in enumerate(places):
+        text = text.replace(str(place), f"<place {i}>")
+    for jid in set(re.findall(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])", text)) | set(ids):
+        text = re.sub(rf"(?<![0-9a-f]){jid[:6]}[0-9a-f]{{0,26}}(?![0-9a-f])", "<id>", text)
+    text = re.sub(r"\bweb_\d{6}_<id>", "<case>", text)
+    text = re.sub(r"\b\d{8}-\d{6}\b", "<stamp>", text)
+    text = re.sub(r"\b\d+\.\d+\b", "<n>", text)
+    return re.sub(r"\b\d+:\d\d\b", "<m:ss>", text)
 
 
 class ModelChoiceOff(unittest.TestCase):
@@ -3230,22 +3261,27 @@ class ModelChoiceOff(unittest.TestCase):
             text = s.log.read_text().split("LF Studio on")[0].replace(str(s.root), "ROOT")
             return re.sub(r"^\[\d\d:\d\d:\d\d\] ", "", text, flags=re.M)
         self.same(self.each(start_log), "the start log")
-        st = self.same(self.each(lambda s: sorted(s.state())), "/api/state's keys")
-        self.assertNotIn("models", st)
-        self.same(self.each(lambda s: sorted(s.state()["session"])), "the session's keys")
         out = self.d / "out"
+        here = lambda s, value: normalized(value, s.root, s.url, out / s.root.name)            # noqa: E731
+        st = self.same(self.each(lambda s: here(s, s.state())), "/api/state")
+        self.assertNotIn('"models"', st)
+        self.assertIn('"session"', st)
         clips = self.each(lambda s: cli(s.url, "generate", "--prompt", "a test clip", "--seed", "1", "--json", "-q",
                                         "--out", str(out / s.root.name)))
         records = {name: json.loads(text) for name, (code, text) in clips.items()}
-        self.same({name: (clips[name][0], sorted(rec)) for name, rec in records.items()}, "lf-cli generate --json")
+        self.same({name: (clips[name][0], here(self.studios[name], rec)) for name, rec in records.items()},
+                  "lf-cli generate --json")
         rec = records["now"]
         self.assertTrue(Path(rec["path"]).is_file())
         self.assertNotIn("model", rec)
-        self.same(self.each(lambda s: sorted(s.state()["jobs"][0])), "a clip's record in /api/state")
-        api = self.same(self.each(lambda s: sorted(json.loads(s.get(f"/api/jobs/{s.state()['jobs'][0]['id']}")[2]))),
+        self.same(self.each(lambda s: here(s, s.state())), "/api/state with the clip")
+        api = self.same(self.each(lambda s: here(s, json.loads(s.get(f"/api/jobs/{s.state()['jobs'][0]['id']}")[2]))),
                         "a clip's API record")
         self.assertNotIn("file_name", api)
-        self.same(self.each(lambda s: cli(s.url, "status", "--json")[0]), "lf-cli status")
+        for args in (("status",), ("status", "--json"), ("status", "ID"), ("status", "ID", "--json")):
+            self.same(self.each(lambda s: here(s, cli(s.url, *[s.state()["jobs"][0]["id"] if a == "ID" else a
+                                                               for a in args], stderr=True))),
+                      f"lf-cli {' '.join(args)}")
         bad = ({"prompt": "x", "seconds": 4}, {"prompt": "x", "task": "x"}, {"prompt": "  "},
                {"prompt": "x", "first_frame": {"name": "f.png", "data": "!!!!"}})
         for body in bad:
@@ -3254,7 +3290,35 @@ class ModelChoiceOff(unittest.TestCase):
         # the form ignores fields it does not know, as before: a clip of sol-h3, its record as before
         jids = self.each(lambda s: s.generate(seed=2, resolution="768p", steps="8")[1]["id"])
         done = self.each(lambda s: s.wait([jids[s.root.name]])[0])
-        self.same({name: sorted(job) for name, job in done.items()}, "a clip whose form had other fields")
+        self.same({name: here(self.studios[name], job) for name, job in done.items()},
+                  "a clip whose form had other fields")
+        self.same(self.each(lambda s: here(s, s.state())), "/api/state with both clips")
+
+    def test_v051s_client(self):
+        """v0.5.1's lf-cli (from git) and this one print the same against a studio with the model choice off: a
+        generate that waits and saves the clip, status and the status of a clip (their usage lines differ: this one
+        lists the model's flags too)."""
+        old = release_client("v0.5.1", self.d / "v0.5.1-client")
+        if not old:
+            self.skipTest("v0.5.1 is not in this copy's git history")
+        s, out = self.now, self.d / "out"
+        clients = {"now": None, "v0.5.1": old}
+        s.wait([s.generate(seed=3)[1]["id"]])                                   # the models loaded for both
+
+        def each(*args):
+            ids = [j["id"] for j in s.state()["jobs"]]
+            return {name: normalized(cli(s.url, *args, client=client, stderr=True), s.root, s.url, out, ids=ids)
+                    for name, client in clients.items()}
+        made = {name: cli(s.url, "generate", "--prompt", "a test clip", "--seed", "4", "--wait", "--out",
+                          str(out / f"{name}.mp4"), client=client, stderr=True) for name, client in clients.items()}
+        self.assertEqual(made["now"][0], 0, made["now"])
+        ids = [j["id"] for j in s.state()["jobs"]]
+        self.same({name: normalized(json.dumps(answer).replace(f"{name}.mp4", "<file>"), s.root, s.url, out, ids=ids)
+                   for name, answer in made.items()}, "lf-cli generate --wait --out")
+        self.same(each("status"), "lf-cli status")
+        for job in s.state()["jobs"]:
+            self.same(each("status", job["id"]), "lf-cli status ID")
+            self.same(each("status", job["id"], "--json"), "lf-cli status ID --json")
 
     def test_model_named(self):
         s = self.now
@@ -4198,6 +4262,124 @@ class TurboSeam(unittest.TestCase):
         if not real.is_file():
             self.skipTest("jobs/h3turbo_job.py is not in this copy yet (the h3-turbo work)")
         self.check(real)
+
+
+def server_value(name, **names):
+    """The value of a module-level assignment of webui/server.py, evaluated from its source with `names`."""
+    source = (REPO_DIR / "webui" / "server.py").read_text()
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.Assign) and len(n.targets) == 1
+                and getattr(n.targets[0], "id", None) == name)
+    return eval(ast.get_source_segment(source, node.value), dict(names))    # noqa: S307 - the repo's own source
+
+
+class TurboEncodeSeam(TurboTest):
+    """Where the h3-turbo work's prompt encode (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, default bench/h3turbo_encode.py) plugs
+    in, once it is in this copy (skipped until then): it takes the arguments encode_prompt gives it (as the stand-in
+    logged them on a stub studio), refuses a prompt of keyframe lines alone with a line ENCODE_LINE reads that names
+    NO_TEXT_ONLY and takes that flag, and writes the files and keys the server reads (qwen/conditioning.pt,
+    encode.json image_tokens, qwen-text/prompt.txt and text-only.json dropped), here through its own encode() with a
+    stand-in of runtime.pipeline.Worker. Standard library: no Qwen, no GPU."""
+    helper = REPO_DIR / "bench" / "h3turbo_encode.py"
+
+    def setUp(self):
+        if not self.helper.is_file():
+            self.skipTest(f"{self.helper.relative_to(self.helper.parents[1])} is not in this copy yet (the h3-turbo "
+                          "work)")
+        super().setUp()
+
+    def load_helper(self):
+        spec = importlib.util.spec_from_file_location("h3turbo_encode_under_test", self.helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_prompt_encode(self):
+        prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second "
+                  "mark; Picture 2 aligns with the 5.00-second mark.\nA dancer shown in <Picture 1> turns slowly.")
+        made = [self.done(self.turbo(task="fl2va", prompt=prompt, resolution="768p", orientation="portrait",
+                                     files={"first_frame": [("a.png", png(24, 32))],
+                                            "last_frame": [("b.png", png(24, 32))]})),
+                self.done(self.turbo(seed=2))]
+        helper = self.load_helper()
+        encode_line = server_value("ENCODE_LINE", re=re)
+        no_text_only = server_value("NO_TEXT_ONLY")
+        environ = {"SOL_H3_SPARK_RUNTIME_ROOT": str(self.studio.runtime),
+                   "LFSTUDIO_PATHS": str(self.studio.root / "paths-{task}.json")}
+        for job in made:
+            with self.subTest(task=job["task"]):
+                argv = next(r["argv"] for r in self.runs("encodes.log") if job["case_id"] in r["argv"])
+                case = Path(argv[argv.index("--case") + 1]).with_name(job["case_id"] + "-seam")
+                argv[argv.index("--case") + 1] = str(case)              # the clip's own case has its files already
+                plan = helper.make_plan(helper.parse_args(argv), environ, helper.load_job_module())
+                self.assertEqual((plan["task"], plan["orientation"], plan["resolution"], plan["canvas_mode"],
+                                  plan["seed"], plan["case_id"], plan["prompt"]),
+                                 (job["task"], job["orientation"], job["model_opts"]["resolution"],
+                                  job["model_opts"]["qwen_canvas"], job["seed"], job["case_id"], job["prompt"]))
+                self.assertEqual(plan["keyframes"], ["first", "last"] if job["task"] == "fl2va" else [])
+                plan["prompt_tokens"] = "minimax"                       # runtime_side's, from the patch's runtime
+                case_spec = {"case_id": plan["case_id"], "prompt": plan["prompt"], "seed": plan["seed"],
+                             "task": plan["task"], **{f"{a}_frame": f for a, f in plan["frames"].items()}}
+                summary = helper.encode(plan, self.worker(plan), {}, {}, case_spec)
+                # what encode_prompt reads
+                self.assertTrue((case / "qwen" / "conditioning.pt").is_file())
+                written = json.loads((case / "encode.json").read_text())
+                self.assertEqual((written["image_tokens"], summary["image_tokens"]),
+                                 (job["model_opts"]["image_tokens"],) * 2)
+                if job["task"] == "fl2va":
+                    self.assertEqual((case / "qwen-text" / "prompt.txt").read_text(encoding="utf-8"),
+                                     "A dancer turns slowly.")
+                    dropped = json.loads((case / "qwen-text" / "text-only.json").read_text())["dropped"]
+                    self.assertIsInstance(dropped, list)
+                    self.assertIn("alignment line", dropped)
+                else:
+                    self.assertFalse((case / "qwen-text").exists())
+        # a prompt of the keyframe line alone: refused (exit 2) with a line the server reads, naming the flag that
+        # skips the text-only encode; with that flag it is planned
+        argv = next(r["argv"] for r in self.runs("encodes.log") if made[0]["case_id"] in r["argv"])
+        alone = self.dir / "alone.txt"
+        alone.write_text("For the target video, at 0.00 seconds into the target video, <Picture 1> is fully "
+                         "referenced.", encoding="utf-8")
+        argv[argv.index("--prompt-file") + 1] = str(alone)
+        argv[argv.index("--case") + 1] += "-alone"
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            code = helper.main(argv, environ)
+        self.assertEqual(code, 2)
+        m = encode_line.match(printed.getvalue().strip())
+        self.assertTrue(m and m.group(1) == "refused" and no_text_only in m.group(2), printed.getvalue())
+        plan = helper.make_plan(helper.parse_args(argv + [no_text_only]), environ, helper.load_job_module())
+        self.assertNotIn("text_only", plan)
+
+    @staticmethod
+    def worker(plan):
+        """A stand-in of runtime.pipeline.Worker for the helper's encode(): each call writes a conditioning and the
+        receipt the real worker writes, with the rows of its keyframes at the plan's canvas."""
+        width, height = plan["qwen_canvas"]
+
+        class Worker:
+            def __init__(self, name, root, paths, config):
+                Path(root).mkdir()
+
+            def call(self, case, output_root):
+                out = Path(output_root)
+                out.mkdir()
+                frames = [a for a in ("first", "last") if case.get(f"{a}_frame")]
+                text_tokens = len(case["prompt"].split()) + 10
+                rows = text_tokens + len(frames) * (plan["image_tokens"] + 2)
+                payload = f"stand-in {case['task']} {rows}".encode()
+                (out / "conditioning.pt").write_bytes(payload)
+                receipt = {"status": "PASS", "task": case["task"], "prompt": case["prompt"],
+                           "prompt_tokens": "minimax", "shape": [1, rows, 5120], "text_tokens": text_tokens,
+                           "payload_sha256": hashlib.sha256(payload).hexdigest(),
+                           "prepared_media": [{"type": "image", "anchor": a, "shape": [height, width, 3]}
+                                              for a in frames],
+                           "conditioning_path": str(out / "conditioning.pt"), "request_wall_s": 0.1}
+                (out / "conditioning.json").write_text(json.dumps(receipt))
+                return receipt
+
+            def close(self):
+                pass
+        return Worker
 
 if __name__ == "__main__":
     unittest.main()

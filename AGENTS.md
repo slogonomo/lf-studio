@@ -93,14 +93,17 @@ it), dies with the server (`--parent`), and fails, stops for memory (exit 3) or 
 hooks. The `Turbo*` classes in `tests/test_server.py` cover the registry in `/api/state` and the page, the refusals,
 a clip's run, files, record and names, the queue across models, the warm-ups, Cancel in each step, restart, Delete,
 memory, failures, the settings and the launcher's checks; `TurboSeam` checks the job's interface (the real job's too,
-once it is in the copy); `ModelChoiceOff` runs v0.5.1's server from git next to this one with the model choice off
-and compares what they answer. `tests/test_api.py` has the API records (`Model*`). The `Model*` classes in
-`tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V Turbo doesn't make yet greyed out
-with the reason (no field changes another; Generate is disabled and says why), the header, the times and Generate's
-label per model, the request, the choices kept, the card's model tag, its Upscale button and download name, Remix,
-a clip's progress and the status line, Cancel, and a clip of a model that is off now; `ModelChoiceOffPage` loads this
-page and v0.5.1's (from git) side by side with the model choice off and compares their pixels, texts, requests and
-kept choices after the same clicks; `MachineTexts` checks Sol-H3's times in the Model row per backend.
+once it is in the copy) and `TurboEncodeSeam` the real prompt encode's (skipped until it is in the copy: the arguments
+the server gives it, its refusal line, the files and keys the server reads); `ModelChoiceOff` runs v0.5.1's server
+from git next to this one with the model choice off and compares what they answer, value by value, and v0.5.1's
+`lf-cli` with this one; `ServerParts` compiles parts of the server (`stop_job`, `registry_problems`) from its source
+with stand-ins, for what a stub studio can't reach on cue. `tests/test_api.py` has the API records (`Model*`). The
+`Model*` classes in `tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V Turbo doesn't
+make yet greyed out with the reason (no field changes another; Generate is disabled and says why), the header, the times
+and Generate's label per model, the request, the choices kept, the card's model tag, its Upscale button and download
+name, Remix, a clip's progress and the status line, Cancel, and a clip of a model that is off now; `ModelChoiceOffPage`
+loads this page and v0.5.1's (from git) side by side with the model choice off and compares their pixels, texts,
+requests and kept choices after the same clicks; `MachineTexts` checks Sol-H3's times in the Model row per backend.
 `tests/ui_test.py` checks the Model row when a studio has one (`UiTestScript` runs it with a LightX2V Turbo clip).
 The client: `Models`, `ModelsRunning`, `ModelsOff` and `ModelsOldStudio` in `tests/test_cli.py` (`lf-cli models`,
 `generate --model` with the model's options and its files, every refusal before anything is sent, the shape warning
