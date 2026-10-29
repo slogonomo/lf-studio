@@ -51,7 +51,7 @@ index be0076a..b28f5e0 100644
          pipeline.finish()
          print(f"Mean E2E: {pipeline.report['mean_e2e_s']:.2f} s; results: {pipeline.root / 'results.json'}")
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/config.py b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
-index 03804f7..4a90ad2 100644
+index 03804f7..9e9b97f 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/config.py
 @@ -6,6 +6,11 @@ import os
@@ -66,7 +66,7 @@ index 03804f7..4a90ad2 100644
  PACKAGE = Path(__file__).resolve().parents[1]
  TASKS = ("t2va", "fl2va", "ref2va")
  REF_IMAGE_MATCH_CHOICES = ("stage1", "stage2")
-@@ -19,12 +24,144 @@ REQUIRED_PATHS = (
+@@ -19,12 +24,145 @@ REQUIRED_PATHS = (
  )
  
  
@@ -118,20 +118,21 @@ index 03804f7..4a90ad2 100644
 +    return mode
 +
 +
-+# lf-studio: the user's first frame in Stage 2 (runtime/stage2.py, fl2va clips with a first frame only). Stage 2
-+# starts every token at 9 % of the draft and 91 % noise under a fixed generic prompt and never sees the keyframe, so
-+# it repaints frame 0 too. "off" (default): as upstream Sol-H3-Spark. "pin": the keyframe, stretched to the output
-+# canvas and encoded by the LTX-2.5 video VAE's encoder, is held clean at latent frame 0 (strength 1), as NVIDIA's
-+# GB200 parent of this Stage 2 does (super_acceleration/stage2/official_compat_h3_refiner_diagnostic.py). "draft": the
-+# draft's own frame-0 latent is held instead (no encoder; a control for "pin"). Read here so a bad value fails when a
++# lf-studio: the user's first frame in Stage 2 (runtime/stage2.py, fl2va clips with a first frame only). Upstream's
++# Stage 2 starts every token at 9 % of the draft and 91 % noise under a fixed generic prompt and never sees the
++# keyframe, so it repaints frame 0 too. "pin" (the default): the keyframe, stretched to the output canvas and encoded
++# by the LTX-2.5 video VAE's encoder, is held clean at latent frame 0 (strength 1), as NVIDIA's GB200 parent of this
++# Stage 2 does (super_acceleration/stage2/official_compat_h3_refiner_diagnostic.py). "off": as upstream Sol-H3-Spark
++# (no encoder). "draft": the draft's own frame-0 latent is held instead (no encoder; a control for "pin"). t2va,
++# ref2va and fl2va clips without a first frame are unchanged in every mode. Read here so a bad value fails when a
 +# Pipeline is made, before any worker loads (and again in Stage 2).
 +STAGE2_KEYFRAME_MODES = ("off", "pin", "draft")
 +
 +
 +def stage2_keyframe_mode():
-+    """SOL_H3_STAGE2_KEYFRAME, default "off" (case-insensitive; empty = the default)."""
++    """SOL_H3_STAGE2_KEYFRAME, default "pin" (case-insensitive; empty = the default; "off" = as upstream)."""
 +    raw = os.environ.get("SOL_H3_STAGE2_KEYFRAME", "")
-+    mode = raw.strip().lower() or "off"
++    mode = raw.strip().lower() or "pin"
 +    if mode not in STAGE2_KEYFRAME_MODES:
 +        raise ValueError(f"SOL_H3_STAGE2_KEYFRAME must be one of {STAGE2_KEYFRAME_MODES}, not {raw!r}")
 +    return mode
@@ -2178,18 +2179,18 @@ index 7f691fa..6e9e81e 100644
      sparse.triton_block_sparse_attn_forward = counted_sparse
      original_mask = native._build_block_mask
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-index 8f1a36c..b8bee7b 100644
+index 8f1a36c..52b83e1 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2.py
-@@ -3,25 +3,100 @@
+@@ -3,25 +3,101 @@
  The module imports GPU frameworks only when Session is constructed. A request
  consumes one same-request normalized H3/PCM bundle and the exact offline generic
  post-connector AV cache. Original PCM is muxed into the final MP4.
 +
 +lf-studio: by default the refiner sees that PCM clean and fixed (SOL_H3_STAGE2_AUDIO, below) instead of a
-+re-noised copy that it regenerates and then discards. With SOL_H3_STAGE2_KEYFRAME=pin an fl2va request with a
-+first frame also reads that image: stretched to the output canvas, encoded by the LTX-2.5 VAE encoder and held
-+clean at latent frame 0, as NVIDIA's GB200 parent does (below).
++re-noised copy that it regenerates and then discards. With SOL_H3_STAGE2_KEYFRAME=pin, the default, an fl2va
++request with a first frame also reads that image: stretched to the output canvas, encoded by the LTX-2.5 VAE encoder
++and held clean at latent frame 0, as NVIDIA's GB200 parent does (below).
  """
  from __future__ import annotations
  
@@ -2245,15 +2246,16 @@ index 8f1a36c..b8bee7b 100644
 +# lf-studio: the user's first frame in Stage 2 (SOL_H3_STAGE2_KEYFRAME, runtime/config.stage2_keyframe_mode).
 +# Upstream Sol-H3-Spark transfers only the draft's latent: Stage 2 starts every token at 9 % of it and 91 % noise
 +# (sigma 0.909375) under a fixed generic prompt and never sees the keyframe, so it repaints frame 0 and the faces in
-+# it. "pin" does what NVIDIA's GB200 parent of this Stage 2 does (official_compat_h3_refiner_diagnostic.py
-+# encode_highres_first_frame; LTX-2's ti2vid_two_stages Stage 2 too): the keyframe, encoded by the LTX-2.5 VAE
-+# encoder, replaces latent frame 0 (its 1,008 tokens) with a denoise mask of 0, so those tokens are never noised and
-+# stay clean through all three updates (VideoConditionByLatentIndex, strength 1). Before encoding, the keyframe is
-+# stretched to the output canvas as H3 stretched it (LANCZOS, qwen_ops.media), because LTX's own loader would
-+# center-crop it instead. No token is added: the transformer's shapes, its compiled graphs and the 141 Sol calls
-+# stay. Every other token gets the same noise draw as without the pin. "draft" holds the draft's own frame-0 latent
-+# instead (no encoder), a control for "pin". Only fl2va requests with a first frame: t2va and ref2va have no
-+# keyframe, and a last frame alone has nothing at frame 0 (pinning a later frame takes new tokens in LTX-2).
++# it. "pin" (the default; "off" is upstream's route) does what NVIDIA's GB200 parent of this Stage 2 does
++# (official_compat_h3_refiner_diagnostic.py encode_highres_first_frame; LTX-2's ti2vid_two_stages Stage 2 too): the
++# keyframe, encoded by the LTX-2.5 VAE encoder, replaces latent frame 0 (its 1,008 tokens) with a denoise mask of 0,
++# so those tokens are never noised and stay clean through all three updates (VideoConditionByLatentIndex, strength 1).
++# Before encoding, the keyframe is stretched to the output canvas as H3 stretched it (LANCZOS, qwen_ops.media),
++# because LTX's own loader would center-crop it instead. No token is added: the transformer's shapes, its compiled
++# graphs and the 141 Sol calls stay. Every other token gets the same noise draw as without the pin. "draft" holds the
++# draft's own frame-0 latent instead (no encoder), a control for "pin". Only fl2va requests with a first frame: t2va
++# and ref2va have no keyframe, and a last frame alone has nothing at frame 0 (pinning a later frame takes new tokens
++# in LTX-2).
 +KEYFRAME_STRENGTH = 1.0
 +
 +
@@ -2284,7 +2286,7 @@ index 8f1a36c..b8bee7b 100644
  
  REQUIRED_PATHS = ("transformer", "refiner_lora", "output_video_vae", "audio_vae",
                    "adapter_dir", "h3_upscaler_source", "h3_upscaler_checkpoint", "prompt_cache")
-@@ -33,15 +108,51 @@ def _refiner_class(base, compat, session):
+@@ -33,15 +109,51 @@ def _refiner_class(base, compat, session):
      class SparkRefiner(compat.OfficialCompatRefiner):
          def __init__(self):
              construct(self, session.paths, torch=torch, dist=session.dist,
@@ -2341,7 +2343,7 @@ index 8f1a36c..b8bee7b 100644
  
          def prompt_stats(self, prompt):
              return session.prompt_cache.stats(prompt)
-@@ -50,8 +161,14 @@ def _refiner_class(base, compat, session):
+@@ -50,8 +162,14 @@ def _refiner_class(base, compat, session):
              return session.prompt_cache.contexts(prompt, self.device)
  
          def prepare_input(self, source_path):
@@ -2357,7 +2359,7 @@ index 8f1a36c..b8bee7b 100644
                  "preprocess": "normalized_h3_x2_then_adapter_crop_t16",
                  "latent_upsampler": False}
  
-@@ -63,17 +180,18 @@ def _refiner_class(base, compat, session):
+@@ -63,17 +181,18 @@ def _refiner_class(base, compat, session):
                      raise RuntimeError(f"H3 bridge shape/dtype/layout contract failed: {shape}")
                  return value
  
@@ -2383,7 +2385,7 @@ index 8f1a36c..b8bee7b 100644
  
          def encode_source_audio(self, source_path):
              from ltx_core.model.audio_vae import encode_audio
-@@ -107,14 +225,17 @@ def _refiner_class(base, compat, session):
+@@ -107,14 +226,17 @@ def _refiner_class(base, compat, session):
              session.writer_chunk_receipt = {"chunk_frames": 16, "source_chunks": 0,
                  "emitted_chunks": 0, "frames": 0, "source_layouts": [], "complete": False}
              chunks = tracked_writer_chunks(chunks, session.writer_chunk_receipt,
@@ -2403,7 +2405,7 @@ index 8f1a36c..b8bee7b 100644
                      crf=19, preset="veryfast", thread_count=8)
                  if not temporary.is_file() or temporary.stat().st_size == 0:
                      raise RuntimeError("video encoder produced no output")
-@@ -133,6 +254,92 @@ def _refiner_class(base, compat, session):
+@@ -133,6 +255,92 @@ def _refiner_class(base, compat, session):
      return SparkRefiner
  
  
@@ -2496,7 +2498,7 @@ index 8f1a36c..b8bee7b 100644
  class Session:
      """Construct once, prepare/run sequential requests, then close the worker."""
  
-@@ -143,9 +350,18 @@ class Session:
+@@ -143,9 +351,18 @@ class Session:
          self.closed = self.failed = False
          self.prepared = self.current_capture = self.payload = None
          self.completed_requests = 0
@@ -2515,7 +2517,7 @@ index 8f1a36c..b8bee7b 100644
          config = config.get("stage2", config)
          self.compile_enabled = config.get("compile", True)
          self.fixed_prompt = config.get("fixed_prompt", FIXED_PROMPT)
-@@ -159,11 +375,22 @@ class Session:
+@@ -159,11 +376,22 @@ class Session:
              if not path.is_file() or not path.stat().st_size:
                  raise FileNotFoundError(path)
          self.work_dir = Path(work_dir).resolve()
@@ -2539,7 +2541,7 @@ index 8f1a36c..b8bee7b 100644
          try:
              self._construct()
          except BaseException:
-@@ -185,8 +412,14 @@ class Session:
+@@ -185,8 +413,14 @@ class Session:
              self._owns_dist = True
          if dist.get_world_size() != 1:
              raise RuntimeError("Spark requires one distributed rank")
@@ -2555,7 +2557,7 @@ index 8f1a36c..b8bee7b 100644
          with torch.inference_mode():
              self.models = _refiner_class(base, compat, self)()
          self.conv_layout_receipt = self.stack.enter_context(installed_direct_upsample_nhwc(torch_module=torch))
-@@ -195,6 +428,7 @@ class Session:
+@@ -195,6 +429,7 @@ class Session:
              "session_started_monotonic_ns": self.started_ns, "session_ready_monotonic_ns": self.ready_ns,
              "session_initialization_s": (self.ready_ns - self.started_ns) / 1e9,
              "refiner_recipe": {"sigmas": list(SIGMAS), "updates": 3, "lora_strength": 0.8,
@@ -2563,7 +2565,7 @@ index 8f1a36c..b8bee7b 100644
                                 "joint_audio_video": True, "expected_sol_backend": "triton"},
              "spatial_route": self.models.h3_spatial_route, "conv_actual_tiling": asdict(self.models.tiling_config),
              "actual_parameter_dtypes": self.models.parameter_dtypes,
-@@ -202,8 +436,62 @@ class Session:
+@@ -202,8 +437,62 @@ class Session:
              "fixed_prompt_cache": self.prompt_cache.receipt(), "residency": self.models.residency,
              "all2all_copy_elision": self.models.all2all_receipt,
              "denoiser_dummy_warmup": False, "latent_only_transfer": True}
@@ -2626,7 +2628,7 @@ index 8f1a36c..b8bee7b 100644
      def prepare(self, request_id, output_root):
          started_ns = time.monotonic_ns()
          if self.closed or self.failed or self.prepared is not None or self.current_capture is not None:
-@@ -225,33 +513,49 @@ class Session:
+@@ -225,33 +514,49 @@ class Session:
          if (self.closed or self.failed or self.current_capture is not None or self.prepared is None
                  or self.prepared["request_id"] != request_id or self.prepared["output_root"] != str(root)):
              raise RuntimeError("run requires the matching completed prepare identity and output root")
@@ -2685,7 +2687,7 @@ index 8f1a36c..b8bee7b 100644
              finished_ns = models.final_mp4_complete_monotonic_ns
              self.final_mp4_complete_monotonic_ns = finished_ns
              receipt.update(status="PASS", result=result, output=str(output), output_sha256=sha256(output),
-@@ -265,18 +569,59 @@ class Session:
+@@ -265,18 +570,59 @@ class Session:
              write_new(root / "final_file_manifest.json", {key: receipt[key] for key in (
                  "status", "request_id", "case_id", "output", "output_sha256", "output_bytes",
                  "stage2_started_monotonic_ns", "final_mp4_complete_monotonic_ns", "stage2_request_s")})
@@ -2770,15 +2772,15 @@ index 4e6e910..fdccb3f 100644
      output = output * std + mean
      return output.to(dtype=normalized.dtype)
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
-index dafe5ee..9c4d8d5 100644
+index dafe5ee..e7bedb3 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
 @@ -3,10 +3,16 @@
  Builders and joint AV sampling are the public Super Acceleration/LTX classes.
  This factory avoids the older diagnostic constructor's unused image, text,
  pixel-input VAE, LTX upsampler and preview-decoder models.
-+lf-studio: the image encoder is built for fl2va sessions with SOL_H3_STAGE2_KEYFRAME=pin
-+(build_image_encoder), as the older diagnostic constructor builds it.
++lf-studio: the image encoder is built for fl2va sessions with SOL_H3_STAGE2_KEYFRAME=pin, the
++default (build_image_encoder), as the older diagnostic constructor builds it.
  """
  from __future__ import annotations
  
@@ -3112,10 +3114,10 @@ index 0000000..247cc7f
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-index 6c20301..9d4db26 100644
+index 6c20301..4b6da5b 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_pipeline.py
-@@ -3,13 +3,16 @@
+@@ -3,13 +3,17 @@
  import json
  import contextlib
  import io
@@ -3129,11 +3131,12 @@ index 6c20301..9d4db26 100644
 -from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS
 +# Modified by lf-studio: deliver-first, background Qwen, new Pipeline arguments, the compile-cache location, the
 +# Stage-2 audio setting, the prompt-token setting and the Stage-2 keyframe setting.
-+from runtime.config import read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root
++from runtime.config import (read_cases, normalize_case, load_recipe, load_paths, REQUIRED_PATHS, compile_cache_root,
++                            stage2_keyframe_mode)
  from runtime.pipeline import Pipeline, await_json, worker_environment
  
  
-@@ -59,31 +62,271 @@ class FakeWorker:
+@@ -59,31 +63,273 @@ class FakeWorker:
          self.events.append(("close", self.name))
  
  
@@ -3303,7 +3306,7 @@ index 6c20301..9d4db26 100644
 +    def test_bad_stage2_keyframe_setting_fails_before_any_worker_and_a_good_one_reaches_stage2(self):
 +        """lf-studio: a bad SOL_H3_STAGE2_KEYFRAME fails when the Pipeline is made, not when Stage 2 has loaded; the
 +        setting reaches the Stage-2 worker through its environment, which Stage 2 reads before it builds its
-+        models."""
++        models. Empty (or unset) is the default, pin."""
 +        made = []
 +        def factory(*args, **kwargs):
 +            made.append(args)
@@ -3314,12 +3317,14 @@ index 6c20301..9d4db26 100644
 +                Pipeline({}, Path(directory) / "run", task="fl2va", worker_factory=factory)
 +            self.assertFalse((Path(directory) / "run").exists())
 +            self.assertEqual(made, [])
-+            for name, value in (("pin", "PIN"), ("draft", "draft"), ("off", "off"), ("default", "")):
++            for name, value, mode in (("pin", "PIN", "pin"), ("draft", "draft", "draft"), ("off", "off", "off"),
++                                      ("default", "", "pin")):
 +                os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
 +                pipeline = Pipeline({}, Path(directory) / name, task="fl2va", worker_factory=factory)
 +                self.assertEqual(pipeline.config["stage1"]["task"], "fl2va")     # what Stage 2 takes its task from
 +                os.environ["SOL_H3_COMPILE_CACHE"] = str(Path(directory) / "cache")
 +                self.assertEqual(worker_environment("stage2", {})["SOL_H3_STAGE2_KEYFRAME"], value)
++                self.assertEqual(stage2_keyframe_mode(), mode)                  # what Stage 2 reads from it
 +
 +    def test_bad_dynamic_text_length_setting_fails_before_any_worker(self):
 +        """lf-studio: a bad SOL_H3_DYNAMIC_TEXT_LENGTH fails when the Pipeline is made, not when Stage 1 installs
@@ -3417,7 +3422,7 @@ index 6c20301..9d4db26 100644
      def test_does_not_overwrite_run(self):
          with tempfile.TemporaryDirectory() as directory:
              with self.assertRaises(FileExistsError):
-@@ -196,7 +439,7 @@ class PipelineTests(unittest.TestCase):
+@@ -196,7 +442,7 @@ class PipelineTests(unittest.TestCase):
                                  ref_image_match="stage2", ref_stage1_attn="sol", worker_factory=FakeWorker)
              try:
                  pipeline.start(case)
@@ -3426,7 +3431,7 @@ index 6c20301..9d4db26 100644
                      self.assertEqual(worker.config, pipeline.config)
                      self.assertEqual(worker.config["stage1"]["reference_image_resize"]["pixel_budget"], 1344 * 768)
                      self.assertEqual(worker.config["stage1"]["attention"], "FA4_Sol_text_audio_sink")
-@@ -225,7 +468,8 @@ class PipelineTests(unittest.TestCase):
+@@ -225,7 +471,8 @@ class PipelineTests(unittest.TestCase):
                      infer.main(["--paths", "unused.json", "--output-dir", str(root / "run"), *source,
                                  "--ref-image-match", "stage2", "--ref-stage1-attn", "sol"])
                      factory.assert_called_once_with({}, root / "run", task="ref2va",
@@ -3436,7 +3441,7 @@ index 6c20301..9d4db26 100644
              for flag, value in (("--ref-image-match", "stage1"), ("--ref-stage1-attn", "dense")):
                  with mock.patch.object(infer, "load_paths") as paths, \
                       mock.patch.object(infer, "Pipeline") as factory, contextlib.redirect_stderr(io.StringIO()):
-@@ -260,11 +504,35 @@ class PipelineTests(unittest.TestCase):
+@@ -260,11 +507,35 @@ class PipelineTests(unittest.TestCase):
  
      def test_stage1_environment_keeps_fa4_isolated(self):
          paths = {"fa4_root": "/deps/fa4", "fastvideo_root": "/deps/FastVideo"}
@@ -5536,7 +5541,7 @@ index 052502f..8df301c 100644
          missing = copy.deepcopy(second)
          missing["layer_calls"][13] -= 1
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py b/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
-index e233052..3708e6f 100644
+index e233052..8b290d7 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
 @@ -1,12 +1,22 @@
@@ -5562,7 +5567,7 @@ index e233052..3708e6f 100644
  from unittest.mock import patch
  
  sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-@@ -146,5 +156,826 @@ class Stage2ContractTests(unittest.TestCase):
+@@ -146,5 +156,897 @@ class Stage2ContractTests(unittest.TestCase):
          self.assertEqual(model.encode_highres_first_frame(None), [])
  
  
@@ -5885,9 +5890,10 @@ index e233052..3708e6f 100644
 +
 +    # ---- the setting and which requests it pins --------------------------------------------------------------
 +    def test_setting(self):
-+        self.assertEqual(stage2.stage2_keyframe_mode(), "off")
-+        for value, mode in (("", "off"), (" ", "off"), ("pin", "pin"), (" PIN ", "pin"), ("Draft", "draft"),
-+                            ("off", "off")):
++        """pin by default (unset or empty); off and draft when set, in any case; another value fails by name."""
++        self.assertEqual(stage2.stage2_keyframe_mode(), "pin")
++        for value, mode in (("", "pin"), (" ", "pin"), ("pin", "pin"), (" PIN ", "pin"), ("Draft", "draft"),
++                            ("off", "off"), (" OFF ", "off")):
 +            os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
 +            self.assertEqual(stage2.stage2_keyframe_mode(), mode)
 +        os.environ["SOL_H3_STAGE2_KEYFRAME"] = "on"
@@ -6145,6 +6151,35 @@ index e233052..3708e6f 100644
 +            session.run(capture, self.temp / "out-changed", "changed")
 +        self.assertNotIn("encode", [call[0] for call in session.calls])
 +
++    def test_by_default_only_a_keyframes_clips_first_frame_is_pinned(self):
++        """With the setting unset (the default, pin): an fl2va clip with a first frame is pinned, with or without a
++        last frame; a last frame alone, t2va and ref2va run as upstream (upstream's record, no encode, no
++        conditioning, no keyframe file). Set to off, a first frame is not pinned either."""
++        first = keyframe_image(self.temp / "first.png", (300, 400))
++        last = keyframe_image(self.temp / "last.png", (300, 400))
++        cases = (("fl2va", dict(first=first), None, "pin"), ("fl2va", dict(first=first, last=last), None, "pin"),
++                 ("fl2va", dict(last=last), None, "off"), ("t2va", {}, None, "off"), ("ref2va", {}, None, "off"),
++                 ("fl2va", dict(first=first), "off", "off"))
++        for i, (task, frames, value, applied) in enumerate(cases):
++            with self.subTest(task=task, frames=sorted(frames), setting=value):
++                if value is None:
++                    os.environ.pop("SOL_H3_STAGE2_KEYFRAME", None)
++                else:
++                    os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
++                session = self.session(stage2.stage2_keyframe_mode(), task=task)
++                receipt, root = self.run_request(session, self.capture(f"default-{i}", task=task, **frames))
++                pinned = applied == "pin"
++                self.assertEqual((receipt["stage2_keyframe"], receipt["stage2_keyframe_setting"]),
++                                 (applied, value or "pin"))
++                self.assertEqual(len([call for call in session.calls if call[0] == "encode"]), int(pinned))
++                self.assertEqual(len(self.states_call(session.calls)[3]), int(pinned))
++                self.assertEqual(receipt["result"]["spatial_route"]["actual_calls"]["input_video_vae"], int(pinned))
++                self.assertEqual(len(list(root.glob("keyframe_first_*.png"))), int(pinned))
++                record = next(call[1] for call in session.calls if call[0] == "record")
++                self.assertEqual(set(record), self.TODAY | ({"_keyframe_png"} if pinned else set()))
++                if not pinned:
++                    self.assertIsNone(receipt["result"]["highres_first_frame"])
++
 +    def test_the_pin_contract_and_the_call_count_are_checked(self):
 +        session = self.session("pin")
 +        model = session.models
@@ -6203,6 +6238,47 @@ index e233052..3708e6f 100644
 +                                 ("build", "cuda:0", "bf16"), "eval", ("requires_grad", False)])
 +        self.assertEqual(models_.image_conditioning_crf, 18)
 +        self.assertEqual(models_.residency["image_encoder"], {"name": "image_encoder", "type": "Encoder"})
++
++    def made_session(self, task):
++        """A Session made by its own __init__, which reads the setting and takes the task from the recipe, with
++        stand-in weight files and no models: the session and the image encoder its refiner asks construct() for."""
++        from runtime.config import load_recipe
++        files = Path(tempfile.mkdtemp(prefix=f"weights-{task}-", dir=self.temp))
++        (files / "adapter").mkdir()
++        paths = {"ltx_root": str(files), "adapter_dir": str(files / "adapter")}
++        for key in stage2.REQUIRED_PATHS:
++            if key != "adapter_dir":
++                (files / key).write_text("stand-in")
++                paths[key] = str(files / key)
++        for name in ("config.json", "model.safetensors"):
++            (files / "adapter" / name).write_text("stand-in")
++        seen = {}
++
++        def construct(session):                   # Session._construct without torch: the refiner's construct() call
++            session.torch, session.dist = RUN_TORCH, None
++            refiner = stage2._refiner_class("base", SimpleNamespace(OfficialCompatRefiner=object), session)
++            with mock.patch.object(stage2, "construct", lambda models_, paths_, **kwargs: seen.update(kwargs)):
++                refiner()
++        os.environ.update(SOL_H3_COMPILE_CACHE=str(self.temp / "cache"), SPARK_AUTOTUNE_CACHE_FIX="0")
++        with mock.patch.object(stage2.Session, "_construct", construct), \
++             mock.patch("runtime.fastload.install", lambda *modules: False):
++            session = stage2.Session(paths, str(files / "work"), load_recipe(task))
++        return session, seen["image_encoder"]
++
++    def test_by_default_keyframes_sessions_build_the_encoder_and_no_other_session_does(self):
++        """With the setting unset or empty (the default, pin), a Session made for fl2va builds the image encoder;
++        t2va and ref2va sessions build none. off and draft build none in fl2va either."""
++        for value, task, mode, wanted in ((None, "fl2va", "pin", True), (None, "t2va", "pin", False),
++                                          (None, "ref2va", "pin", False), ("", "fl2va", "pin", True),
++                                          ("", "t2va", "pin", False), ("Off", "fl2va", "off", False),
++                                          ("draft", "fl2va", "draft", False)):
++            with self.subTest(setting=value, task=task):
++                if value is None:
++                    os.environ.pop("SOL_H3_STAGE2_KEYFRAME", None)
++                else:
++                    os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
++                session, image_encoder = self.made_session(task)
++                self.assertEqual((session.stage2_keyframe, session.task, image_encoder), (mode, task, wanted))
 +
 +    def test_which_sessions_build_the_encoder_and_what_their_receipt_says(self):
 +        built = []

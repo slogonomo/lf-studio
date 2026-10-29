@@ -583,7 +583,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("nothing to do", out["05-python.sh"][1])
         self.assertIn(f"sol-engine @ {base}", out["10-sana.sh"][1])
         self.assertIn("patches/lf-studio.patch", out["10-sana.sh"][1])
-        self.assertIn("154 CPU tests", out["10-sana.sh"][1])
+        self.assertIn("156 CPU tests", out["10-sana.sh"][1])
         self.assertIn("python3.12 -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-Spark &&", out["20-weights.sh"][1])
         self.assertIn("--include-offline", out["20-weights.sh"][1])

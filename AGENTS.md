@@ -111,7 +111,7 @@ package it also checks the files the job pins and the entries it was written aga
 tests (the merger, the lean block forward against a stock-style block, the tensor checks, the column crop) run where
 torch is importable (CPU is enough) and are skipped otherwise.
 
-The patch has its own 154 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
+The patch has its own 156 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 The RTX 5090 patch has 201 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).
 
 On real hardware: the pipeline needs nearly the whole DGX Spark (~110 GiB free), so run one GPU app at a time. A second
