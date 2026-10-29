@@ -30,8 +30,8 @@ What this wrapper changes, and why:
   (the receipt counts the files and the fallbacks). Measured with the bench wrapper (3 steps at 768p from a clip's
   Stage-1 latent, a route of the bench's that the job does not take): loaded in 21 s with the 312 LoRA weights merged
   in 2.8 s, the native and refined latents bit-identical to a standard load's, ~1.9 GB of anonymous memory in the
-  process, 40.0 GiB MemAvailable after the load. "standard" is NVIDIA's own
-  loading, the fallback (~7.5 min). The latent upscaler's checkpoint (0.7 GB) loads through NVIDIA's node either way.
+  process, 40.0 GiB MemAvailable after the load; in this job, below. "standard" is NVIDIA's own loading, the fallback
+  (~7.5 min). The latent upscaler's checkpoint (0.7 GB) loads through NVIDIA's node either way.
 - The text: the clip's own prompt conditioning (qwen/conditioning.pt; t2va: prompt_embeds [1, L, 5120] bf16, every
   text_token_tag 1) instead of loading the 32B text encoder (66.7 GB). It is the same layer-50 hidden state, from
   LF Studio's NVFP4 encoder: close to NVIDIA's BF16 one, not bit-identical.
@@ -66,15 +66,16 @@ The input: the clip's MP4 (stage2/refined_*.mp4), through NVIDIA's encode_video 
 and ref2va need a text-only encode of the prompt (their conditioning interleaves the pictures), the other lengths
 (3 to 15 s) changes to NVIDIA's fixed length: follow-ups.
 
-Measured on a DGX Spark (GB10), one 5 s clip, standard forward and VAE, cuDNN attention. This job, run by a staging
-studio (2K, balanced: 2 steps from 0.7, the clip's audio, the standard load): encode_video 185 s, load
-455 s, steps of 379 and 380 s, decode 181 s, MP4 17 s, 1620.7 s from the request to the MP4; peak allocated 91.08
-GiB, lowest MemAvailable 18.32 GiB (34.13 GiB during the load), 4.91 GiB allocated before the decode. The bench
-wrapper it is derived from, standard load: load 445-539 s; per refine step 144 s at 1080p and 378 s at 2K; decode
-104 / 180 s; MP4 8 / 16 s; peak allocated 81 / 91 GiB; lowest MemAvailable 28 / 15 GiB. 4K, with the lean blocks
-(and a load through device_map): steps of 1687 and 1701 s, decode 399 s, peak allocated 94.5 GiB, lowest
-MemAvailable 13.8 GiB. The bench with the fast load: above (768p). Not run on the GPU yet: this job with the fast
-load (its default), its 4K path and 9:16 clips (the same number of tokens as 16:9 at each resolution).
+Measured on a DGX Spark (GB10), 2026-10-28: this job run by a staging studio with nothing else loaded, 5 s clips,
+balanced (2 steps from 0.7), the clip's audio, standard forward and VAE, cuDNN attention, one run each. A 16:9 clip
+with the fast load, 1080p / 2K / 4K: encode_video 131 / 129 / 133 s, load 21.5 / 21.6 / 21.7 s (the LoRA merge 2.8 s
+of it), steps of 151+149 / 379+380 / 1684+1688 s, decode 108 / 182 / 396 s, MP4 3.5 / 15 / 12.7 s; 574.2 / 1122.6 /
+3958.1 s from the job's start to the MP4; peak allocated 81.29 / 91.08 / 94.46 GiB, lowest MemAvailable 27.4 / 15.7
+/ 11.1 GiB. At 2K the video is the same, bit for bit, as with the standard load (the same clip and seed), which took
+1620.7 s: encode_video 185 s, load 455 s (the merge 74 s of it), the refine and decode as above. A 9:16 clip with the
+fast load at 1080p: steps of 143+144 s, 553.9 s, peak 81.26 GiB, as 16:9 (the same number of tokens); at 2K it ran
+too, beside other work on the machine (not a clean measurement); at 4K not yet. The bench wrapper it is derived from:
+docs/PERFORMANCE.md.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
 cancelled; the clip's orientation (from its MP4), times per stage, the latent grids the upscaler ran to, steps, sigmas,
