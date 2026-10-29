@@ -99,6 +99,32 @@ timings, and a Stage-2 replay bench with bit-exact and picture checks
 **Tests** (`tests/`): the server and the API clients end to end against a GPU-free stub of the pipeline, and the
 page in a browser; see [AGENTS.md](AGENTS.md).
 
+## Models
+
+Every clip is made with **Sol-H3**, NVIDIA's two-stage pipeline above, unless you pick another model. Off by default
+and on the DGX Spark only, `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo` and the optional install step
+`install/66-h3turbo.sh` add an experimental second model, **LightX2V Turbo**: the full MiniMax-H3 in one stage with
+LightX2V's [turbo LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo), 4 steps. It keeps the look of a keyframe:
+in a research probe on one DGX Spark (11 Keyframes clips of 5 s), frame 0 matched the first frame at 30-36 dB PSNR
+(compared at 384p), Sol-H3's clips of the same prompts and frames at 18-23 dB. The page then gets a Model row at the
+top of the prompt card, and agents and scripts name the model (`lf-cli generate --model lightx2v-turbo`, the MCP tool
+`generate`); `lf-cli models` and the MCP tool `models` list what each model makes.
+
+- **What it makes, for now:** Text and Keyframes (a first frame, or a first and a last frame), 5 s, 16:9 or 9:16, at
+  576p (1024×576, the default) or 768p (1344×768). Reference, a last frame alone and 6-15 s show greyed out, with the
+  reason. The aim is everything Sol-H3 makes; what each model makes is a table in the studio, so offering more is a
+  change of that table once a GPU run has validated it.
+- **It is slower.** Not measured in the studio yet. In the probe, with the model already loaded, generating a 5 s
+  clip took 160 s at 576p and 320 s at 768p; the studio adds the prompt encode and the model's load to each clip (its
+  estimates until it has measured one: about 3:20 and 6:00). A clip closes the Sol-H3 models first when they are
+  loaded (about 40 s), and the next Sol-H3 clip loads them again.
+- **Not yet:** upscaling its clips, keeping its model loaded between clips, other lengths and Reference.
+
+With the setting off the studio is as it was. Setup:
+[docs/INSTALL.md](docs/INSTALL.md#experimental-lightx2v-turbo); the API:
+[docs/API.md](docs/API.md#models-experimental-lightx2v-turbo); problems:
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#lightx2v-turbo-experimental).
+
 ## Experimental: Upscale
 
 Off by default, DGX Spark only. With `LFSTUDIO_UPSCALE=1` and the optional install step `install/65-regen2k.sh`, a
@@ -218,7 +244,7 @@ own license; read it before you download or use the model or its outputs:
 |---|---|---|
 | [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) | draft model | [MiniMax H3 Community License Agreement](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE). It does not cover the EU, the UK, South Korea or the USA (its §I.5 and §V.4); MiniMax links an [application form](https://platform.minimax.io/h3-license) for a license there. |
 | [FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA](https://huggingface.co/FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA) | 4-step draft LoRA (t2va, fl2va) | see the model card; NVIDIA's notices list it under the MiniMax-H3 license |
-| [lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo) | 4-step draft LoRA (ref2va) | the card declares Apache-2.0; the MiniMax-H3 base model keeps its own terms |
+| [lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo) | 4-step draft LoRA (ref2va); the experimental LightX2V Turbo's fl2v 4-step v1.3 and 8-step v1.1 768p LoRAs (`install/66-h3turbo.sh`) | the card declares Apache-2.0; the MiniMax-H3 base model keeps its own terms |
 | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) | NVFP4 prompt encoder file | see the model card; NVIDIA's notices list it under the MiniMax-H3 license |
 | [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) | refiner, LoRA, VAEs, offline prompt-cache weights | gated; LTX-2.x Community License Agreement |
 | [LBH-123-AI/Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) ([source](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler)) | H3 ×2 latent upscaler | weights: the model card states Apache-2.0 (in its text at NVIDIA's pinned revision 13ccf95, and in its metadata since 2026-09-17). Source: MIT since 2026-09-17 (commit 40316cf); NVIDIA's pinned source revision d7c01b9 has no license file. NVIDIA's notices say no license is declared. Not redistributed here or by NVIDIA. |
@@ -236,6 +262,10 @@ lists the pinned revisions and terms.
   the runtime and the install flow this repo builds on are theirs.
 - Built on MiniMax-H3, FastVideo/FastH3 (Hao AI Lab), LTX-2.5 (Lightricks), Sol-Attn, ComfyUI, LightX2V, the
   LBH-123-AI H3 latent upscaler and the Efficient-Large-Model H3-to-LTX adapter.
+- The experimental LightX2V Turbo model runs **LightX2V's turbo LoRA for MiniMax-H3**
+  ([lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo),
+  [code](https://github.com/ModelTC/Minimax-H3-Turbo), by ModelTC's LightX2V team) on the full MiniMax-H3, with the
+  modular MiniMax-H3 pipeline of Diffusers (Hugging Face).
 - The experimental Upscale runs **Open-H3-Regenerate-2K** by NVIDIA Research
   ([project page](https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/),
   [code](https://github.com/NVlabs/Sana/tree/sol-engine/models/Open-H3-Regenerate-2K)), with the SoL-Refiner

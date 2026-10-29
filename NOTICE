@@ -46,6 +46,10 @@ with that page:
   Open-H3-Regenerate-2K: High-Resolution Video Refinement with Few-Step Diffusion. Sensen Gao, Haozhe Liu,
   Yitong Li, Haopeng Li, Tian Ye, Jia-Wang Bian, Song Han, Enze Xie. Project page, 2026.
 
+LightX2V Turbo, the experimental second model, runs LightX2V's turbo LoRA for MiniMax-H3 by ModelTC
+(https://huggingface.co/lightx2v/Minimax-h3-Turbo, https://github.com/ModelTC/Minimax-H3-Turbo; not included):
+install/66-h3turbo.sh fetches the files at a pinned revision.
+
 Not included here, obtained separately by the user, each under its own terms:
 
 - Model weights: MiniMaxAI/MiniMax-H3, FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA,

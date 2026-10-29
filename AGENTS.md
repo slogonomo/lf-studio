@@ -10,7 +10,10 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   server reads it on every request, so edits show up on reload.
 - `bin/lf-cli`: the client for agents and scripts, a CLI and an MCP server (`lf-cli mcp`) in one file. People copy
   it to other machines, so it stays standard-library only, Python 3.9 syntax, and reads no other file of this repo.
-  `docs/API.md` documents it and the HTTP API.
+  `docs/API.md` documents it and the HTTP API. It knows one model, `sol-h3`, the default: everything else about the
+  models (which there are, what each makes, their options and sizes) it reads from the studio's table (`/api/state`
+  `models`) before a generate that names another model or an option, so a model added to the studio needs no client
+  change (`--model`, `--option NAME=VALUE`, the MCP `model` and `options` have no enum).
 - `upscale/regen2k_job.py`: the experimental Upscale's GPU job, one upscale per process, run in its own env with
   NVIDIA's Open-H3-Regenerate-2K (its docstring says what is NVIDIA's and what it changes). Standard library outside its
   torch functions, so the server and the tests import it without torch. `upscale/fastload.py`, its loader, is a copy of
@@ -19,7 +22,11 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   `LFSTUDIO_UPSCALE=1`), and reads the `LFSTUDIO_UPSCALE_*` settings with its `studio_settings`, as `bin/lf-studio
   --check` does. The page's Upscale button and popover, `lf-cli upscale` and the MCP tool `upscale` use the endpoint;
   `install/65-regen2k.sh` (optional) builds its environment from the hashed lock `install/freeze/regen2k-lock.txt` and
-  fetches its weights (`install/regen2k_weights.py`).
+  fetches its weights (`install/regen2k_weights.py`); `--env-only` builds the environment alone.
+- `install/66-h3turbo.sh` (optional) sets up the experimental LightX2V Turbo model: it checks the base model (refusing
+  one without the VAE's weights), uses the Upscale's environment (or runs `65-regen2k.sh --env-only`; it never touches
+  a venv itself), fetches LightX2V's turbo LoRA files at a pinned revision (`install/h3turbo_weights.py`, standard
+  library, pinned sizes and SHA-256, no token) and runs the job's `--check-install`.
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
@@ -95,6 +102,12 @@ a clip's progress and the status line, Cancel, and a clip of a model that is off
 page and v0.5.1's (from git) side by side with the model choice off and compares their pixels, texts, requests and
 kept choices after the same clicks; `MachineTexts` checks Sol-H3's times in the Model row per backend.
 `tests/ui_test.py` checks the Model row when a studio has one (`UiTestScript` runs it with a LightX2V Turbo clip).
+The client: `Models`, `ModelsRunning`, `ModelsOff` and `ModelsOldStudio` in `tests/test_cli.py` (`lf-cli models`,
+`generate --model` with the model's options and its files, every refusal before anything is sent, the shape warning
+at the model's size, status and cancel while a clip runs, a studio with the model choice off, an older studio and one
+that spark-switchboard has stopped: fake servers), and `Models` and `ModelsOff` in `tests/test_mcp.py` (the `models`
+tool, `generate` with a model, the repeat key with the model and its options, the refusals; `FakeStudio` has the
+stopped studio).
 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
@@ -107,7 +120,11 @@ the GCC 14 toolchain kept on `FORCE=1`, the adoption of a venv whose fake `pip f
 the dated prompt-cache backup. Add a test there for every backend change. It also covers `install/65-regen2k.sh` (its
 dry run, and runs with a fake uv: a failed step stops it and leaves the venv unmarked, #74) and
 `install/regen2k_weights.py` (with a stand-in `huggingface_hub` and a fake Hugging Face for the range reads, which
-must never send a token, also through a redirect).
+must never send a token, also through a redirect), and `install/66-h3turbo.sh` (`InstallH3Turbo`: its dry run, the
+base model without VAE weights refused, the Upscale's environment used as it is, built by `65-regen2k.sh --env-only`
+with a fake uv, or one of your own; a failed step stops it) and `install/h3turbo_weights.py` (`H3TurboWeights`: the
+pinned files, kept, resumed by Range or downloaded and checked, from a fake Hugging Face that redirects to another
+host name, with no token ever sent). None of them downloads anything.
 
 `tests/test_old_names.py` covers the names up to 0.4 that work until 0.6: the old setting names in the environment
 and the settings file (and that the four `OLD_SETTINGS` lists agree), the old places, the shims, the launcher's check
