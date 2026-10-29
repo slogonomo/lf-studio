@@ -213,9 +213,11 @@ path_re() {
     fi
 }
 # Pipeline workers run in their own sessions, so stopping the server's process group does not reach them.
-# Their command lines name runtime.worker and an options file under this runtime root's web-UI outputs. So does the
-# experimental Upscale's job (upscale/regen2k_job.py --job <runtime root>/outputs/webui/...; webui/server.py).
-WORKER_RE="($(path_re "$PKG")/(runtime|qwen_python\.sh)|runtime\.worker --module [a-z0-9]+ --options $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/|$(path_re "$REPO")/upscale/regen2k_job\.py --job $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/)"
+# Their command lines name runtime.worker and an options file under this runtime root's web-UI outputs. So do the GPU
+# jobs the server runs in groups of their own (webui/server.py gpu_process): the experimental Upscale's job
+# (upscale/regen2k_job.py --job <runtime root>/outputs/webui/...), LightX2V Turbo's job (jobs/h3turbo_job.py --job ...)
+# and its prompt encode (bench/h3turbo_encode.py --case ...), and any later job script of upscale/, jobs/ or bench/.
+WORKER_RE="($(path_re "$PKG")/(runtime|qwen_python\.sh)|runtime\.worker --module [a-z0-9]+ --options $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/|$(path_re "$REPO")/(upscale|jobs|bench)/[a-z0-9_]+\.py --(job|case) $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/)"
 SERVER_RE="$(path_re "$SERVER")"
 
 stop_containers() {   # $1 = docker stop | docker rm -f
@@ -291,6 +293,27 @@ run_checks() {
         refuse "LFSTUDIO_UPSCALE=$LFSTUDIO_UPSCALE: must be 0 (off, the default) or 1 (on) (see bin/env.example)"
     if [[ "${LFSTUDIO_UPSCALE:-0}" == 1 && "$LFSTUDIO_BACKEND" != spark ]]; then
         refuse "LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only, not with LFSTUDIO_BACKEND=$LFSTUDIO_BACKEND (Open-H3-Regenerate-2K needs ~100 GiB of GPU memory); set LFSTUDIO_UPSCALE=0"
+    fi
+    # the models a clip may have (webui/server.py models_setting, in the same words): a comma list with sol-h3 in it,
+    # unset or empty = sol-h3 alone. The experimental LightX2V Turbo needs the DGX Spark: refused on the RTX 5090
+    local m turbo=0 models=() listed=()
+    IFS=, read -ra listed <<<"${LFSTUDIO_MODELS:-}"
+    for m in "${listed[@]}"; do
+        m="${m#"${m%%[![:space:]]*}"}"; m="${m%"${m##*[![:space:]]}"}"
+        [[ -n "$m" ]] && models+=("$m")
+    done
+    (( ${#models[@]} > 0 )) || models=(sol-h3)
+    for m in "${models[@]}"; do
+        case "$m" in
+            sol-h3) ;;
+            lightx2v-turbo) turbo=1 ;;
+            *) refuse "LFSTUDIO_MODELS=$LFSTUDIO_MODELS: unknown model $m (known: sol-h3, lightx2v-turbo) (see bin/env.example)" ;;
+        esac
+    done
+    [[ " ${models[*]} " == *" sol-h3 "* ]] ||
+        refuse "LFSTUDIO_MODELS=$LFSTUDIO_MODELS: must include sol-h3, the studio's own model (see bin/env.example)"
+    if (( turbo )) && [[ "$LFSTUDIO_BACKEND" != spark ]]; then
+        refuse "LFSTUDIO_MODELS=$LFSTUDIO_MODELS: the experimental LightX2V Turbo (lightx2v-turbo) runs on the DGX Spark only, not with LFSTUDIO_BACKEND=$LFSTUDIO_BACKEND (it needs ~100 GiB of GPU memory); set LFSTUDIO_MODELS=sol-h3 (see bin/env.example)"
     fi
     [[ -x "$LFSTUDIO_PYTHON" ]] || refuse "no Python at LFSTUDIO_PYTHON=$LFSTUDIO_PYTHON (install/40-stage1.sh, or set it in $ENV_FILE)"
     "$LFSTUDIO_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null ||
@@ -411,6 +434,42 @@ if differ:
             3) refuse "$f" ;;
             4) refuse "the experimental Upscale (LFSTUDIO_UPSCALE=1): $f; set it up, or set LFSTUDIO_UPSCALE=0" ;;
             *) refuse "cannot check the experimental Upscale with $REPO/upscale/regen2k_job.py: ${f:-exit code $rc}" ;;
+        esac
+    fi
+    # LightX2V Turbo's settings and files, checked by its job's own code (standard library outside its GPU part, as the
+    # server loads it; LFSTUDIO_H3TURBO_SCRIPT is the test hook the server reads too): the settings as the server reads
+    # them (studio_settings; exit 3), its Python, its prompt encode and check_install (the base model, the LoRA files;
+    # exit 4)
+    if (( turbo )); then
+        local h3turbo_job=${LFSTUDIO_H3TURBO_SCRIPT:-$REPO/jobs/h3turbo_job.py}
+        local h3turbo_encode=${LFSTUDIO_H3TURBO_ENCODE_SCRIPT:-$REPO/bench/h3turbo_encode.py}
+        [[ -f "$h3turbo_job" ]] ||
+            refuse "LFSTUDIO_MODELS has lightx2v-turbo: cannot read its job $h3turbo_job (no such file); set LFSTUDIO_MODELS=sol-h3"
+        f=$("$LFSTUDIO_PYTHON" -I -B -c 'import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("h3turbo_job", sys.argv[1])
+job = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(job)
+settings, problems = job.studio_settings(os.environ)
+if problems:
+    print("; ".join(problems))
+    sys.exit(3)
+if not os.access(settings["python"], os.X_OK):
+    print("no Python at LFSTUDIO_H3TURBO_PYTHON=%s (the environment of its job)" % settings["python"])
+    sys.exit(4)
+if not os.path.isfile(sys.argv[2]):
+    print("no prompt encode at %s" % sys.argv[2])
+    sys.exit(4)
+report, problems = job.check_install(settings)
+if problems:
+    print("; ".join(problems))
+    sys.exit(4)' "$h3turbo_job" "$h3turbo_encode" 2>&1)
+        rc=$?
+        f=$(grep . <<<"$f" | tail -n 1)
+        case $rc in
+            0) log "the experimental LightX2V Turbo is on (LFSTUDIO_MODELS): its environment, base model and LoRA are there" ;;
+            3) refuse "$f (see bin/env.example)" ;;
+            4) refuse "the experimental LightX2V Turbo (LFSTUDIO_MODELS): $f; set it up, or set LFSTUDIO_MODELS=sol-h3" ;;
+            *) refuse "cannot check the experimental LightX2V Turbo with $h3turbo_job: ${f:-exit code $rc}" ;;
         esac
     fi
     for t in t2va fl2va ref2va; do

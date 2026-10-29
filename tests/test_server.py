@@ -3,9 +3,11 @@
 python3 -m unittest discover -s tests -v      (needs python3 >= 3.10 and ffmpeg; the server uses the standard
 library only)
 """
+import base64
 import concurrent.futures
 import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -3084,6 +3086,948 @@ class LauncherUpscale(LauncherSettingsCheck):
         self.assertEqual(mine.wait(timeout=10), -signal.SIGKILL)
         self.assertIsNone(other.poll())
 
+
+# ------------------------------------------------------------------------------------------ the model choice
+TURBO, BOTH = "lightx2v-turbo", "sol-h3,lightx2v-turbo"
+LORA4 = "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors"
+NOT_REF2VA = ("LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use "
+              "Sol-H3")
+NOT_LAST = "LightX2V Turbo needs a first frame for now (a last frame alone: use Sol-H3)"
+NOT_LONGER = "LightX2V Turbo makes 5 s clips for now"
+REPO_DIR = Path(__file__).resolve().parents[1]
+
+
+def release_server(ref, directory):
+    """An earlier release's server (git show: webui/server.py, the page it serves and the Upscale's job it loads) under
+    `directory`: its server.py, or None where git or the release is not there (a copy of the repo without history)."""
+    for rel in ("webui/server.py", "webui/index.html", "upscale/regen2k_job.py"):
+        try:
+            r = subprocess.run(["git", "-C", str(REPO_DIR), "show", f"{ref}:{rel}"], capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if r.returncode:
+            return None
+        (directory / rel).parent.mkdir(parents=True, exist_ok=True)
+        (directory / rel).write_bytes(r.stdout)
+    return directory / "webui" / "server.py"
+
+
+def cli(url, *args):
+    """bin/lf-cli with these arguments against `url`: (exit status, stdout)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_"))}
+    env.update(LFSTUDIO_URL=url, PYTHONDONTWRITEBYTECODE="1")
+    run = subprocess.run([sys.executable, str(REPO_DIR / "bin" / "lf-cli"), *args], env=env, capture_output=True,
+                         text=True, timeout=120)
+    return run.returncode, run.stdout
+
+
+class ModelChoiceOff(unittest.TestCase):
+    """With LFSTUDIO_MODELS unset (sol-h3 alone, the default) the studio is v0.5.1's: side by side with v0.5.1's own
+    server (from git), the same /api/state, records and API records, the same answers to bad requests and the same
+    lf-cli output; the page as it is, without the models' table; LightX2V Turbo's settings are not read. What is new:
+    a request that names a model, which v0.5.1's form ignored and its JSON refused, makes the clip with "model":
+    "sol-h3" (its record as before) and is refused for a model that is off or unknown."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.studios = {}
+        old = release_server("v0.5.1", self.d / "v0.5.1")
+        for name, server in (("now", None), ("v0.5.1", old)):
+            if name == "now" or server:
+                s = StubStudio(self.d / name, load_s=1, clip_s=0.5, preload=False, server=server)
+                s.env.update(LFSTUDIO_H3TURBO_MIN_FREE_GIB="nonsense", LFSTUDIO_H3TURBO_QWEN_CANVAS="nonsense",
+                             LFSTUDIO_H3TURBO_SCRIPT=str(self.d / "no-such-job.py"))     # not read while it is off
+                self.studios[name] = s.start()
+                self.addCleanup(s.stop)
+        self.now = self.studios["now"]
+
+    def each(self, fn):
+        """fn(studio) on each studio: {name: result}."""
+        return {name: fn(s) for name, s in self.studios.items()}
+
+    def same(self, results, what):
+        if len(results) == 2:
+            self.assertEqual(results["now"], results["v0.5.1"], what)
+        return results["now"]
+
+    def test_as_v051(self):
+        if len(self.studios) < 2:
+            self.skipTest("v0.5.1 is not in this copy's git history; the rest is checked without it")
+        def start_log(s):
+            text = s.log.read_text().split("LF Studio on")[0].replace(str(s.root), "ROOT")
+            return re.sub(r"^\[\d\d:\d\d:\d\d\] ", "", text, flags=re.M)
+        self.same(self.each(start_log), "the start log")
+        st = self.same(self.each(lambda s: sorted(s.state())), "/api/state's keys")
+        self.assertNotIn("models", st)
+        self.same(self.each(lambda s: sorted(s.state()["session"])), "the session's keys")
+        out = self.d / "out"
+        clips = self.each(lambda s: cli(s.url, "generate", "--prompt", "a test clip", "--seed", "1", "--json", "-q",
+                                        "--out", str(out / s.root.name)))
+        records = {name: json.loads(text) for name, (code, text) in clips.items()}
+        self.same({name: (clips[name][0], sorted(rec)) for name, rec in records.items()}, "lf-cli generate --json")
+        rec = records["now"]
+        self.assertTrue(Path(rec["path"]).is_file())
+        self.assertNotIn("model", rec)
+        self.same(self.each(lambda s: sorted(s.state()["jobs"][0])), "a clip's record in /api/state")
+        api = self.same(self.each(lambda s: sorted(json.loads(s.get(f"/api/jobs/{s.state()['jobs'][0]['id']}")[2]))),
+                        "a clip's API record")
+        self.assertNotIn("file_name", api)
+        self.same(self.each(lambda s: cli(s.url, "status", "--json")[0]), "lf-cli status")
+        bad = ({"prompt": "x", "seconds": 4}, {"prompt": "x", "task": "x"}, {"prompt": "  "},
+               {"prompt": "x", "first_frame": {"name": "f.png", "data": "!!!!"}})
+        for body in bad:
+            self.same(self.each(lambda s: s.post("/api/generate", json_body=body)), body)
+        self.same(self.each(lambda s: s.post("/api/load", json_body={"task": "t2va"})), "/api/load")
+        # the form ignores fields it does not know, as before: a clip of sol-h3, its record as before
+        jids = self.each(lambda s: s.generate(seed=2, resolution="768p", steps="8")[1]["id"])
+        done = self.each(lambda s: s.wait([jids[s.root.name]])[0])
+        self.same({name: sorted(job) for name, job in done.items()}, "a clip whose form had other fields")
+
+    def test_model_named(self):
+        s = self.now
+        self.assertEqual(s.get("/")[2].decode(), (REPO_DIR / "webui" / "index.html").read_text())   # no lf-models
+        for answer in (s.post("/api/generate", json_body={"prompt": "x", "model": TURBO}),
+                       s.generate(model=TURBO)):
+            self.assertEqual(answer, (400, {"error": f"ValueError: {TURBO} is off on this studio (LFSTUDIO_MODELS)"}))
+        self.assertEqual(s.generate(model="flux"), (400, {"error": "ValueError: model must be one of sol-h3"}))
+        code, body = s.post("/api/generate", json_body={"prompt": "x", "resolution": "576p"})   # an option: unknown
+        self.assertEqual(code, 400)
+        self.assertIn('unknown key "resolution"', body["error"])
+        self.assertEqual(s.post("/api/load", json_body={"task": "t2va", "orientation": "landscape", "seconds": 5,
+                                                        "model": TURBO}),
+                         (400, {"error": f"{TURBO} is off on this studio (LFSTUDIO_MODELS)"}))
+        self.assertEqual(s.state()["jobs"], [])
+        a = s.post("/api/generate", json_body={"prompt": "x", "model": "sol-h3", "seed": 3})[1]["id"]
+        b = s.generate(model="sol-h3", seed=4)[1]["id"]
+        c = s.generate(model="", seed=5)[1]["id"]                      # empty: the default
+        for job in s.wait([a, b, c]):
+            self.assertEqual(job["status"], "done")
+            self.assertFalse({"model", "model_opts", "file_name"} & set(job))
+        self.assertNotIn("LightX2V Turbo", s.log.read_text())
+
+
+class TurboTest(UpscaleTest):
+    """The experimental LightX2V Turbo on (LFSTUDIO_MODELS=sol-h3,lightx2v-turbo), with tests/stub/h3turbo_job.py
+    as its job and tests/stub/h3turbo_encode.py as its prompt encode (tests/stub/studio.py sets their hooks and
+    MemAvailable). `env` is set before start; the stand-ins log each run to turbo-jobs.log and encodes.log."""
+    env = {}
+
+    def seed(self):
+        self.studio.env.update(LFSTUDIO_MODELS=BOTH, STUB_H3TURBO_LOG=str(self.dir / "turbo-jobs.log"),
+                               STUB_QWEN_LOG=str(self.dir / "encodes.log"), STUB_UPSCALE_LOG=str(self.dir /
+                                                                                                  "upscale-jobs.log"))
+        self.studio.env.update(self.env)
+
+    def restart(self, **env):
+        self.studio.stop()
+        self.studio.env.update(env)
+        self.studio.start()
+
+    def turbo(self, **kw):
+        code, body = self.studio.turbo(**kw)
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["job"]["model"], TURBO)
+        return body["id"]
+
+    def runs(self, name):
+        """The runs a stand-in logged: turbo-jobs.log or encodes.log."""
+        log = self.dir / name
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def turbo_dirs(self):
+        return sorted(d.name for d in (self.studio.runtime / "outputs" / "webui").iterdir() if f"-{TURBO}-" in d.name)
+
+    def waiting_for(self, jid, name):
+        """Wait until the stand-in `name` (turbo-jobs.log, encodes.log) runs for the clip; returns its pid."""
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            pids = [r["pid"] for r in self.runs(name) if jid[:6] in json.dumps(r)]
+            if pids and alive(pids[-1]):
+                return pids[-1]
+            time.sleep(0.05)
+        self.fail(f"no {name} run for {jid}")
+
+    def tearDown(self):
+        for pid in [r["pid"] for name in ("turbo-jobs.log", "encodes.log") for r in self.runs(name)]:
+            with contextlib.suppress(OSError):         # left running by a test that killed its server
+                if alive(pid) and b"h3turbo_" in (Path("/proc") / str(pid) / "cmdline").read_bytes():
+                    os.killpg(pid, signal.SIGKILL)
+                    deadline = time.time() + 10
+                    while alive(pid) and time.time() < deadline:
+                        time.sleep(0.05)
+        super().tearDown()
+
+
+class TurboRegistry(TurboTest):
+    """The models' table in /api/state ("models"), in the page (its lf-models script) and in the records."""
+
+    def test_table(self):
+        st = self.studio.state()
+        sol, turbo = st["models"]
+        self.assertEqual([sol["id"], sol["name"], sol["runs"], sol["default"], sol["experimental"]],
+                         ["sol-h3", "Sol-H3", "session", True, False])
+        self.assertEqual([turbo["id"], turbo["name"], turbo["runs"], turbo["default"], turbo["experimental"]],
+                         [TURBO, "LightX2V Turbo", "job", False, True])
+        offered = lambda caps: {dim: {v["value"]: v.get("why", True) for v in values}           # noqa: E731
+                                for dim, values in caps.items()}
+        self.assertEqual(offered(sol["capabilities"]), {
+            "task": {"t2va": True, "fl2va": True, "ref2va": True},
+            "frames": {"first": True, "last": True, "first+last": True},
+            "seconds": {s: True for s in (5, 6, 7, 8, 10, 12, 15)},
+            "orientation": {"landscape": True, "portrait": True}})
+        self.assertEqual((sol["options"], sol["eta_s"]), ([], {}))
+        self.assertEqual(offered(turbo["capabilities"]), {
+            "task": {"t2va": True, "fl2va": True, "ref2va": NOT_REF2VA},
+            "frames": {"first": True, "last": NOT_LAST, "first+last": True},
+            "seconds": {5: True, **{s: NOT_LONGER for s in (6, 7, 8, 10, 12, 15)}},
+            "orientation": {"landscape": True, "portrait": True}})
+        self.assertEqual(turbo["options"], [
+            {"name": "resolution", "label": "Size", "type": "string", "default": "576p",
+             "choices": [{"value": "576p", "size": {"landscape": [1024, 576], "portrait": [576, 1024]},
+                          "offered": True},
+                         {"value": "768p", "size": {"landscape": [1344, 768], "portrait": [768, 1344]},
+                          "offered": True}]},
+            {"name": "steps", "label": "Steps", "type": "integer", "default": 4,
+             "choices": [{"value": 4, "offered": True}]}])
+        self.assertEqual(turbo["combinations"], [
+            {"task": ["t2va", "fl2va"], "frames": ["first", "first+last"], "seconds": [5],
+             "orientation": ["landscape", "portrait"], "resolution": ["576p", "768p"], "steps": [4]}])
+        self.assertEqual(turbo["eta_s"], {"576p/4/5": {"s": 200, "measured": False},
+                                          "768p/4/5": {"s": 360, "measured": False}})
+        self.assertIsNone(st["session"]["model"])
+        page = self.studio.get("/")[2].decode()
+        table = re.search(r'<meta name="lf-studio-backend" content="spark">\n'
+                          r'<script type="application/json" id="lf-models">(.*?)</script>', page).group(1)
+        self.assertEqual(json.loads(table), st["models"])
+        self.assertNotIn("<", table)
+
+    def seed(self):
+        super().seed()
+        self.write_state([finished_job("a" * 32, created=1)])                   # a clip from before the model choice
+
+    def test_records(self):
+        """Every clip's record has its model (sol-h3 for one without, as all clips before the model choice) and the
+        name it downloads as; an upscale has no model of its own."""
+        st = self.studio.state()
+        self.assertEqual((st["jobs"][0]["model"], st["jobs"][0]["file_name"]),
+                         ("sol-h3", "lf-studio_t2va_5s_seed7_aaaaaa.mp4"))
+        parent = self.clip()
+        self.assertEqual(self.studio.state()["session"]["model"], "sol-h3")
+        uid = self.done(self.upscale(parent["id"]))["id"]
+        rec = json.loads(self.studio.get(f"/api/jobs/{uid}")[2])
+        self.assertNotIn("model", rec)
+        self.assertEqual(rec["file_name"], f"lf-studio_t2va_5s_seed1_{parent['id'][:6]}_2k_{uid[:6]}.mp4")
+        older = json.loads(self.studio.get(f"/api/jobs?before={time.time() + 60}&limit=100")[2])["jobs"]
+        self.assertEqual({j["id"]: j.get("model") for j in older},
+                         {"a" * 32: "sol-h3", parent["id"]: "sol-h3", uid: None})
+        self.assertTrue(all("file_name" in j for j in older))
+
+
+class TurboRun(TurboTest):
+    """A LightX2V Turbo clip: the Sol-H3 session closed, the prompt encoded, its job run, its files and its record."""
+
+    def test_t2va_after_a_sol_clip(self):
+        sol = self.clip()
+        session_root = Path(sol["output"]).parents[2]
+        jid = self.turbo(seed=9)
+        job = self.done(jid)
+        self.assertTrue((session_root / "CLOSED").exists())                   # Sol-H3's models were closed for it
+        self.assertIn("closing session ('t2va', 'landscape', 5) - LightX2V Turbo needs the memory",
+                      self.studio.log.read_text())
+        self.assertEqual((job["model"], job["model_opts"]), (TURBO, {
+            "resolution": "576p", "steps": 4, "size": [1024, 576], "lora": LORA4, "qwen_canvas": "draft",
+            "image_tokens": 0}))
+        case = Path(job["case_dirs"][0])
+        self.assertEqual((case.name, case.parent.parent), (job["case_id"], self.studio.runtime / "outputs" / "webui"))
+        self.assertRegex(case.parent.name, rf"^\d{{8}}-\d{{6}}-{TURBO}-576p-t2va-landscape-5s$")
+        out = Path(job["output"])
+        self.assertEqual(out, case / "turbo" / "clip_1024x576_121f.mp4")
+        self.assertEqual(sorted(p.name for p in case.iterdir()),
+                         ["encode.json", "encode.log", "prompt.txt", "qwen", "qwen-worker", "turbo"])  # no qwen-text
+        self.assertEqual(sorted(p.name for p in out.parent.iterdir()),
+                         ["audio.pt", "clip_1024x576_121f.jpg", "clip_1024x576_121f.mp4", "job.json",
+                          "latents.safetensors", "receipt.json", "worker.log"])
+        streams = probe(out)
+        self.assertEqual((streams["video"]["width"], streams["video"]["height"], streams["video"]["nb_frames"],
+                          streams["video"]["r_frame_rate"]), (1024, 576, "121", "24/1"))
+        self.assertEqual(streams["audio"]["codec_name"], "aac")
+        self.assertEqual((case / "prompt.txt").read_text(), "a test clip")
+        data = json.loads((case / "turbo" / "job.json").read_text())
+        self.assertEqual(data, {
+            "version": 1, "task": "t2va", "orientation": "landscape", "resolution": "576p", "seconds": 5, "seed": 9,
+            "steps": 4, "lora": str(self.studio.h3turbo / "loras" / LORA4), "shift": [6, 3],
+            "conditioning": str(case / "qwen" / "conditioning.pt"), "qwen_canvas": "draft", "first_frame": None,
+            "last_frame": None, "audio_noise": "seed", "crf": 19, "x264_preset": "veryfast", "load": "fast",
+            "abort_below_gib": 6, "paths": {"base_model": str(self.studio.h3turbo / "base"),
+                                            "output": str(case / "turbo")}, "meta": {"studio_job": jid}})
+        encode, = self.runs("encodes.log")
+        self.assertEqual(encode["argv"], ["--case", str(case), "--prompt-file", str(case / "prompt.txt"),
+                                          "--orientation", "landscape", "--resolution", "576p", "--canvas", "draft",
+                                          "--seed", "9", "--case-id", job["case_id"], "--package",
+                                          str(self.studio.package)])
+        run, = self.runs("turbo-jobs.log")
+        self.assertEqual(run["argv"], ["--job", str(case / "turbo" / "job.json"), "--parent",
+                                       str(self.studio.proc.pid)])
+        self.assertEqual(json.loads((case / "turbo" / "receipt.json").read_text())["state"], "done")
+        self.assertEqual(set(job["phases_s"]), {"loading", "step", "decoding", "saving"})       # the job's receipt
+        self.assertEqual((job["peak_gib"], job["low_mem_gib"], job["includes_model_load"]), (77.4, 35.2, True))
+        self.assertGreater(job["load_s"], 0)
+        self.assertGreaterEqual(job["e2e_s"], job["encode_s"])
+        for key in ("job_phase", "text_only", "first_error", "saving", "cancel_requested"):
+            self.assertNotIn(key, job)
+        code, headers, _ = self.studio.get(f"/video/{jid}", {"Range": "bytes=0-9"})
+        self.assertEqual((code, headers["Content-Disposition"]),
+                         (206, f'inline; filename="lf-studio_{TURBO}-576p_t2va_5s_seed9_{jid[:6]}.mp4"'))
+        self.assertEqual(job["file_name"], f"lf-studio_{TURBO}-576p_t2va_5s_seed9_{jid[:6]}.mp4")
+        self.assertEqual(self.studio.get(f"/poster/{jid}")[1]["Content-Type"], "image/jpeg")
+        times = json.loads((self.studio.state_dir / "load-times.json").read_text())
+        self.assertEqual(times[f"job/{TURBO}/576p/4/5"], job["e2e_s"])
+        self.assertEqual(times["last"], times["t2va/landscape/5"])            # Sol-H3's cold start, untouched
+        self.assertEqual(self.studio.state()["models"][1]["eta_s"]["576p/4/5"], {"s": job["e2e_s"], "measured": True})
+        self.assertFalse(alive(run["pid"]))
+        self.assertEqual(worker_groups(self.studio.proc.pid), [])
+        st = self.studio.state()
+        self.assertEqual((st["session"]["state"], st["session"]["key"], st["session"]["model"]), ("idle", None, None))
+        self.assertTrue(self.clip(seed=2)["includes_model_load"])              # Sol-H3 loads its models again
+
+    def test_fl2va_first_and_last_portrait_768p(self):
+        prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second "
+                  "mark; Picture 2 aligns with the 5.00-second mark.\nA dancer shown in <Picture 1> turns slowly.")
+        jid = self.turbo(task="fl2va", orientation="portrait", resolution="768p", prompt=prompt,
+                         files={"first_frame": [("a.png", png(24, 32))], "last_frame": [("b.png", png(24, 32))]})
+        job = self.done(jid)
+        self.assertEqual(job["model_opts"], {"resolution": "768p", "steps": 4, "size": [768, 1344], "lora": LORA4,
+                                             "qwen_canvas": "draft", "image_tokens": 252})
+        case = Path(job["case_dirs"][0])
+        self.assertRegex(case.parent.name, rf"-{TURBO}-768p-fl2va-portrait-5s$")
+        self.assertEqual(Path(job["output"]).name, "clip_768x1344_121f.mp4")
+        self.assertEqual((probe(job["output"])["video"]["width"], probe(job["output"])["video"]["height"]), (768, 1344))
+        data = json.loads((case / "turbo" / "job.json").read_text())
+        self.assertEqual((data["first_frame"], data["last_frame"], data["resolution"], data["orientation"]),
+                         (job["first_frame"], job["last_frame"], "768p", "portrait"))
+        argv = self.runs("encodes.log")[0]["argv"]
+        self.assertEqual(argv[argv.index("--resolution") + 1], "768p")
+        self.assertEqual(argv[-4:], ["--first", job["first_frame"], "--last", job["last_frame"]])
+        # the prompt without its keyframe references, for a later Upscale (the encode's own rewrite)
+        self.assertEqual(job["text_only"], {"prompt": "A dancer turns slowly.",
+                                            "dropped": ["alignment line", "1 x '<Picture N>'"]})
+        self.assertEqual((case / "qwen-text" / "prompt.txt").read_text(), "A dancer turns slowly.")
+        self.assertTrue((case / "qwen-text" / "conditioning.pt").is_file())
+        self.assertEqual(job["labels"][0]["label"], "<Picture 1>")
+        self.assertEqual(job["file_name"], f"lf-studio_{TURBO}-768p_fl2va_5s_seed1_{jid[:6]}.mp4")
+        self.assertEqual(self.studio.get(f"/still/{jid}")[1]["Content-Type"], "image/jpeg")
+        self.assertEqual(self.done(self.turbo(task="fl2va", seed=2, files={"first_frame": [("a.png", png())]}))[
+            "model_opts"]["image_tokens"], 252)                                   # a first frame alone
+
+    def test_progress(self):
+        """The status while it runs: freeing memory, encoding the prompt, loading (the job's own load), then
+        generating from its first step, with its phase lines as job_phase."""
+        self.restart(STUB_H3TURBO_S="6", STUB_QWEN_S="1", STUB_CLOSE_S="1")
+        self.clip()
+        jid = self.turbo()
+        seen, deadline = [], time.time() + 40
+        while time.time() < deadline:
+            rec = json.loads(self.studio.get(f"/api/jobs/{jid}")[2])
+            step = (rec["status"], rec["phase"], rec.get("job_phase"))
+            if step not in seen:
+                seen.append(step)
+            if rec["state"] == "done":
+                break
+            time.sleep(0.03)
+        self.assertIn(("freeing memory", "unloading", None), seen)
+        self.assertIn(("encoding the prompt", "encoding", None), seen)
+        self.assertIn(("loading models + generating", "loading", "loading"), seen)
+        steps = [p for status, phase, p in seen if status == "generating"]
+        self.assertEqual([p for i, p in enumerate(steps) if p and p not in steps[:i]],
+                         ["step 1/4", "step 2/4", "step 3/4", "step 4/4", "decoding", "saving"])
+        # the API's "saving" (Cancel answers 409) only once the job has written its clip, not after the encode
+        self.assertGreater([phase for _, phase, p in seen].index("saving"), [p for _, _, p in seen].index("saving"))
+        self.assertEqual(seen[-1], ("done", None, None))
+
+    def test_canvas_setting(self):
+        """LFSTUDIO_H3TURBO_QWEN_CANVAS=canvas: the encode sees the keyframes at the clip's canvas."""
+        self.restart(LFSTUDIO_H3TURBO_QWEN_CANVAS="canvas")
+        job = self.done(self.turbo(task="fl2va", files={"first_frame": [("a.png", png())]}))
+        self.assertEqual((job["model_opts"]["qwen_canvas"], job["model_opts"]["image_tokens"]), ("canvas", 576))
+        argv = self.runs("encodes.log")[0]["argv"]
+        self.assertEqual(argv[argv.index("--canvas") + 1], "canvas")
+        self.assertEqual(json.loads((Path(job["case_dirs"][0]) / "turbo" / "job.json").read_text())["qwen_canvas"],
+                         "canvas")
+        self.assertIn("Qwen canvas canvas, memory floor 100 GiB, guard 5 GiB", self.studio.log.read_text())
+
+
+class TurboNames(TurboTest):
+    """File names: Sol-H3's as before, byte for byte (the download and the publish copy); a LightX2V Turbo clip's
+    with its model and options."""
+
+    def seed(self):
+        super().seed()
+        self.publish = self.dir / "publish"
+        self.studio.env["LFSTUDIO_PUBLISH_DIR"] = str(self.publish)
+
+    def test_names(self):
+        sol, turbo = self.clip(), self.done(self.turbo(resolution="768p", seed=3))
+        for job, name, stem in ((sol, f"lf-studio_t2va_5s_seed1_{sol['id'][:6]}.mp4",
+                                 rf"t2va_landscape_5s_seed1_{sol['id'][:6]}"),
+                                (turbo, f"lf-studio_{TURBO}-768p_t2va_5s_seed3_{turbo['id'][:6]}.mp4",
+                                 rf"t2va_landscape_5s_{TURBO}-768p_seed3_{turbo['id'][:6]}")):
+            headers = self.studio.get(f"/video/{job['id']}", {"Range": "bytes=0-9"})[1]
+            self.assertEqual(headers["Content-Disposition"], f'inline; filename="{name}"')
+            self.assertEqual(job["file_name"], name)
+            self.assertRegex(Path(job["published"]).name, rf"^\d{{8}}-\d{{6}}_{stem}\.mp4$")
+            self.assertTrue(Path(job["published"]).with_suffix(".jpg").is_file())
+
+
+class TurboRefusals(TurboTest):
+    """What LightX2V Turbo does not make, a model that is unknown, an option of another model and a value an option
+    does not have: 400 with the reason, the same from the form and JSON, nothing left behind."""
+
+    def inputs(self):
+        return sorted(p.name for p in (self.studio.runtime / "inputs" / "webui").iterdir())
+
+    def test_refused(self):
+        frame = lambda zone: {zone: [("f.png", png())]}                                         # noqa: E731
+        b64 = lambda: base64.b64encode(png()).decode()                                           # noqa: E731
+        cases = (   # (form fields, form files, JSON body, error)
+            ({"model": "flux"}, None, {"model": "flux"}, "model must be one of sol-h3, lightx2v-turbo"),
+            ({"model": TURBO, "task": "ref2va"}, frame("ref_images"),
+             {"model": TURBO, "ref_images": [{"name": "r.png", "data": b64()}]}, NOT_REF2VA),
+            ({"model": TURBO, "seconds": "6"}, None, {"model": TURBO, "seconds": 6}, NOT_LONGER),
+            ({"model": TURBO, "seconds": "15"}, None, {"model": TURBO, "seconds": 15}, NOT_LONGER),
+            ({"model": TURBO, "task": "fl2va"}, frame("last_frame"),
+             {"model": TURBO, "last_frame": {"name": "f.png", "data": b64()}}, NOT_LAST),
+            ({"model": TURBO, "resolution": "1080p"}, None, {"model": TURBO, "resolution": "1080p"},
+             "resolution must be 576p or 768p for lightx2v-turbo"),
+            ({"model": TURBO, "steps": "8"}, None, {"model": TURBO, "steps": 8}, "steps must be 4 for lightx2v-turbo"),
+            ({"resolution": "576p"}, None, {"resolution": "576p"},
+             "resolution is an option of lightx2v-turbo; sol-h3 takes none"),
+            ({"model": "sol-h3", "steps": "4"}, None, {"model": "sol-h3", "steps": 4},
+             "steps is an option of lightx2v-turbo; sol-h3 takes none"))
+        for form, files, body, error in cases:
+            by_form = self.studio.post("/api/generate", dict({"prompt": "x"}, **form), files)
+            by_json = self.studio.post("/api/generate", json_body=dict({"prompt": "x"}, **body))
+            self.assertEqual(by_form, (400, {"error": f"ValueError: {error}"}), form)
+            self.assertEqual(by_json, by_form, body)
+        self.assertEqual(self.studio.post("/api/generate", {"prompt": "x", "model": TURBO, "steps": "four"}),
+                         (400, {"error": "ValueError: steps must be 4 for lightx2v-turbo"}))
+        for body, error in (({"model": 1}, "model must be a string"), ({"model": TURBO, "resolution": 576},
+                                                                       "resolution must be a string"),
+                            ({"model": TURBO, "steps": "4"}, "steps must be an integer"),
+                            ({"model": TURBO, "steps": True}, "steps must be an integer"),
+                            ({"model": TURBO, "width": 1}, 'unknown key "width"')):
+            code, answer = self.studio.post("/api/generate", json_body=dict({"prompt": "x"}, **body))
+            self.assertEqual(code, 400, body)
+            self.assertIn(error, answer["error"])
+        self.assertIn("(known: prompt, task, orientation, seconds, seed, remix_from, keep, first_frame, last_frame, "
+                      "ref_images, ref_videos, ref_audio, model, resolution, steps)", answer["error"])
+        self.assertEqual((self.studio.state()["jobs"], self.inputs()), ([], []))
+        # taken: no model, an empty one or null (sol-h3), and LightX2V Turbo's own clips with its options
+        a = self.generate(model="")
+        b = self.studio.post("/api/generate", json_body={"prompt": "x", "model": None, "resolution": None})[1]["id"]
+        c = self.turbo(resolution="768p", steps="4")
+        d = self.studio.post("/api/generate", json_body={"prompt": "x", "model": TURBO, "steps": 4,
+                                                         "resolution": "576p"})[1]["id"]
+        jobs = self.studio.wait([a, b, c, d], timeout=60)
+        self.assertEqual([(j["status"], j["model"]) for j in jobs],
+                         [("done", "sol-h3"), ("done", "sol-h3"), ("done", TURBO), ("done", TURBO)])
+
+    def test_remix(self):
+        """A Remix of a first + last clip as LightX2V Turbo keeps both frames; keeping only the last is refused."""
+        src = self.clip(task="fl2va", files={"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]})
+        code, body = self.studio.turbo(task="fl2va", remix_from=src["id"], keep="first_frame:0,last_frame:0")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.done(body["id"])["model"], TURBO)
+        self.assertEqual(self.studio.turbo(task="fl2va", remix_from=src["id"], keep="last_frame:0"),
+                         (400, {"error": f"ValueError: {NOT_LAST}"}))
+        self.assertEqual(len(self.inputs()), 2)                                  # the clip's and the Remix's
+
+
+class TurboPlainTokens(TurboTest):
+    """With SOL_H3_PROMPT_TOKENS=plain, a LightX2V Turbo prompt with MiniMax's tokens is refused at once (its job
+    refuses such a conditioning); Sol-H3 takes it as before."""
+    env = {"SOL_H3_PROMPT_TOKENS": "plain"}
+
+    def test_refused(self):
+        prompt = "A man says <d>hello</d>."
+        self.assertEqual(self.studio.turbo(prompt=prompt), (400, {"error": (
+            "ValueError: lightx2v-turbo needs SOL_H3_PROMPT_TOKENS=minimax for a prompt with MiniMax's tokens (<d>, "
+            "</d>): plain splits them into text tokens H3 never saw")}))
+        self.generate(prompt=prompt)
+        self.turbo(prompt="A man says hello.")
+
+
+class TurboQueue(TurboTest):
+    """One queue for every clip, in order (strict FIFO across models), upscales after them; no warm-up after a LightX2V
+    Turbo clip."""
+    preload = True
+
+    def test_fifo(self):
+        parent = self.clip()
+        a = self.generate(seed=2, seconds=6)                                    # runs while the others are queued
+        self.until(a, lambda j: j["status"] != "queued")
+        up = self.upscale(parent["id"])
+        b, c, d = self.turbo(seed=3), self.generate(seed=4), self.turbo(seed=5)
+        jobs = {j["id"]: j for j in self.studio.wait([a, up, b, c, d], timeout=90)}
+        self.assertTrue(all(j["status"] == "done" for j in jobs.values()), jobs)
+        order = sorted(jobs, key=lambda jid: jobs[jid]["started"])
+        self.assertEqual(order, [a, b, c, d, up])
+        self.assertTrue(jobs[c]["includes_model_load"])                         # a cold start after the turbo clip
+        log = self.studio.log.read_text()
+        self.assertEqual(log.count("LightX2V Turbo needs the memory"), 2)       # both Sol-H3 sessions closed
+        time.sleep(3)                                                            # no warm-up after the turbo clip
+        self.assertEqual(self.studio.state()["session"]["state"], "idle")
+        self.assertNotIn("will preload", log.split("queued upscale")[-1].split("LightX2V Turbo:")[-1])
+
+
+class TurboWarmUpAtStart(TurboTest):
+    """None at start when the last finished clip is a LightX2V Turbo one."""
+    preload = True
+
+    def seed(self):
+        super().seed()
+        self.write_state([finished_job("1" * 32, created=1),
+                          finished_job("2" * 32, created=2, model=TURBO,
+                                       model_opts={"resolution": "576p", "steps": 4})])
+
+    def test_none(self):
+        time.sleep(2)
+        self.assertNotIn("will preload", self.studio.log.read_text())
+        self.assertEqual(self.studio.state()["session"]["state"], "idle")
+
+
+class TurboStopsAWarmUp(TurboTest):
+    """A LightX2V Turbo clip stops a warm-up (it closes the models anyway), unless a Sol-H3 clip queued before it
+    waits for the warm-up's models."""
+    preload, load_s = True, 4
+
+    def seed(self):
+        super().seed()
+        self.write_state([finished_job("1" * 32, created=1)],
+                         load_times={"warm/t2va/landscape/5": 1, "t2va/landscape/5": 6, "last": 6})   # no takeover
+
+    def test_stopped(self):
+        self.studio.wait_for(lambda s: s["session"].get("preloading"))
+        self.done(self.turbo())
+        self.assertIn("aborting preload: a LightX2V Turbo clip arrived, which needs the memory",
+                      self.studio.log.read_text())
+
+    def test_kept_for_a_sol_clip_before_it(self):
+        self.studio.wait_for(lambda s: s["session"].get("preloading"))
+        a = self.generate()                                                       # the warm-up's settings
+        b = self.turbo(seed=2)
+        jobs = self.studio.wait([a, b], timeout=60)
+        self.assertEqual([j["status"] for j in jobs], ["done", "done"])
+        self.assertNotIn("aborting preload", self.studio.log.read_text())
+        self.assertNotIn("includes_model_load", jobs[0])                          # a warm clip in the warmed models
+
+
+class TurboCancel(TurboTest):
+    """Cancel takes a queued LightX2V Turbo clip out of the queue, or stops it while the Sol-H3 models close, while its
+    prompt is encoded and while its job runs (SIGTERM to the process group of the step under way, SIGKILL 20 s later):
+    Cancel answers 200 from the encode to the job's last step (one pipeline_call), the card stays, cancelled."""
+    env = {"STUB_H3TURBO_S": "30"}
+
+    def test_queued(self):
+        a = self.generate()
+        self.until(a, lambda j: j["status"] != "queued")
+        jid = self.turbo()
+        self.assertEqual(self.cancel(jid)[1]["job"]["status"], "cancelled")
+        self.assertEqual(self.studio.wait([a])[0]["status"], "done")
+        job = self.studio.job(jid)
+        self.assertEqual(job["status"], "cancelled")
+        self.assertNotIn("case_dirs", job)
+        self.assertEqual((self.turbo_dirs(), self.runs("encodes.log")), ([], []))
+        self.assertNotIn("LightX2V Turbo needs the memory", self.studio.log.read_text())     # the models stayed
+
+    def test_while_the_models_close(self):
+        self.restart(STUB_CLOSE_S="3")
+        self.clip()
+        jid = self.turbo()
+        self.until(jid, lambda j: j["status"] == "freeing memory")
+        self.assertEqual(self.cancel(jid)[0], 200)
+        job = self.studio.wait([jid], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertNotIn("case_dirs", job)
+        self.assertEqual((self.turbo_dirs(), self.runs("encodes.log")), ([], []))
+
+    def test_during_the_encode(self):
+        self.restart(STUB_QWEN_S="30")
+        jid = self.turbo()
+        pid = self.waiting_for(jid, "encodes.log")
+        self.until(jid, lambda j: j["status"] == "encoding the prompt")
+        self.assertEqual(worker_groups(self.studio.proc.pid), [pid])             # in a process group of its own
+        rec = json.loads(self.studio.get(f"/api/jobs/{jid}")[2])
+        self.assertEqual((rec["state"], rec["phase"]), ("running", "encoding"))
+        self.assertNotIn(rec["status"], idle_values())                            # busy for spark-switchboard
+        t0 = time.time()
+        self.assertEqual(self.cancel(jid)[0], 200)
+        job = self.studio.wait([jid], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertLess(time.time() - t0, 5, "stopped right away")
+        self.assertFalse(alive(pid))
+        self.assertEqual((self.runs("turbo-jobs.log"), worker_groups(self.studio.proc.pid)), ([], []))
+        case = Path(job["case_dirs"][0])
+        self.assertTrue(case.is_dir())
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": jid}), (200, {"ok": True}))
+        self.assertFalse(case.exists())
+
+    def test_during_the_job(self):
+        """After the encode, while the job loads and steps, the clip is not "saving": Cancel answers 200 (the encode
+        and the job are one pipeline_call), and the job ends at once."""
+        jid = self.turbo()
+        pid = self.waiting_for(jid, "turbo-jobs.log")
+        self.until(jid, lambda j: (j.get("job_phase") or "").startswith("step"))
+        self.assertEqual(worker_groups(self.studio.proc.pid), [pid])
+        rec = json.loads(self.studio.get(f"/api/jobs/{jid}")[2])
+        self.assertEqual((rec["phase"], rec["status"]), ("generating", "generating"))
+        self.assertEqual(self.studio.post("/api/unload"), (409, {"error": "a job is running"}))
+        t0 = time.time()
+        code, body = self.cancel(jid)
+        self.assertEqual((code, body["job"]["cancel_requested"]), (200, True))
+        job = self.studio.wait([jid], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertLess(time.time() - t0, 5)
+        for key in ("error", "output", "published", "cancel_requested", "saving"):
+            self.assertNotIn(key, job)
+        self.assertFalse(alive(pid))
+        receipt = json.loads((Path(job["case_dirs"][0]) / "turbo" / "receipt.json").read_text())
+        self.assertEqual((receipt["state"], receipt["exit_status"]), ("cancelled", 143))
+        self.assertTrue(all(j["status"] in idle_values() for j in self.studio.state()["jobs"]))
+        self.assertTrue(self.clip(seed=2)["includes_model_load"])               # the queue carries on
+
+    def test_a_job_that_ignores_sigterm(self):
+        self.restart(STUB_H3TURBO_TERM="ignore")
+        jid = self.turbo()
+        pid = self.waiting_for(jid, "turbo-jobs.log")
+        self.until(jid, lambda j: (j.get("job_phase") or "").startswith("step"))
+        t0 = time.time()
+        self.assertEqual(self.cancel(jid)[0], 200)
+        time.sleep(3)
+        self.assertTrue(alive(pid))
+        job = self.studio.wait([jid], timeout=40)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertGreater(time.time() - t0, 19)
+        self.assertFalse(alive(pid))
+        self.assertIn(f"cancel: the LightX2V Turbo job {pid} is still there 20 s after SIGTERM: SIGKILL",
+                      self.studio.log.read_text())
+
+    def test_restart_while_running(self):
+        """A server killed hard takes the job with it (--parent); the clip reads failed after the restart."""
+        jid = self.turbo()
+        pid = self.waiting_for(jid, "turbo-jobs.log")
+        self.studio.proc.kill()
+        self.studio.proc.wait()
+        deadline = time.time() + 10
+        while alive(pid) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(alive(pid), "the job outlived the server")
+        self.studio.start()
+        job = self.studio.job(jid)
+        self.assertEqual((job["status"], job["error"]), ("failed", "server restarted"))
+
+    def test_stop_ends_the_job_and_the_encode(self):
+        jid = self.turbo()
+        pid = self.waiting_for(jid, "turbo-jobs.log")
+        self.studio.stop()                                                        # SIGTERM: the server stops its job
+        self.assertFalse(alive(pid))
+        self.assertIn("stopping the running LightX2V Turbo clip", self.studio.log.read_text())
+        self.restart(STUB_QWEN_S="30")
+        self.assertEqual(self.studio.job(jid)["status"], "failed")
+        jid = self.turbo(seed=2)
+        pid = self.waiting_for(jid, "encodes.log")
+        self.studio.stop()
+        self.assertFalse(alive(pid))
+        self.assertIn("stopping the running LightX2V Turbo prompt encode", self.studio.log.read_text())
+
+
+class TurboDelete(TurboTest):
+    """Delete and Undo of a LightX2V Turbo clip move its own directory and inputs; a failed one's directory goes too."""
+
+    def test_delete_and_undo(self):
+        jid = self.turbo(task="fl2va", files={"first_frame": [("a.png", png())]})
+        job = self.done(jid)
+        case, inputs = Path(job["case_dirs"][0]), self.studio.runtime / "inputs" / "webui" / jid
+        self.assertEqual(Path(job["output"]).parents[1], case)
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": jid}), (200, {"ok": True}))
+        self.assertFalse(case.exists() or inputs.exists())
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": jid})[0], 200)
+        self.assertTrue(Path(job["output"]).is_file() and inputs.is_dir())
+        self.restart(STUB_H3TURBO_FAIL="1")
+        failed = self.studio.wait([self.turbo(seed=2)], timeout=30)[0]
+        self.assertEqual(failed["status"], "failed")
+        case = Path(failed["case_dirs"][0])
+        self.assertTrue(case.is_dir())
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": failed["id"]}), (200, {"ok": True}))
+        self.assertFalse(case.exists())
+
+
+class TurboMemory(TurboTest):
+    """The memory floor before a clip (LFSTUDIO_H3TURBO_MIN_FREE_GIB, default 100), the guard while its job runs
+    (LFSTUDIO_H3TURBO_GUARD_GIB, default 5) and the job's own stop (exit 3), on the stub studio's MemAvailable file."""
+    env = {"STUB_H3TURBO_S": "30"}
+
+    def test_floor(self):
+        self.studio.set_memory(50)
+        job = self.studio.wait([self.turbo()], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", (
+            "ModelJobFailed: not enough free memory for a LightX2V Turbo clip: 50.0 GiB available with the models "
+            "closed, 100 GiB needed (LFSTUDIO_H3TURBO_MIN_FREE_GIB); close other apps")))
+        self.assertNotIn("case_dirs", job)
+        self.assertEqual((self.turbo_dirs(), self.runs("encodes.log")), ([], []))
+        self.assertNotIn("retrying", self.studio.log.read_text())
+        self.studio.set_memory(101)
+        self.assertTrue(self.waiting_for(self.turbo(seed=2), "turbo-jobs.log"))
+
+    def test_guard(self):
+        jid = self.turbo()
+        pid = self.waiting_for(jid, "turbo-jobs.log")
+        self.studio.set_memory(1)
+        t0 = time.time()
+        job = self.studio.wait([jid], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", (
+            "ModelJobFailed: stopped: MemAvailable was below 5 GiB for 3 s (1.0 GiB; LFSTUDIO_H3TURBO_GUARD_GIB)")))
+        self.assertLess(time.time() - t0, 8)
+        self.assertFalse(alive(pid))
+        self.assertIn("LightX2V Turbo: MemAvailable 1.0 GiB, below 5 GiB for 3 s: stopping its job (SIGKILL)",
+                      self.studio.log.read_text())
+
+    def test_the_jobs_own_stop(self):
+        self.restart(STUB_H3TURBO_ABORT="1")
+        job = self.studio.wait([self.turbo()], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", (
+            "ModelJobFailed: stopped by its job: MemAvailable fell below 6 GiB (MemAvailable 5.2 GiB, below "
+            "abort_below_gib 6 (STUB_H3TURBO_ABORT))")))
+
+    def test_checks_off(self):
+        self.restart(LFSTUDIO_H3TURBO_MIN_FREE_GIB="0", LFSTUDIO_H3TURBO_GUARD_GIB="0", STUB_H3TURBO_S="4")
+        self.studio.set_memory(1)
+        self.assertEqual(self.done(self.turbo())["status"], "done")
+
+
+class TurboFailure(TurboTest):
+    """A step that fails fails the clip with its own error, without a retry; the next Sol-H3 clip loads as usual."""
+
+    def failed(self, **env):
+        self.restart(**env)
+        job = self.studio.wait([self.turbo()], timeout=30)[0]
+        self.assertEqual(job["status"], "failed")
+        self.assertNotIn("first_error", job)
+        return job
+
+    def test_the_job(self):
+        job = self.failed(STUB_H3TURBO_FAIL="1")
+        self.assertEqual(job["error"], "ModelJobFailed: OutOfMemoryError: CUDA out of memory (STUB_H3TURBO_FAIL)")
+        self.assertNotIn("retrying", self.studio.log.read_text())
+        self.assertTrue(self.clip(seed=2)["includes_model_load"])
+
+    def test_the_encode(self):
+        job = self.failed(STUB_QWEN_FAIL="1")
+        self.assertEqual(job["error"], "ModelJobFailed: the prompt encode failed: RuntimeError: Worker exited with "
+                                       "code 1 (STUB_QWEN_FAIL)")
+        self.assertEqual(self.runs("turbo-jobs.log"), [])
+
+    def test_outputs(self):
+        log = lambda job: Path(job["case_dirs"][0]) / "turbo" / "worker.log"                     # noqa: E731
+        job = self.failed(STUB_H3TURBO_OUTPUT="none")
+        self.assertEqual(job["error"], f"ModelJobFailed: the LightX2V Turbo job wrote no clip_1024x576_121f.mp4; see "
+                                       f"{log(job)}")
+        job = self.failed(STUB_H3TURBO_OUTPUT="bad")
+        self.assertEqual(job["error"], f"ModelJobFailed: the LightX2V Turbo job's clip_1024x576_121f.mp4 can't be "
+                                       f"read; see {log(job)}")
+
+    def test_no_python_and_no_lora(self):
+        job = self.failed(LFSTUDIO_H3TURBO_PYTHON=str(self.dir / "nothing"))
+        self.assertTrue(job["error"].startswith(f"ModelJobFailed: cannot start the LightX2V Turbo job with "
+                                                f"LFSTUDIO_H3TURBO_PYTHON={self.dir / 'nothing'} ("), job["error"])
+        lora = self.studio.h3turbo / "loras" / LORA4
+        lora.unlink()
+        job = self.failed(LFSTUDIO_H3TURBO_PYTHON=sys.executable)
+        self.assertEqual(job["error"], f"ModelJobFailed: no lora file {lora}")           # the job's refusal
+
+
+class TurboWithoutUpscale(TurboTest):
+    """With the Upscale off (its job not loaded) a LightX2V Turbo clip runs, its memory floor and guard work."""
+    env = {"LFSTUDIO_UPSCALE": "0"}
+
+    def test_runs(self):
+        self.assertIs(self.studio.state()["upscale"], False)
+        job = self.done(self.turbo())
+        self.assertNotIn("upscalable", job)
+        self.studio.set_memory(50)
+        self.assertIn("50.0 GiB available", self.studio.wait([self.turbo(seed=2)], timeout=30)[0]["error"])
+
+
+class TurboUpscale(TurboTest):
+    """A LightX2V Turbo clip can't be upscaled yet (it has no Stage-2 files, and its sizes are other ones)."""
+
+    def test_refused(self):
+        jid = self.turbo()
+        self.done(jid)
+        why = "Upscale of LightX2V Turbo clips comes in a later version"
+        self.assertEqual(self.studio.job(jid)["upscalable"], {"ok": False, "why": why})
+        self.assertEqual(self.studio.upscale(jid), (400, {"error": why}))
+
+
+class TurboLoad(TurboTest):
+    """POST /api/load takes a model: sol-h3 (the default) as before; LightX2V Turbo loads its model with each clip."""
+
+    def test_load(self):
+        want = {"task": "t2va", "orientation": "landscape", "seconds": 5}
+        self.assertEqual(self.studio.post("/api/load", json_body=dict(want, model=TURBO)), (409, {
+            "error": "LightX2V Turbo loads its model with each clip; there is nothing to load ahead"}))
+        self.assertEqual(self.studio.post("/api/load", json_body=dict(want, model="flux")),
+                         (400, {"error": "model must be one of sol-h3, lightx2v-turbo"}))
+        self.assertEqual(self.studio.post("/api/load", json_body=dict(want, model="sol-h3")), (200, {"ok": True}))
+        self.assertEqual(self.studio.wait_for(lambda s: s["session"]["state"] == "ready")["session"]["model"],
+                         "sol-h3")
+
+
+class TurboSettings(unittest.TestCase):
+    """LFSTUDIO_MODELS and, with lightx2v-turbo, LightX2V Turbo's settings: a bad value stops the server at start."""
+
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        for i, (env, message) in enumerate((
+                ({"LFSTUDIO_MODELS": "sol-h3,flux"}, "LFSTUDIO_MODELS=sol-h3,flux: unknown model flux (known: sol-h3, "
+                                                     "lightx2v-turbo) (see bin/env.example)"),
+                ({"LFSTUDIO_MODELS": "lightx2v-turbo"}, "LFSTUDIO_MODELS=lightx2v-turbo: must include sol-h3, the "
+                                                        "studio's own model (see bin/env.example)"),
+                ({"LFSTUDIO_MODELS": BOTH, "LFSTUDIO_H3TURBO_MIN_FREE_GIB": "-1"},
+                 "LFSTUDIO_H3TURBO_MIN_FREE_GIB=-1: must be a number of GiB, 0 or more (see bin/env.example)"),
+                ({"LFSTUDIO_MODELS": BOTH, "LFSTUDIO_H3TURBO_QWEN_CANVAS": "full", "LFSTUDIO_H3TURBO_BASE": "rel"},
+                 "LFSTUDIO_H3TURBO_BASE=rel: must be an absolute path; LFSTUDIO_H3TURBO_QWEN_CANVAS=full: must be "
+                 "draft or canvas (see bin/env.example)"),
+                ({"LFSTUDIO_MODELS": BOTH, "LFSTUDIO_H3TURBO_SCRIPT": str(d / "no-job.py")},
+                 f"LFSTUDIO_MODELS has lightx2v-turbo: cannot read its job {d / 'no-job.py'}"),
+                ({"LFSTUDIO_MODELS": BOTH, "LFSTUDIO_H3TURBO_ENCODE_SCRIPT": str(d / "no-encode.py")},
+                 f"LFSTUDIO_MODELS has lightx2v-turbo: no prompt encode at {d / 'no-encode.py'}"))):
+            with self.assertRaises(RuntimeError) as e:
+                StubStudio(d / str(i), env=env).start(timeout=10)
+            self.assertIn(message, str(e.exception))
+        for i, value in enumerate(("", " sol-h3 ", "sol-h3,,", " lightx2v-turbo , sol-h3")):
+            studio = StubStudio(d / f"ok{i}", env={"LFSTUDIO_MODELS": value}).start()
+            try:
+                self.assertEqual("models" in studio.state(), "lightx2v-turbo" in value, value)
+            finally:
+                studio.stop()
+
+
+class LauncherModels(LauncherSettingsCheck):
+    """bin/lf-studio --check with LFSTUDIO_MODELS (in the server's words), and with lightx2v-turbo its settings, its
+    Python, its prompt encode and its job's check_install (here the stand-ins'); --kill ends a left-over job or
+    encode."""
+    test_settings = test_api_setting = test_older_patch = None
+
+    def turbo(self):
+        root = self.d / "h3turbo"
+        (root / "base").mkdir(parents=True)
+        (root / "loras").mkdir()
+        (root / "loras" / LORA4).write_bytes(b"")
+        stub = Path(__file__).resolve().parent / "stub"
+        return {"LFSTUDIO_MODELS": BOTH, "LFSTUDIO_H3TURBO_SCRIPT": str(stub / "h3turbo_job.py"),
+                "LFSTUDIO_H3TURBO_ENCODE_SCRIPT": str(stub / "h3turbo_encode.py"),
+                "LFSTUDIO_H3TURBO_PYTHON": sys.executable, "LFSTUDIO_H3TURBO_BASE": str(root / "base"),
+                "LFSTUDIO_H3TURBO_LORAS": str(root / "loras")}
+
+    def refused(self, why, **settings):
+        code, out = self.check(**settings)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"REFUSED - {why}", out)
+
+    def test_the_setting(self):
+        for value in ("", "sol-h3", " sol-h3 ,"):
+            code, out = self.check(LFSTUDIO_MODELS=value, LFSTUDIO_H3TURBO_MIN_FREE_GIB="not read")
+            self.assertEqual(code, 0, out)
+            self.assertNotIn("LightX2V", out)
+        self.refused("LFSTUDIO_MODELS=sol-h3,flux: unknown model flux (known: sol-h3, lightx2v-turbo) (see "
+                     "bin/env.example)", LFSTUDIO_MODELS="sol-h3,flux")
+        self.refused("LFSTUDIO_MODELS=lightx2v-turbo: must include sol-h3, the studio's own model (see "
+                     "bin/env.example)", LFSTUDIO_MODELS="lightx2v-turbo")
+
+    def test_turbo(self):
+        settings = self.turbo()
+        code, out = self.check(**settings)
+        self.assertEqual(code, 0, out)
+        self.assertIn("the experimental LightX2V Turbo is on (LFSTUDIO_MODELS): its environment, base model and LoRA "
+                      "are there", out)
+        turbo = "the experimental LightX2V Turbo (LFSTUDIO_MODELS): "
+        self.refused("LFSTUDIO_H3TURBO_GUARD_GIB=x: must be a number of GiB, 0 or more (see bin/env.example)",
+                     **settings, LFSTUDIO_H3TURBO_GUARD_GIB="x")
+        self.refused(f"{turbo}no Python at LFSTUDIO_H3TURBO_PYTHON={self.d / 'nothing'} (the environment of its job); "
+                     "set it up, or set LFSTUDIO_MODELS=sol-h3",
+                     **dict(settings, LFSTUDIO_H3TURBO_PYTHON=str(self.d / "nothing")))
+        self.refused(f"{turbo}no prompt encode at {self.d / 'no-encode.py'}",
+                     **dict(settings, LFSTUDIO_H3TURBO_ENCODE_SCRIPT=str(self.d / "no-encode.py")))
+        self.refused(f"LFSTUDIO_MODELS has lightx2v-turbo: cannot read its job {self.d / 'no-job.py'} (no such file)",
+                     **dict(settings, LFSTUDIO_H3TURBO_SCRIPT=str(self.d / "no-job.py")))
+        lora = self.d / "h3turbo" / "loras" / LORA4
+        lora.unlink()
+        self.refused(f"{turbo}no {lora} (the 4-step LoRA; install/66-h3turbo.sh fetches it); set it up", **settings)
+
+    def test_kill_ends_left_over_jobs(self):
+        """--kill (and the launcher's cleanup) find LightX2V Turbo's job and prompt encode by their command lines
+        (jobs/*.py --job, bench/*.py --case under this runtime root's web-UI outputs), not one elsewhere."""
+        repo, runtime = Path(__file__).resolve().parents[1], self.d / "runtime"
+        case = runtime / "outputs" / "webui" / f"20261028-000000-{TURBO}-576p-t2va-landscape-5s" / "web_x"
+        sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+        procs = [subprocess.Popen(sleeper + [str(repo / rel), flag, str(path)], start_new_session=True)
+                 for rel, flag, path in (("jobs/h3turbo_job.py", "--job", case / "turbo" / "job.json"),
+                                         ("bench/h3turbo_encode.py", "--case", case),
+                                         ("jobs/h3turbo_job.py", "--job", self.d / "bench" / "job.json"))]
+        self.addCleanup(lambda: [p.kill() or p.wait() for p in procs if p.poll() is None])
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "LFSTUDIO_", "SOLH3_"))}
+        env.update(LFSTUDIO_ENV=str(self.d / "no-env-file"), LFSTUDIO_SANA=str(self.d / "no-sana"),
+                   LFSTUDIO_PYTHON=sys.executable, SOL_H3_SPARK_RUNTIME_ROOT=str(runtime),
+                   LFSTUDIO_STATE_DIR=str(self.d / "state"), LFSTUDIO_SERVER=str(self.d / "no-server.py"),
+                   LFSTUDIO_TEST_SKIP_DOCKER="1")
+        run = subprocess.run(["bash", str(repo / "bin/lf-studio"), "--kill"], env=env, capture_output=True, text=True,
+                             timeout=60)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual([procs[0].wait(timeout=10), procs[1].wait(timeout=10)], [-signal.SIGKILL] * 2)
+        self.assertIsNone(procs[2].poll())
+
+
+class TurboSeam(unittest.TestCase):
+    """Where the h3-turbo work plugs in: the job the server loads (LFSTUDIO_H3TURBO_SCRIPT, default jobs/h3turbo_job.py)
+    has the names and tables the server uses, and the sizes of its canvases are the registry's; the stand-in has them,
+    and so does the real job once it is in this copy (skipped until then)."""
+    NAMES = ("JOB_VERSION", "PRESETS", "RECEIPT", "MINIMAX_PROMPT_TOKENS", "CANVAS", "studio_settings", "parse_job",
+             "output_name", "worker_command", "worker_environment", "parse_line", "write_json", "check_install")
+
+    def check(self, path):
+        spec = importlib.util.spec_from_file_location("h3turbo_job_under_test", path)
+        job = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(job)
+        for name in self.NAMES:
+            self.assertTrue(hasattr(job, name), f"{path} has no {name}")
+        self.assertEqual(job.JOB_VERSION, 1)
+        self.assertIn(4, job.PRESETS)
+        self.assertEqual({k: list(v) for k, v in job.CANVAS.items()},
+                         {("576p", "landscape"): [1024, 576], ("576p", "portrait"): [576, 1024],
+                          ("768p", "landscape"): [1344, 768], ("768p", "portrait"): [768, 1344]})
+        settings, problems = job.studio_settings({"LFSTUDIO_HOME": "/opt/lf"})
+        self.assertEqual(problems, [])
+        self.assertEqual({k: settings[k] for k in ("python", "base_model", "loras", "qwen_canvas", "min_free_gib",
+                                                   "guard_gib")},
+                         {"python": Path("/opt/lf/envs/regen2k/bin/python"),
+                          "base_model": Path("/opt/lf/checkpoints/MiniMax-H3"),
+                          "loras": Path("/opt/lf/checkpoints/Minimax-h3-Turbo"), "qwen_canvas": "draft",
+                          "min_free_gib": 100.0, "guard_gib": 5.0})
+        self.assertEqual(job.worker_command("/py", "/job.py", "/c/job.json", 7),
+                         ["/py", "-I", "-B", "/job.py", "--job", "/c/job.json", "--parent", "7"])
+        self.assertEqual(job.parse_line("[lf-studio] phase step 2/4"), ("phase", "step 2/4"))
+        self.assertNotIn("HF_TOKEN", job.worker_environment({"HF_TOKEN": "x", "PATH": "/bin"}))
+
+    def test_the_stand_in(self):
+        self.check(Path(__file__).resolve().parent / "stub" / "h3turbo_job.py")
+
+    def test_the_job(self):
+        real = REPO_DIR / "jobs" / "h3turbo_job.py"
+        if not real.is_file():
+            self.skipTest("jobs/h3turbo_job.py is not in this copy yet (the h3-turbo work)")
+        self.check(real)
 
 if __name__ == "__main__":
     unittest.main()

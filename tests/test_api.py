@@ -726,6 +726,102 @@ class ApiOff(ApiTest):
         self.assert_off("GET", f"/api/jobs/{body['id']}")
 
 
+TURBO = "lightx2v-turbo"
+
+
+class ModelRecord(ApiTest):
+    """The model choice on (LFSTUDIO_MODELS=sol-h3,lightx2v-turbo, the stand-ins of tests/stub): JSON submits with
+    model, resolution and steps, and a LightX2V Turbo clip's API record while it runs and once done: model,
+    model_opts, the encoding phase, job_phase, file_name."""
+
+    def seed(self):
+        self.studio.env.update(LFSTUDIO_MODELS=f"sol-h3,{TURBO}", STUB_H3TURBO_S="3", STUB_QWEN_S="1.5")
+
+    def test_record_wait_and_video(self):
+        jid = self.submit_ok({"prompt": "x", "model": TURBO, "resolution": "768p", "steps": 4, "seed": 5,
+                              "orientation": "portrait"})
+        rec = self.wait_state(jid, lambda r: r["phase"] == "encoding")
+        self.assertEqual((rec["state"], rec["status"], rec["model"]), ("running", "encoding the prompt", TURBO))
+        self.assertEqual(rec["model_opts"], {"resolution": "768p", "steps": 4, "size": [768, 1344],
+                                             "lora": "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors",
+                                             "qwen_canvas": "draft"})
+        self.assertNotIn("job_phase", rec)
+        rec = self.wait_state(jid, lambda r: (r.get("job_phase") or "").startswith("step"))
+        self.assertEqual((rec["status"], rec["phase"]), ("generating", "generating"))
+        self.assertEqual(self.get_job(jid, "?wait=0.2", "/video")[0], 202)
+        code, rec = self.get_job(jid, "?wait=60")
+        self.assertEqual((code, rec["state"], rec["phase"]), (200, "done", None))
+        name = f"lf-studio_{TURBO}-768p_t2va_5s_seed5_{jid[:6]}.mp4"
+        self.assertEqual((rec["file_name"], rec["model_opts"]["image_tokens"], rec["includes_model_load"]),
+                         (name, 0, True))
+        self.assertNotIn("job_phase", rec)
+        self.assertEqual(rec["urls"], {"video": f"/video/{jid}", "poster": f"/poster/{jid}"})
+        self.assertEqual(rec["upscalable"], {"ok": False, "why": "Upscale of LightX2V Turbo clips comes in a later "
+                                                                 "version"})
+        code, headers, data = self.studio.request("GET", f"/api/jobs/{jid}/video")
+        self.assertEqual((code, data[4:8], headers["Content-Disposition"]),
+                         (200, b"ftyp", f'inline; filename="{name}"'))
+        sol = self.submit_ok({"prompt": "x", "seed": 6})
+        rec = self.get_job(sol, "?wait=60")[1]
+        self.assertEqual((rec["model"], rec["file_name"]), ("sol-h3", f"lf-studio_t2va_5s_seed6_{sol[:6]}.mp4"))
+        self.assertNotIn("model_opts", rec)
+
+    def test_json(self):
+        for body, error in (({"model": ["sol-h3"]}, "model must be a string"),
+                            ({"model": TURBO, "resolution": 768}, "resolution must be a string"),
+                            ({"model": TURBO, "steps": 4.0}, "steps must be an integer"),
+                            ({"model": TURBO, "steps": "4"}, "steps must be an integer"),
+                            ({"model": TURBO, "seconds": 8}, "LightX2V Turbo makes 5 s clips for now"),
+                            ({"model": TURBO, "task": "ref2va", "ref_images": [{"name": "r.png", "data": b64(png())}]},
+                             "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now"),
+                            ({"model": TURBO, "last_frame": {"name": "f.png", "data": b64(png())}},
+                             "LightX2V Turbo needs a first frame for now"),
+                            ({"resolution": "576p"}, "resolution is an option of lightx2v-turbo; sol-h3 takes none"),
+                            ({"model": "flux"}, "model must be one of sol-h3, lightx2v-turbo")):
+            code, answer = self.submit(dict({"prompt": "x"}, **body))
+            self.assertEqual(code, 400, body)
+            self.assertTrue(answer["error"].startswith(f"ValueError: {error}"), (body, answer))
+        self.assertEqual((self.inputs(), self.studio.state()["jobs"]), ([], []))
+        jid = self.submit_ok({"prompt": "x", "model": TURBO, "first_frame": {"name": "f.png", "data": b64(png())},
+                              "resolution": None, "steps": None})                   # null: the default
+        rec = self.get_job(jid, "?wait=60")[1]
+        self.assertEqual((rec["state"], rec["task"], rec["model_opts"]["resolution"], rec["model_opts"]["steps"]),
+                         ("done", "fl2va", "576p", 4))
+
+
+class ModelOff(ApiTest):
+    """LFSTUDIO_MODELS unset (the default): a JSON submit may name sol-h3, which makes the clip as before (no new keys
+    in its record); another model is refused, and LightX2V Turbo's options are unknown keys, as before."""
+
+    def test_off(self):
+        jid = self.submit_ok({"prompt": "x", "model": "sol-h3"})
+        rec = self.get_job(jid, "?wait=30")[1]
+        self.assertEqual(rec["state"], "done")
+        self.assertFalse({"model", "model_opts", "file_name"} & set(rec))
+        self.assertNotIn("models", self.studio.state())
+        self.assertEqual(self.submit({"prompt": "x", "model": TURBO}),
+                         (400, {"error": f"ValueError: {TURBO} is off on this studio (LFSTUDIO_MODELS)"}))
+        for key, value in (("resolution", "576p"), ("steps", 4)):
+            code, answer = self.submit({"prompt": "x", key: value})
+            self.assertEqual(code, 400)
+            self.assertIn(f'unknown key "{key}" (known: prompt, task, orientation, seconds, seed, remix_from, keep, '
+                          'first_frame, last_frame, ref_images, ref_videos, ref_audio, model)', answer["error"])
+
+
+class ModelApiOff(ApiTest):
+    """LFSTUDIO_API=0 with the model choice on: the page's form makes LightX2V Turbo clips, JSON stays refused."""
+
+    def seed(self):
+        self.studio.env.update(LFSTUDIO_API="0", LFSTUDIO_MODELS=f"sol-h3,{TURBO}")
+
+    def test_form(self):
+        self.assertEqual(self.submit({"prompt": "x", "model": TURBO}), (403, API_OFF))
+        code, body = self.studio.turbo(resolution="768p")
+        self.assertEqual(code, 200, body)
+        job = self.studio.wait([body["id"]], timeout=60)[0]
+        self.assertEqual((job["status"], job["model"], job["model_opts"]["resolution"]), ("done", TURBO, "768p"))
+
+
 class BadApiSetting(unittest.TestCase):
     def test_refused_at_start(self):
         from studio import StubStudio

@@ -75,6 +75,20 @@ with the reason on clips it can't take; in cards too narrow for the names, Upsca
 buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off), the popover, the upscale's card and
 `tests/ui_test.py` with an upscale in the gallery.
 
+The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as
+by default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo
+on. `tests/stub/h3turbo_job.py` stands in for its job, `jobs/h3turbo_job.py` (`LFSTUDIO_H3TURBO_SCRIPT`): the server
+loads it (the real job's settings, presets and job.json check) and runs it; it prints the job's phase lines over
+`STUB_H3TURBO_S`, writes an MP4 at the clip's canvas and length and a receipt, ends at once on SIGTERM (or ignores
+it), dies with the server (`--parent`), and fails, stops for memory (exit 3) or writes no or a bad MP4 on its
+`STUB_H3TURBO_*` hooks. `tests/stub/h3turbo_encode.py` stands in for its prompt encode
+(`LFSTUDIO_H3TURBO_ENCODE_SCRIPT`, by default the h3-turbo work's `bench/h3turbo_encode.py`), with `STUB_QWEN_*`
+hooks. The `Turbo*` classes in `tests/test_server.py` cover the registry in `/api/state` and the page, the refusals,
+a clip's run, files, record and names, the queue across models, the warm-ups, Cancel in each step, restart, Delete,
+memory, failures, the settings and the launcher's checks; `TurboSeam` checks the job's interface (the real job's too,
+once it is in the copy); `ModelChoiceOff` runs v0.5.1's server from git next to this one with the model choice off
+and compares what they answer. `tests/test_api.py` has the API records (`Model*`).
+
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
 `Sol-H3-RTX5090` with a stand-in `runtime/offload.py`; no Docker; the RAM floor; the GPU memory floor driven by a fake

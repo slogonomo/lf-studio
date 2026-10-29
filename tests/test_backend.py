@@ -251,6 +251,19 @@ class LauncherRtx5090(LauncherTest):
                                FAKE_VRAM_FREE_MIB="30000")
         self.assertEqual(code, 0, out)
 
+    def test_no_lightx2v_turbo(self):
+        """The experimental LightX2V Turbo (LFSTUDIO_MODELS=sol-h3,lightx2v-turbo) needs the DGX Spark: refused
+        before its settings are read; sol-h3 alone passes."""
+        code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MODELS="sol-h3,lightx2v-turbo",
+                               LFSTUDIO_H3TURBO_GUARD_GIB="not read", FAKE_VRAM_FREE_MIB="30000")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - LFSTUDIO_MODELS=sol-h3,lightx2v-turbo: the experimental LightX2V Turbo "
+                      "(lightx2v-turbo) runs on the DGX Spark only, not with LFSTUDIO_BACKEND=rtx5090 (it needs ~100 "
+                      "GiB of GPU memory); set LFSTUDIO_MODELS=sol-h3 (see bin/env.example)", out)
+        code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MODELS="sol-h3", LFSTUDIO_MIN_FREE_GIB="0",
+                               FAKE_VRAM_FREE_MIB="30000")
+        self.assertEqual(code, 0, out)
+
 
 class LauncherBackendRefusals(LauncherTest):
     def test_invalid_backend(self):
@@ -392,6 +405,24 @@ class ServerBackend(unittest.TestCase):
             self.assertIs(s.state()["upscale"], True)
         finally:
             s.stop()
+
+    def test_lightx2v_turbo_refused_on_rtx5090(self):
+        """The experimental LightX2V Turbo needs the DGX Spark: the server stops with it in LFSTUDIO_MODELS on the
+        RTX 5090; sol-h3 alone starts there, without the models' table."""
+        with self.assertRaises(RuntimeError) as e:
+            self.studio("rtx-turbo", LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0",
+                        LFSTUDIO_MODELS="sol-h3,lightx2v-turbo").start()
+        self.assertIn("LFSTUDIO_MODELS=sol-h3,lightx2v-turbo: the experimental LightX2V Turbo (lightx2v-turbo) runs "
+                      "on the DGX Spark only, not with LFSTUDIO_BACKEND=rtx5090", str(e.exception))
+        for name, env in (("rtx-sol", {"LFSTUDIO_BACKEND": "rtx5090", "LFSTUDIO_UPSCALE": "0",
+                                       "LFSTUDIO_MODELS": "sol-h3"}),
+                          ("spark-turbo", {"LFSTUDIO_MODELS": "sol-h3,lightx2v-turbo"})):    # unset: the Spark
+            s = self.studio(name, **env).start()
+            try:
+                self.assertEqual([m["id"] for m in s.state().get("models", [])],
+                                 ["sol-h3", "lightx2v-turbo"] if name == "spark-turbo" else [])
+            finally:
+                s.stop()
 
 
 PAGE = (REPO / "webui" / "index.html").read_text()
