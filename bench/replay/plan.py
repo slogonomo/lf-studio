@@ -129,10 +129,15 @@ def stage2_paths(paths_template, task):
 
 
 def build(drafts, arm_specs, *, package, geometry, paths_template, out, label="", stop_at=None, info=None):
-    """The plan: one group per (format, length, canvas), each with its run list."""
-    keys, groups = [], {}
+    """The plan: one group per (format, length, canvas), each with its run list. With a keyframe arm, also one per
+    task: Stage 2 pins a first frame only in an fl2va session (runtime/stage2.py keyframe_mode_for), and a process
+    loads Stage 2 for its first draft's task."""
+    keys, groups, by_task = [], {}, False
+    if drafts:
+        native, sigmas = native_geometry(package, geometry, drafts[0]["orientation"], drafts[0]["seconds"])
+        by_task = any(armlib.settings(n, sigmas, native)["keyframe"] is not None for n, _ in arm_specs)
     for d in drafts:
-        fmt = (d["orientation"], d["seconds"])
+        fmt = (d["orientation"], d["seconds"], d["task"] if by_task else None)
         if fmt not in keys:
             keys.append(fmt)
     canvases = []
@@ -144,8 +149,9 @@ def build(drafts, arm_specs, *, package, geometry, paths_template, out, label=""
     order = 0
     for canvas in canvases:
         group_arms = [(n, k) for n, k in arm_specs if armlib.ARMS[n].canvas == canvas]
-        for orientation, seconds in keys:
-            members = [d for d in drafts if (d["orientation"], d["seconds"]) == (orientation, seconds)]
+        for orientation, seconds, task in keys:
+            members = [d for d in drafts if (d["orientation"], d["seconds"]) == (orientation, seconds)
+                       and task in (None, d["task"])]
             native, recipe_sigmas = native_geometry(package, geometry, orientation, seconds)
             for d in members:
                 if list(native["h3"]) != list(d["h3_shape"]):
@@ -163,6 +169,7 @@ def build(drafts, arm_specs, *, package, geometry, paths_template, out, label=""
             geo = armlib.canvas_geometry(native, canvas)
             order += 1
             gid = f"{order}-{orientation}-{seconds}s-{geo['output_width']}x{geo['output_height']}"
+            gid += f"-{task}" if task else ""
             arm_settings = {n: armlib.settings(n, recipe_sigmas, native) for n, _ in group_arms}
             runs = []
 

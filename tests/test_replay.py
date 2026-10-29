@@ -340,6 +340,20 @@ class PlanTests(Fixture):
         self.assertIn("first in process", text)
         self.assertIn("relaxes: the H3 upscaler runs at scale 1.25", text)
 
+    def test_keyframe_arms_run_each_task_in_its_own_process(self):
+        """Stage 2 pins a first frame only in an fl2va session, and a process loads Stage 2 for its first draft's task:
+        with a keyframe arm the drafts of one format are grouped by task too; without one, as before."""
+        self.add("a5", task="t2va")
+        self.add("b5", task="fl2va")
+        self.add("c5", task="ref2va")
+        p = self.build(["a5", "b5", "c5"], "baseline:1,keyframe_pin:1")
+        self.assertEqual([(g["id"], g["task"], g["drafts"]) for g in p["groups"]],
+                         [("1-landscape-5s-1344x768-t2va", "t2va", ["a5"]),
+                          ("2-landscape-5s-1344x768-fl2va", "fl2va", ["b5"]),
+                          ("3-landscape-5s-1344x768-ref2va", "ref2va", ["c5"])])
+        self.assertEqual([g["id"] for g in self.build(["a5", "b5", "c5"], "baseline:1")["groups"]],
+                         ["1-landscape-5s-1344x768"])
+
     def test_manifests_must_agree_on_stage2(self):
         self.add("a5", task="t2va")
         self.add("b5", task="fl2va")
@@ -638,7 +652,7 @@ class GpuRunTests(Fixture):
 
     def test_keyframe_sets_and_restores_the_session_mode(self):
         built = []
-        self.session.stage2_keyframe = "off"
+        self.session.stage2_keyframe, self.session.task = "off", "fl2va"
         self.session.ensure_image_encoder = lambda: built.append("encoder")
         self.models.image_encoder = None
         run = self.run_arm("keyframe_pin")
@@ -654,6 +668,9 @@ class GpuRunTests(Fixture):
         self.assertEqual(run.actual()["checks"], "relaxed")
         run.undo()
         self.assertEqual((self.session.stage2_keyframe, self.models.stage2_sigmas), ("off", tuple(self.sigmas)))
+        self.session.task = "t2va"                      # a t2va session never pins: no encoder for it
+        self.run_arm("keyframe_pin").undo()
+        self.assertEqual(built, ["encoder", "encoder"])
 
     def test_keyframe_receipts_are_verified(self):
         expected = {"steps": 3, "output": [1344, 768], "frames": 121, "sigmas": [0.909375, 0.725, 0.421875, 0.0],

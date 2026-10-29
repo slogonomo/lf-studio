@@ -106,9 +106,10 @@ class GpuRun:
 
     def keyframe(self, mode):
         """SOL_H3_STAGE2_KEYFRAME for this run (the session's mode; Session.run applies it to fl2va drafts with a first
-        frame). pin needs the image encoder: built once if this process started without it, and kept."""
+        frame, in an fl2va session). pin needs the image encoder there: built once, before the run's clock starts, if
+        this process started without it, and kept."""
         self._set(self.session, "stage2_keyframe", mode)
-        if mode == "pin":
+        if mode == "pin" and getattr(self.session, "task", None) == "fl2va":
             self.session.ensure_image_encoder()
 
     def apply(self, arm_name):
@@ -394,7 +395,8 @@ def main():
         expected = dict(group["arms"][run["arm"]], frames=group["geometry"]["output_frames"])
         if expected.get("keyframe") is not None:
             capture = json.loads((Path(draft["dir"]) / "stage1" / "capture.json").read_text())
-            expected["keyframe_applied"] = armlib.keyframe_expected(expected["keyframe"], capture)
+            expected["keyframe_applied"] = (armlib.keyframe_expected(expected["keyframe"], capture)
+                                            if group["task"] == "fl2va" else "off")
         row = {"group": group["id"], "draft": run["draft"], "arm": run["arm"], "repeat": run["repeat"],
                "planned_first_in_process": run["first_in_process"], "task": draft["task"],
                "orientation": group["orientation"], "seconds": group["seconds"], "canvas": group["canvas"],

@@ -482,7 +482,8 @@ upscaler, the adapter and the refiner, the Sol backend check, the writer's frame
 Arms are runtime patches in the bench, not hooks in the patch. That keeps the studio's runtime free of bench-only
 code, and the bench works with any installed 0.3 or later patch without reinstalling. The keyframe arms are the
 exception: they set the patch's own keyframe mode on the session, so they need a patch with `SOL_H3_STAGE2_KEYFRAME`
-(checked before loading). `keyframe_pin` builds the image encoder once in a process started without
+(checked before loading). With a keyframe arm, runs are also grouped by task, one process each: Stage 2 pins only
+in an fl2va session, as in the studio. `keyframe_pin` builds the image encoder once in an fl2va process started without
 `SOL_H3_STAGE2_KEYFRAME=pin` and keeps it; start the run with that setting to have it loaded as in a studio session.
 `add` copies an fl2va clip's first and last frame with its draft and points the copy's `capture.json` at them, so a
 pin still finds them once the studio's trash is emptied (a draft added before this names the studio's own
