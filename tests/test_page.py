@@ -2311,7 +2311,7 @@ class ModelRunning(ModelPage):
         self.page.wait_for_function("document.getElementById('loaded').textContent.endsWith('ready')")
         self.assertEqual(self.text("#loaded"), "Sol-H3 · Text · 16:9 · 5 s · ready")
         self.model(TURBO)
-        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~4:00 min est.")
+        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~3:27 min est.")   # 200 s + 7 s
         self.page.fill("#prompt", "a slow one")
         self.page.click("#go")
         jid = next(j["id"] for j in self.studio.wait_for(lambda s: len(s["jobs"]) == 2)["jobs"] if j["id"] != sol)
@@ -2354,7 +2354,7 @@ class ModelRunning(ModelPage):
         self.page.wait_for_selector(f'{self.card(sol)}[data-status="queued"]')
         self.assertEqual(self.text(f"{self.card(sol)} .ph2 .small"), "next up")
         self.model(TURBO)
-        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~4:00 min est.")
+        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~3:27 min est.")   # 200 s + 7 s
         self.assertEqual(self.page.get_attribute(f"{card} .cancel", "title"), "Stop this clip")
         self.page.click(f"{card} .cancel")
         self.page.wait_for_function("document.getElementById('toast').textContent === 'Stopping the clip'")
