@@ -498,9 +498,9 @@ downloads as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id
 `LFSTUDIO_PUBLISH_DIR` copy is named as the clip's with `_<resolution>` after it (`-2`, ... for a second one). Its
 files are in a directory of their own, so Delete moves only them; a clip can't be deleted while an upscale of it is
 queued or running (409). It fails, without a retry, below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` of free memory once the
-models are closed (default 110), or when the memory guard kills it (`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s);
-`error` says why (the job's own error line when it has one). A finished upscale also has `phases_s`, `peak_gib` and
-`low_mem_gib` from its job.
+models are closed (default 110; 5 GiB more at 4K), or when the memory guard kills it (`LFSTUDIO_UPSCALE_GUARD_GIB`,
+5 GiB for 3 s); `error` says why (the job's own error line when it has one). A finished upscale also has `phases_s`,
+`peak_gib` and `low_mem_gib` from its job.
 
 With the Upscale on, `/api/state` has `"upscale": true`, `"upscale_defaults"`, what a request without those keys
 gets (`{"resolution": "2k", "strength": <LFSTUDIO_UPSCALE_STRENGTH>, "audio": <LFSTUDIO_UPSCALE_AUDIO>}`; `null`

@@ -120,7 +120,8 @@ Environment:
                              file through mmap (the start log warns).
   LFSTUDIO_UPSCALE_PREREAD   0 (default): off. 1: the job reads its weights into the page cache in parallel before
                              it loads them (not shown to shorten the load yet). Needs LFSTUDIO_UPSCALE_LOAD=standard.
-  LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 0 = no check)
+  LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 5 more at 4K:
+                             regen2k_job.min_free_for; 0 = no check)
   LFSTUDIO_UPSCALE_GUARD_GIB stop an upscale when MemAvailable stays below this for 3 s (default 5; 0 = no guard)
   Test hooks: LFSTUDIO_UPSCALE_SCRIPT (the job script, default upscale/regen2k_job.py) and LFSTUDIO_TEST_MEMINFO (a
   file read for MemAvailable instead of /proc/meminfo; with the Upscale on, the start log warns when it is set).
@@ -1433,13 +1434,14 @@ def run_upscale(job):
     if job["audio"] == "clip" and not info["clip_audio"]:
         raise UpscaleFailed("the clip's Stage-1 audio is gone")
     files = upscale_files(parent)
-    floor = UPSCALE_CONF["min_free_gib"]
+    floor = regen.min_free_for(job["resolution"], UPSCALE_CONF["min_free_gib"])
     available = enough_memory(floor)
     if available is None and floor > 0:
         log(f"upscale: cannot read MemAvailable from {MEMINFO}; starting without the memory check")
     if available is not None and available < floor:
+        extra = f" plus {regen.FLOOR_4K_EXTRA_GIB:g} GiB at 4K" if floor != UPSCALE_CONF["min_free_gib"] else ""
         raise UpscaleFailed(f"not enough free memory for an upscale: {available:.1f} GiB available with the models "
-                            f"closed, {floor:g} GiB needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB); close other apps")
+                            f"closed, {floor:g} GiB needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB{extra}); close other apps")
     case = new_session_dir(f"upscale-{job['resolution']}") / job["case_id"]
     out = case / "regen"
     with lock:

@@ -291,9 +291,10 @@ environment, NVIDIA's package and the weights at start. Run `install/65-regen2k.
 `LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only` means `LFSTUDIO_BACKEND=rtx5090`: the
 release needs ~100 GiB of GPU memory.
 
-**`not enough free memory for an upscale: N GiB available with the models closed, 110 GiB needed`.** The studio
-closed its own models, and something else still holds the memory (another app, a container). Close it and try again;
-`LFSTUDIO_UPSCALE_MIN_FREE_GIB` changes the floor (measured in the job: ~101 GiB used at 2K, ~105 GiB at 4K).
+**`not enough free memory for an upscale: N GiB available with the models closed, 110 GiB needed`** (115 GiB at
+4K). The studio closed its own models, and something else still holds the memory (another app, a container). Close it
+and try again; `LFSTUDIO_UPSCALE_MIN_FREE_GIB` changes the floor, and 4K always needs 5 GiB more than it (measured in
+the job: ~101 GiB used at 2K, ~105 GiB at 4K).
 
 **`stopped: MemAvailable was below 5 GiB for 3 s`.** The Upscale's own memory guard killed the job (SIGKILL, so its
 `receipt.json` still says `running`) before the machine ran out (on GB10's unified memory that can hang the box), and

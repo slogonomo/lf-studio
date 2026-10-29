@@ -330,6 +330,12 @@ class StudioSettingsTests(unittest.TestCase):
             "LFSTUDIO_UPSCALE_MIN_FREE_GIB=-1: must be a number of GiB, 0 or more",
             "LFSTUDIO_UPSCALE_GUARD_GIB=inf: must be a number of GiB, 0 or more (see bin/env.example)"])
 
+    def test_min_free_for(self):
+        """4K needs 5 GiB more than the floor (its job used ~105 GiB, 2K ~101); a floor of 0 stays off."""
+        self.assertEqual([job_module.min_free_for(res, 110.0) for res in ("1080p", "2k", "4k")], [110.0, 110.0, 115.0])
+        self.assertEqual(job_module.min_free_for("4k", 0.0), 0.0)
+        self.assertEqual(job_module.min_free_for("4k", 100.0), 105.0)
+
     def test_the_patch_switches_for_o_direct(self):
         """SPARK_FAST_SAFETENSORS and SPARK_DIRECT_IO, which the job inherits: anything but 1 turns fastload's O_DIRECT
         reads off, as fastload itself reads them (the server warns at start); not a problem, any load."""

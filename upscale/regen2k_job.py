@@ -176,8 +176,9 @@ DEFAULT_AUDIO = "clip"
 # used, and 116.4 -> 11.1 GiB at 4K (the lean blocks), so ~105 GiB (the bench's 4K run: 13.8 GiB of 117.3, ~104).
 # 110 (the launcher's own floor for the studio; 117.7 GiB on the idle box) keeps the guard's 5 GiB clear at 2K, not
 # at 4K: a 4K job that starts with just 110 GiB free would come down to ~4.7 GiB, below the guard, which stops it if
-# that lasts 3 s. 4K wants ~111 GiB or more free.
+# that lasts 3 s. So 4K needs FLOOR_4K_EXTRA_GIB more than the floor (min_free_for): 115 GiB by default.
 MIN_FREE_GIB = 110
+FLOOR_4K_EXTRA_GIB = 5
 GUARD_GIB = 5
 
 # what this wrapper was written against (checked against the package's own names at run time)
@@ -354,6 +355,12 @@ def studio_settings(environ):
     if problems:
         problems[-1] += " (see bin/env.example)"
     return settings, problems
+
+
+def min_free_for(resolution, floor):
+    """The MemAvailable a job of this resolution needs to start: the floor (LFSTUDIO_UPSCALE_MIN_FREE_GIB), plus
+    FLOOR_4K_EXTRA_GIB at 4K (see MIN_FREE_GIB). A floor of 0 (no check) stays 0."""
+    return floor + FLOOR_4K_EXTRA_GIB if floor > 0 and resolution == "4k" else floor
 
 
 # ---------------------------------------------------------------- inputs (standard library only)

@@ -2700,6 +2700,17 @@ class UpscaleMemory(UpscaleTest):
         self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
         self.assertNotIn("retrying", self.studio.log.read_text())
 
+    def test_floor_at_4k(self):
+        """4K needs 5 GiB more (its job used ~105 GiB against ~101 at 2K): 112 GiB is enough for 2K, not for 4K."""
+        parent = self.clip()
+        self.studio.set_memory(112)
+        job = self.studio.wait([self.upscale(parent["id"], resolution="4k")], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"]), ("failed", (
+            "UpscaleFailed: not enough free memory for an upscale: 112.0 GiB available with the models closed, 115 GiB "
+            "needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB plus 5 GiB at 4K); close other apps")))
+        self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
+        self.assertTrue(self.upscaling(self.upscale(parent["id"], resolution="2k")))
+
     def test_guard(self):
         uid = self.upscale(self.clip()["id"])
         pid = self.upscaling(uid)
@@ -2735,6 +2746,7 @@ class UpscaleMemoryChecksOff(UpscaleTest):
         parent = self.clip()
         self.studio.set_memory(1)
         self.assertEqual(self.done(self.upscale(parent["id"]))["status"], "done")
+        self.assertEqual(self.done(self.upscale(parent["id"], resolution="4k"))["status"], "done")   # no 4K extra
 
 
 class UpscaleFailure(UpscaleTest):
