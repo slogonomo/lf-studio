@@ -315,9 +315,9 @@ def _resolve_definitions(raw, name, notes):
     """The subjects' {n: (full, short)} with each <Subject M> inside a definition written as M's short form, itself
     resolved (name(M) for a subject without a definition, or one whose definition leads back to the one being
     resolved: noted). Without recursion: a chain of definitions (<Subject 1> is <Subject 2>, ...) of any length is
-    resolved in the same order a recursive walk takes, with each subject being resolved on a list of its own. TooLong
-    when the forms written out pass 4 x PROMPT_MAX characters together: a definition that names another twice doubles
-    it at each step of such a chain."""
+    resolved in the order a recursive walk takes, the subjects being resolved kept on a list, not on Python's stack.
+    TooLong when the forms written out pass 4 x PROMPT_MAX characters together: a definition that names another twice
+    doubles it at each step of such a chain."""
     resolved, open_, size = {}, set(), [0]
 
     def form(n):

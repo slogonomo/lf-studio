@@ -4,7 +4,7 @@ form of the keyframe alignment line the studio writes (the prompt guide's exampl
 alignLine() for each set of keyframes, read from webui/index.html), on the inline references, on lines that only start
 like an alignment line and on dialogue (never changed); ref_text_only_prompt, a Reference prompt as t2va's three fields
 for the Upscale (the guide's and the page's examples, the summary form, free text, t2va's own fields, a prompt with
-nothing left); --upscale (the Upscale's encode: text alone, plain tokens allowed); the prompt as the server takes it (stripped, its length limit);
+nothing left, a chain of definitions, one too long as text alone); --upscale (the Upscale's encode: text alone, plain tokens allowed); the prompt as the server takes it (stripped, its length limit);
 the arguments and the environment it refuses; --check; and the encodes against a stand-in of the patch's runtime package
 (its Worker records the recipe it got and the calls, and writes conditioning files as the Qwen worker does): the canvas
 per job, the clip's encode and the text-only one, the receipt checks, the worker closed in every case. Standard library
