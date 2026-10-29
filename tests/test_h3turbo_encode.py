@@ -1,13 +1,13 @@
 """bench/h3turbo_encode.py (LightX2V Turbo's prompt encode: a clip's prompt conditioning from a transient Qwen worker,
 which the server's encode_prompt runs) and its wrapper bench/h3turbo-encode.sh, on the CPU: text_only_prompt on every
-form of the keyframe alignment line the studio writes (the prompt guide's examples, read from bin/lf-cli, and the
-page's alignLine(), read from webui/index.html), on the inline references, on lines that only start like an
-alignment line and on dialogue (never changed); the prompt as the server takes it (stripped, its length limit); the
-arguments and the environment it refuses; --check; and the encodes against a stand-in of the patch's runtime
-package (its Worker records the recipe it got and the calls, and writes conditioning files as the Qwen worker does):
-the canvas per job, the clip's encode and the text-only one, the receipt checks, the worker closed in every case.
-Standard library only. (The server's tests run it through its own encode() too: TurboEncodeSeam in
-tests/test_server.py; tests/stub/h3turbo_encode.py stands in for it in the stub studio.)
+form of the keyframe alignment line the studio writes (the prompt guide's examples, read from bin/lf-cli, and the page's
+alignLine() for each set of keyframes, read from webui/index.html), on the inline references, on lines that only start
+like an alignment line and on dialogue (never changed); the prompt as the server takes it (stripped, its length limit);
+the arguments and the environment it refuses; --check; and the encodes against a stand-in of the patch's runtime package
+(its Worker records the recipe it got and the calls, and writes conditioning files as the Qwen worker does): the canvas
+per job, the clip's encode and the text-only one, the receipt checks, the worker closed in every case. Standard library
+only. (The server's tests run it through its own encode() too: TurboEncodeSeam in tests/test_server.py;
+tests/stub/h3turbo_encode.py stands in for it in the stub studio.)
 """
 import hashlib
 import importlib.util
@@ -44,12 +44,20 @@ def guide_examples():
     return found
 
 
-def page_example(seconds=5):
-    """The page's fl2va example with its alignLine() for `seconds` (webui/index.html's EX.fl2va and alignLine)."""
+def page_lines():
+    """The page's keyframe lines per set of keyframes (webui/index.html's ALIGN, which alignLine() fills in)."""
     page = (REPO / "webui" / "index.html").read_text()
-    template = re.search(r"const alignLine=\(\)=>`(.*?)`;", page).group(1)
-    line = template.replace("${(+val('seconds')||5).toFixed(2)}", f"{seconds:.2f}")
-    assert "${" not in line, line
+    lines = json.loads(re.search(r"const ALIGN=(\{.*?\});\n", page, re.S).group(1))
+    assert set(lines) == {"first", "last", "first+last"}, lines
+    assert "const alignLine=frames=>(ALIGN[frames]||ALIGN['first+last']).replace('S.SS'," in page
+    return lines
+
+
+def page_example(seconds=5, frames="first+last"):
+    """The page's fl2va example with its alignLine() for `seconds` and the keyframes attached (webui/index.html's
+    EX.fl2va and alignLine; with none attached yet, the first + last line)."""
+    page = (REPO / "webui" / "index.html").read_text()
+    line = page_lines()[frames].replace("S.SS", f"{seconds:.2f}")
     example = re.search(r'fl2va:"(ALIGN\\n.*?)",\n', page).group(1)
     return json.loads(f'"{example}"').replace("ALIGN", line)
 
@@ -86,14 +94,23 @@ class TextOnlyTests(unittest.TestCase):
         self.assertNotIn("Picture", result["prompt"])
 
     def test_the_pages_alignment_line(self):
-        """alignLine(): a hyphen, no angle brackets, "-second mark" without "of the target video"; one newline."""
+        """alignLine() with both keyframes: a hyphen, no angle brackets, "-second mark" without "of the target video";
+        one newline. With one keyframe it writes the guide's own line for it (the forms the GPU validation ran: a
+        first frame alone fully referenced at 0 s, a last frame alone as <Picture 1> at the length)."""
+        guide = guide_examples()
         for seconds in (5, 8, 15):
             prompt = page_example(seconds)
             self.assertTrue(prompt.startswith("How the reference pictures align with the target video - Picture 1 "
                                               f"aligns with the 0.00-second mark; Picture 2 aligns with the "
                                               f"{seconds:.2f}-second mark.\nintegrated_multimodal_description:"))
-            result = helper.text_only_prompt(prompt)
-            self.assertEqual(result, {"prompt": prompt.split("\n", 1)[1], "dropped": ["alignment line"], "notes": []})
+            for frames in ("first+last", "first", "last"):
+                prompt = page_example(seconds, frames)
+                result = helper.text_only_prompt(prompt)
+                self.assertEqual(result, {"prompt": prompt.split("\n", 1)[1], "dropped": ["alignment line"],
+                                          "notes": []}, frames)
+        self.assertEqual(page_example(5, "first").split("\n")[0],
+                         guide["fl2va, first frame only, 5 s"].split("\n")[0])
+        self.assertEqual(page_example(6, "last").split("\n")[0], guide["fl2va, last frame only, 6 s"].split("\n")[0])
 
     def test_alignment_lines_in_other_places(self):
         """In front of the text on the same line (dialogue after it unchanged), after a blank line, with Windows line

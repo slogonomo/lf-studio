@@ -382,9 +382,14 @@ const $=id=>document.getElementById(id), form=$('f');
 const EX={t2va:"integrated_multimodal_description: A wide aerial shot follows an eagle gliding over a turquoise alpine lake, with pine forest, a narrow waterfall and snow-covered peaks visible in the background. Its wings flex gently as it banks through the warm afternoon light. The camera maintains its distance and reveals the landscape in one continuous shot. Natural colors, realistic feathers, no cuts or text.\noverall_soundscape: Wind moving through the valley, a distant eagle call and soft waterfall noise.\nnon_diegetic_music: None.",
 fl2va:"ALIGN\nintegrated_multimodal_description: A red fox walks from the woodland edge into the clearing. The camera stays wide.\noverall_soundscape: Soft wind and leaves rustling.",
 ref2va:"subject_definitions: <Subject 1> is the person in <Picture 1>. <Audio 1> provides the voice reference.\nsummary: [reference generation] <Subject 1> stands in a garden and greets the camera.\nretention_analysis: <Subject 1>: fully_preserved - face, hair and clothing as in <Picture 1>.\ndetailed_description: [Shot 1] A static medium shot. <Subject 1> faces the camera and says, <d>[English] Welcome to the garden.</d>\noverall_soundscape: Quiet outdoor ambience.\nnon_diegetic_music: N/A"};
-// fl2va alignment line: Picture 1 = first frame at 0 s, Picture 2 = last frame at the selected length
-const alignLine=()=>`How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; Picture 2 aligns with the ${(+val('seconds')||5).toFixed(2)}-second mark.`;
-const example=t=>EX[t].replace('ALIGN',alignLine());
+// fl2va's keyframe line for the keyframes attached (framesNow), S.SS the selected length: a first frame alone is fully
+// referenced at 0 s and a last frame alone, Picture 1, aligns with the length (the prompt guide's lines, docs/API.md);
+// both, or none attached yet: Picture 1 = first frame at 0 s, Picture 2 = last frame at the length
+const ALIGN={"first":"For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.",
+"last":"How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the S.SS-second mark of the target video.",
+"first+last":"How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; Picture 2 aligns with the S.SS-second mark."};
+const alignLine=frames=>(ALIGN[frames]||ALIGN['first+last']).replace('S.SS',(+val('seconds')||5).toFixed(2));
+const example=(t,frames)=>EX[t].replace('ALIGN',alignLine(frames));
 const HINT={t2va:"H3 base format",fl2va:"start with the alignment line",ref2va:"H3 full-reference format"};
 const CHIPS={t2va:["integrated_multimodal_description:","overall_soundscape:","non_diegetic_music: N/A"],
   fl2va:["alignment line","integrated_multimodal_description:","overall_soundscape:"],
@@ -562,19 +567,20 @@ setRadio('seconds',store.get('seconds','5'))||setRadio('seconds','5');
 autoroll.checked=store.get('autoroll','0')==='1';seed.value=store.get('seed','42');prompt.value=store.get('prompt','');
 buildModels();
 
-function modeUI(){const t=val('task');$('fl').hidden=t!=='fl2va';$('ref').hidden=t!=='ref2va';$('hint').textContent=HINT[t];prompt.placeholder=example(t);
+// frames: the keyframes attached (framesNow; none before the drop zones are set up)
+function modeUI(frames){const t=val('task');$('fl').hidden=t!=='fl2va';$('ref').hidden=t!=='ref2va';$('hint').textContent=HINT[t];prompt.placeholder=example(t,frames);
   const c=$('chips');c.textContent='';
   const ex=document.createElement('button');ex.type='button';ex.className='chip ex';ex.textContent='Example';ex.title='Replace the prompt with an example';
-  ex.onclick=()=>{prompt.value=example(t);store.set('prompt',prompt.value);prompt.focus();};c.append(ex);
+  ex.onclick=()=>{prompt.value=example(t,framesNow());store.set('prompt',prompt.value);prompt.focus();};c.append(ex);
   CHIPS[t].forEach(k=>{const b=document.createElement('button');b.type='button';b.className='chip';
     b.textContent='+ '+(k==='alignment line'?'alignment line':k.replace(/:$/,'').split(':')[0]);b.title='Insert at the cursor';
-    b.onclick=()=>{const ins=k==='alignment line'?alignLine():k;const at=prompt.selectionStart??prompt.value.length;
+    b.onclick=()=>{const ins=k==='alignment line'?alignLine(framesNow()):k;const at=prompt.selectionStart??prompt.value.length;
       const pre=prompt.value.slice(0,at),post=prompt.value.slice(at),lead=pre&&!pre.endsWith('\n')?'\n':'';
       prompt.value=pre+lead+ins+' '+post;store.set('prompt',prompt.value);prompt.focus();const p=(pre+lead+ins+' ').length;prompt.setSelectionRange(p,p);};
     c.append(b);});}
 form.addEventListener('change',e=>{const n=e.target.name;
-  if(n==='task'||n==='orientation'||n==='seconds'){store.set(n,val(n));if(n==='task')modeUI();
-    if(n==='seconds')prompt.placeholder=example(val('task'));if(n==='orientation')resUI();modelUI();updateGo();}
+  if(n==='task'||n==='orientation'||n==='seconds'){store.set(n,val(n));if(n==='task')modeUI(framesNow());
+    if(n==='seconds')prompt.placeholder=example(val('task'),framesNow());if(n==='orientation')resUI();modelUI();updateGo();}
   // the model and its options: each stored on its own; the header, the rows and Generate follow
   else if(n==='model'||n.startsWith('opt:')){store.set(n==='model'?'model':'opt.'+n.slice(4).replace(':','.'),val(n));modelUI();resUI();updateGo();}});
 autoroll.addEventListener('change',()=>store.set('autoroll',autoroll.checked?'1':'0'));
@@ -608,7 +614,7 @@ zones.forEach(z=>{const inp=z.querySelector('input'),th=z.querySelector('.thumbs
       w.append(el,x);th.append(w);});
     files.forEach(f=>{const kind=f.type.split('/')[0];if(kind!=='image'&&kind!=='video'){th.append(thumb('audio','',f.name));return;}
       const url=URL.createObjectURL(f),el=thumb(kind,url,f.name);el.dataset.url=url;th.append(el);});
-    if(booted)updateGo();};
+    if(booted){updateGo();prompt.placeholder=example(val('task'),framesNow());}};
   z.addEventListener('click',e=>{if(!e.target.closest('.clear'))inp.click();});
   z.addEventListener('keydown',e=>{if(e.target.closest('button'))return;            // a ×: it handles its own keys
     if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click();}});

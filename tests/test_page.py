@@ -139,6 +139,48 @@ class Durations(PageTest):
         self.assertRegex(self.page.inner_text(f"{card} .ph2 .big"), r"^0:0\d$")
 
 
+class KeyframeLine(PageTest):
+    """fl2va's keyframe line (the "alignment line" chip, the Example and the prompt's placeholder) follows the keyframes
+    attached: the prompt guide's line for a first frame alone and for a last frame alone (Picture 1, at the length),
+    the page's two-picture line with both or none yet."""
+    LAST = ("How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the "
+            "{}-second mark of the target video.")
+    FIRST = ("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully "
+             "referenced.")
+    BOTH = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; "
+            "Picture 2 aligns with the {}-second mark.")
+
+    def attach(self, zone, name):
+        self.page.set_input_files(f'input[name="{zone}"]', files=[{"name": name, "mimeType": "image/png",
+                                                                    "buffer": png()}])
+        self.page.wait_for_timeout(200)
+
+    def chip(self):
+        """The prompt after the alignment-line chip into an empty prompt."""
+        self.page.fill("#prompt", "")
+        self.page.click("#chips .chip:nth-child(2)")
+        return self.page.input_value("#prompt")
+
+    def test_the_line_per_keyframes(self):
+        self.pick("task", "fl2va")
+        self.pick("seconds", "8")
+        self.assertEqual(self.chip(), self.BOTH.format("8.00") + " ")                       # none attached yet
+        self.assertTrue(self.page.get_attribute("#prompt", "placeholder").startswith(self.BOTH.format("8.00") + "\n"))
+        self.attach("last_frame", "last.png")
+        self.assertEqual(self.chip(), self.LAST.format("8.00") + " ")
+        self.assertTrue(self.page.get_attribute("#prompt", "placeholder").startswith(self.LAST.format("8.00") + "\n"))
+        self.pick("seconds", "6")
+        self.page.click("#chips .chip.ex")
+        self.assertTrue(self.page.input_value("#prompt").startswith(self.LAST.format("6.00") + "\nintegrated_"))
+        self.assertTrue(self.page.get_attribute("#prompt", "placeholder").startswith(self.LAST.format("6.00") + "\n"))
+        self.attach("first_frame", "first.png")
+        self.assertEqual(self.chip(), self.BOTH.format("6.00") + " ")
+        self.page.click('.drop:has(input[name="last_frame"]) .clear')
+        self.page.wait_for_timeout(200)
+        self.assertEqual(self.chip(), self.FIRST + " ")
+        self.assertTrue(self.page.get_attribute("#prompt", "placeholder").startswith(self.FIRST + "\n"))
+
+
 class RemixInputs(PageTest):
     """#1: Remix puts the clip's files back into the form; Generate reuses them without uploading."""
 
