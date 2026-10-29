@@ -585,7 +585,7 @@ Every clip has a model. Without one it is **Sol-H3** (`sol-h3`): NVIDIA's two-st
 always been. A studio on a DGX Spark with `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo` (off by default;
 [INSTALL.md](INSTALL.md#experimental-lightx2v-turbo), `bin/env.example`) also has **LightX2V Turbo**
 (`lightx2v-turbo`): the full MiniMax-H3 in one stage with LightX2V's turbo LoRA (`lightx2v/Minimax-h3-Turbo`), which
-keeps the look of a keyframe more closely than Sol-H3's draft and refine, and takes longer.
+keeps its keyframes, the last one too (Sol-H3 holds the first frame only, since 0.5.2), and takes longer.
 
 **What it makes:** Text (t2va) and Keyframes (fl2va: a first frame, a last frame alone, or both), 5, 6, 7, 8, 10, 12
 or 15 s, 16:9 or 9:16, at `576p` (1024×576 or 576×1024, the default) or `768p` (1344×768 or 768×1344), in 4 steps.

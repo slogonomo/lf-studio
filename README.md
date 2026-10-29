@@ -113,11 +113,13 @@ page in a browser; see [AGENTS.md](AGENTS.md).
 Every clip is made with **Sol-H3**, NVIDIA's two-stage pipeline above, unless you pick another model. Off by default
 and on the DGX Spark only, `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo` and the optional install step
 `install/66-h3turbo.sh` add an experimental second model, **LightX2V Turbo**: the full MiniMax-H3 in one stage with
-LightX2V's [turbo LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo), 4 steps. It keeps the look of a keyframe:
-in a research probe on one DGX Spark (11 Keyframes clips of 5 s), frame 0 matched the first frame at 30-36 dB PSNR
-(compared at 384p), Sol-H3's clips of the same prompts and frames at 18-23 dB. The page then gets a Model row at the
-top of the prompt card, and agents and scripts name the model (`lf-cli generate --model lightx2v-turbo`, the MCP tool
-`generate`); `lf-cli models` and the MCP tool `models` list what each model makes.
+LightX2V's [turbo LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo), 4 steps. It keeps its keyframes: in a
+research probe on one DGX Spark (11 Keyframes clips of 5 s), frame 0 matched the first frame at 30-36 dB PSNR
+(compared at 384p), and in the job's own runs a clip with a last frame ended on it (30.9-34.3 dB). Sol-H3 has held the
+first frame since 0.5.2 (30-38 dB, measured on other clips), but not a last one. Sol-H3's clips of the probe's
+prompts and frames, made before 0.5.2, were at 18-23 dB. The page then gets a Model row at the top of the prompt card,
+and agents and scripts name the model (`lf-cli generate --model lightx2v-turbo`, the MCP tool `generate`); `lf-cli
+models` and the MCP tool `models` list what each model makes.
 
 - **What it makes:** Text and Keyframes (a first frame, a last frame alone, or both), 5, 6, 7, 8, 10, 12 or 15 s,
   16:9 or 9:16, at 576p (1024×576, the default) or 768p (1344×768). Reference shows greyed out, with the reason. What
