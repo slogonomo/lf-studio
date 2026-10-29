@@ -37,6 +37,15 @@ Sol-H3-Spark and the Sol Video Inference Engine are by NVIDIA Research:
   Yitong Li, Junsong Chen, Haopeng Li, Haozhe Liu, Jincheng Yu, Ligeng Zhu, Ping Luo, Song Han, Enze Xie.
   arXiv:2606.23743, 2026.
 
+Open-H3-Regenerate-2K, which the experimental Upscale runs, is by NVIDIA Research
+(https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/). NVIDIA asks users to cite the SoL-Refiner paper together
+with that page:
+  SoL-Refiner: Speed-of-Light One-Step Refinement for High-Resolution Video.
+  Haozhe Liu, Tian Ye, Shuchen Xue, Yitong Li, Junsong Chen, Haopeng Li, Jincheng Yu, Duomin Wang, Ruihua Zhang,
+  Lei Zhu, Song Han, Enze Xie. arXiv:2609.37969, 2026.
+  Open-H3-Regenerate-2K: High-Resolution Video Refinement with Few-Step Diffusion. Sensen Gao, Haozhe Liu,
+  Yitong Li, Haopeng Li, Tian Ye, Jia-Wang Bian, Song Han, Enze Xie. Project page, 2026.
+
 Not included here, obtained separately by the user, each under its own terms:
 
 - Model weights: MiniMaxAI/MiniMax-H3, FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA,

@@ -236,6 +236,11 @@ lists the pinned revisions and terms.
   the runtime and the install flow this repo builds on are theirs.
 - Built on MiniMax-H3, FastVideo/FastH3 (Hao AI Lab), LTX-2.5 (Lightricks), Sol-Attn, ComfyUI, LightX2V, the
   LBH-123-AI H3 latent upscaler and the Efficient-Large-Model H3-to-LTX adapter.
+- The experimental Upscale runs **Open-H3-Regenerate-2K** by NVIDIA Research
+  ([project page](https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/),
+  [code](https://github.com/NVlabs/Sana/tree/sol-engine/models/Open-H3-Regenerate-2K)), with the SoL-Refiner
+  refinement recipe. Its LoRA merges LightX2V's FL2VA Turbo adapter and Alissonerdx's LMS Sharp LoRA. NVIDIA asks
+  users to cite the SoL-Refiner paper together with the project page (the last two entries below).
 
 ```bibtex
 @misc{li2026solvideoinferenceengine,
@@ -254,6 +259,26 @@ lists the pinned revisions and terms.
   author={Li, Haopeng and Li, Yitong and Chen, Junsong and Ye, Tian and Liu, Haozhe and Yu, Jincheng and Wang, Duomin and Zhang, Ruihua and Xie, Zeke and Xie, Enze and Han, Song},
   journal={arXiv preprint arXiv:2607.24027},
   year={2026}
+}
+
+@misc{liu2026solrefiner,
+  title         = {{SoL-Refiner}: Speed-of-Light One-Step Refinement for High-Resolution Video},
+  author        = {Haozhe Liu and Tian Ye and Shuchen Xue and Yitong Li and
+                   Junsong Chen and Haopeng Li and Jincheng Yu and Duomin Wang and
+                   Ruihua Zhang and Lei Zhu and Song Han and Enze Xie},
+  year          = {2026},
+  eprint        = {2609.37969},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV},
+  url           = {https://arxiv.org/abs/2609.37969}
+}
+
+@misc{gao2026openh3regenerate2k,
+  title        = {Open-H3-Regenerate-2K: High-Resolution Video Refinement with Few-Step Diffusion},
+  author       = {Sensen Gao and Haozhe Liu and Yitong Li and Haopeng Li and Tian Ye and Jia-Wang Bian and Song Han and Enze Xie},
+  year         = {2026},
+  howpublished = {\url{https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/}},
+  note         = {Project page}
 }
 ```
 
