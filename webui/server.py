@@ -130,13 +130,16 @@ LFSTUDIO_LAUNCHER_PID or the LFSTUDIO_UPSCALE ones, which are new): an old name 
 with one warning. The default state directory is ~/.local/state/sol-h3-studio while that has jobs.db and
 ~/.local/state/lf-studio does not.
 
-SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0) and
+SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0),
 SOL_H3_DYNAMIC_TEXT_LENGTH (1 or 0; 1, the default since 0.4, compiles Stage 1's body blocks once per session for any
-prompt length, 0 once per prompt length) are patch settings (see docs/PATCH.md), checked at start: another value
-stops the server with a message, here and not in every Stage-1 load. So does a value, set or the default, that the
-applied patch is too old to give. 0.3's patch has none of the last three: it tokenizes as plain and compiles as
+prompt length, 0 once per prompt length) and SOL_H3_STAGE2_KEYFRAME (off, pin or draft; off, the default, as before:
+Stage 2 repaints a Keyframes clip's first frame; pin holds the uploaded first frame in it, experimental, #57) are patch
+settings (see docs/PATCH.md), checked at start: another value stops the server with a message, here and not in every
+Stage-1 load. So does a value, set or the default, that the applied patch is too old to give. 0.3's patch has none of
+SOL_H3_PROMPT_TOKENS, SOL_H3_STATIC_SHAPES and SOL_H3_DYNAMIC_TEXT_LENGTH: it tokenizes as plain and compiles as
 SOL_H3_STATIC_SHAPES=0 and SOL_H3_DYNAMIC_TEXT_LENGTH=0 do, so the defaults stop the server until install/10-sana.sh
-has applied the current patch.
+has applied the current patch. SOL_H3_STAGE2_KEYFRAME is DGX Spark only so far: with LFSTUDIO_BACKEND=rtx5090, pin
+and draft stop the server (the RTX 5090 patch does not have the setting yet).
 SOL_H3_SECONDS and SOL_H3_ORIENTATION are infer.py defaults. The studio passes length and format with every job, so
 the server removes both from its environment at start; otherwise a 5 s job would render at SOL_H3_SECONDS.
 """
@@ -221,15 +224,20 @@ except ImportError as error:
 
 # the patch's settings: (name, its check in runtime/config.py, default, what a patch without the setting does, the
 # version that added it). A bad value stops the studio here, not every clip. An older patch lacks some of them and
-# would ignore them: any other value, set or the default, stops the studio too.
+# would ignore them: any other value, set or the default, stops the studio too. SPARK_ONLY: settings the RTX 5090
+# patch does not have yet, so no install/10-sana.sh brings them there.
+SPARK_ONLY_SETTINGS = ("SOL_H3_STAGE2_KEYFRAME",)
 import runtime.config  # noqa: E402
 for setting, name, default, older, since in (("SOL_H3_STAGE2_AUDIO", "stage2_audio_mode", "frozen", "joint", "0.3"),
                                              ("SOL_H3_PROMPT_TOKENS", "prompt_tokens_mode", "minimax", "plain", "0.4"),
                                              ("SOL_H3_STATIC_SHAPES", "compile_dynamic", "1", "0", "0.4"),
-                                             ("SOL_H3_DYNAMIC_TEXT_LENGTH", "dynamic_text_length", "1", "0", "0.4")):
+                                             ("SOL_H3_DYNAMIC_TEXT_LENGTH", "dynamic_text_length", "1", "0", "0.4"),
+                                             ("SOL_H3_STAGE2_KEYFRAME", "stage2_keyframe_mode", "off", "off", "0.5.2")):
     setting_check, value = getattr(runtime.config, name, None), os.environ.get(setting, "")
     if setting_check is None and (value.strip().lower() or default) != older:
         asked = f"{setting}={value}" if value.strip() else f"{setting}={default} (the default since {since})"
+        if BACKEND == "rtx5090" and setting in SPARK_ONLY_SETTINGS:
+            fail(f"{asked}: the RTX 5090 patch does not have this setting yet (DGX Spark only; see bin/env.example)")
         fail(f"{asked} needs a newer patch than the one applied in {PKG}; run install/10-sana.sh")
     try:
         setting_check and setting_check()

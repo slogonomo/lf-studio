@@ -1116,6 +1116,25 @@ class BadStage2Audio(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class BadStage2Keyframe(unittest.TestCase):
+    """SOL_H3_STAGE2_KEYFRAME (a patch setting, #57; off by default) is checked at start too: a bad value stops the
+    studio instead of failing every Stage-2 load."""
+
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-bad-"))
+        try:
+            for i, value in enumerate(("first", "on", "1")):
+                with self.assertRaises(RuntimeError) as e:
+                    StubStudio(d / f"a{i}", env={"SOL_H3_STAGE2_KEYFRAME": value}).start()
+                self.assertIn(f"SOL_H3_STAGE2_KEYFRAME must be one of ('off', 'pin', 'draft'), not {value!r}",
+                              str(e.exception))
+            for i, value in enumerate(("PIN", "draft", " ", "off")):       # empty is the default, as unset
+                studio = StubStudio(d / f"b{i}", env={"SOL_H3_STAGE2_KEYFRAME": value}).start()
+                studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class BadDynamicTextLength(unittest.TestCase):
     """SOL_H3_DYNAMIC_TEXT_LENGTH (a patch setting, #41; on by default since 0.4) is checked at start too: a bad value
     stops the studio instead of failing every Stage-1 load once the transformer is in memory."""
@@ -1135,14 +1154,17 @@ class BadDynamicTextLength(unittest.TestCase):
 
 
 def older_patch_package(directory, version):
-    """The stub runtime as an older patch has it. 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS,
-    SOL_H3_STATIC_SHAPES or SOL_H3_DYNAMIC_TEXT_LENGTH; 0.2's has none of them. Such a patch tokenizes as plain does
-    and compiles as SOL_H3_STATIC_SHAPES=0 and SOL_H3_DYNAMIC_TEXT_LENGTH=0 do, and 0.2's refines as joint does."""
+    """The stub runtime as an older patch has it. 0.5's has every setting but SOL_H3_STAGE2_KEYFRAME (it never pins the
+    keyframe, as off does). 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS, SOL_H3_STATIC_SHAPES or
+    SOL_H3_DYNAMIC_TEXT_LENGTH; 0.2's has none of them. Such a patch tokenizes as plain does and compiles as
+    SOL_H3_STATIC_SHAPES=0 and SOL_H3_DYNAMIC_TEXT_LENGTH=0 do, and 0.2's refines as joint does."""
     package = Path(directory) / f"package-{version}"
     shutil.copytree(Path(__file__).resolve().parent / "stub" / "runtime", package / "runtime",
                     ignore=shutil.ignore_patterns("__pycache__"))
-    missing = {"0.3": "prompt_tokens_mode, compile_dynamic, dynamic_text_length",
-               "0.2": "stage2_audio_mode, prompt_tokens_mode, compile_dynamic, dynamic_text_length"}[version]
+    missing = {"0.5": "stage2_keyframe_mode",
+               "0.3": "prompt_tokens_mode, compile_dynamic, dynamic_text_length, stage2_keyframe_mode",
+               "0.2": "stage2_audio_mode, prompt_tokens_mode, compile_dynamic, dynamic_text_length, "
+                      "stage2_keyframe_mode"}[version]
     with (package / "runtime" / "config.py").open("a") as f:
         f.write(f"\ndel {missing}   # the patch of {version} has no such setting\n")
     return package
@@ -1167,12 +1189,18 @@ OLDER_PATCH_CASES = (
              "SOL_H3_STAGE2_AUDIO": "frozen"}, "SOL_H3_STAGE2_AUDIO=frozen"),
     ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0",
              "SOL_H3_STAGE2_AUDIO": "JOINT"}, None),
+    ("0.5", {}, None),                                     # SOL_H3_STAGE2_KEYFRAME is off by default: as 0.5 does
+    ("0.5", {"SOL_H3_STAGE2_KEYFRAME": " Off"}, None),
+    ("0.5", {"SOL_H3_STAGE2_KEYFRAME": "pin"}, "SOL_H3_STAGE2_KEYFRAME=pin"),
+    ("0.5", {"SOL_H3_STAGE2_KEYFRAME": "Draft"}, "SOL_H3_STAGE2_KEYFRAME=Draft"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0",
+             "SOL_H3_STAGE2_KEYFRAME": "pin"}, "SOL_H3_STAGE2_KEYFRAME=pin"),
 )
 
 
 def older_patch_settings(settings):
     return {"SOL_H3_PROMPT_TOKENS": "", "SOL_H3_STAGE2_AUDIO": "", "SOL_H3_STATIC_SHAPES": "",
-            "SOL_H3_DYNAMIC_TEXT_LENGTH": "", **settings}
+            "SOL_H3_DYNAMIC_TEXT_LENGTH": "", "SOL_H3_STAGE2_KEYFRAME": "", **settings}
 
 
 class BadPromptTokens(unittest.TestCase):
@@ -1184,7 +1212,7 @@ class BadPromptTokens(unittest.TestCase):
         started fine and every clip came out plain (#38)."""
         d = Path(tempfile.mkdtemp(prefix="lf-studio-old-"))
         try:
-            packages = {version: older_patch_package(d, version) for version in ("0.3", "0.2")}
+            packages = {version: older_patch_package(d, version) for version in ("0.5", "0.3", "0.2")}
             for i, (version, settings, refused) in enumerate(OLDER_PATCH_CASES):
                 package = packages[version]
                 studio = StubStudio(d / f"case-{i}", env=older_patch_settings(settings), package=package)
@@ -1214,8 +1242,8 @@ class BadPromptTokens(unittest.TestCase):
 
 class LauncherSettingsCheck(unittest.TestCase):
     """bin/lf-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS,
-    SOL_H3_STATIC_SHAPES, SOL_H3_DYNAMIC_TEXT_LENGTH) in the package, here the stub runtime, and refuses a bad value
-    with its message, or a value an older patch can't give (#38)."""
+    SOL_H3_STATIC_SHAPES, SOL_H3_DYNAMIC_TEXT_LENGTH, SOL_H3_STAGE2_KEYFRAME) in the package, here the stub runtime, and
+    refuses a bad value with its message, or a value an older patch can't give (#38)."""
 
     def setUp(self):
         self.d = Path(tempfile.mkdtemp(prefix="lf-studio-check-"))
@@ -1255,6 +1283,11 @@ class LauncherSettingsCheck(unittest.TestCase):
             code, out = self.check(SOL_H3_DYNAMIC_TEXT_LENGTH=value)
             self.assertEqual(code, 1, out)
             self.assertIn(f"REFUSED - SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not {value!r}", out)
+        for value in ("off", "Pin", "draft", " "):
+            self.assertEqual(self.check(SOL_H3_STAGE2_KEYFRAME=value)[0], 0, value)
+        code, out = self.check(SOL_H3_STAGE2_KEYFRAME="first")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - SOL_H3_STAGE2_KEYFRAME must be one of ('off', 'pin', 'draft'), not 'first'", out)
 
     def test_api_setting(self):
         """LFSTUDIO_API (#58): 1, 0, or unset or empty (on); any other value is refused with the server's words."""

@@ -37,6 +37,19 @@ def dynamic_text_length(environ=None):
     return value == "1"
 
 
+STAGE2_KEYFRAME_MODES = ("off", "pin", "draft")
+
+
+def stage2_keyframe_mode():
+    """The patch's SOL_H3_STAGE2_KEYFRAME check (runtime/config.py), same rules."""
+    import os
+    raw = os.environ.get("SOL_H3_STAGE2_KEYFRAME", "")
+    mode = raw.strip().lower() or "off"
+    if mode not in STAGE2_KEYFRAME_MODES:
+        raise ValueError(f"SOL_H3_STAGE2_KEYFRAME must be one of {STAGE2_KEYFRAME_MODES}, not {raw!r}")
+    return mode
+
+
 PROMPT_TOKEN_MODES = ("plain", "minimax")
 
 

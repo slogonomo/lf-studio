@@ -241,6 +241,21 @@ class LauncherRtx5090(LauncherTest):
         self.assertEqual(code, 1, out)
         self.assertIn("REFUSED - SOL_H3_PROMPT_TOKENS must be one of", out)
 
+    def test_stage2_keyframe_is_spark_only(self):
+        """SOL_H3_STAGE2_KEYFRAME (#57) is in the Spark patch only so far: with an RTX 5090 patch without it, the
+        default (off) passes, and pin or draft are refused as DGX Spark only, not sent to install/10-sana.sh."""
+        with (self.package / "runtime" / "config.py").open("a") as f:
+            f.write("\ndel stage2_keyframe_mode   # the RTX 5090 patch has no such setting yet\n")
+        settings = dict(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="30000")
+        self.assertEqual(self.check(**settings)[0], 0)
+        self.assertEqual(self.check(SOL_H3_STAGE2_KEYFRAME="off", **settings)[0], 0)
+        for value in ("pin", "Draft"):
+            code, out = self.check(SOL_H3_STAGE2_KEYFRAME=value, **settings)
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"REFUSED - SOL_H3_STAGE2_KEYFRAME={value}: the RTX 5090 patch does not have this setting "
+                          "yet (DGX Spark only) (see bin/env.example)", out)
+            self.assertNotIn("install/10-sana.sh", out)
+
     def test_no_upscale(self):
         """The experimental Upscale (LFSTUDIO_UPSCALE=1) needs the DGX Spark: refused first; 0 passes."""
         code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="1", FAKE_VRAM_FREE_MIB="30000")
@@ -380,6 +395,28 @@ class ServerBackend(unittest.TestCase):
         with self.assertRaises(RuntimeError) as e:
             self.studio("bad", LFSTUDIO_BACKEND="gb10").start()
         self.assertIn("LFSTUDIO_BACKEND=gb10: must be spark or rtx5090", str(e.exception))
+
+    def test_stage2_keyframe_is_spark_only(self):
+        """SOL_H3_STAGE2_KEYFRAME (#57): a package without the setting, as the RTX 5090 patch is so far, starts with the
+        default; pin stops the server, on the RTX 5090 as DGX Spark only, on the Spark as an older patch."""
+        package = self.d / "package"
+        shutil.copytree(STUB / "runtime", package / "runtime", ignore=shutil.ignore_patterns("__pycache__"))
+        with (package / "runtime" / "config.py").open("a") as f:
+            f.write("\ndel stage2_keyframe_mode   # a patch without the setting\n")
+        s = self.studio("rtx-off", LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0")
+        s.package = package
+        s.start()
+        s.stop()
+        for name, env, refusal in (
+                ("rtx-pin", dict(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0"),
+                 "SOL_H3_STAGE2_KEYFRAME=pin: the RTX 5090 patch does not have this setting yet (DGX Spark only"),
+                ("spark-pin", {}, f"SOL_H3_STAGE2_KEYFRAME=pin needs a newer patch than the one applied in "
+                                  f"{package.resolve()}; run install/10-sana.sh")):
+            s = self.studio(name, SOL_H3_STAGE2_KEYFRAME="pin", **env)
+            s.package = package
+            with self.assertRaises(RuntimeError) as e:
+                s.start()
+            self.assertIn(refusal, str(e.exception))
 
     def test_upscale_refused_on_rtx5090(self):
         """The experimental Upscale needs the DGX Spark: the server stops with LFSTUDIO_UPSCALE=1 on the RTX 5090."""
