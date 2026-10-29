@@ -166,6 +166,50 @@ class DraftTests(Fixture):
         info = self.add("nostudio", studio=False)
         self.assertIsNone(info["studio"])
 
+    def test_keyframes_are_copied_with_the_draft(self):
+        """An fl2va clip's keyframes are copied into the draft (a pin reads the first frame) and the copy's
+        capture.json names the copies; everything else in it stays the studio's."""
+        case = make_case(self.rt, self.geometry, "kf", task="fl2va")
+        inputs = self.rt / "inputs" / "webui" / "kf"
+        inputs.mkdir(parents=True)
+        (inputs / "First.PNG").write_bytes(b"first frame")
+        capture = json.loads((case / "stage1" / "capture.json").read_text())
+        capture.update(input_spec={"task": "fl2va", "first_frame": str(inputs / "First.PNG"),
+                                   "last_frame": str(inputs / "last.jpg"), "references": []},
+                       input_sha256={"first_frame": hashlib.sha256(b"first frame").hexdigest()})
+        (case / "stage1" / "capture.json").write_text(json.dumps(capture))
+        info = drafts.add(self.store, "kf", case, self.geometry)          # the last frame is gone meanwhile
+        self.assertEqual(info["inputs"], {
+            "first_frame": {"source": str(inputs / "First.PNG"), "file": "inputs/first_frame.png",
+                            "sha256": hashlib.sha256(b"first frame").hexdigest()},
+            "last_frame": {"source": str(inputs / "last.jpg"), "missing": True}})
+        copied = json.loads((self.store / "kf" / "stage1" / "capture.json").read_text())
+        self.assertEqual(copied["input_spec"]["first_frame"], str(self.store / "kf" / "inputs" / "first_frame.png"))
+        self.assertEqual(copied["input_spec"]["last_frame"], str(inputs / "last.jpg"))   # kept: a pin would name it
+        self.assertEqual({k: v for k, v in copied.items() if k != "input_spec"},
+                         {k: v for k, v in capture.items() if k != "input_spec"})
+        self.assertEqual((self.store / "kf" / "inputs" / "first_frame.png").read_bytes(), b"first frame")
+        shutil.rmtree(inputs)                                    # the studio's trash emptied: the draft still pins
+        self.assertTrue((self.store / "kf" / "inputs" / "first_frame.png").is_file())
+        self.assertIn("seed 7, first frame, last frame MISSING, no dialogue",
+                      drafts.describe(drafts.load(self.store, "kf")))
+        self.assertIsNone(self.add("t2", task="t2va")["inputs"] or None)
+        self.assertEqual(json.loads((self.store / "t2" / "stage1" / "capture.json").read_text()),
+                         json.loads((self.rt / "outputs" / "webui" / "session-t2va-landscape-5s" / "t2" / "stage1" /
+                                     "capture.json").read_text()))          # no keyframes: copied as it is
+
+    def test_a_keyframe_that_changed_since_stage1_is_refused(self):
+        case = make_case(self.rt, self.geometry, "kc", task="fl2va")
+        first = self.rt / "first.png"
+        first.write_bytes(b"another image")
+        capture = json.loads((case / "stage1" / "capture.json").read_text())
+        capture.update(input_spec={"task": "fl2va", "first_frame": str(first), "last_frame": None, "references": []},
+                       input_sha256={"first_frame": "0" * 64})
+        (case / "stage1" / "capture.json").write_text(json.dumps(capture))
+        with self.assertRaisesRegex(ValueError, "not the first frame Stage 1 read"):
+            drafts.add(self.store, "kc", case, self.geometry)
+        self.assertFalse((self.store / "kc").exists())
+
     def test_turns(self):
         self.assertEqual(drafts.parse_turns("R:0-1.2,L:2.4-4.7"),
                          [{"speaker": "R", "t0": 0.0, "t1": 1.2}, {"speaker": "L", "t0": 2.4, "t1": 4.7}])
@@ -226,6 +270,22 @@ class ArmTests(Fixture):
         self.assertEqual(tuple(t480["h3_upscaled"]), (1, 24, 37, 52, 30))
         ten, _ = self.native(seconds=10)
         self.assertEqual(arms.video_tokens(arms.canvas_geometry(ten, 480)), 31 * 15 * 26)
+
+    def test_keyframe_arms(self):
+        native, sigmas = self.native()
+        self.assertIsNone(arms.settings("baseline", sigmas, native)["keyframe"])    # the session's own setting
+        for name, mode, steps in (("keyframe_off", "off", 3), ("keyframe_pin", "pin", 3),
+                                  ("keyframe_draft", "draft", 3), ("keyframe_pin_steps2", "pin", 2)):
+            s = arms.settings(name, sigmas, native)
+            self.assertEqual((s["keyframe"], s["steps"], s["output"]), (mode, steps, [1344, 768]), name)
+        with self.assertRaises(ValueError):
+            arms.Recorder(sigmas, native).keyframe("on")
+        first = {"task": "fl2va", "input_spec": {"first_frame": "/in/a.png", "last_frame": None}}
+        last = {"task": "fl2va", "input_spec": {"first_frame": None, "last_frame": "/in/b.png"}}
+        t2va = {"task": "t2va", "input_spec": {"first_frame": None}}
+        self.assertEqual([arms.keyframe_expected("pin", c) for c in (first, last, t2va, {})],
+                         ["pin", "off", "off", "off"])
+        self.assertEqual(arms.keyframe_expected("draft", first), "draft")
 
     def test_recorder_refuses_bad_settings(self):
         native, sigmas = self.native()
@@ -576,6 +636,59 @@ class GpuRunTests(Fixture):
         run.undo()
         self.assertIs(self.models.tiling_config, before)
 
+    def test_keyframe_sets_and_restores_the_session_mode(self):
+        built = []
+        self.session.stage2_keyframe = "off"
+        self.session.ensure_image_encoder = lambda: built.append("encoder")
+        self.models.image_encoder = None
+        run = self.run_arm("keyframe_pin")
+        self.assertEqual((self.session.stage2_keyframe, built), ("pin", ["encoder"]))
+        self.assertEqual(run.actual()["keyframe"], "pin")
+        run.undo()
+        self.assertEqual(self.session.stage2_keyframe, "off")
+        run = self.run_arm("keyframe_draft")                         # no encoder for the draft's own frame 0
+        self.assertEqual((self.session.stage2_keyframe, built), ("draft", ["encoder"]))
+        run.undo()
+        run = self.run_arm("keyframe_pin_steps2")
+        self.assertEqual((self.session.stage2_keyframe, self.models.stage2_sigmas), ("pin", (0.725, 0.421875, 0.0)))
+        self.assertEqual(run.actual()["checks"], "relaxed")
+        run.undo()
+        self.assertEqual((self.session.stage2_keyframe, self.models.stage2_sigmas), ("off", tuple(self.sigmas)))
+
+    def test_keyframe_receipts_are_verified(self):
+        expected = {"steps": 3, "output": [1344, 768], "frames": 121, "sigmas": [0.909375, 0.725, 0.421875, 0.0],
+                    "tiles": {"frames": [128, 24], "height": [448, 64], "width": [768, 64]}, "profile_step": None,
+                    "keyframe": "pin", "keyframe_applied": "pin"}
+        pinned = {"stage2_keyframe": "pin", "result": {
+            "attention": {"completed_steps": 3, "sol_calls": 141},
+            "output_info": {"width": 1344, "height": 768, "frames": 121},
+            "official_vae_tiling": {"config": {"frames": {"tile_size": 128, "overlap": 24},
+                                               "height": {"tile_size": 448, "overlap": 64},
+                                               "width": {"tile_size": 768, "overlap": 64}}},
+            "spatial_route": {"actual_calls": {"input_video_vae": 1}},
+            "highres_first_frame": {"mode": "pin", "latent_index": 0, "strength": 1.0, "tokens": [0, 1008]}}}
+        self.assertEqual(stage2.verify(pinned, expected, {"sigmas": expected["sigmas"], "keyframe": "pin"}), [])
+        self.assertEqual(stage2.verify(pinned, expected, {"sigmas": expected["sigmas"], "keyframe": "off"}),
+                         ["the session held keyframe mode off, expected pin"])
+        off = json.loads(json.dumps(pinned))                     # what Stage 2 does for a draft it cannot pin
+        off.update(stage2_keyframe="off")
+        off["result"].update(highres_first_frame=None, spatial_route={"actual_calls": {"input_video_vae": 0}})
+        self.assertEqual(len(stage2.verify(off, expected)), 3)
+        self.assertEqual(stage2.verify(off, dict(expected, keyframe_applied="off")), [])
+        self.assertEqual(stage2.verify(off, dict(expected, keyframe=None)), [])     # other arms: not checked
+        wrong = json.loads(json.dumps(pinned))
+        wrong["result"]["highres_first_frame"]["latent_index"] = 15
+        self.assertIn("expected a pin at latent frame 0", " ".join(stage2.verify(wrong, expected)))
+
+    def test_preflight_needs_the_keyframe_pin_for_keyframe_arms(self):
+        old = type("OldStage2", (), {"Session": type("Session", (), {}), "public_refiner_modules": None,
+                                     "upscale_comfy_normalized_h3": None})
+        models_module = type("M", (), {"SIGMAS": tuple(self.sigmas)})
+        geometry_module = type("G", (), {"from_recipe": None})
+        stage2.preflight(old, models_module, geometry_module, self.sigmas)
+        with self.assertRaisesRegex(RuntimeError, "keyframe_mode_for.*Session.ensure_image_encoder"):
+            stage2.preflight(old, models_module, geometry_module, self.sigmas, keyframe=True)
+
     def test_contract_and_verify(self):
         model = type("M", (), {})()
         model.sol_backend, model.sol_attention = "triton", Stats(0)
@@ -735,6 +848,11 @@ class ReportTests(Fixture):
         self.assertIn("vs the studio's clip (warm, Stage 2 36.0 s in the studio): yes", text)
         self.assertIn("audio identical in every run", text)
         self.assertIn("4 of 4 planned runs passed", text)
+        h = {"sha256": "x", "video_md5": "v", "audio_md5": "a"}
+        row = {"status": "PASS", "output": "o.mp4", "request_index": 2, "stage2_audio": "frozen",
+               "stage2_keyframe": "pin"}
+        self.assertEqual(report.studio_verdict(row, d["studio"], h, h), "n/a: keyframe pin here, off in the studio")
+        self.assertEqual(report.studio_verdict(dict(row, stage2_keyframe="off"), d["studio"], h, h), "yes")
 
         qdir, complete = quality.quality(out, log=lambda *a: None)
         self.assertIsNone(complete)

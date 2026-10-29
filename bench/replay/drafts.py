@@ -1,9 +1,11 @@
 """The replay bench's draft store. Standard library only.
 
 A draft is the Stage-1 output of one studio clip: `stage1/capture.json` and `stage1/stage1_direct_tensors.pt` in its
-case folder (`<runtime root>/outputs/webui/<session>/<case>`). Stage 2 reads nothing else. `add` copies them, with
-the studio's final MP4 and Stage-2 receipt for comparison, into `<runtime root>/outputs/bench/replay-drafts/<name>/`.
-A copy, because deleting a clip in the studio moves its folder to the trash, and emptying the trash removes it.
+case folder (`<runtime root>/outputs/webui/<session>/<case>`). Stage 2 reads nothing else, apart from an fl2va clip's
+first frame with SOL_H3_STAGE2_KEYFRAME=pin. `add` copies them, the clip's keyframes (to `inputs/`, with the copy's
+capture.json pointing there) and the studio's final MP4 and Stage-2 receipt for comparison, into
+`<runtime root>/outputs/bench/replay-drafts/<name>/`. A copy, because deleting a clip in the studio moves its folder
+and its input files to the trash, and emptying the trash removes them.
 
 draft.json records what the bench needs: task, format, length (from the capture's tensor shapes, with the package's
 own geometry rules), seed, the studio clip's hash and whether it was a warm run, and for dialogue drafts the
@@ -99,7 +101,11 @@ def add(store, name, case_dir, geometry, *, dialogue=False, turns=None, mouth=No
     tmp = target.with_name(f".{name}.partial")
     shutil.rmtree(tmp, ignore_errors=True)
     (tmp / "stage1").mkdir(parents=True)
-    shutil.copy2(capture_path, tmp / "stage1" / "capture.json")
+    inputs = copy_keyframes(capture, tmp, target)
+    if inputs:              # the copy's capture.json names the copied keyframes (the rest of it is the studio's)
+        (tmp / "stage1" / "capture.json").write_text(json.dumps(capture, indent=2, ensure_ascii=False) + "\n")
+    else:
+        shutil.copy2(capture_path, tmp / "stage1" / "capture.json")
     shutil.copy2(payload_path, tmp / "stage1" / "stage1_direct_tensors.pt")
     studio = None
     receipt_path = case / "stage2" / "stage2_result.json"
@@ -115,6 +121,7 @@ def add(store, name, case_dir, geometry, *, dialogue=False, turns=None, mouth=No
             studio = {"mp4": f"studio/{mp4.name}", "sha256": sha, "sha256_matches_receipt": sha == receipt.get("output_sha256"),
                       "request_index": index, "warm": isinstance(index, int) and index >= 1,
                       "stage2_audio": receipt.get("stage2_audio") or "joint (before 0.3)",
+                      "stage2_keyframe": receipt.get("stage2_keyframe") or "off",
                       "stage2_s": receipt.get("stage2_request_s"),
                       "phases_s": (receipt.get("result") or {}).get("phases_s")}
     info = {"name": name, "added": time.strftime("%Y-%m-%d %H:%M:%S"), "source": str(case),
@@ -123,10 +130,37 @@ def add(store, name, case_dir, geometry, *, dialogue=False, turns=None, mouth=No
             "h3_shape": capture["h3_normalized"]["shape"], "audio_shape": capture["audio"]["shape"],
             "request_id": capture.get("request_id", capture.get("case_id")), "seed": capture["seed"],
             "payload_sha256": capture["payload_sha256"], "prompt": capture.get("prompt", ""),
-            "dialogue": bool(dialogue or turns), "turns": turns, "mouth": mouth, "note": note, "studio": studio}
+            "dialogue": bool(dialogue or turns), "turns": turns, "mouth": mouth, "note": note, "studio": studio,
+            "inputs": inputs}
     (tmp / "draft.json").write_text(json.dumps(info, indent=1, ensure_ascii=False) + "\n")
     tmp.rename(target)
     return info
+
+
+def copy_keyframes(capture, tmp, target):
+    """Copy an fl2va clip's first and last frame into the draft (tmp, renamed to target when done) and point the
+    capture at the copies. Returns {key: {source, file, sha256}}; a keyframe that is gone is recorded as missing and
+    keeps its path (a pin of it then fails, naming that path). The capture's input_sha256 (patches since #57), when
+    present, must match the copy."""
+    spec, recorded, inputs = capture.get("input_spec") or {}, capture.get("input_sha256") or {}, {}
+    for key in ("first_frame", "last_frame"):
+        source = spec.get(key)
+        if not source:
+            continue
+        path = Path(source)
+        if not path.is_file():
+            inputs[key] = {"source": source, "missing": True}
+            continue
+        (tmp / "inputs").mkdir(exist_ok=True)
+        name = f"{key}{path.suffix.lower()}"
+        shutil.copy2(path, tmp / "inputs" / name)
+        sha = media.sha256(tmp / "inputs" / name)
+        if recorded.get(key) not in (None, sha):
+            raise ValueError(f"{path} is not the {key.replace('_', ' ')} Stage 1 read (its sha256 differs from the "
+                             "capture's input_sha256)")
+        inputs[key] = {"source": source, "file": f"inputs/{name}", "sha256": sha}
+        spec[key] = str(target / "inputs" / name)
+    return inputs
 
 
 def load(store, name):
@@ -149,5 +183,8 @@ def describe(info):
             f"studio clip {'warm' if studio['warm'] else 'first in its process'}, {studio['stage2_audio']} audio")
     talk = f"dialogue, turns {info['turns']}" if info.get("turns") else ("dialogue, turns not set" if info.get("dialogue")
                                                                          else "no dialogue")
+    keys = info.get("inputs") or {}
+    frames = "".join(f", {key.replace('_', ' ')}{' MISSING' if value.get('missing') else ''}"
+                     for key, value in keys.items())
     return (f"{info['name']}: {info['task']} {info['orientation']} {info['seconds']} s "
-            f"({info['draft_frames']} -> {info['output_frames']} frames), seed {info['seed']}, {talk}; {clip}")
+            f"({info['draft_frames']} -> {info['output_frames']} frames), seed {info['seed']}{frames}, {talk}; {clip}")

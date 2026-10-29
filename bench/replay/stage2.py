@@ -104,6 +104,13 @@ class GpuRun:
     def profile_step(self, index):
         self.profile = int(index)
 
+    def keyframe(self, mode):
+        """SOL_H3_STAGE2_KEYFRAME for this run (the session's mode; Session.run applies it to fl2va drafts with a first
+        frame). pin needs the image encoder: built once if this process started without it, and kept."""
+        self._set(self.session, "stage2_keyframe", mode)
+        if mode == "pin":
+            self.session.ensure_image_encoder()
+
     def apply(self, arm_name):
         armlib.ARMS[arm_name].fn(self)
         if self.steps != self.recipe_steps:
@@ -114,6 +121,8 @@ class GpuRun:
         tiles = self.models.tiling_config
         return {"sigmas": [float(x) for x in self.models.stage2_sigmas],
                 "tiles": asdict(tiles) if is_dataclass(tiles) else repr(tiles),
+                "keyframe": getattr(self.session, "stage2_keyframe", None),
+                "image_encoder": getattr(self.models, "image_encoder", None) is not None,
                 "checks": "relaxed" if "replay_steps" in vars(getattr(self.cls, "_checked_attention_stats"))
                 else "runtime's own"}
 
@@ -148,6 +157,30 @@ def verify(receipt, expected, actual=None, run_dir=None):
     if expected.get("profile_step") is not None and run_dir is not None:
         if not (Path(run_dir) / "profile" / "profile_kernels.csv").is_file():
             problems.append("no profile/profile_kernels.csv for the profiled step")
+    if expected.get("keyframe") is not None:
+        problems += keyframe_problems(receipt, expected, actual)
+    return problems
+
+
+def keyframe_problems(receipt, expected, actual=None):
+    """A keyframe arm's receipt: the mode Stage 2 applied (expected["keyframe_applied"]: the arm's mode for an fl2va
+    draft with a first frame, else off), one VAE encode exactly when it pinned the first frame, and the pin's record
+    at latent frame 0 with strength 1."""
+    problems, result = [], receipt.get("result") or {}
+    want = expected.get("keyframe_applied", expected["keyframe"])
+    if actual is not None and actual.get("keyframe") != expected["keyframe"]:
+        problems.append(f"the session held keyframe mode {actual.get('keyframe')}, expected {expected['keyframe']}")
+    if receipt.get("stage2_keyframe") != want:
+        problems.append(f"stage2_keyframe {receipt.get('stage2_keyframe')}, expected {want}")
+    encodes = ((result.get("spatial_route") or {}).get("actual_calls") or {}).get("input_video_vae")
+    if encodes != (1 if want == "pin" else 0):
+        problems.append(f"{encodes} keyframe encodes (input_video_vae), expected {1 if want == 'pin' else 0}")
+    first = result.get("highres_first_frame")
+    if want == "off" and first is not None:
+        problems.append(f"highres_first_frame {first}, expected none")
+    elif want != "off" and (not isinstance(first, dict) or first.get("mode") != want
+                            or first.get("latent_index") != 0 or first.get("strength") != 1.0):
+        problems.append(f"highres_first_frame {first}, expected a {want} at latent frame 0, strength 1")
     return problems
 
 
@@ -274,10 +307,15 @@ def install_canvas(canvas, s2, geometry_module):
     return state
 
 
-def preflight(s2, models_module, geometry_module, recipe_sigmas):
-    """Fail before 40 GB load if the package no longer has what the arms change (instead of a silent no-op)."""
+def preflight(s2, models_module, geometry_module, recipe_sigmas, keyframe=False):
+    """Fail before 40 GB load if the package no longer has what the arms change (instead of a silent no-op).
+    keyframe: an arm of this process sets SOL_H3_STAGE2_KEYFRAME (a patch from before #57 has no such setting)."""
     missing = [f"runtime.stage2.{n}" for n in ("Session", "public_refiner_modules", "upscale_comfy_normalized_h3")
                if not hasattr(s2, n)]
+    if keyframe:
+        missing += [f"runtime.stage2.{n}" for n in ("keyframe_mode_for",) if not hasattr(s2, n)]
+        missing += [f"runtime.stage2.Session.{n}" for n in ("ensure_image_encoder",)
+                    if not hasattr(getattr(s2, "Session", None), n)]
     missing += ["runtime.geometry.from_recipe"] if not hasattr(geometry_module, "from_recipe") else []
     if missing:
         raise RuntimeError(f"the installed package lacks {missing}: bench/replay needs updating")
@@ -329,7 +367,8 @@ def main():
     from runtime import geometry as geometry_module
     from runtime import stage2 as s2
     from runtime.stage2_ops import models as models_module
-    preflight(s2, models_module, geometry_module, group["recipe_sigmas"])
+    preflight(s2, models_module, geometry_module, group["recipe_sigmas"],
+              keyframe=any(a.get("keyframe") is not None for a in group["arms"].values()))
     if armlib.CANVASES[group["canvas"]] is not None:
         install_canvas(group["canvas"], s2, geometry_module)
     config = load_recipe(group["task"], orientation=group["orientation"],
@@ -343,14 +382,19 @@ def main():
     compat = session_preflight(session)
     timer = StepTimer(session.models.wrapped_transformer, torch)
     session.models.wrapped_transformer = timer
+    keyframe_setting = getattr(session, "stage2_keyframe", "off (a patch from before #57)")
     append_jsonl(out / "processes.jsonl", {"group": group["id"], "pid": os.getpid(), "load_s": round(load_s, 2),
-                                           "stage2_audio": session.stage2_audio, "torch": torch.__version__,
+                                           "stage2_audio": session.stage2_audio, "stage2_keyframe": keyframe_setting,
+                                           "torch": torch.__version__,
                                            "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started))})
     print(f"[replay] {group['id']}: Stage 2 ready in {load_s:.1f} s ({session.stage2_audio} audio)", flush=True)
     failures = consecutive = 0
     for run in group["runs"]:
         draft = plan["drafts"][run["draft"]]
         expected = dict(group["arms"][run["arm"]], frames=group["geometry"]["output_frames"])
+        if expected.get("keyframe") is not None:
+            capture = json.loads((Path(draft["dir"]) / "stage1" / "capture.json").read_text())
+            expected["keyframe_applied"] = armlib.keyframe_expected(expected["keyframe"], capture)
         row = {"group": group["id"], "draft": run["draft"], "arm": run["arm"], "repeat": run["repeat"],
                "planned_first_in_process": run["first_in_process"], "task": draft["task"],
                "orientation": group["orientation"], "seconds": group["seconds"], "canvas": group["canvas"],
@@ -385,6 +429,7 @@ def main():
                        request_index=receipt.get("request_index"),
                        first_in_process=receipt.get("request_index") == 0,
                        stage2_s=receipt.get("stage2_request_s"), wall_s=round(wall, 3),
+                       stage2_keyframe=receipt.get("stage2_keyframe", "off"),
                        phases_s=result.get("phases_s"), step_s=timer.seconds(),
                        peak_alloc_gib=round(torch.cuda.max_memory_allocated() / 2**30, 2),
                        peak_reserved_gib=round(torch.cuda.max_memory_reserved() / 2**30, 2),

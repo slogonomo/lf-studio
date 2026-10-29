@@ -214,6 +214,7 @@ wait for it. A change of mode still reloads.
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
 | `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip, or right after a change back to 10 s or less |
 | `SOL_H3_DYNAMIC_TEXT_LENGTH` | 1 | 0 = Stage 1's body blocks compile per prompt length, not once per session |
+| `SOL_H3_STAGE2_KEYFRAME` | off | `pin` = Stage 2 holds a Keyframes clip's first frame (experimental, not measured on the GPU yet; [PATCH.md](PATCH.md#19-stage-2-keyframe-pin-experimental)) |
 | `LFSTUDIO_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 | `LFSTUDIO_RESHAPE` (web UI) | 1 | 0 = another length or format closes the session and loads the models again |
 
@@ -436,11 +437,11 @@ the replay. `add` records which kind each clip was.
 | Per-step s | CUDA-event time of each call of the refiner's transformer (one per denoise step) | `step_s` |
 | Memory | torch peak allocated and reserved; lowest MemAvailable, sampled every 0.5 s during the run | `runs.csv` |
 | Settings | each run's sigmas, steps, output size, decoder tiles and upscale factor; the runtime checks it relaxes | `runs.jsonl` |
-| Arm took effect | the receipt shows the arm's step count, Sol-call count, output size, frames and decoder tiles, the refiner held the arm's sigmas, and `profile_step` wrote its profile; otherwise the run fails | `status` |
+| Arm took effect | the receipt shows the arm's step count, Sol-call count, output size, frames and decoder tiles, the refiner held the arm's sigmas, `profile_step` wrote its profile, and a keyframe arm's mode, VAE encodes and frame-0 record are in the receipt; otherwise the run fails | `status` |
 | Patch | SHA-256 of the patch applied to the package (the copy `install/10-sana.sh` keeps) and of the Stage-2 code it runs | `runs.csv` |
 | Output | SHA-256 of the MP4, and MD5 of its decoded video frames and of its decoded audio | `runs.csv` |
 | Same as baseline | decoded video and audio equal to the same draft's first warm baseline run | `runs.csv` |
-| Same as studio | baseline runs: the MP4 equal to the studio's clip of that draft, warm run against warm clip | `runs.csv` |
+| Same as studio | baseline runs: the MP4 equal to the studio's clip of that draft, warm run against warm clip (n/a when the Stage-2 audio or keyframe mode differs from the clip's) | `runs.csv` |
 | Repeats | whether the warm runs of each draft and arm are identical; the first run of each process against the warm one | `summary.md` |
 | GPU clocks | SM clock, temperature, power and throttle reasons from `nvidia-smi` at 1 Hz | `summary.md` |
 | SSIM, PSNR | ffmpeg, every frame, at the draft canvas (672×384 or 384×672): each arm against the baseline, against the `preview` arm when the run has it (how close it stays to the draft), the first run against the warm run (the noise floor), and the studio clip against the baseline | `quality/` |
@@ -472,13 +473,20 @@ edited.
 | `profile_step` | the baseline with torch.profiler around denoise step 1 (timings perturbed) | none |
 | `canvas480`, `canvas480_untiled`, `canvas480_steps2`, `preview480` | refine at 832×480 with the H3 upscaler at ×1.25 (`preview480`: no refine) | the 2×-draft output rule, the upscaler's ×2, the refiner modules' 1344×768 size; the attention-call count for `canvas480_steps2` (2 steps); for `preview480` the denoise (skipped) and the attention-call count (0 steps) |
 | `canvas384`, `preview384` | refine at 672×384, the draft's own size, without the upscaler (`preview384`: no refine) | the same three, with the upscaler skipped; for `preview384` the denoise (skipped) and the attention-call count (0 steps) |
+| `keyframe_off`, `keyframe_pin`, `keyframe_draft`, `keyframe_pin_steps2` | `SOL_H3_STAGE2_KEYFRAME` for the run ([PATCH.md](PATCH.md#19-stage-2-keyframe-pin-experimental)): no pin, the first frame held at latent frame 0, or the draft's own frame 0; `keyframe_pin_steps2` with the 2-step refine. Only fl2va drafts with a first frame are pinned; the others run as `off` | none; for `keyframe_pin_steps2` the attention-call count (2 steps) |
 
 All other runtime checks stay in force: the capture and payload checks, the shape and dtype checks between the
 upscaler, the adapter and the refiner, the Sol backend check, the writer's frame-count check and the output check.
 `--dry` prints the exact list per arm.
 
 Arms are runtime patches in the bench, not hooks in the patch. That keeps the studio's runtime free of bench-only
-code, and the bench works with any installed 0.3 or later patch without reinstalling. Such patches could break
+code, and the bench works with any installed 0.3 or later patch without reinstalling. The keyframe arms are the
+exception: they set the patch's own keyframe mode on the session, so they need a patch with `SOL_H3_STAGE2_KEYFRAME`
+(checked before loading). `keyframe_pin` builds the image encoder once in a process started without
+`SOL_H3_STAGE2_KEYFRAME=pin` and keeps it; start the run with that setting to have it loaded as in a studio session.
+`add` copies an fl2va clip's first and last frame with its draft and points the copy's `capture.json` at them, so a
+pin still finds them once the studio's trash is emptied (a draft added before this names the studio's own
+file). Such patches could break
 silently when the package changes, so the bench checks three times. Before loading: its worker settings against
 the studio's (`runtime/pipeline.py`), and that the runtime modules still have the functions it replaces and the
 recipe's sigmas. Right after loading (Stage 2 loads in ~17 s): that the refiner has every attribute and method an
