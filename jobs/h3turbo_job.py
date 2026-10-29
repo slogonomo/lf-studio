@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Experimental H3 Turbo: one clip from the full MiniMax-H3 transformer in one stage, with a LightX2V fl2v turbo LoRA,
-at 576p or 768p, 16:9 or 9:16. One clip per process, run by the studio's server in the Regen-2K environment:
+"""Experimental LightX2V Turbo (the studio's model id: lightx2v-turbo, MODEL): one clip from the full MiniMax-H3
+transformer in one stage, with a LightX2V fl2v turbo LoRA, at 576p or 768p, 16:9 or 9:16, 5 to 15 s. One clip per
+process, run by the studio's server in the Regen-2K environment:
 
     $LFSTUDIO_H3TURBO_PYTHON -I -B jobs/h3turbo_job.py --job <case>/turbo/job.json [--parent PID]
     $LFSTUDIO_H3TURBO_PYTHON -I -B jobs/h3turbo_job.py --job <case>/turbo/job.json --check
@@ -55,41 +56,61 @@ saved and the DiT is dropped (its last use, as the Upscale's job does) before th
 in all (165 s with a last frame), peak allocated 77.1-77.5 GiB, lowest MemAvailable 35.0-35.4 GiB; 768p steps of
 57.2-58.4 s, 320 s, peak 80.1-80.2 GiB, lowest 31.0-32.1 GiB.
 
+Lengths. The frames made are 24 fps snapped up to 17k+5 (frames_for_seconds: 124 at 5 s, 362 at 15 s), as the
+studio's Sol-H3 draws them. diffusers 0.40 refuses more than 15.0 s of them (MiniMaxH3ModularPipeline.max_duration,
+checked on the frames made), and the studio's 15 s makes 362, 15.083 s: the same 362 frames the studio's Sol-H3 draws
+with the same MiniMax-H3 transformer for its own 15 s clips (the patch's runtime/geometry.py takes up to 15.2 s). For
+such a clip, and only for it, the job gives its pipeline instance a class of its own whose max_duration is the clip's
+length (allow_length; diffusers' files, its class and every other check unchanged), and the receipt notes it. 14 s
+(345 frames, 14.375 s) is the longest that stock diffusers 0.40 takes. The MP4 keeps the studio's length, the largest
+8m+1 frames of the 17k+5 made (studio_frames: 121 of 124 at 5 s, 361 of 362 at 15 s), with frames / 24 * 32000
+samples (161,333 at 5 s, of the decoded 165,600), as the studio's Sol clips do; a clip with a last keyframe keeps every
+frame made (kept_frames: 124 at 5 s, 5.17 s; 345 of 345 at 14 s either way), because the last keyframe is anchored
+to the last frame made: so its MP4 ends on it, with no frame dropped in between and nothing re-timed. Its audio is cut
+to the same length (165,333 samples at 5 s); where the decoded audio (round(frames / 24 * 40) latents of 800 samples)
+is shorter than that, at 6 and 15 s by 266 samples (8 ms), its last samples are mirrored onto the end.
+
 Output, in paths.output (default: the directory of job.json): clip_<W>x<H>_<frames>f.mp4 (24 fps, H.264 yuv420p at
-job.json's crf / x264_preset, the studio's 19 / veryfast by default, AAC stereo 32 kHz; the studio's length: the
-largest 8m+1 frames of the 17k+5 made, 121 of 124 at 5 s, and frames / 24 * 32000 samples, 161,333 at 5 s, of the
-decoded 165,600), audio.pt ({"audio": (1, 2, samples) float32}: the decoded PCM before AAC, trimmed as the MP4 is),
+job.json's crf / x264_preset, the studio's 19 / veryfast by default, AAC stereo 32 kHz; the frames and samples kept,
+above), audio.pt ({"audio": (1, 2, samples) float32}: the decoded PCM before AAC, trimmed as the MP4 is),
 latents.safetensors ("video" (1, 24, T, H/16, W/16) and "audio" (2, 32, A) float32: every generated frame, normalized)
-and receipt.json (state running, done, failed, refused, aborted or cancelled; the job, the geometry and the layout
-rows, the sigmas, the LoRA's header facts, times per phase (torch's and diffusers' imports too: with the load they
-are what a clip per process costs; encode_1, encode_2 for each keyframe's VAE encode), peak GPU memory, lowest
+and receipt.json (state running, done, failed, refused, aborted or cancelled; the model (MODEL), the job, the
+geometry and the layout rows, the sigmas, the LoRA's header facts, a raised max_duration, times per phase (torch's
+and diffusers' imports too: with the load they are what a clip per process costs; encode_1, encode_2 for each
+keyframe's VAE encode), peak GPU memory, lowest
 MemAvailable, the inputs' sha256, the latents' sha256 per tensor, how each keyframe was fitted to the canvas (images:
 "stretch" with its ratio, or "cover-crop" with the crop box, and the sha256 of the pixels diffusers encoded; a note
 when one is stretched by more than FIT_RANGE allows or mostly cut away), frame 0 against the first keyframe as fitted
-(f0_vs_keyframe, PSNR and MAE), versions, the load). A last keyframe is anchored at the last frame made (123 of 124
-at 5 s), which the MP4 leaves out, as the studio's Sol clips do: it ends 3 frames (0.125 s) before it.
-last_vs_keyframe measures that frame, last_kept_vs_keyframe the MP4's last one. Progress on stdout: "[lf-studio]
-phase <name>" for loading, step k/N, decoding and saving, in that order, and "[lf-studio] error <text>" last on
-failure.
+(f0_vs_keyframe, PSNR and MAE), the last frame made, where a last keyframe is anchored (frame 123 of 124 at 5 s),
+against it (last_vs_keyframe) and the MP4's last frame against it (last_kept_vs_keyframe: the same frame, since such a
+clip keeps every frame made), versions, the load). Progress on stdout: "[lf-studio] phase <name>" for loading, step
+k/N, decoding and saving, in that order, and "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loaded), 3 aborted for memory, 143
 stopped by SIGTERM.
 --check validates job.json and its inputs without torch (the LoRA's sha256 against PRESETS too), prints the plan and
 exits (0 or 2), writing nothing. --check-install checks the environment (diffusers 0.40.0 and the blocks this job
 calls), the base model and the LoRA files of PRESETS where the LFSTUDIO_H3TURBO_* settings put them (studio_settings),
-without the GPU and without reading weights. Those settings are provisional: the server does not read them yet, and
-they go into bin/env.example once it runs this job. --parent PID (the server passes its own): the job is killed when
-that process ends (PR_SET_PDEATHSIG); if that process is gone already, it exits at once (143).
+without the GPU and without reading weights; the server reads the same settings with studio_settings (bin/env.example
+has them). --parent PID (the server passes its own): the job is killed when that process ends (PR_SET_PDEATHSIG); if
+that process is gone already, it exits at once (143).
 
 job.json: {"version": 1, "task": "t2va"|"fl2va", "orientation": "landscape"|"portrait", "resolution": "576p"|"768p",
-"seconds": 5-14, "seed": INT, "steps": INT, "lora": FILE, "shift": [VIDEO, AUDIO], "conditioning": FILE (its
+"seconds": 5-15, "seed": INT, "steps": INT, "lora": FILE, "shift": [VIDEO, AUDIO], "conditioning": FILE (its
 conditioning.json next to it), "qwen_canvas": "draft"|"canvas", "first_frame": FILE|null, "last_frame": FILE|null,
 "audio_noise": "seed"|"reference" ("seed"), "crf": 0-51 (19), "x264_preset": NAME ("veryfast"), "load":
 "fast"|"standard" ("fast"), "abort_below_gib": GiB (6), "paths": {"base_model": DIR, "output": DIR (optional)},
 "meta": {...} (optional, copied into the receipt)}. Paths are absolute; any other field is refused. t2va takes no
-frames; fl2va a first frame, first and last, or (not offered by the studio yet) a last frame alone. qwen_canvas says
-where Qwen saw the keyframes: "draft" the studio's 384p draft canvas (672x384 or 384x672: 252 image tokens per
-keyframe), "canvas" the generation canvas (576 tokens at 576p, 1008 at 768p); the conditioning must match it. 15 s is
-refused: its 362 frames (15.08 s) are above the 15.0 s that diffusers 0.40's MiniMax-H3 layout takes.
+frames; fl2va a first frame, first and last, or a last frame alone. qwen_canvas says where Qwen saw the keyframes:
+"draft" the studio's 384p draft canvas (672x384 or 384x672: 252 image tokens per keyframe; the studio's default),
+"canvas" the generation canvas (576 tokens at 576p, 1008 at 768p); the conditioning must match it.
+
+The studio's model of a clip (the GPU validation's receipts on one DGX Spark, 2026-10-29: 15 clips, 576p at 5, 10
+and 14 s, 768p at 5 and 10 s, 4 steps; the rest estimated from them): MemAvailable at its lowest is the start minus
+(USE_GIB[0] + USE_GIB[1] per 1000 rows of the packed sequence, layout_rows), within USE_SPREAD_GIB of every clip;
+min_free_for is the floor a clip of a size and length needs to start (the setting's, or more where that would not keep
+the job above its abort_below_gib: long 768p clips). A step takes STEP_S[0] N + STEP_S[1] N^2 seconds (N: rows /
+1000), the decode DECODE_S per frame and megapixel; estimate_s adds the prompt encode, the process (imports, load,
+saving) and the poster: what the studio's registry shows until a clip has been measured on the machine.
 
 Everything outside run() and the torch helpers is standard library only, so the server, bin/lf-studio --check and
 tests/test_h3turbo_job.py import this file without torch.
@@ -116,6 +137,7 @@ import wave
 from pathlib import Path
 
 TAG = "[lf-studio]"
+MODEL = "lightx2v-turbo"         # the studio's id of this model (webui/server.py MODELS), in every receipt
 JOB_VERSION = 1
 REPO = Path(__file__).resolve().parents[1]
 FASTLOAD = REPO / "upscale" / "fastload.py"     # the Upscale's copy of the patch's runtime/fastload.py, by its path
@@ -138,8 +160,8 @@ DRAFT_CANVAS = {"landscape": (672, 384), "portrait": (384, 672)}
 # a keyframe stretched by a ratio outside this range, or cover-cropped to less than its first value, gets a receipt
 # note (the research probe refused a first frame of the other orientation; the studio decides what it allows)
 FIT_RANGE = (0.8, 1.25)
-MIN_SECONDS = 5
-MAX_DURATION_S = 15.0            # diffusers 0.40: MiniMaxH3ModularPipeline.max_duration, of the 17k+5 frames made
+MIN_SECONDS, MAX_SECONDS = 5, 15             # whole seconds; the studio offers 5, 6, 7, 8, 10, 12 and 15
+STOCK_MAX_DURATION_S = 15.0      # diffusers 0.40: MiniMaxH3ModularPipeline.max_duration, of the 17k+5 frames made
 AUDIO_NOISES = ("seed", "reference")
 AUDIO_SEED_OFFSET = 0x9E3779B9   # audio_noise "seed": the audio generator's seed is (seed + this) mod 2^63
 LOADS = ("fast", "standard")
@@ -172,6 +194,18 @@ OFFERED_STEPS = (4,)
 # one runs, GiB of MemAvailable (the probe started at 108.5 and came down to 31.0 at 768p)
 MIN_FREE_GIB = 100
 GUARD_GIB = 5
+# the studio's model of a clip on a DGX Spark (the docstring; the GPU validation's receipts): the MemAvailable a clip
+# takes at its lowest, start - (77.8 + 0.186 per 1000 rows), within 1.6 GiB of every one of the 15 clips (21.7k-75.1k
+# rows); a step, 0.848 N + 0.016 N^2 seconds (N = rows / 1000; within 1 s, 21.7k-75.1k rows); the decode, 0.67 s per
+# frame and megapixel (0.64-0.69); the rest of the process (imports, load, LoRA, saving), 23 s (21.8-26.4); the prompt
+# encode, 12 s (9-18 s); 2 s for the poster and the record (an allowance). The floor's rows: two keyframes and 1000
+# conditioning rows (the validation's: 156-1441); the estimate's: one keyframe and 500.
+USE_GIB = (77.8, 0.186)
+USE_SPREAD_GIB = 1.6
+STEP_S = (0.848, 0.016)
+DECODE_S = 0.67
+PROCESS_S, ENCODE_S, POSTER_S = 23, 12, 2
+FLOOR_ROWS, ESTIMATE_ROWS = (2, 1000), (1, 500)       # (keyframes, conditioning rows)
 BASE_PARTS = ("transformer", "vae", "audio_vae", "scheduler", "audio_scheduler")
 WEIGHT_PARTS = ("transformer", "vae", "audio_vae")
 AUDIO_FILE = "audio.pt"
@@ -208,8 +242,21 @@ def frames_for_seconds(seconds):
 
 
 def studio_frames(draft_frames):
-    """The frames kept, the studio's length for that many made (the patch's geometry.output_frames_for): 124 -> 121."""
+    """The studio's length for that many made (the patch's geometry.output_frames_for): 124 -> 121."""
     return ((int(draft_frames) - 1) // 8) * 8 + 1
+
+
+def kept_frames(frames, keyframes):
+    """The frames the MP4 keeps of the `frames` made: the studio's length (studio_frames), or every frame made for a
+    clip with a last keyframe, which is anchored to the last frame made (124 of 124 at 5 s): so the clip ends on it."""
+    return int(frames) if "last" in keyframes else studio_frames(frames)
+
+
+def max_duration_for(frames):
+    """The pipeline's max_duration a clip of `frames` needs: None within diffusers' stock STOCK_MAX_DURATION_S, else
+    its own length (362 frames at 15 s: 15.083 s; allow_length)."""
+    duration = frames / FPS
+    return None if duration <= STOCK_MAX_DURATION_S else duration
 
 
 def latent_frames(frames):
@@ -286,13 +333,15 @@ def fit_note(anchor, size, canvas, fit):
 
 
 def geometry(job):
-    """What a job's settings give: canvas, frames made and kept, latent sizes, samples kept, sigmas."""
+    """What a job's settings give: canvas, frames made and kept (kept_frames), latent sizes, samples kept, the
+    pipeline's max_duration it needs (null: stock), sigmas."""
     width, height = CANVAS[(job["resolution"], job["orientation"])]
     frames = frames_for_seconds(job["seconds"])
-    keep = studio_frames(frames)
+    keep = kept_frames(frames, job["keyframes"])
     qw, qh = qwen_canvas(job["orientation"], job["resolution"], job["qwen_canvas"])
     return {"width": width, "height": height, "frames": frames, "latent_frames": latent_frames(frames),
             "audio_latents": audio_latents(frames), "keep_frames": keep, "keep_samples": kept_samples(keep),
+            "max_duration_s": max_duration_for(frames),
             "num_inference_steps": job["steps"] + 1,
             "sigmas": expected_sigmas(job["steps"], float(job["shift"][0])),
             "audio_sigmas": expected_sigmas(job["steps"], float(job["shift"][1])),
@@ -302,6 +351,33 @@ def geometry(job):
 def output_name(job):
     g = geometry(job)
     return f"clip_{g['width']}x{g['height']}_{g['keep_frames']}f.mp4"
+
+
+def sequence_rows(resolution, seconds, keyframes, text_rows):
+    """The rows of a clip's packed sequence at `resolution` (either orientation) and `seconds`, with `keyframes`
+    keyframes and `text_rows` conditioning rows (layout_rows)."""
+    width, height = CANVAS[(resolution, "landscape")]
+    return layout_rows(text_rows, width, height, frames_for_seconds(seconds), keyframes)["sequence"]
+
+
+def min_free_for(resolution, seconds, floor):
+    """The MemAvailable a clip of this size and length needs to start: the studio's floor
+    (LFSTUDIO_H3TURBO_MIN_FREE_GIB, MIN_FREE_GIB by default), or more where the model of the docstring says the job
+    would come down below its abort_below_gib (ABORT_BELOW_GIB) plus USE_SPREAD_GIB from it: 768p from 12 s (103 GiB at
+    12 s, 107 at 15 s). A floor of 0 (no check) stays 0."""
+    if floor <= 0:
+        return floor
+    use = USE_GIB[0] + USE_GIB[1] * sequence_rows(resolution, seconds, *FLOOR_ROWS) / 1000
+    return max(floor, math.ceil(use + ABORT_BELOW_GIB + USE_SPREAD_GIB))
+
+
+def estimate_s(resolution, seconds, steps):
+    """Seconds a clip takes in the studio, from its prompt encode to its poster (the server's e2e_s), by the model of
+    the docstring: an estimate (the GPU validation measured 576p at 5, 10 and 14 s and 768p at 5 and 10 s)."""
+    n = sequence_rows(resolution, seconds, *ESTIMATE_ROWS) / 1000
+    width, height = CANVAS[(resolution, "landscape")]
+    decode = DECODE_S * frames_for_seconds(seconds) * width * height / 1e6
+    return ENCODE_S + PROCESS_S + steps * (STEP_S[0] * n + STEP_S[1] * n * n) + decode + POSTER_S
 
 
 # ---------------------------------------------------------------- job.json (standard library only)
@@ -350,12 +426,8 @@ def parse_job(data, job_dir):
                                   ("load", LOADS, "fast")):
         job[key] = _choice(data, key, choices, default)
     seconds = data["seconds"]
-    if not _is_int(seconds) or seconds < MIN_SECONDS:
-        raise JobError(f"seconds: a whole number from {MIN_SECONDS}, got {seconds!r}")
-    if frames_for_seconds(seconds) / FPS > MAX_DURATION_S:
-        raise JobError(f"seconds: {seconds} s makes {frames_for_seconds(seconds)} frames "
-                       f"({frames_for_seconds(seconds) / FPS:.2f} s), above the {MAX_DURATION_S:g} s that diffusers "
-                       f"{DIFFUSERS_VERSION}'s MiniMax-H3 layout takes")
+    if not _is_int(seconds) or not MIN_SECONDS <= seconds <= MAX_SECONDS:
+        raise JobError(f"seconds: a whole number from {MIN_SECONDS} to {MAX_SECONDS}, got {seconds!r}")
     seed = data["seed"]
     if not _is_int(seed) or not 0 <= seed < 2 ** 63:
         raise JobError(f"seed: a whole number from 0 to 2**63-1, got {seed!r}")
@@ -702,7 +774,7 @@ def prepare(job_path, receipt):
 
 
 def check_install(settings, env=False):
-    """What the studio needs for H3 Turbo, without the GPU and without reading weights: the base model's parts and
+    """What the studio needs for LightX2V Turbo, without the GPU and without reading weights: the base model's parts and
     configs, the LoRA files of PRESETS (header, size, modules and shapes against the transformer's config; the files
     of OFFERED_STEPS are required) and the upscale/fastload.py loader; with `env` also this Python's packages
     (diffusers DIFFUSERS_VERSION and the blocks run() calls; imports torch). Returns (report, problems)."""
@@ -1177,6 +1249,34 @@ def _quiet(block):
         _quiet(child)
 
 
+def allow_length(pipe, frames):
+    """A clip longer than diffusers' stock max_duration (the studio's 15 s: 362 frames, 15.083 s; the docstring's
+    Lengths): this pipeline instance gets a class of its own, a subclass of its class whose max_duration is the clip's
+    length, so diffusers' own setup step takes the frames, and every other check of it stays. diffusers' files, its
+    class and other instances are unchanged. Returns the receipt's record, or None for a clip within stock (the
+    pipeline untouched)."""
+    duration = max_duration_for(frames)
+    stock = pipe.max_duration
+    if duration is None or duration <= stock:
+        return None
+    base = type(pipe)
+    pipe.__class__ = type(f"LFStudio{base.__name__}", (base,), {
+        "__module__": __name__, "max_duration": property(lambda self: duration,
+                                                         doc=f"the clip's {frames} frames (LF Studio's job)")})
+    return {"stock_s": stock, "clip_s": round(duration, 4), "frames": frames}
+
+
+def pad_audio(audio, samples):
+    """(2, n) decoded audio cut or padded to `samples`: where the decode is shorter (a clip that keeps every frame made,
+    at 6 and 15 s: 266 samples), its last samples mirrored onto the end, which keeps it continuous. Returns (audio, the
+    samples added)."""
+    import numpy as np
+    short = samples - audio.shape[1]
+    if short <= 0:
+        return audio[:, :samples], 0
+    return np.pad(audio, ((0, 0), (0, short)), mode="reflect"), short
+
+
 def empty_cache(torch, device):
     gc.collect()
     if device.type == "cuda":
@@ -1320,6 +1420,12 @@ def load_models(job, device, recorder, receipt, phase):
     for name in POPPED_BLOCKS:                    # the studio's conditioning.pt instead; the decode is `dec`
         blocks.sub_blocks.pop(name)
     gen = blocks.init_pipeline()                  # no path: nothing is read from modular_model_index.json
+    raised = allow_length(gen, geometry(job)["frames"])  # 15 s only: diffusers' max_duration for this instance
+    if raised:
+        receipt["max_duration"] = raised
+        receipt.setdefault("notes", []).append(
+            f"{raised['frames']} frames ({raised['clip_s']:g} s): diffusers {DIFFUSERS_VERSION}'s max_duration "
+            f"({raised['stock_s']:g} s) raised to the clip's length for this pipeline instance")
     gen.update_components(transformer=transformer, vae=vae, audio_vae=audio_vae, scheduler=scheduler,
                           audio_scheduler=audio_scheduler)
     dec = MiniMaxH3DecodeStep().init_pipeline()
@@ -1447,9 +1553,9 @@ def run(job, receipt, trace):
         frames = (videos[:g["keep_frames"]] * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous().cpu() \
             .numpy()
         last = None
-        if "last" in job["keyframes"]:          # the last frame made, where the last keyframe is anchored (not kept)
+        if "last" in job["keyframes"]:          # the last frame made, where the last keyframe is anchored (kept)
             last = (videos[-1:] * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous().cpu().numpy()[0]
-        audio = result["audio"][0][:, :g["keep_samples"]].float().cpu().numpy()
+        audio, padded = pad_audio(result["audio"][0].float().cpu().numpy(), g["keep_samples"])
         rate = int(result["sampling_rate"])
         del result, videos, latents, audio_lat
     empty_cache(torch, device)
@@ -1460,6 +1566,8 @@ def run(job, receipt, trace):
                            f"{g['keep_samples']} samples kept")
     receipt["decoded"].update(kept_frames=int(frames.shape[0]), kept_samples=int(audio.shape[1]),
                               size=[int(frames.shape[2]), int(frames.shape[1])])
+    if padded:
+        receipt["decoded"]["padded_samples"] = padded
     named = dict(zip(job["keyframes"], keyframes))
     if "first" in named:
         receipt["f0_vs_keyframe"] = adherence(frames[0], named["first"])
@@ -1567,7 +1675,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, cancel)
     apply_environment(os.environ)
     started = time.time()
-    receipt = {"state": "running", "job_file": str(job_path), "pid": os.getpid(),
+    receipt = {"state": "running", "model": MODEL, "job_file": str(job_path), "pid": os.getpid(),
                "started": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)), "times_s": {},
                "peak_gib": {}, "lowest_mem_available_gib": {}}
     out, trace, status = job_path.parent, MemTrace(ABORT_BELOW_GIB), 0

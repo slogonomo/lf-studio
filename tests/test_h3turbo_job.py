@@ -1,18 +1,22 @@
-"""jobs/h3turbo_job.py (the experimental H3 Turbo's GPU job) on the CPU: job.json and its refusals, the geometry (the
-frames, latents and samples of every length against the patch's runtime/geometry.py, and the layout rows against
-those the probe it was ported from recorded on the GPU), the sigmas, the LoRA header rules on stand-in files with the
-real files' key names and shapes (no data: sparse files), the conditioning checks, the studio's settings and
-check_install, the command line, the environment and the progress lines against the Upscale job's
-(upscale/regen2k_job.py), the memory trace, the generation call's arguments per task, the fast load (stand-in
-loaders), --check and --check-install, main's receipt when the GPU part finishes, fails, is refused, is aborted for
-memory or gets SIGTERM (a stand-in run()), and --parent (the job dies with the server). No GPU, no weights.
+"""jobs/h3turbo_job.py (the experimental LightX2V Turbo's GPU job) on the CPU: job.json and its refusals, the geometry
+(the frames, latents and samples of every length against the patch's runtime/geometry.py, the frames a clip with a last
+keyframe keeps, and the layout rows against those the probe it was ported from recorded on the GPU), the studio's model
+of a clip (the memory floor per size and length, the estimates) against the GPU validation's receipts, the sigmas, the
+LoRA header rules on stand-in files with the real files' key names and shapes (no data: sparse files), the conditioning
+checks, the studio's settings and check_install, the command line, the environment and the progress lines against the
+Upscale job's (upscale/regen2k_job.py), the memory trace, the generation call's arguments per task, the fast load
+(stand-in loaders), --check and --check-install, main's receipt when the GPU part finishes, fails, is refused, is
+aborted for memory or gets SIGTERM (a stand-in run()), and --parent (the job dies with the server). No GPU, no weights.
 
-Where torch is importable (CPU is enough; skipped otherwise): the LoRA hooks against PEFT's arithmetic on tiny
-layers, and against PEFT itself on a tiny MiniMax-H3 transformer when peft and diffusers are there; the tensor checks
-of the conditioning; and with diffusers 0.40.0 and ffmpeg, run() itself on a tiny random-weight MiniMax-H3 at the
-real 576p canvases: t2va (no image), a first frame (with its condition rows computed independently: the stretched
-keyframe, the VAE posterior under seed 42, its noise, the draw order), first + last, a last frame alone, the memory
-abort and SIGTERM. Run those with the Regen-2K environment's Python, CUDA hidden:
+Where torch is importable (CPU is enough; skipped otherwise): the LoRA hooks against PEFT's arithmetic on tiny layers,
+and against PEFT itself on a tiny MiniMax-H3 transformer when peft and diffusers are there; the tensor checks of the
+conditioning; and with diffusers 0.40.0 and ffmpeg, run() itself on a tiny random-weight MiniMax-H3 at the real 576p
+canvases: t2va (no image), a first frame (with its condition rows computed independently: the stretched keyframe, the
+VAE posterior under seed 42, its noise, the draw order), first + last and a last frame alone (the MP4 ends on the frame
+the last keyframe is anchored to: its last frame is the last one decoded, decoded again here from the latents), the
+memory abort and SIGTERM; and on a small canvas, 15 s (362 frames, past diffusers' stock 15.0 s: the pipeline's
+max_duration raised for that clip only, and stock diffusers refusing it). Run those with the Regen-2K environment's
+Python, CUDA hidden:
     CUDA_VISIBLE_DEVICES= $LFSTUDIO_HOME/envs/regen2k/bin/python -I -m unittest discover -s tests -p test_h3turbo_job.py
 """
 import contextlib
@@ -239,14 +243,14 @@ class JobTests(Fixture):
                 self.parsed(**changes)
 
     def test_lengths(self):
-        """Whole seconds from 5; 15 s is above diffusers' 15.0 s once snapped to 17n+5 frames (362)."""
-        for seconds in range(5, 15):
+        """Whole seconds from 5 to 15 (15 s: 362 frames, past diffusers' stock 15.0 s; run() raises it for that
+        clip)."""
+        for seconds in range(5, 16):
             self.assertEqual(self.parsed(seconds=seconds)["seconds"], seconds)
-        with self.assertRaisesRegex(JobError, r"seconds: 15 s makes 362 frames \(15\.08 s\), above the 15 s"):
-            self.parsed(seconds=15)
-        for bad in (4, 5.0, "5", True, None, 16):
-            with self.assertRaisesRegex(JobError, "^seconds: "):
+        for bad in (4, 5.0, "5", True, None, 16, 20):
+            with self.assertRaisesRegex(JobError, r"^seconds: a whole number from 5 to 15, got "):
                 self.parsed(seconds=bad)
+        self.assertEqual(job_module.MODEL, "lightx2v-turbo")
 
     def test_bad_values_are_refused_by_name(self):
         for key, bad in (("orientation", "square"), ("resolution", "1080p"), ("resolution", 576),
@@ -327,17 +331,29 @@ class GeometryTests(unittest.TestCase):
         output_frames_for, frame_geometry), for every length the job takes."""
         namespace = {}
         exec(compile(patch_new_file(f"{PKG_REL}/runtime/geometry.py"), "geometry.py", "exec"), namespace)
-        for seconds in range(5, 15):
+        for seconds in range(5, 16):
             frames = job_module.frames_for_seconds(seconds)
             self.assertEqual(frames, namespace["draft_frames_for_seconds"](seconds))
             facts = namespace["frame_geometry"](frames)
             keep = job_module.studio_frames(frames)
             self.assertEqual((keep, job_module.kept_samples(keep)), (facts["output_frames"], facts["audio_samples"]))
             self.assertLessEqual(job_module.kept_samples(keep), job_module.audio_latents(frames) * 800)
-        self.assertEqual([job_module.frames_for_seconds(s) for s in (5, 6, 8, 10, 12, 15)],
-                         [124, 158, 192, 243, 294, 362])
-        self.assertEqual([job_module.studio_frames(job_module.frames_for_seconds(s)) for s in (5, 6, 8, 10, 12)],
-                         [121, 153, 185, 241, 289])
+            self.assertEqual(job_module.kept_frames(frames, ["first"]), keep)
+            self.assertEqual(job_module.kept_frames(frames, []), keep)
+            for keyframes in (["last"], ["first", "last"]):      # every frame made: the last keyframe's is the last
+                self.assertEqual(job_module.kept_frames(frames, keyframes), frames)
+            # 15 s is past diffusers' stock max_duration (15.0 s of the frames made): raised for that clip only
+            self.assertEqual(job_module.max_duration_for(frames), frames / 24 if seconds == 15 else None)
+        self.assertEqual([job_module.frames_for_seconds(s) for s in (5, 6, 7, 8, 10, 12, 14, 15)],
+                         [124, 158, 175, 192, 243, 294, 345, 362])
+        self.assertEqual([job_module.studio_frames(job_module.frames_for_seconds(s)) for s in (5, 6, 8, 10, 12, 14,
+                                                                                               15)],
+                         [121, 153, 185, 241, 289, 345, 361])
+        # a clip that keeps every frame made: the decoded audio (round(frames / 24 * 40) latents of 800 samples) is
+        # 266 samples short of the frames' length at 6 and 15 s (pad_audio), long enough at the other lengths
+        short = {s: job_module.kept_samples(f) - job_module.audio_latents(f) * 800
+                 for s, f in ((s, job_module.frames_for_seconds(s)) for s in (5, 6, 7, 8, 10, 12, 15))}
+        self.assertEqual({s: n for s, n in short.items() if n > 0}, {6: 266, 15: 266})
         self.assertEqual([job_module.latent_frames(job_module.frames_for_seconds(s)) for s in (5, 6, 8, 10, 12)],
                          [37, 47, 57, 72, 87])
         self.assertEqual((job_module.audio_latents(124), job_module.kept_samples(121), 207 * 800), (207, 161333,
@@ -379,14 +395,90 @@ class GeometryTests(unittest.TestCase):
 
     def test_geometry_of_a_job(self):
         job = {"resolution": "768p", "orientation": "landscape", "seconds": 5, "steps": 4, "shift": [6.0, 3.0],
-               "qwen_canvas": "canvas"}
+               "qwen_canvas": "canvas", "keyframes": ["first"]}
         g = job_module.geometry(job)
         self.assertEqual((g["width"], g["height"], g["frames"], g["keep_frames"], g["keep_samples"],
                           g["latent_frames"], g["audio_latents"], g["num_inference_steps"], g["qwen_canvas"],
-                          g["image_tokens"]), (1344, 768, 124, 121, 161333, 37, 207, 5, [1344, 768], 1008))
+                          g["image_tokens"], g["max_duration_s"]),
+                         (1344, 768, 124, 121, 161333, 37, 207, 5, [1344, 768], 1008, None))
         self.assertEqual(job_module.output_name(job), "clip_1344x768_121f.mp4")
         self.assertEqual(job_module.output_name(dict(job, resolution="576p", orientation="portrait", seconds=10)),
                          "clip_576x1024_241f.mp4")
+        last = job_module.geometry(dict(job, keyframes=["first", "last"]))
+        self.assertEqual((last["frames"], last["keep_frames"], last["keep_samples"]), (124, 124, 165333))
+        self.assertEqual(job_module.output_name(dict(job, keyframes=["last"])), "clip_1344x768_124f.mp4")
+        g = job_module.geometry(dict(job, seconds=15, keyframes=[]))
+        self.assertEqual((g["frames"], g["keep_frames"], g["keep_samples"], g["latent_frames"], g["audio_latents"]),
+                         (362, 361, 481333, 107, 603))
+        self.assertAlmostEqual(g["max_duration_s"], 362 / 24)
+        self.assertEqual(job_module.output_name(dict(job, seconds=15, keyframes=["last"])), "clip_1344x768_362f.mp4")
+
+
+class StudioModelTests(unittest.TestCase):
+    """The studio's model of a clip (the docstring) against the GPU validation's receipts on a DGX Spark (2026-10-29;
+    their numbers, as the receipts recorded them): the lowest MemAvailable, the step times, the decode, the memory floor
+    per size and length, and the registry's estimates."""
+    # arm: (resolution, seconds, sequence rows, MemAvailable at the start and its lowest, mean step s, decode s,
+    #       process wall s, its prompt encode's s: None where the run took a studio clip's own conditioning)
+    VALIDATION = {"576p 5 s first frame (1)": ("576p", 5, 22798, 116.85, 34.71, 28.5, 49.3, 189.7, None),
+              "576p 5 s first frame, the studio's env": ("576p", 5, 22798, 116.42, 33.74, 28.2, 48.6, 187.5, None),
+              "576p 5 s t2va 16:9": ("576p", 5, 21882, 116.23, 32.97, 26.8, 47.1, 176.5, 9.5),
+              "576p 5 s t2va 9:16": ("576p", 5, 21747, 116.66, 34.84, 25.9, 47.2, 172.6, 9.1),
+              "768p 5 s t2va 16:9": ("768p", 5, 37866, 116.85, 32.16, 54.6, 87.3, 327.5, 9.5),
+              "576p 5 s first frame, canvas tokens": ("576p", 5, 23122, 116.9, 35.67, 28.0, 46.8, 181.4, 12.5),
+              "768p 5 s first frame, canvas tokens": ("768p", 5, 40159, 116.89, 32.09, 59.9, 87.0, 350.3, 15.1),
+              "576p 5 s last frame alone": ("576p", 5, 22655, 116.72, 36.24, 27.1, 47.1, 178.3, 10.7),
+              "576p 5 s first + last (1)": ("576p", 5, 23516, 116.62, 33.97, 28.5, 46.9, 184.5, 11.2),
+              "576p 5 s first + last (2)": ("576p", 5, 23496, 116.79, 33.65, 28.5, 46.8, 184.2, 11.7),
+              "576p 5 s first + last (3)": ("576p", 5, 23516, 116.78, 34.17, 28.5, 47.1, 184.7, 11.5),
+              "576p 5 s first + last (4)": ("576p", 5, 23496, 116.74, 35.09, 28.5, 46.9, 184.5, 11.6),
+              "576p 10 s first frame": ("576p", 10, 43543, 116.75, 31.53, 67.0, 95.2, 386.5, None),
+              "576p 14 s first frame": ("576p", 14, 61163, 116.77, 27.41, 112.0, 134.4, 605.8, None),
+              "768p 10 s first frame": ("768p", 10, 75079, 116.67, 24.47, 153.6, 173.7, 812.5, None)}
+
+    def test_the_model_fits_the_receipts(self):
+        use0, per_k = job_module.USE_GIB
+        a, b = job_module.STEP_S
+        for arm, (resolution, seconds, rows, start, low, step, decode, wall, encode) in self.VALIDATION.items():
+            with self.subTest(arm):
+                self.assertLessEqual(abs((start - low) - (use0 + per_k * rows / 1000)), job_module.USE_SPREAD_GIB)
+                n = rows / 1000
+                self.assertLess(abs(step - (a * n + b * n * n)), 1.0)
+                width, height = job_module.CANVAS[(resolution, "landscape")]
+                frames = job_module.frames_for_seconds(seconds)
+                self.assertLess(abs(decode / (frames * width * height / 1e6) - job_module.DECODE_S), 0.035)
+                self.assertLess(abs(wall - 4 * step - decode - job_module.PROCESS_S), 3.5)
+                if encode is not None:
+                    self.assertLess(abs(encode - job_module.ENCODE_S), 3.5)
+
+    def test_the_memory_floor(self):
+        """The floor per size and length: the setting's 100 GiB where the model keeps the job above its 6 GiB abort
+        (and the spread) from there, more for long 768p clips; 0 stays 0 (no check), a higher setting is kept."""
+        floors = {(r, s): job_module.min_free_for(r, s, 100) for r in ("576p", "768p") for s in (5, 6, 7, 8, 10, 12,
+                                                                                                    14, 15)}
+        self.assertEqual({k: v for k, v in floors.items() if v != 100}, {("768p", 12): 103, ("768p", 14): 106,
+                                                                         ("768p", 15): 107})
+        self.assertEqual((job_module.min_free_for("768p", 15, 0), job_module.min_free_for("768p", 15, 110),
+                          job_module.min_free_for("576p", 5, 90)), (0, 110, 90))
+        # measured: 768p 10 s came down 92.2 GiB (116.67 -> 24.47): from 100 it would have stayed 7.8 above 0
+        use = job_module.USE_GIB[0] + job_module.USE_GIB[1] * job_module.sequence_rows("768p", 10, 2, 1000) / 1000
+        self.assertLess(use + job_module.ABORT_BELOW_GIB + job_module.USE_SPREAD_GIB, 100)
+        self.assertEqual(job_module.sequence_rows("768p", 15, 2, 1000), 1000 + 2 * 1008 + 2 * 603 + 107 * 1008)
+
+    def test_the_estimates(self):
+        """The registry's estimates: within 8 % of every clip measured (process wall + prompt encode + poster; t2va
+        clips, without a keyframe, are the quickest),
+        growing with the size and length."""
+        for arm, (resolution, seconds, rows, start, low, step, decode, wall, encode) in self.VALIDATION.items():
+            with self.subTest(arm):
+                took = wall + (job_module.ENCODE_S if encode is None else encode) + job_module.POSTER_S
+                self.assertLess(abs(job_module.estimate_s(resolution, seconds, 4) / took - 1), 0.08)
+        for resolution in ("576p", "768p"):
+            times = [job_module.estimate_s(resolution, s, 4) for s in (5, 6, 7, 8, 10, 12, 15)]
+            self.assertEqual(times, sorted(times))
+        self.assertLess(job_module.estimate_s("576p", 5, 4), job_module.estimate_s("576p", 5, 8))
+        self.assertEqual([round(job_module.estimate_s(r, s, 4), -1) for r, s in (("576p", 15), ("768p", 15))],
+                         [660, 1440])
 
 
 class SigmaTests(unittest.TestCase):
@@ -930,12 +1022,12 @@ class ScriptTests(Fixture):
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])
 
     def test_a_refused_job_leaves_a_refused_receipt(self):
-        result = self.script("--job", str(self.write_job(seconds=15)))
+        result = self.script("--job", str(self.write_job(seconds=16)))
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(job_module.parse_line(result.stdout.splitlines()[-1])[0], "error")
         receipt = json.loads((self.out / "receipt.json").read_text())
-        self.assertEqual((receipt["state"], receipt["exit_status"]), ("refused", 2))
-        self.assertIn("362 frames", receipt["error"])
+        self.assertEqual((receipt["state"], receipt["exit_status"], receipt["model"]), ("refused", 2, "lightx2v-turbo"))
+        self.assertIn("seconds: a whole number from 5 to 15, got 16", receipt["error"])
         (self.case / "qwen" / "conditioning.json").unlink()
         self.assertEqual(self.script("--job", str(self.write_job())).returncode, 2)
         receipt = json.loads((self.out / "receipt.json").read_text())
@@ -998,6 +1090,7 @@ class MainTests(Fixture):
         self.assertNotIn("stage", receipt)
         self.assertNotIn("phase", receipt)
         self.assertEqual(receipt["job"]["meta"]["studio_job"], "f" * 32)
+        self.assertEqual(receipt["model"], "lightx2v-turbo")
 
     def test_failed(self):
         def run(job, receipt, trace):
@@ -1469,9 +1562,18 @@ class RunTests(unittest.TestCase):
         (case / "qwen" / "conditioning.json").write_text(json.dumps(meta))
         return case
 
-    def run_job(self, name, task="fl2va", frames=None, orientation="portrait", callback=None, **changes):
-        """main() on a job for a new case; returns (status, receipt, phases printed, output dir, forwards)."""
+    def run_job(self, name, task="fl2va", frames=None, orientation="portrait", callback=None, canvas=None,
+                **changes):
+        """main() on a job for a new case; returns (status, receipt, phases printed, output dir, forwards). The frames
+        the job hands to write_mp4 go to self.written. `canvas` (width, height): the 576p canvas of this orientation
+        made that small (for the long clips)."""
         frames = {} if frames is None else frames
+        self.written = []
+        write_mp4 = job_module.write_mp4
+
+        def written(pixels, *args, **kwargs):
+            self.written.append(pixels.copy())
+            return write_mp4(pixels, *args, **kwargs)
         case = self.make_case(name, task, {k: str(v) for k, v in frames.items()}, orientation,
                               canvas=changes.get("qwen_canvas", "draft"))
         out = case / "turbo"
@@ -1490,6 +1592,8 @@ class RunTests(unittest.TestCase):
         with mock.patch.object(job_module, "DEVICE", "cpu"), mock.patch.object(job_module, "MEMINFO",
                                                                                 str(self.meminfo)), \
                 mock.patch.object(job_module, "apply_environment"), \
+                mock.patch.object(job_module, "write_mp4", written), \
+                mock.patch.dict(job_module.CANVAS, {("576p", orientation): canvas} if canvas else {}), \
                 patched_forward(callback or (lambda index, kwargs: None)) as calls, \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
             status = job_module.main(["--job", str(out / "job.json")])
@@ -1497,26 +1601,40 @@ class RunTests(unittest.TestCase):
         receipt = json.loads((out / "receipt.json").read_text())
         return status, receipt, phases, out, len(calls)
 
-    def assert_outputs(self, receipt, out, size):
+    def assert_outputs(self, receipt, out, size, keep=121, seconds=5):
+        """The files of a done clip of `seconds` that keeps `keep` frames (121 of the 124 made at 5 s; every frame
+        made with a last keyframe), and its receipt."""
+        made = job_module.frames_for_seconds(seconds)
+        samples, decoded = job_module.kept_samples(keep), job_module.audio_latents(made) * 800
         self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(
-            ["job.json", "receipt.json", "audio.pt", "latents.safetensors", f"clip_{size[0]}x{size[1]}_121f.mp4"]))
+            ["job.json", "receipt.json", "audio.pt", "latents.safetensors", f"clip_{size[0]}x{size[1]}_{keep}f.mp4"]))
         streams = ffprobe(out / receipt["output"]["file"])
         video, audio = streams["video"], streams["audio"]
         self.assertEqual((video["codec_name"], video["width"], video["height"], video["pix_fmt"],
-                          video["r_frame_rate"], int(video["nb_read_frames"])), ("h264", *size, "yuv420p", "24/1", 121))
+                          video["r_frame_rate"], int(video["nb_read_frames"])),
+                         ("h264", *size, "yuv420p", "24/1", keep))
         self.assertEqual((audio["codec_name"], audio["channels"], int(audio["sample_rate"])), ("aac", 2, 32000))
-        self.assertAlmostEqual(float(audio["duration"]), 161333 / 32000, delta=0.05)
+        self.assertAlmostEqual(float(audio["duration"]), samples / 32000, delta=0.05)
         pcm = torch.load(out / "audio.pt", map_location="cpu", weights_only=True)
-        self.assertEqual((tuple(pcm["audio"].shape), pcm["audio"].dtype), ((1, 2, 161333), torch.float32))
-        self.assertLess((out / "audio.pt").stat().st_size, 2 * 161333 * 4 + 4096)   # the trimmed PCM, not all of it
+        self.assertEqual((tuple(pcm["audio"].shape), pcm["audio"].dtype), ((1, 2, samples), torch.float32))
+        self.assertLess((out / "audio.pt").stat().st_size, 2 * samples * 4 + 4096)   # the trimmed PCM, not all of it
+        self.assertEqual(len(self.written), 1)
+        self.assertEqual(self.written[0].shape, (keep, size[1], size[0], 3))       # what the MP4 was made from
         from safetensors.torch import load_file
         latents = load_file(str(out / "latents.safetensors"))
         self.assertEqual((tuple(latents["video"].shape), tuple(latents["audio"].shape)),
-                         ((1, 24, 37, size[1] // 16, size[0] // 16), (2, 32, 207)))
+                         ((1, 24, job_module.latent_frames(made), size[1] // 16, size[0] // 16),
+                          (2, 32, job_module.audio_latents(made))))
         for name, tensor in latents.items():
             self.assertEqual(receipt["latents_sha256"][name], job_module.tensor_sha256(tensor))
-        self.assertEqual(receipt["decoded"], {"frames": 124, "samples": 165600, "kept_frames": 121,
-                                              "kept_samples": 161333, "size": list(size)})
+        expected = {"frames": made, "samples": decoded, "kept_frames": keep, "kept_samples": samples,
+                    "size": list(size)}
+        if samples > decoded:
+            expected["padded_samples"] = samples - decoded
+        self.assertEqual(receipt["decoded"], expected)
+        self.assertEqual(receipt["output"], {"file": f"clip_{size[0]}x{size[1]}_{keep}f.mp4", "size": list(size),
+                                             "frames": keep, "samples": samples})
+        self.assertEqual(receipt["model"], "lightx2v-turbo")
         self.assertEqual((receipt["state"], receipt["exit_status"], receipt["forwards"]), ("done", 0, 4))
         self.assertTrue(receipt["sigmas_match_expected"])
         self.assertEqual(receipt["layout_actual"]["sequence"], receipt["layout"]["sequence"])
@@ -1626,9 +1744,9 @@ class RunTests(unittest.TestCase):
 
     def test_first_and_last(self):
         """16:9, first and last frame, audio noise "reference": two keyframes' condition rows, the first stretched and
-        the last (4:3 here) cover-cropped as diffusers fitted them, each VAE encode timed, the last frame made and the
-        last one kept against the last keyframe, the audio noise drawn from the clip's generator after the video
-        noise."""
+        the last (4:3 here) cover-cropped as diffusers fitted them, each VAE encode timed, every frame made kept (124):
+        the MP4 ends on the frame the last keyframe is anchored to, the audio noise drawn from the clip's generator
+        after the video noise."""
         import numpy as np
         from PIL import Image
         seen = []
@@ -1640,7 +1758,7 @@ class RunTests(unittest.TestCase):
             "both", frames={"first": self.land, "last": self.land_43}, orientation="landscape", callback=grab,
             audio_noise="reference")
         self.assertEqual(status, 0, receipt.get("traceback") or receipt.get("error"))
-        self.assert_outputs(receipt, out, (1024, 576))
+        self.assert_outputs(receipt, out, (1024, 576), keep=124)
         self.assertEqual(receipt["layout_actual"]["condition"], 2 * 576)
         self.assertEqual(receipt["layout_actual"]["video_rows"], 2 * 576 + 21312)
         first = Image.open(self.land).convert("RGB").resize((1024, 576), Image.Resampling.LANCZOS)
@@ -1658,10 +1776,8 @@ class RunTests(unittest.TestCase):
                       fit_notes(receipt)[0])
         self.assertTrue({"encode_1", "encode_2"} <= set(receipt["times_s"]))
         self.assertNotIn("encode", receipt["times_s"])
-        self.assertEqual(receipt["last_vs_keyframe"]["frame"], 123)
-        self.assertEqual(receipt["last_kept_vs_keyframe"]["frame"], 120)
-        self.assertIn("psnr_db", receipt["last_kept_vs_keyframe"])
-        self.assertIn("psnr_db", receipt["f0_vs_keyframe"])
+        self.assert_ends_on_the_anchor(receipt, last)
+        self.assertEqual(job_module.adherence(self.written[0][0], np.asarray(first)), receipt["f0_vs_keyframe"])
         self.assertNotIn("audio_noise_seed", receipt)
         g = torch.Generator().manual_seed(11)
         for _ in range(2):                                                  # one draw per keyframe
@@ -1684,10 +1800,92 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(fit_notes(receipt)), 1)
         self.assertIn("the last frame (1456x816) is stretched by 0.31525 onto the 576x1024 canvas",
                       fit_notes(receipt)[0])
-        self.assertEqual(receipt["last_vs_keyframe"]["frame"], 123)
-        self.assertEqual(receipt["last_kept_vs_keyframe"]["frame"], 120)
+        self.assert_outputs(receipt, out, (576, 1024), keep=124)
+        self.assert_ends_on_the_anchor(receipt, stretched)
         self.assertNotIn("f0_vs_keyframe", receipt)
         self.assertEqual(receipt["job"]["keyframes"], ["last"])
+
+    def assert_ends_on_the_anchor(self, receipt, keyframe):
+        """A clip with a last keyframe keeps every frame made: the MP4's last frame is the last one made, where the
+        keyframe is anchored (frame 123 of 124 at 5 s), measured against the keyframe as diffusers fitted it."""
+        import numpy as np
+        made = receipt["decoded"]["frames"]
+        self.assertEqual(receipt["last_vs_keyframe"]["frame"], made - 1)
+        self.assertEqual(receipt["last_kept_vs_keyframe"], receipt["last_vs_keyframe"])
+        self.assertEqual(len(self.written[0]), made)
+        self.assertEqual(job_module.adherence(self.written[0][-1], np.asarray(keyframe)),
+                         {k: v for k, v in receipt["last_vs_keyframe"].items() if k != "frame"})
+
+    def decode_again(self, out):
+        """The clip's saved latents decoded again here, as the job's decode pipeline decodes them (diffusers'
+        MiniMaxH3DecodeStep with the base model's VAEs): every frame made, as uint8 (F, H, W, 3)."""
+        from diffusers import AutoencoderKLMiniMaxH3, AutoencoderKLMiniMaxH3Audio
+        from diffusers.modular_pipelines.minimax_h3.modular_blocks_minimax_h3 import MiniMaxH3DecodeStep
+        from safetensors.torch import load_file
+        latents = load_file(str(out / "latents.safetensors"))
+        dec = MiniMaxH3DecodeStep().init_pipeline()
+        dec.update_components(
+            vae=AutoencoderKLMiniMaxH3.from_pretrained(self.base, subfolder="vae", torch_dtype=torch.float32).eval(),
+            audio_vae=AutoencoderKLMiniMaxH3Audio.from_pretrained(self.base, subfolder="audio_vae",
+                                                                  torch_dtype=torch.float32).eval())
+        with torch.inference_mode():
+            videos = dec(latents=latents["video"], audio_latents=latents["audio"], output_type="pt",
+                         output=["videos"])["videos"][0]
+        return (videos * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous().numpy()
+
+    def test_fifteen_seconds_with_a_last_frame(self):
+        """15 s (on a small canvas): 362 frames made, past diffusers' stock 15.0 s, with its max_duration raised for
+        this clip's pipeline (noted in the receipt); a last frame alone keeps all 362, and the MP4's last frame is
+        the last one decoded (decoded again here from the latents); the audio, 266 samples short of 362 frames,
+        padded."""
+        status, receipt, phases, out, forwards = self.run_job("fifteen", frames={"last": self.land},
+                                                              orientation="landscape", canvas=(256, 128), seconds=15)
+        self.assertEqual(status, 0, receipt.get("traceback") or receipt.get("error"))
+        self.assert_outputs(receipt, out, (256, 128), keep=362, seconds=15)
+        self.assertEqual(receipt["decoded"]["padded_samples"], 266)
+        self.assertEqual(receipt["max_duration"], {"stock_s": 15.0, "clip_s": 15.0833, "frames": 362})
+        self.assertIn("362 frames (15.0833 s): diffusers 0.40.0's max_duration (15 s) raised to the clip's length for "
+                      "this pipeline instance", receipt["notes"])
+        self.assertEqual((receipt["layout_actual"]["frames"], receipt["layout_actual"]["latent_frames"]), (362, 107))
+        self.assertEqual(receipt["layout_actual"]["sequence"], receipt["layout"]["sequence"])
+        self.assertAlmostEqual(receipt["geometry"]["max_duration_s"], 362 / 24)
+        again = self.decode_again(out)
+        self.assertEqual(again.shape, (362, 128, 256, 3))
+        self.assertTrue((self.written[0] == again).all())          # every frame made, the last (361) last
+        self.assertEqual(receipt["last_vs_keyframe"]["frame"], 361)
+        self.assertEqual(receipt["last_kept_vs_keyframe"], receipt["last_vs_keyframe"])
+        import diffusers as stock
+        self.assertEqual(stock.MiniMaxH3ModularPipeline.max_duration.fget(None), 15.0)   # diffusers' class as it was
+        pcm = torch.load(out / "audio.pt", map_location="cpu", weights_only=True)["audio"][0]
+        self.assertTrue(torch.equal(pcm[:, -266:], pcm[:, -533:-267].flip(-1)))   # the decode's end, mirrored
+
+    def test_fifteen_seconds_t2va_and_stock_diffusers(self):
+        """15 s t2va keeps the studio's 361 of the 362 frames (no padding); without allow_length, stock diffusers
+        0.40 refuses the clip, as the GPU validation found."""
+        status, receipt, phases, out, forwards = self.run_job("fifteen-t2va", task="t2va", orientation="landscape",
+                                                              canvas=(256, 128), seconds=15)
+        self.assertEqual(status, 0, receipt.get("traceback") or receipt.get("error"))
+        self.assert_outputs(receipt, out, (256, 128), keep=361, seconds=15)
+        self.assertNotIn("padded_samples", receipt["decoded"])
+        self.assertEqual(receipt["max_duration"]["frames"], 362)
+        import logging
+        logging.disable(logging.CRITICAL)                   # diffusers logs the refusal with its traceback
+        self.addCleanup(logging.disable, logging.NOTSET)
+        with mock.patch.object(job_module, "allow_length", lambda pipe, frames: None):
+            status, receipt, phases, out, forwards = self.run_job("fifteen-stock", task="t2va",
+                                                                  orientation="landscape", canvas=(256, 128),
+                                                                  seconds=15)
+        logging.disable(logging.NOTSET)
+        self.assertEqual((status, receipt["state"]), (1, "failed"))
+        self.assertIn("MiniMax-H3 generates between 5.0 and 15.0 seconds", receipt["error"])
+        self.assertNotIn("max_duration", receipt)
+        # 14 s, the longest stock length, is left as it is
+        status, receipt, phases, out, forwards = self.run_job("fourteen", task="t2va", orientation="landscape",
+                                                              canvas=(256, 128), seconds=14)
+        self.assertEqual(status, 0, receipt.get("traceback") or receipt.get("error"))
+        self.assert_outputs(receipt, out, (256, 128), keep=345, seconds=14)
+        self.assertNotIn("max_duration", receipt)
+        self.assertIsNone(receipt["geometry"]["max_duration_s"])
 
     def test_aborted_for_memory(self):
         def drop(index, kwargs):
