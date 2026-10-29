@@ -233,8 +233,9 @@ class Protocol(McpTest):
             self.assertLessEqual(len(tool["description"]), 2048)
         upscale = r["tools"][5]["description"]
         for words in ("Experimental", "5 s text clips (t2va), 16:9 or 9:16", "2K is 1440x2560", "redraws faces",
-                      "closes the studio's models", "not yet run end to end"):
+                      "closes the studio's models", "4K has run once, with a 16:9 clip; not yet with a 9:16 one"):
             self.assertIn(words, upscale)
+        self.assertNotIn("untested", upscale)
         self.assertNotIn("draft", upscale)                                       # from the clip's MP4 only
         self.assertEqual(set(r["tools"][5]["inputSchema"]["properties"]),
                          {"id", "resolution", "strength", "audio", "seed", "wait_s", "out", "poster"})

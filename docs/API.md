@@ -453,9 +453,9 @@ clip, from its MP4, to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regene
 (`upscale/regen2k_job.py`, in an environment of its own). For now it takes **5 s text clips (t2va), 16:9 or 9:16**
 only: NVIDIA's pipeline is fixed at 121 frames, and fl2va and ref2va clips need a text-only encode of their prompt
 first. NVIDIA's code is written for 16:9 (1344×768): the job takes a 9:16 clip (768×1344) through it with the shapes
-turned, without changing NVIDIA's files, and the result is upright (1080×1920, 1440×2560 or 2160×3840). 9:16 has not
-run on the GPU yet, and NVIDIA trained its refiner on 16:9 video. The other lengths (3 to 15 s), fl2va and ref2va
-are follow-ups.
+turned, without changing NVIDIA's files, and the result is upright (1080×1920, 1440×2560 or 2160×3840). 9:16 has run
+on the GPU at 1080p (as fast as 16:9) and 2K, not yet at 4K, and NVIDIA trained its refiner on 16:9 video. The other
+lengths (3 to 15 s), fl2va and ref2va are follow-ups.
 
 ```bash
 curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: application/json' \
@@ -465,7 +465,7 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 | Key | Value |
 |---|---|
 | `id` | the finished clip (required) |
-| `resolution` | `1080p`, `2k` (default) or `4k` (untested: the studio's 4K path has not been run end to end yet): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's) |
+| `resolution` | `1080p`, `2k` (default) or `4k` (the slowest: ~66 min in its one run so far, a 16:9 clip; not yet run with a 9:16 one): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's) |
 | `strength` | how much it may redraw: `faithful` (start noise 0.5, 2 steps), `balanced` (0.7, 2 steps) or `full` (NVIDIA's release setting, 3 steps from 0.909: sharpest, but it redraws faces). Default `LFSTUDIO_UPSCALE_STRENGTH` (`balanced`). Provisional, until measured |
 | `audio` | what the picture is refined against: `clip` (the clip's own Stage-1 audio) or `silence` (NVIDIA's). Default `LFSTUDIO_UPSCALE_AUDIO` (`clip`). The result gets the clip's sound either way, copied |
 | `seed` | the refine's seed; default (or `null`) the clip's |
@@ -613,9 +613,9 @@ running ones, oldest first, then the newest 5 finished ones; `status ID` one cli
 `--wait`, `--out` or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default as
 `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the
 studio's defaults hold for the rest (2K, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the
-clip's seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes about 11 min to 1.6 h in all (4K
-is untested), with a ~25 s load expected (21 s in the bench, not yet measured in the studio's job; ~7 min more on a
-studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback), so `--timeout` and a later `wait` are the usual way.
+clip's seed), and holds at switchboard as `generate` does (`--hold`). An upscale takes about 10 min to 1.6 h in all (4K
+over an hour), with a ~22 s load (measured in the studio's job; ~7 min more on a studio with
+`LFSTUDIO_UPSCALE_LOAD=standard`, the fallback), so `--timeout` and a later `wait` are the usual way.
 `status` shows it as `2k upscale of <clip id8>, balanced, ...`, `cancel` stops it within about 20 s, and the studio's
 refusals (`Upscale takes 5 s clips only, for now ...`, the Upscale off) are exit 2.
 
@@ -734,7 +734,7 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
 - **spark-switchboard:** as the CLI; a stopped studio makes `wait` and `fetch` answer that `fetch` with `wake: true`
   would start it.
 - **`upscale`** answers `Queued upscale <id> of clip <clip id> (2k, balanced).`, then as `generate`.
-  An upscale takes about 11 min to 1.6 h, far longer than any `wait_s`: the usual result says it is still running, and a
+  An upscale takes about 10 min to 1.6 h, far longer than any `wait_s`: the usual result says it is still running, and a
   later `wait` saves it.
 
 ### Waiting values per client

@@ -1433,24 +1433,25 @@ class UpscalePage(UpscaleCards, PageTest):
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "balanced"])
         self.assertIsNone(self.page.query_selector('#uppop input[name="up_source"]'))      # one source: the clip's MP4
         text = self.page.inner_text("#uppop")
-        for words in ("1080p\n~11 min", "2K\n~20 min", "4K\n~1.1 h · untested", "in all, with a ~25 s load",
+        for words in ("1080p\n~10 min", "2K\n~19 min", "4K\n~1.1 h", "in all, with a ~22 s load",
                       "Faithful", "Start noise 0.5, 2 steps", "Balanced", "Full re-generate", "redraws faces",
                       "Unloads the models while it runs"):
             self.assertIn(words, text)
         self.assertNotIn("draft", text)
         self.assertNotIn("9:16", text)                                       # the note is for 9:16 clips
+        self.assertNotIn("untested", text)                                   # 4K has run (16:9, docs/PERFORMANCE.md)
         self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
-                         ["1920×1080", "2560×1440", "3840×2160 · the studio's 4K upscale has not been run end to end yet"])
+                         ["1920×1080", "2560×1440", "3840×2160"])
         # the progress bar's expected seconds (docs/PERFORMANCE.md): the fast load, ~7 min more with the standard load
         # (the record's "load"); a record of an older studio's upscale from the draft counts as any other
         self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, load: 'fast'},
             {resolution: '2k', steps: 3}, {resolution: '1080p', steps: 2},
             {resolution: '2k', steps: 2, load: 'standard'}, {resolution: '4k', steps: 2},
-            {resolution: '1080p', steps: 2, source: 'draft'}].map(upEta)"""), [1230, 1610, 673, 1660, 4085, 673])
+            {resolution: '1080p', steps: 2, source: 'draft'}].map(upEta)"""), [1165, 1545, 615, 1595, 3995, 615])
         # its times are upEta's for 2 steps with the studio's load (/api/state upscale_load), and follow it each time
         # it opens (one evaluate: no poll in between)
         self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
-            upEta({resolution: r, steps: 2, load})))"""), [673, 1103, 1230, 1660, 4085, 4515])
+            upEta({resolution: r, steps: 2, load})))"""), [615, 1045, 1165, 1595, 3995, 4425])
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
         times = self.page.evaluate("""id => {
@@ -1461,8 +1462,8 @@ class UpscalePage(UpscaleCards, PageTest):
               closeUpscale(false);
             }
             state.upscale_load = 'fast'; return seen;}""", ok)
-        fast = ["in all, with a ~25 s load", "~11 min", "~20 min", "~1.1 h · untested"]
-        standard = ["in all, with a ~7.5 min load", "~18 min", "~28 min", "~1.3 h · untested"]
+        fast = ["in all, with a ~22 s load", "~10 min", "~19 min", "~1.1 h"]
+        standard = ["in all, with a ~7.5 min load", "~17 min", "~27 min", "~1.2 h"]
         self.assertEqual(times, [standard, fast, standard, fast])
         self.page.focus(up)                                                   # the keyboard: Enter opens it, focus
         self.page.keyboard.press("Enter")                                     # on the resolution; Escape returns
@@ -1538,11 +1539,12 @@ class UpscalePortrait(UpscaleCards, PageTest):
         self.assertEqual(self.page.get_attribute(f"{self.card(tall)} .act.up", "aria-disabled"), "false")
         self.open_popover(tall)
         self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
-                         ["1080×1920", "1440×2560", "2160×3840 · the studio's 4K upscale has not been run end to end yet"])
+                         ["1080×1920", "1440×2560",
+                          "2160×3840 · the studio's 4K upscale has not been run with a 9:16 clip yet"])
         self.assertTrue(self.page.is_visible("#upportrait"))
         text = self.page.inner_text("#uppop")
         for words in ("9:16 comes out upright (2K: 1440×2560). NVIDIA trained its refiner on 16:9 video",
-                      "1080p\n~11 min", "2K\n~20 min", "4K\n~1.1 h · untested"):        # the same times: the same tokens
+                      "1080p\n~10 min", "2K\n~19 min", "4K\n~1.1 h"):        # the same times: the same tokens
             self.assertIn(words, text)
         with self.page.expect_request("**/api/upscale") as request:
             self.page.click("#upgo")
@@ -1606,7 +1608,7 @@ class UpscaleDefaults(UpscaleCards, PageTest):
         self.open_popover(ok)
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "full"])
         text = self.page.inner_text("#uppop")
-        for words in ("1080p\n~18 min", "2K\n~28 min", "4K\n~1.3 h · untested", "in all, with a ~7.5 min load"):
+        for words in ("1080p\n~17 min", "2K\n~27 min", "4K\n~1.2 h", "in all, with a ~7.5 min load"):
             self.assertIn(words, text)
 
 
