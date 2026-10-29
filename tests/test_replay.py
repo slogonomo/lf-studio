@@ -356,7 +356,7 @@ class PlanTests(Fixture):
 
     def test_the_keyframe_setting_keeps_fl2va_drafts_apart(self):
         """Without a keyframe arm, the bench's SOL_H3_STAGE2_KEYFRAME applies to every run (cli.group_env passes it
-        on): with pin, draft or none set (the patch's default may be pin), fl2va drafts get processes of their own,
+        on): with pin, draft or none set (the patch's default is pin), fl2va drafts get processes of their own,
         so whether one is pinned doesn't depend on which draft comes first; with off, tasks share a process as before.
         """
         self.add("a5", task="t2va")

@@ -133,7 +133,7 @@ def keyframe_split(keyframe_arms, keyframe_setting):
     pins a first frame only in an fl2va session (runtime/stage2.py keyframe_mode_for), so a process mixing tasks
     would pin its fl2va drafts or not depending on which draft comes first. "task": one process per task (a keyframe
     arm sets the mode itself). "fl2va": fl2va drafts apart from the others, unless keyframe_setting (the bench's
-    SOL_H3_STAGE2_KEYFRAME, None = unset) is off; unset counts too, since the patch's default may be pin. None:
+    SOL_H3_STAGE2_KEYFRAME, None = unset) is off; unset counts too: the patch's default is pin since 0.5.2. None:
     tasks mix as before #57."""
     if keyframe_arms:
         return "task"

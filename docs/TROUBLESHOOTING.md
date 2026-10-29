@@ -31,9 +31,15 @@ NVIDIA Sync, use switchboard's `delegate.sh` then, see [nvidia-sync.md](nvidia-s
 `SOL_H3_STAGE2_KEYFRAME`). The repo was updated, but the Sana checkout still carries the patch of an older release,
 which would ignore that setting. Run `install/10-sana.sh`, then start again ([updating](INSTALL.md#updating)).
 
+**`REFUSED - SOL_H3_STAGE2_KEYFRAME=pin (the default since 0.5.2) needs a newer patch than the one applied in ...; run
+install/10-sana.sh (or set SOL_H3_STAGE2_KEYFRAME=off)`.** On the DGX Spark the studio holds a Keyframes clip's first
+frame in Stage 2 by default since 0.5.2 (the keyframe pin, [PATCH.md](PATCH.md#19-stage-2-keyframe-pin)). The Sana
+checkout still carries an older patch, which never pins. Run `install/10-sana.sh`, then start again. To start without
+the pin until then, set `SOL_H3_STAGE2_KEYFRAME=off` in the settings file: Keyframes clips then come out as before.
+
 **`REFUSED - SOL_H3_STAGE2_KEYFRAME=pin: the RTX 5090 patch does not have this setting yet (DGX Spark only)`.** The
-keyframe pin ([PATCH.md](PATCH.md#19-stage-2-keyframe-pin-experimental)) is in the DGX Spark's patch only so far.
-Remove the setting, or set it to `off`.
+keyframe pin ([PATCH.md](PATCH.md#19-stage-2-keyframe-pin)) is in the DGX Spark's patch only so far. On the RTX 5090
+its default is `off`, as before. Remove the setting, or set it to `off`.
 
 **`cannot talk to docker as <user>`, or `permission denied while trying to connect to the Docker daemon socket`.**
 Add yourself to the group (`sudo usermod -aG docker $USER`) and log in again. A login session started before
@@ -136,13 +142,16 @@ it without changing its token count, avoids it. Before the patch the 4th distinc
 ("Forward execution thread failed", Dynamo recompile limit); the patch raises the limit.
 
 **A Keyframes clip doesn't keep my image: another face, or its details redrawn.** The draft starts on your first
-frame, but Stage 2, which refines it to 1344×768, refines every frame from 91 % noise, without the image and under a
-fixed generic prompt, so it repaints the first frame too (issue #57; NVIDIA's route, whose README guarantees neither
-the keyframes nor the identity). Measured on 6 clips, frame 0 against the image: 23-34 dB PSNR in the draft, 16-23 dB
-after Stage 2. It can also draw people into the first frame of an empty scene. `SOL_H3_STAGE2_KEYFRAME=pin` in the
-settings file (then restart the studio) holds the uploaded first frame in Stage 2: experimental, checked on the CPU
-but not yet on clips, DGX Spark only, about 0.6 GB more memory in Keyframes sessions
-([PATCH.md](PATCH.md#19-stage-2-keyframe-pin-experimental)). It doesn't change a last frame, Text or Reference clips.
+frame, but in NVIDIA's route Stage 2, which refines it to 1344×768, refines every frame from 91 % noise, without the
+image and under a fixed generic prompt, so it repaints the first frame too (issue #57; NVIDIA's README guarantees
+neither the keyframes nor the identity). Measured on 6 clips, frame 0 against the image: 23-34 dB PSNR in the draft,
+16-23 dB after Stage 2. It can also draw people into the first frame of an empty scene. On the DGX Spark this is fixed
+by default since 0.5.2: Stage 2 holds the uploaded first frame (the keyframe pin,
+[PATCH.md](PATCH.md#19-stage-2-keyframe-pin)). Measured on one DGX Spark, frame 0 then matches the image at 30-38 dB,
+and in some clips the next frames keep the face better too. Only the first frame is held: later frames are still
+refined, so a clip with a lot of motion can still drift, and a last frame, Text and Reference clips are not changed.
+Check that `SOL_H3_STAGE2_KEYFRAME` is not `off` in the settings file. On the RTX 5090 the pin isn't there yet, so its
+Keyframes clips drift as before.
 
 **The first run of a mode, format or length is much slower.** Its kernels are compiled once into
 `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` (measured first runs: t2va 9:16 5 s 111 s, t2va 16:9 10 s 264 s,

@@ -2,10 +2,10 @@
 
 A draft is the Stage-1 output of one studio clip: `stage1/capture.json` and `stage1/stage1_direct_tensors.pt` in its
 case folder (`<runtime root>/outputs/webui/<session>/<case>`). Stage 2 reads nothing else, apart from an fl2va clip's
-first frame with SOL_H3_STAGE2_KEYFRAME=pin. `add` copies them, the clip's keyframes (to `inputs/`, with the copy's
-capture.json pointing there) and the studio's final MP4 and Stage-2 receipt for comparison, into
-`<runtime root>/outputs/bench/replay-drafts/<name>/`. A copy, because deleting a clip in the studio moves its folder
-and its input files to the trash, and emptying the trash removes them.
+first frame with SOL_H3_STAGE2_KEYFRAME=pin (the default since 0.5.2). `add` copies them, the clip's keyframes (to
+`inputs/`, with the copy's capture.json pointing there) and the studio's final MP4 and Stage-2 receipt for comparison,
+into `<runtime root>/outputs/bench/replay-drafts/<name>/`. A copy, because deleting a clip in the studio moves its
+folder and its input files to the trash, and emptying the trash removes them.
 
 draft.json records what the bench needs: task, format, length (from the capture's tensor shapes, with the package's
 own geometry rules), seed, the studio clip's hash and whether it was a warm run, and for dialogue drafts the

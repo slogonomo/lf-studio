@@ -61,12 +61,13 @@ the A/B test of [#38](https://github.com/slogonomo/lf-studio/issues/38) (4 seeds
 the default prompt tokens, a scene that opened with "what" had it in 4 of 4 clips, and none of 4 with "What"
 ([#53](https://github.com/slogonomo/lf-studio/issues/53)).
 
-**Keyframes clips and the first frame:** the draft starts on your first frame, but Stage 2, which refines it to
-1344×768, never sees the image: it repaints every frame, the first one too, so faces and fine detail drift from it
-([#57](https://github.com/slogonomo/lf-studio/issues/57)). That is NVIDIA's Sol-H3-Spark route, whose README guarantees
-neither the keyframes nor the identity. `SOL_H3_STAGE2_KEYFRAME=pin` (off by default; experimental, DGX Spark only)
-makes Stage 2 keep your image as the clip's first frame, as NVIDIA's GB200 version of this Stage 2 does. It is checked
-on the CPU so far, not yet on clips ([details](docs/PATCH.md#19-stage-2-keyframe-pin-experimental)).
+**Keyframes clips and the first frame:** the draft starts on your first frame, but in NVIDIA's Sol-H3-Spark route
+Stage 2, which refines it to 1344×768, never sees the image: it repaints every frame, the first one too, so faces and
+fine detail drift from it ([#57](https://github.com/slogonomo/lf-studio/issues/57)). On the DGX Spark the studio now
+holds your first frame in Stage 2, as NVIDIA's GB200 version of this Stage 2 does. Measured on one DGX Spark, the
+clip's first frame matches your image at 30-38 dB PSNR instead of 17-23 dB, with no extra time and 608 MiB more memory
+in Keyframes sessions. Later frames are still refined, so clips with a lot of motion can still drift.
+`SOL_H3_STAGE2_KEYFRAME=off` turns it off. Not on the RTX 5090 yet ([details](docs/PATCH.md#19-stage-2-keyframe-pin)).
 
 **An API for agents and scripts** ([docs/API.md](docs/API.md)): the studio's HTTP API, documented, with a JSON
 submit and a wait that hands over the MP4 as soon as the clip is done; and `bin/lf-cli`, one Python file for other
