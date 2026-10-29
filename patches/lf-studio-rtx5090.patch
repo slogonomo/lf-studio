@@ -10542,7 +10542,7 @@ index 0000000..04d1047
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
-index b1fd3a9..d793d15 100644
+index b1fd3a9..728fa54 100644
 --- a/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
 +++ b/models/minimax_h3/Sol-H3-RTX5090/tests/test_stage2_contract.py
 @@ -1,18 +1,30 @@
@@ -10576,7 +10576,7 @@ index b1fd3a9..d793d15 100644
  
  
  class Tensor:
-@@ -146,5 +158,1052 @@ class Stage2ContractTests(unittest.TestCase):
+@@ -146,5 +158,1053 @@ class Stage2ContractTests(unittest.TestCase):
          self.assertEqual(model.encode_highres_first_frame(None), [])
  
  
@@ -11154,16 +11154,17 @@ index b1fd3a9..d793d15 100644
 +        self.assertEqual(len(found), 1)                             # upstream's states once: the same random draws
 +        return found[0]
 +
-+    TODAY = {"prompt_id", "prompt", "seed", "source_index", "index", "_source_path"}
++    # the record of a clip without a pin: upstream's keys, as before 0.5.2
++    UPSTREAM = {"prompt_id", "prompt", "seed", "source_index", "index", "_source_path"}
 +
 +    def test_off_is_upstream(self):
 +        """SOL_H3_STAGE2_KEYFRAME=off: the record, the conditionings and the receipts' first-frame fields are
-+        today's: no keyframe is read, no image encoded, nothing conditioned."""
++        upstream's, as before 0.5.2: no keyframe is read, no image encoded, nothing conditioned."""
 +        source = keyframe_image(self.temp / "first.png", (300, 400))
 +        session = self.session("off")
 +        receipt, root = self.run_request(session, self.capture("off", first=source))
 +        record = next(call[1] for call in session.calls if call[0] == "record")
-+        self.assertEqual(set(record), self.TODAY)
++        self.assertEqual(set(record), self.UPSTREAM)
 +        self.assertEqual(record["_source_path"], "/dev/null")
 +        self.assertNotIn("encode", [call[0] for call in session.calls])
 +        self.assertEqual(self.states_call(session.calls)[3], [])
@@ -11184,7 +11185,7 @@ index b1fd3a9..d793d15 100644
 +                    session = self.session(mode, task=task)
 +                    receipt, root = self.run_request(session, self.capture(f"{mode}-{task}", **capture))
 +                    record = next(call[1] for call in session.calls if call[0] == "record")
-+                    self.assertEqual(set(record), self.TODAY)
++                    self.assertEqual(set(record), self.UPSTREAM)
 +                    self.assertEqual(self.states_call(session.calls)[3], [])
 +                    self.assertNotIn("encode", [call[0] for call in session.calls])
 +                    self.assertEqual((receipt["stage2_keyframe"], receipt["stage2_keyframe_setting"]), ("off", mode))
@@ -11205,7 +11206,7 @@ index b1fd3a9..d793d15 100644
 +                with Image.open(png) as written:
 +                    self.assertEqual(written.tobytes(), h3_stretch(source, *canvas).tobytes())
 +                record = next(call[1] for call in session.calls if call[0] == "record")
-+                self.assertEqual(set(record), self.TODAY | {"_keyframe_png"})
++                self.assertEqual(set(record), self.UPSTREAM | {"_keyframe_png"})
 +                self.assertEqual(record["_keyframe_png"], str(png))
 +                encodes = [call for call in session.calls if call[0] == "encode"]
 +                self.assertEqual(encodes, [("encode", png, canvas)])     # the parent's encode, at this canvas
@@ -11232,7 +11233,7 @@ index b1fd3a9..d793d15 100644
 +        with mock.patch.dict(sys.modules, LTX_CONDITIONING):
 +            receipt, root = self.run_request(session, self.capture("draft", first=source))
 +        record = next(call[1] for call in session.calls if call[0] == "record")
-+        self.assertEqual(set(record), self.TODAY)                   # no image read: nothing to encode
++        self.assertEqual(set(record), self.UPSTREAM)                # no image read: nothing to encode
 +        self.assertNotIn("encode", [call[0] for call in session.calls])
 +        _, video_latent, _, conditionings, seed = self.states_call(session.calls)
 +        self.assertEqual(seed, 7)
@@ -11289,7 +11290,7 @@ index b1fd3a9..d793d15 100644
 +                self.assertEqual(receipt["result"]["spatial_route"]["actual_calls"]["input_video_vae"], int(pinned))
 +                self.assertEqual(len(list(root.glob("keyframe_first_*.png"))), int(pinned))
 +                record = next(call[1] for call in session.calls if call[0] == "record")
-+                self.assertEqual(set(record), self.TODAY | ({"_keyframe_png"} if pinned else set()))
++                self.assertEqual(set(record), self.UPSTREAM | ({"_keyframe_png"} if pinned else set()))
 +                if not pinned:
 +                    self.assertIsNone(receipt["result"]["highres_first_frame"])
 +
