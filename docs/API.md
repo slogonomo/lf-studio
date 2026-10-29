@@ -144,7 +144,7 @@ the API on, as in 0.4. Any other value stops `bin/lf-studio` (also `--check`) an
 API for programs is off on this studio (LFSTUDIO_API=0)"}`:
 
 - `POST /api/generate` with a JSON body, and with the page's form when the request has an `X-LFStudio-Client`
-  header (any value). `bin/lf-cli` sends its form with one (`X-LFStudio-Client: lf-cli/0.5.1`), so the studio
+  header (any value). `bin/lf-cli` sends its form with one (`X-LFStudio-Client: lf-cli/0.5.2`), so the studio
   refuses its `generate` before anything is queued. The 403 comes after the checks of the body's length (411, 413)
   and type (415), and before the queue's (429).
 - `GET` and `HEAD` of `/api/jobs/<id>` and `/api/jobs/<id>/video`, with or without `wait`, for any id.
@@ -192,7 +192,7 @@ How a client behaves well:
    `{"error": "<text>"}`: if `error` is an object, the answer came from switchboard. Without the header, a GET gets
    switchboard's answer as plain text.
 2. **Send a `User-Agent` that names your program.** switchboard's log and dashboard show it for each start ("wanted:
-   GET /api/state (curl/8.5.0 from ...)"). `bin/lf-cli` sends `lf-cli/0.5.1`.
+   GET /api/state (curl/8.5.0 from ...)"). `bin/lf-cli` sends `lf-cli/0.5.2`.
 3. **Submit with `X-Switchboard-Wait: <seconds>`** (0-3600). switchboard then holds the POST for that long while
    another app finishes its work and the studio starts, instead of answering 503 after `hold_s`. Your HTTP timeout
    must be longer. A 503 from switchboard means the POST was **not** passed on: no clip was made, and sending it again
