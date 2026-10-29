@@ -1719,7 +1719,7 @@ class WarmUpSkipsDeleted(StudioTest):
 
 class OldLengths(StudioTest):
     """3 and 4 s went after 0.5.0: clips made at those lengths stay in the history. They list, play, download and give
-    their files to Remix as before; the remix itself takes a length offered."""
+    their files to Remix as before; the remix itself takes a length offered. The Upscale refuses them (5 s only)."""
 
     def seed(self):
         self.old = self.dir / "old"
@@ -1750,6 +1750,9 @@ class OldLengths(StudioTest):
         self.assertEqual((job["status"], job["seconds"]), ("done", 5), job.get("error"))
         self.assertEqual(Path(job["first_frame"]).stat().st_ino, (self.old / "first.png").stat().st_ino)
         self.assertEqual(self.studio.job("4" * 32)["seconds"], 4)          # the old clip is as it was
+        # the experimental Upscale (on in the stub studio) takes 5 s clips only: the old 3 s t2va clip is refused
+        self.assertEqual(self.studio.job("3" * 32)["upscalable"], {"ok": False, "why": UPSCALE_LENGTH})
+        self.assertEqual(self.studio.upscale("3" * 32), (400, {"error": UPSCALE_LENGTH}))
 
 
 class OldLengthWarmUp(StudioTest):
@@ -2411,7 +2414,7 @@ class UpscaleRefusals(UpscaleTest):
 
     def test_clips_it_cannot_upscale(self):
         ten = self.clip(seconds=10, seed=2)
-        six = self.clip(orientation="portrait", seconds=6, seed=6)     # (3 s went after 0.5.0)
+        six = self.clip(orientation="portrait", seconds=6, seed=6)     # 3 s went after 0.5.0: see OldLengths
         fl2va = self.clip(task="fl2va", seed=3, files={"first_frame": [("f.png", png())]})
         failed = self.studio.wait([self.generate(prompt="STUB_FAIL", seed=4)])[0]
         for job, code, why in ((ten, 400, UPSCALE_LENGTH), (six, 400, UPSCALE_LENGTH), (fl2va, 400, NOT_T2VA),

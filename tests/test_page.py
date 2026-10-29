@@ -540,7 +540,8 @@ class ReleaseReviewPage(PageTest):
 
 class OldLengths(PageTest):
     """3 and 4 s went after 0.5.0: the page offers 5-15 s, a length kept from 0.5.0 reads 5 s, and clips of 3 and 4 s
-    made before still list and play, and Remix brings them back at 5 s without an error."""
+    made before still list and play, and Remix brings them back at 5 s without an error. Their Upscale button is
+    disabled with the reason (5 s clips only)."""
 
     def seed(self):
         old = self.dir / "old"
@@ -576,6 +577,10 @@ class OldLengths(PageTest):
             self.assertEqual(self.page.get_attribute(f"{card} video", "src"), f"/video/{jid}")
             self.assertIn(f"_{seconds}s_", self.page.get_attribute(f"{card} a.act", "download"))
             self.assertEqual(self.page.evaluate("id => fetch('/video/' + id).then(r => r.status)", jid), 200)
+        up = f"{self.card('3' * 32)} .act.up"                                   # the Upscale takes 5 s clips only
+        self.page.wait_for_selector(f'{up}[aria-disabled="true"]', state="attached")
+        self.assertEqual(self.page.get_attribute(up, "title"),
+                         "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)")
         self.pick("seconds", "10")
         self.page.click(f"{self.card('3' * 32)} .reuse-all")                   # t2va, 3 s
         self.page.wait_for_function("document.getElementById('toast').textContent"
