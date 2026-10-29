@@ -427,20 +427,23 @@ const UPSCALE={"1080p":{name:'1080p',base:315,step:150,size:[1920,1080]},"2k":{n
   "4k":{name:'4K',base:625,step:1685,size:[3840,2160]}};
 const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==='portrait'?[s[1],s[0]]:s).join('×');};
 // +15 s for an upscale whose text is encoded first (the clip's prompt without its pictures: ~9-18 s with its Qwen
-// worker's start, measured with LightX2V Turbo's prompt encode)
+// worker's start, measured with LightX2V Turbo's prompt encode; 9.1-9.2 s in the studio's upscales)
 const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
   return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0);};
 // What the Upscale does with a clip besides its MP4 (/api/state upscalable: "text", where its text alone comes from;
-// "video", what is done to the MP4), for the popover; nothing for a Sol-H3 Text clip, which it takes as it is. Every
-// other clip's route has not run on the GPU through the studio yet (docs/PERFORMANCE.md): UP_UNRUN says so, and its
-// times are a Text clip's, until the GPU runs of these routes
+// "video", what is done to the MP4), for the popover; nothing for a Sol-H3 Text clip, which it takes as it is.
+// UP_RAN: the routes (model, text, video) that have run on the GPU through the studio, each in a Text clip's time plus
+// its encode (docs/PERFORMANCE.md): Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's 576p Text clip
+// (stretched) and its 768p clip with a last keyframe (cut to 121 frames, its own text alone). Any other route has not:
+// UP_UNRUN says so, and its times are a Text clip's
+const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation trim'];
 const UP_UNRUN="This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's";
 const upNotes=(j,u)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='generation';
   if(own)n.push(j.task==='ref2va'?'Uses your prompt with the references taken out':'Uses your prompt without its keyframe line');
   if(u.text==='encode')n[n.length-1]+=', encoded first (~15 s)';
   if(/stretch/.test(u.video||''))n.push('From the 576p clip, stretched to 768p first');
   if(/trim/.test(u.video||''))n.push('Its first 121 frames: the last 3, up to your last keyframe, are left out');
-  if(jobModel(j)!=='sol-h3'||(u.text&&u.text!=='clip')||(u.video&&u.video!=='clip'))n.push(UP_UNRUN);
+  if(!UP_RAN.includes([jobModel(j),u.text||'clip',u.video||'clip'].join(' ')))n.push(UP_UNRUN);
   return n.join('. ');};
 // an upscale's card: the text it used, when not the clip's own prompt
 const upText=j=>j.text&&j.text.prompt?(j.task==='ref2va'?'prompt without its references':'prompt without its keyframe line'):'';

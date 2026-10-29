@@ -26,8 +26,8 @@ try:
 except ImportError:
     sync_playwright = None
 
-# the Upscale popover's note on a clip whose route has not run on the GPU through the studio yet (every clip but a
-# Sol-H3 Text clip; the page's UP_UNRUN)
+# the Upscale popover's note on a clip whose route has not run on the GPU through the studio yet (the page's UP_UNRUN:
+# not on Sol-H3's clips, LightX2V Turbo's 576p Text clips or its 768p clips with a last keyframe, its UP_RAN)
 UP_UNRUN = "This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's"
 
 
@@ -1761,13 +1761,13 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
             self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "aria-disabled"), "false")
         self.assertEqual((self.page.get_attribute(f"{self.card(long)} .act.up", "aria-disabled"),
                           self.page.get_attribute(f"{self.card(long)} .act.up", "title")), ("true", UPSCALE_LENGTH))
-        self.open_popover(kf)
+        self.open_popover(kf)                        # routes that have run through the studio: no UP_UNRUN
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt without its keyframe line, encoded first "
-                                                           f"(~15 s). {UP_UNRUN}")
+                                                           "(~15 s)")
         self.page.keyboard.press("Escape")
         self.open_popover(ref)
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt with the references taken out, encoded "
-                                                           f"first (~15 s). {UP_UNRUN}")
+                                                           "first (~15 s)")
         with self.page.expect_request("**/api/upscale") as request:
             self.page.click("#upgo")
         self.assertEqual(json.loads(request.value.post_data), {"id": ref, "resolution": "2k", "strength": "balanced"})
@@ -1783,21 +1783,35 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.page.wait_for_selector(f'{card}[data-status="cancelled"]', timeout=20000)
 
     def test_eta_and_notes(self):
-        """+15 s for an encode in the expected time; the notes for each kind of clip, LightX2V Turbo's too."""
+        """+15 s for an encode in the expected time; the notes for each kind of clip, LightX2V Turbo's too, with
+        UP_UNRUN only on the routes that have not run on the GPU through the studio."""
         self.assertEqual(self.page.evaluate("""[{resolution: '1080p', steps: 2, text: {source: 'encode'}},
             {resolution: '1080p', steps: 2, text: {source: 'generation'}},
             {resolution: '1080p', steps: 2, text: {source: 'clip'}}].map(upEta)"""), [630, 615, 615])
         notes = self.page.evaluate(f"""[
-            [{{task: 't2va'}}, {{text: 'clip', video: 'clip'}}], [{{task: 't2va'}}, {{text: 'clip', video: 'stretch'}}],
-            [{{task: 'fl2va'}}, {{text: 'generation', video: 'stretch+trim'}}],
-            [{{task: 'fl2va'}}, {{text: 'encode', video: 'trim'}}],
-            [{{task: 't2va'}}, undefined], [{{task: 't2va', model: '{TURBO}'}}, {{}}]].map(([j, u]) => upNotes(j, u))""")
+            [{{task: 't2va'}}, {{text: 'clip', video: 'clip'}}], [{{task: 't2va'}}, undefined],
+            [{{task: 'fl2va'}}, {{text: 'encode'}}], [{{task: 'ref2va', model: 'sol-h3'}}, {{text: 'encode'}}],
+            [{{task: 't2va', model: '{TURBO}'}}, {{video: 'stretch'}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'trim'}}],
+            [{{task: 't2va', model: '{TURBO}'}}, {{}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation'}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch'}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch+trim'}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'encode', video: 'trim'}}],
+            [{{task: 't2va'}}, {{video: 'stretch'}}]].map(([j, u]) => upNotes(j, u))""")
+        kf, stretch, trim = ("Uses your prompt without its keyframe line", "From the 576p clip, stretched to 768p first",
+                             "Its first 121 frames: the last 3, up to your last keyframe, are left out")
         self.assertEqual(notes, [
-            "", f"From the 576p clip, stretched to 768p first. {UP_UNRUN}",
-            "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first. Its first 121 "
-            f"frames: the last 3, up to your last keyframe, are left out. {UP_UNRUN}",
-            "Uses your prompt without its keyframe line, encoded first (~15 s). Its first 121 frames: the last 3, up "
-            f"to your last keyframe, are left out. {UP_UNRUN}", "", UP_UNRUN])     # a 768p Text clip of the turbo
+            "", "",                                                                  # Sol-H3 Text
+            f"{kf}, encoded first (~15 s)", "Uses your prompt with the references taken out, encoded first (~15 s)",
+            stretch,                                                                 # the turbo's 576p Text clip
+            f"{kf}. {trim}",                                                         # its 768p clip with a last keyframe
+            UP_UNRUN,                                                                # its 768p Text clip, as it is
+            f"{kf}. {UP_UNRUN}",                                                     # 768p, a first frame
+            f"{kf}. {stretch}. {UP_UNRUN}",                                          # 576p, a first frame
+            f"{kf}. {stretch}. {trim}. {UP_UNRUN}",                                  # 576p with a last keyframe
+            f"{kf}, encoded first (~15 s). {trim}. {UP_UNRUN}",                      # one without its qwen-text/
+            f"{stretch}. {UP_UNRUN}"])                                               # a route no model has
 
 
 class UpscalePageOff(PageTest):

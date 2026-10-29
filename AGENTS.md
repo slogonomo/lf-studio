@@ -100,10 +100,10 @@ clips (576p stretched, its sound as it is; 768p linked, a last keyframe cut to 1
 model turned off), `tests/test_api.py` its API record, the `Upscale*` classes in `tests/test_cli.py` and
 `tests/test_mcp.py` the client, and those in `tests/test_page.py` the button (disabled with the reason on clips it can't
 take; `UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a route has not run on the GPU
-through the studio, the encode's phase and time, the text an upscale used and its clip's model; in cards too narrow for
-the names, Upscale and Delete show icons, so the buttons keep one row; `OneRowUpscaleOff` checks that row with the
-Upscale off), the popover, the upscale's card and `tests/ui_test.py` with an upscale in the gallery (and the popover of
-a Keyframes clip).
+through the studio (on the routes the page's `UP_RAN` leaves out), the encode's phase and time, the text an upscale used
+and its clip's model; in cards too narrow for the names, Upscale and Delete show icons, so the buttons keep one row;
+`OneRowUpscaleOff` checks that row with the Upscale off), the popover, the upscale's card and `tests/ui_test.py` with an
+upscale in the gallery (and the popover of a Keyframes clip).
 
 The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as by
 default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo on.
