@@ -23,6 +23,12 @@ This repository contains:
   (https://github.com/huggingface/diffusers, 0.40.0, by The HuggingFace Team), Apache License, Version 2.0.
   upscale/fastload.py, with which it loads the weights, is a copy of runtime/fastload.py from
   patches/lf-studio.patch: a new file there, lf-studio's own code, not NVIDIA's.
+- jobs/h3turbo_job.py (the experimental H3 Turbo) runs the modular MiniMax-H3 pipeline of Diffusers
+  (https://github.com/huggingface/diffusers, 0.40.0, by The HuggingFace Team; Apache License, Version 2.0) with a
+  LightX2V turbo LoRA, and contains code adapted from: PEFT's LoRA Linear forward (https://github.com/huggingface/peft,
+  peft/tuners/lora/layer.py, by The HuggingFace Team; Apache License, Version 2.0), and the target modules, key names,
+  step count and shift rules of LightX2V's Minimax-H3-Turbo reference inference
+  (https://github.com/ModelTC/Minimax-H3-Turbo, inference_minimax_h3.py, by ModelTC; Apache License, Version 2.0).
 - install/regen2k_weights.py contains code adapted from that package's download.py (the byte-range read of Sharp's
   AdaLN table, fetch_curve, and its file hashes), and install/constraints/regen2k-requirements.in starts from its
   requirements.txt. Apache License, Version 2.0.

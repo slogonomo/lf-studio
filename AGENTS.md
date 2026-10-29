@@ -23,7 +23,9 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
 - `jobs/h3turbo_job.py`: the experimental H3 Turbo's GPU job (the full MiniMax-H3 in one stage with a LightX2V turbo
   LoRA, one clip per process in the Regen-2K environment; its docstring is the spec), not run by the server yet;
   `bench/h3turbo-encode.sh` (`bench/h3turbo_encode.py`) makes its prompt conditioning with a transient Qwen worker, as
-  the server will. Tests: `tests/test_h3turbo_job.py` (its torch parts with the Regen-2K Python, CUDA hidden) and
+  the server will. Its `LFSTUDIO_H3TURBO_*` settings (`studio_settings`, read by its `--check-install`) are
+  provisional: they go into `bin/env.example` and the server's docstring when the server runs the job. Tests:
+  `tests/test_h3turbo_job.py` (its torch parts with the Regen-2K Python, CUDA hidden) and
   `tests/test_h3turbo_encode.py`.
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
@@ -115,6 +117,20 @@ took 9:16, a 9:16 one its portrait route (the same with either load). With `LFST
 package it also checks the files the job pins and the entries it was written against (read, not imported). Its torch
 tests (the merger, the lean block forward against a stock-style block, the tensor checks, the column crop) run where
 torch is importable (CPU is enough) and are skipped otherwise.
+
+`tests/test_h3turbo_job.py` covers `jobs/h3turbo_job.py` on the CPU: job.json and its refusals, the geometry (every
+length against the patch's `runtime/geometry.py`, the layout rows against the research probe's GPU receipts), how a
+keyframe is fitted to the canvas, the sigmas, the LoRA header rules on sparse stand-in files, the conditioning
+checks, the settings and `--check-install`, the command line, the environment and the progress lines against
+`upscale/regen2k_job.py`'s, the memory trace, the fast load with stand-in loaders, `--check`, the receipt when a job
+is done, fails, is refused, is aborted for memory or gets SIGTERM, and `--parent`. Its torch parts (the LoRA hooks
+against PEFT, the conditioning tensors, and `run()` itself on a tiny random-weight MiniMax-H3 at the real 576p
+canvases: t2va, a first frame, first + last, a last frame alone, the memory abort and SIGTERM) need torch and
+diffusers 0.40.0 and are skipped otherwise; run them with the Regen-2K Python, CUDA hidden (the command is in the
+file's docstring; about 2-3 min). `tests/test_h3turbo_encode.py` covers `bench/h3turbo_encode.py` and its wrapper,
+standard library only: the text-only rewrite on every alignment-line form the guide and the page write, the prompt
+as the server takes it, the refusals, `--check`, and the encodes against a stand-in of the patch's `runtime` package
+kept in the test file itself (the server's tests get one in `tests/stub/runtime/` when the server encodes).
 
 The patch has its own 135 CPU tests, run in the patched checkout ([docs/PATCH.md](docs/PATCH.md#apply-test-revert)).
 The RTX 5090 patch has 201 (`install/10-sana.sh` with `LFSTUDIO_BACKEND=rtx5090` runs them).
