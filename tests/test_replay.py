@@ -166,6 +166,50 @@ class DraftTests(Fixture):
         info = self.add("nostudio", studio=False)
         self.assertIsNone(info["studio"])
 
+    def test_keyframes_are_copied_with_the_draft(self):
+        """An fl2va clip's keyframes are copied into the draft (a pin reads the first frame) and the copy's
+        capture.json names the copies; everything else in it stays the studio's."""
+        case = make_case(self.rt, self.geometry, "kf", task="fl2va")
+        inputs = self.rt / "inputs" / "webui" / "kf"
+        inputs.mkdir(parents=True)
+        (inputs / "First.PNG").write_bytes(b"first frame")
+        capture = json.loads((case / "stage1" / "capture.json").read_text())
+        capture.update(input_spec={"task": "fl2va", "first_frame": str(inputs / "First.PNG"),
+                                   "last_frame": str(inputs / "last.jpg"), "references": []},
+                       input_sha256={"first_frame": hashlib.sha256(b"first frame").hexdigest()})
+        (case / "stage1" / "capture.json").write_text(json.dumps(capture))
+        info = drafts.add(self.store, "kf", case, self.geometry)          # the last frame is gone meanwhile
+        self.assertEqual(info["inputs"], {
+            "first_frame": {"source": str(inputs / "First.PNG"), "file": "inputs/first_frame.png",
+                            "sha256": hashlib.sha256(b"first frame").hexdigest()},
+            "last_frame": {"source": str(inputs / "last.jpg"), "missing": True}})
+        copied = json.loads((self.store / "kf" / "stage1" / "capture.json").read_text())
+        self.assertEqual(copied["input_spec"]["first_frame"], str(self.store / "kf" / "inputs" / "first_frame.png"))
+        self.assertEqual(copied["input_spec"]["last_frame"], str(inputs / "last.jpg"))   # kept: a pin would name it
+        self.assertEqual({k: v for k, v in copied.items() if k != "input_spec"},
+                         {k: v for k, v in capture.items() if k != "input_spec"})
+        self.assertEqual((self.store / "kf" / "inputs" / "first_frame.png").read_bytes(), b"first frame")
+        shutil.rmtree(inputs)                                    # the studio's trash emptied: the draft still pins
+        self.assertTrue((self.store / "kf" / "inputs" / "first_frame.png").is_file())
+        self.assertIn("seed 7, first frame, last frame MISSING, no dialogue",
+                      drafts.describe(drafts.load(self.store, "kf")))
+        self.assertIsNone(self.add("t2", task="t2va")["inputs"] or None)
+        self.assertEqual(json.loads((self.store / "t2" / "stage1" / "capture.json").read_text()),
+                         json.loads((self.rt / "outputs" / "webui" / "session-t2va-landscape-5s" / "t2" / "stage1" /
+                                     "capture.json").read_text()))          # no keyframes: copied as it is
+
+    def test_a_keyframe_that_changed_since_stage1_is_refused(self):
+        case = make_case(self.rt, self.geometry, "kc", task="fl2va")
+        first = self.rt / "first.png"
+        first.write_bytes(b"another image")
+        capture = json.loads((case / "stage1" / "capture.json").read_text())
+        capture.update(input_spec={"task": "fl2va", "first_frame": str(first), "last_frame": None, "references": []},
+                       input_sha256={"first_frame": "0" * 64})
+        (case / "stage1" / "capture.json").write_text(json.dumps(capture))
+        with self.assertRaisesRegex(ValueError, "not the first frame Stage 1 read"):
+            drafts.add(self.store, "kc", case, self.geometry)
+        self.assertFalse((self.store / "kc").exists())
+
     def test_turns(self):
         self.assertEqual(drafts.parse_turns("R:0-1.2,L:2.4-4.7"),
                          [{"speaker": "R", "t0": 0.0, "t1": 1.2}, {"speaker": "L", "t0": 2.4, "t1": 4.7}])
@@ -227,6 +271,22 @@ class ArmTests(Fixture):
         ten, _ = self.native(seconds=10)
         self.assertEqual(arms.video_tokens(arms.canvas_geometry(ten, 480)), 31 * 15 * 26)
 
+    def test_keyframe_arms(self):
+        native, sigmas = self.native()
+        self.assertIsNone(arms.settings("baseline", sigmas, native)["keyframe"])    # the session's own setting
+        for name, mode, steps in (("keyframe_off", "off", 3), ("keyframe_pin", "pin", 3),
+                                  ("keyframe_draft", "draft", 3), ("keyframe_pin_steps2", "pin", 2)):
+            s = arms.settings(name, sigmas, native)
+            self.assertEqual((s["keyframe"], s["steps"], s["output"]), (mode, steps, [1344, 768]), name)
+        with self.assertRaises(ValueError):
+            arms.Recorder(sigmas, native).keyframe("on")
+        first = {"task": "fl2va", "input_spec": {"first_frame": "/in/a.png", "last_frame": None}}
+        last = {"task": "fl2va", "input_spec": {"first_frame": None, "last_frame": "/in/b.png"}}
+        t2va = {"task": "t2va", "input_spec": {"first_frame": None}}
+        self.assertEqual([arms.keyframe_expected("pin", c) for c in (first, last, t2va, {})],
+                         ["pin", "off", "off", "off"])
+        self.assertEqual(arms.keyframe_expected("draft", first), "draft")
+
     def test_recorder_refuses_bad_settings(self):
         native, sigmas = self.native()
         rec = arms.Recorder(sigmas, native)
@@ -257,8 +317,8 @@ class PlanTests(Fixture):
         self.add("tall", orientation="portrait")
         p = self.build(["a5", "b5", "c10", "tall"], "baseline:2,steps2_from_0725:1,canvas480_steps2:1")
         ids = [g["id"] for g in p["groups"]]
-        self.assertEqual(ids, ["1-landscape-5s-1344x768", "2-landscape-10s-1344x768", "3-portrait-5s-768x1344",
-                               "4-landscape-5s-832x480", "5-landscape-10s-832x480", "6-portrait-5s-480x832"])
+        self.assertEqual(ids, ["1-landscape-5s-1344x768", "2-landscape-10s-1344x768-fl2va", "3-portrait-5s-768x1344",
+                               "4-landscape-5s-832x480", "5-landscape-10s-832x480-fl2va", "6-portrait-5s-480x832"])
         g1 = p["groups"][0]
         self.assertEqual(g1["drafts"], ["a5", "b5"])
         self.assertEqual(g1["tasks"], ["t2va", "ref2va"])
@@ -280,12 +340,53 @@ class PlanTests(Fixture):
         self.assertIn("first in process", text)
         self.assertIn("relaxes: the H3 upscaler runs at scale 1.25", text)
 
-    def test_manifests_must_agree_on_stage2(self):
+    def test_keyframe_arms_run_each_task_in_its_own_process(self):
+        """Stage 2 pins a first frame only in an fl2va session, and a process loads Stage 2 for its first draft's task:
+        with a keyframe arm the drafts of one format are grouped by task too, whatever the setting."""
         self.add("a5", task="t2va")
         self.add("b5", task="fl2va")
-        values = json.loads((self.tmp / "paths-fl2va.json").read_text())
+        self.add("c5", task="ref2va")
+        for setting in (None, "off", "pin"):
+            p = self.build(["a5", "b5", "c5"], "baseline:1,keyframe_pin:1", keyframe_setting=setting)
+            self.assertEqual([(g["id"], g["task"], g["drafts"]) for g in p["groups"]],
+                             [("1-landscape-5s-1344x768-t2va", "t2va", ["a5"]),
+                              ("2-landscape-5s-1344x768-fl2va", "fl2va", ["b5"]),
+                              ("3-landscape-5s-1344x768-ref2va", "ref2va", ["c5"])], setting)
+            self.assertIn("a keyframe arm, so one process per task", plan.describe(p))
+
+    def test_the_keyframe_setting_keeps_fl2va_drafts_apart(self):
+        """Without a keyframe arm, the bench's SOL_H3_STAGE2_KEYFRAME applies to every run (cli.group_env passes it
+        on): with pin, draft or none set (the patch's default is pin), fl2va drafts get processes of their own,
+        so whether one is pinned doesn't depend on which draft comes first; with off, tasks share a process as before.
+        """
+        self.add("a5", task="t2va")
+        self.add("b5", task="fl2va")
+        self.add("c5", task="ref2va")
+        for setting in ("pin", " Draft ", None, ""):
+            p = self.build(["a5", "b5", "c5"], "baseline:1", keyframe_setting=setting)
+            self.assertEqual([(g["id"], g["task"], g["drafts"]) for g in p["groups"]],
+                             [("1-landscape-5s-1344x768", "t2va", ["a5", "c5"]),
+                              ("2-landscape-5s-1344x768-fl2va", "fl2va", ["b5"])], setting)
+            p = self.build(["b5", "a5"], "baseline:1", keyframe_setting=setting)      # the fl2va draft first
+            self.assertEqual([(g["id"], g["task"], g["drafts"]) for g in p["groups"]],
+                             [("1-landscape-5s-1344x768-fl2va", "fl2va", ["b5"]),
+                              ("2-landscape-5s-1344x768", "t2va", ["a5"])], setting)
+        self.assertIn("SOL_H3_STAGE2_KEYFRAME=pin, so fl2va drafts run in processes of their own",
+                      plan.describe(self.build(["a5", "b5"], "baseline:1", keyframe_setting="pin")))
+        self.assertIn("SOL_H3_STAGE2_KEYFRAME=(unset), so fl2va drafts",
+                      plan.describe(self.build(["a5", "b5"], "baseline:1")))
+        for setting in ("off", " OFF "):
+            p = self.build(["a5", "b5", "c5"], "baseline:1", keyframe_setting=setting)
+            self.assertEqual([(g["id"], g["tasks"]) for g in p["groups"]],
+                             [("1-landscape-5s-1344x768", ["t2va", "fl2va", "ref2va"])], setting)
+            self.assertNotIn("keyframe:", plan.describe(p))
+
+    def test_manifests_must_agree_on_stage2(self):
+        self.add("a5", task="t2va")
+        self.add("b5", task="ref2va")
+        values = json.loads((self.tmp / "paths-ref2va.json").read_text())
         values["transformer"] = "/models/other"
-        (self.tmp / "paths-fl2va.json").write_text(json.dumps(values))
+        (self.tmp / "paths-ref2va.json").write_text(json.dumps(values))
         with self.assertRaises(ValueError):
             self.build(["a5", "b5"], "baseline")
 
@@ -308,10 +409,11 @@ class PlanTests(Fixture):
 class ScriptTests(Fixture):
     """bench/replay.sh itself: settings from the env file, the memory check, --dry writes nothing."""
 
-    def script(self, *args, extra=None):
+    def script(self, *args, extra=None, env_lines=""):
         env_file = self.tmp / "env"
         env_file.write_text(f'LFSTUDIO_HOME="{self.tmp}"\nLFSTUDIO_SANA="{self.sana}"\n'
-                            f'LFSTUDIO_PATHS="{self.paths_template}"\nSOL_H3_SPARK_RUNTIME_ROOT="{self.rt}"\n')
+                            f'LFSTUDIO_PATHS="{self.paths_template}"\nSOL_H3_SPARK_RUNTIME_ROOT="{self.rt}"\n'
+                            + env_lines)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_", "SOL_H3_"))}
         env.update(LFSTUDIO_ENV=str(env_file), **(extra or {}))
         return subprocess.run(["bash", str(REPO / "bench" / "replay.sh"), *args], capture_output=True, text=True,
@@ -334,6 +436,24 @@ class ScriptTests(Fixture):
         r = self.script("run", "--dry", "--arms", "nope")
         self.assertEqual(r.returncode, 2)
         self.assertIn("unknown arm", r.stderr)
+
+    def test_dry_takes_the_keyframe_setting_from_the_env_file(self):
+        """The plan sees the SOL_H3_STAGE2_KEYFRAME its Stage-2 processes get (the env file, through install/env.sh)."""
+        make_case(self.rt, self.geometry, "web_1")
+        make_case(self.rt, self.geometry, "web_2", task="fl2va")
+        for name in ("t5", "f5"):
+            case = "web_1" if name == "t5" else "web_2"
+            task = "t2va" if name == "t5" else "fl2va"
+            r = self.script("add", name, str(self.rt / "outputs" / "webui" / f"session-{task}-landscape-5s" / case))
+            self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.script("run", "--dry", "--arms", "baseline:1", env_lines="SOL_H3_STAGE2_KEYFRAME=pin\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("SOL_H3_STAGE2_KEYFRAME=pin, so fl2va drafts run in processes of their own", r.stdout)
+        self.assertIn("process 1/2 [1-landscape-5s-1344x768-fl2va]", r.stdout)
+        self.assertIn("process 2/2 [2-landscape-5s-1344x768]", r.stdout)
+        r = self.script("run", "--dry", "--arms", "baseline:1", env_lines="SOL_H3_STAGE2_KEYFRAME=off\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("process 1/1 [1-landscape-5s-1344x768]", r.stdout)
 
     def test_run_checks_free_memory_first(self):
         make_case(self.rt, self.geometry, "web_1")
@@ -576,6 +696,62 @@ class GpuRunTests(Fixture):
         run.undo()
         self.assertIs(self.models.tiling_config, before)
 
+    def test_keyframe_sets_and_restores_the_session_mode(self):
+        built = []
+        self.session.stage2_keyframe, self.session.task = "off", "fl2va"
+        self.session.ensure_image_encoder = lambda: built.append("encoder")
+        self.models.image_encoder = None
+        run = self.run_arm("keyframe_pin")
+        self.assertEqual((self.session.stage2_keyframe, built), ("pin", ["encoder"]))
+        self.assertEqual(run.actual()["keyframe"], "pin")
+        run.undo()
+        self.assertEqual(self.session.stage2_keyframe, "off")
+        run = self.run_arm("keyframe_draft")                         # no encoder for the draft's own frame 0
+        self.assertEqual((self.session.stage2_keyframe, built), ("draft", ["encoder"]))
+        run.undo()
+        run = self.run_arm("keyframe_pin_steps2")
+        self.assertEqual((self.session.stage2_keyframe, self.models.stage2_sigmas), ("pin", (0.725, 0.421875, 0.0)))
+        self.assertEqual(run.actual()["checks"], "relaxed")
+        run.undo()
+        self.assertEqual((self.session.stage2_keyframe, self.models.stage2_sigmas), ("off", tuple(self.sigmas)))
+        self.session.task = "t2va"                      # a t2va session never pins: no encoder for it
+        self.run_arm("keyframe_pin").undo()
+        self.assertEqual(built, ["encoder", "encoder"])
+
+    def test_keyframe_receipts_are_verified(self):
+        expected = {"steps": 3, "output": [1344, 768], "frames": 121, "sigmas": [0.909375, 0.725, 0.421875, 0.0],
+                    "tiles": {"frames": [128, 24], "height": [448, 64], "width": [768, 64]}, "profile_step": None,
+                    "keyframe": "pin", "keyframe_applied": "pin"}
+        pinned = {"stage2_keyframe": "pin", "result": {
+            "attention": {"completed_steps": 3, "sol_calls": 141},
+            "output_info": {"width": 1344, "height": 768, "frames": 121},
+            "official_vae_tiling": {"config": {"frames": {"tile_size": 128, "overlap": 24},
+                                               "height": {"tile_size": 448, "overlap": 64},
+                                               "width": {"tile_size": 768, "overlap": 64}}},
+            "spatial_route": {"actual_calls": {"input_video_vae": 1}},
+            "highres_first_frame": {"mode": "pin", "latent_index": 0, "strength": 1.0, "tokens": [0, 1008]}}}
+        self.assertEqual(stage2.verify(pinned, expected, {"sigmas": expected["sigmas"], "keyframe": "pin"}), [])
+        self.assertEqual(stage2.verify(pinned, expected, {"sigmas": expected["sigmas"], "keyframe": "off"}),
+                         ["the session held keyframe mode off, expected pin"])
+        off = json.loads(json.dumps(pinned))                     # what Stage 2 does for a draft it cannot pin
+        off.update(stage2_keyframe="off")
+        off["result"].update(highres_first_frame=None, spatial_route={"actual_calls": {"input_video_vae": 0}})
+        self.assertEqual(len(stage2.verify(off, expected)), 3)
+        self.assertEqual(stage2.verify(off, dict(expected, keyframe_applied="off")), [])
+        self.assertEqual(stage2.verify(off, dict(expected, keyframe=None)), [])     # other arms: not checked
+        wrong = json.loads(json.dumps(pinned))
+        wrong["result"]["highres_first_frame"]["latent_index"] = 15
+        self.assertIn("expected a pin at latent frame 0", " ".join(stage2.verify(wrong, expected)))
+
+    def test_preflight_needs_the_keyframe_pin_for_keyframe_arms(self):
+        old = type("OldStage2", (), {"Session": type("Session", (), {}), "public_refiner_modules": None,
+                                     "upscale_comfy_normalized_h3": None})
+        models_module = type("M", (), {"SIGMAS": tuple(self.sigmas)})
+        geometry_module = type("G", (), {"from_recipe": None})
+        stage2.preflight(old, models_module, geometry_module, self.sigmas)
+        with self.assertRaisesRegex(RuntimeError, "keyframe_mode_for.*Session.ensure_image_encoder"):
+            stage2.preflight(old, models_module, geometry_module, self.sigmas, keyframe=True)
+
     def test_contract_and_verify(self):
         model = type("M", (), {})()
         model.sol_backend, model.sol_attention = "triton", Stats(0)
@@ -735,6 +911,11 @@ class ReportTests(Fixture):
         self.assertIn("vs the studio's clip (warm, Stage 2 36.0 s in the studio): yes", text)
         self.assertIn("audio identical in every run", text)
         self.assertIn("4 of 4 planned runs passed", text)
+        h = {"sha256": "x", "video_md5": "v", "audio_md5": "a"}
+        row = {"status": "PASS", "output": "o.mp4", "request_index": 2, "stage2_audio": "frozen",
+               "stage2_keyframe": "pin"}
+        self.assertEqual(report.studio_verdict(row, d["studio"], h, h), "n/a: keyframe pin here, off in the studio")
+        self.assertEqual(report.studio_verdict(dict(row, stage2_keyframe="off"), d["studio"], h, h), "yes")
 
         qdir, complete = quality.quality(out, log=lambda *a: None)
         self.assertIsNone(complete)

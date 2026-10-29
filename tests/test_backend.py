@@ -86,6 +86,13 @@ def spark_package(sana):
     return package
 
 
+def without_keyframe_setting(package):
+    """The package's patch without SOL_H3_STAGE2_KEYFRAME: the DGX Spark's or the RTX 5090's before 0.5.2."""
+    with (Path(package) / "runtime" / "config.py").open("a") as f:
+        f.write("\ndel stage2_keyframe_mode   # a patch without the setting\n")
+    return Path(package)
+
+
 def mem_available_gib():
     for line in Path("/proc/meminfo").read_text().splitlines():
         if line.startswith("MemAvailable:"):
@@ -428,6 +435,102 @@ class ServerBackend(unittest.TestCase):
 PAGE = (REPO / "webui" / "index.html").read_text()
 
 
+class Stage2KeyframeDefault(LauncherTest):
+    """SOL_H3_STAGE2_KEYFRAME's default (#57) is pin on both backends, in bin/lf-studio --check and in the server's
+    start check alike: with the current patch the default passes; with an older one (no stage2_keyframe_mode: the DGX
+    Spark's or the RTX 5090's before 0.5.2) it is refused as needing install/10-sana.sh, naming off as the other way,
+    and off set explicitly starts."""
+
+    def setUp(self):
+        super().setUp()
+        old = self.d / "sana-old" / "models" / "minimax_h3" / "Sol-H3-Spark"     # a copy: the stub stays as it is
+        shutil.copytree(STUB / "runtime", old / "runtime", ignore=shutil.ignore_patterns("__pycache__"))
+        spark = dict(LFSTUDIO_TEST_SKIP_DOCKER="1", LFSTUDIO_MIN_FREE_GIB="0")
+        rtx = dict(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_MIN_FREE_GIB="0", FAKE_VRAM_FREE_MIB="30000",
+                   LFSTUDIO_UPSCALE="0")
+        # (backend, its settings, the current patch's package, an older one's, LFSTUDIO_SANA of the older one)
+        self.backends = (
+            ("spark", spark, spark_package(self.sana), without_keyframe_setting(old), self.d / "sana-old"),
+            ("rtx5090", rtx, rtx_package(self.d / "sana-rtx"),
+             without_keyframe_setting(rtx_package(self.d / "sana-rtx-old")), self.d / "sana-rtx-old"))
+
+    def default_refusal(self, package):
+        return (f"SOL_H3_STAGE2_KEYFRAME=pin (the default since 0.5.2) needs a newer patch than the one applied in "
+                f"{package.resolve()}; run install/10-sana.sh (or set SOL_H3_STAGE2_KEYFRAME=off)")
+
+    def test_the_stubs_default_is_the_patchs(self):
+        """The stub runtime, which stands in for the current patch here, resolves unset and empty to pin."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("stub_config", STUB / "runtime" / "config.py")
+        config = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(config)
+        for value, mode in ((None, "pin"), ("", "pin"), (" ", "pin"), ("OFF", "off"), ("draft", "draft")):
+            with mock.patch.dict(os.environ):
+                os.environ.pop("SOL_H3_STAGE2_KEYFRAME", None)
+                if value is not None:
+                    os.environ["SOL_H3_STAGE2_KEYFRAME"] = value
+                self.assertEqual(config.stage2_keyframe_mode(), mode, value)
+
+    def test_launcher_check(self):
+        for backend, settings, current, older, older_sana in self.backends:
+            with self.subTest(backend=backend):
+                new = dict(settings, LFSTUDIO_SANA=str(current.parents[2]))
+                old = dict(settings, LFSTUDIO_SANA=str(older_sana))
+                for value in (None, "", " ", "draft"):   # the current patch: pin, the default, passes (draft too)
+                    code, out = self.check(**new, **({} if value is None else {"SOL_H3_STAGE2_KEYFRAME": value}))
+                    self.assertEqual(code, 0, out)
+                for value in (None, ""):                 # an older patch: the default needs install/10-sana.sh
+                    code, out = self.check(**old, **({} if value is None else {"SOL_H3_STAGE2_KEYFRAME": value}))
+                    self.assertEqual(code, 1, out)
+                    self.assertIn(f"REFUSED - {self.default_refusal(older)}", out)
+                    self.assertNotIn("(see bin/env.example)", out)          # exit 4, not a bad value's exit 3
+                for value in ("off", " Off "):           # ... and off, asked for, starts
+                    code, out = self.check(**old, SOL_H3_STAGE2_KEYFRAME=value)
+                    self.assertEqual(code, 0, out)
+                for value in ("pin", "Draft"):           # pin or draft asked for: no other way named
+                    code, out = self.check(**old, SOL_H3_STAGE2_KEYFRAME=value)
+                    self.assertEqual(code, 1, out)
+                    self.assertIn(f"REFUSED - SOL_H3_STAGE2_KEYFRAME={value} needs a newer patch than the one applied "
+                                  f"in {older.resolve()}; run install/10-sana.sh", out)
+                    self.assertNotIn("(or set", out)
+
+    def studio(self, name, package, **env):
+        s = StubStudio(self.d / name, load_s=1, clip_s=1, preload=False, package=package)
+        for setting in ("LFSTUDIO_BACKEND", "SOL_H3_STAGE2_KEYFRAME"):
+            s.env.pop(setting, None)
+        s.env.update(env)
+        return s
+
+    def starts(self, name, package, **env):
+        s = self.studio(name, package, **env).start()
+        try:
+            return s.state()["backend"]
+        finally:
+            s.stop()
+
+    def refused(self, name, package, **env):
+        with self.assertRaises(RuntimeError) as e:
+            self.studio(name, package, **env).start()
+        return str(e.exception)
+
+    def test_server_start(self):
+        for backend, settings, current, older, _ in self.backends:
+            with self.subTest(backend=backend):
+                env = {"LFSTUDIO_BACKEND": "rtx5090", "LFSTUDIO_UPSCALE": "0"} if backend == "rtx5090" else {}
+                self.assertEqual(self.starts(f"{backend}-new", current, **env), backend)       # pin, the default
+                self.assertEqual(self.starts(f"{backend}-new-empty", current, SOL_H3_STAGE2_KEYFRAME="", **env),
+                                 backend)
+                self.assertIn(self.default_refusal(older), self.refused(f"{backend}-old", older, **env))
+                self.assertIn(self.default_refusal(older),
+                              self.refused(f"{backend}-old-empty", older, SOL_H3_STAGE2_KEYFRAME=" ", **env))
+                self.assertEqual(self.starts(f"{backend}-old-off", older, SOL_H3_STAGE2_KEYFRAME="off", **env),
+                                 backend)
+                message = self.refused(f"{backend}-old-pin", older, SOL_H3_STAGE2_KEYFRAME="pin", **env)
+                self.assertIn("SOL_H3_STAGE2_KEYFRAME=pin needs a newer patch than the one applied in "
+                              f"{older.resolve()}; run install/10-sana.sh", message)
+                self.assertNotIn("(or set", message)
+
+
 def machines():
     """The page's per-backend texts and clip times (JSON between its /*machines*/ markers)."""
     m = re.search(r"const MACHINES=/\*machines\*/(.*?)/\*machines\*/;", PAGE, re.S)
@@ -577,7 +680,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("nothing to do", out["05-python.sh"][1])
         self.assertIn(f"sol-engine @ {base}", out["10-sana.sh"][1])
         self.assertIn("patches/lf-studio.patch", out["10-sana.sh"][1])
-        self.assertIn("135 CPU tests", out["10-sana.sh"][1])
+        self.assertIn("156 CPU tests", out["10-sana.sh"][1])
         self.assertIn("python3.12 -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-Spark &&", out["20-weights.sh"][1])
         self.assertIn("--include-offline", out["20-weights.sh"][1])
@@ -632,7 +735,7 @@ class InstallDryRun(unittest.TestCase):
         text = out["10-sana.sh"][1]
         self.assertIn(f"sol-engine @ {RTX_BASE}", text)
         self.assertIn("patches/lf-studio-rtx5090.patch", text)
-        self.assertIn("201 CPU tests", text)
+        self.assertIn("223 CPU tests", text)
         self.assertIn(f"{py312} -m venv", out["20-weights.sh"][1])
         self.assertIn("models/minimax_h3/Sol-H3-RTX5090 &&", out["20-weights.sh"][1])
         self.assertNotIn("--include-offline", out["20-weights.sh"][1])

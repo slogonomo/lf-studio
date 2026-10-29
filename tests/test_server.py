@@ -1124,6 +1124,25 @@ class BadStage2Audio(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class BadStage2Keyframe(unittest.TestCase):
+    """SOL_H3_STAGE2_KEYFRAME (a patch setting, #57; pin by default on the DGX Spark) is checked at start too: a bad
+    value stops the studio instead of failing every Stage-2 load."""
+
+    def test_refused_at_start(self):
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-bad-"))
+        try:
+            for i, value in enumerate(("first", "on", "1")):
+                with self.assertRaises(RuntimeError) as e:
+                    StubStudio(d / f"a{i}", env={"SOL_H3_STAGE2_KEYFRAME": value}).start()
+                self.assertIn(f"SOL_H3_STAGE2_KEYFRAME must be one of ('off', 'pin', 'draft'), not {value!r}",
+                              str(e.exception))
+            for i, value in enumerate(("PIN", "draft", " ", "off")):       # empty is the default (pin), as unset
+                studio = StubStudio(d / f"b{i}", env={"SOL_H3_STAGE2_KEYFRAME": value}).start()
+                studio.stop()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class BadDynamicTextLength(unittest.TestCase):
     """SOL_H3_DYNAMIC_TEXT_LENGTH (a patch setting, #41; on by default since 0.4) is checked at start too: a bad value
     stops the studio instead of failing every Stage-1 load once the transformer is in memory."""
@@ -1143,22 +1162,27 @@ class BadDynamicTextLength(unittest.TestCase):
 
 
 def older_patch_package(directory, version):
-    """The stub runtime as an older patch has it. 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS,
+    """The stub runtime as an older patch has it. 0.5's (0.5.0 and 0.5.1) has every setting but SOL_H3_STAGE2_KEYFRAME
+    (it never pins the keyframe, as off does). 0.3's has SOL_H3_STAGE2_AUDIO but not SOL_H3_PROMPT_TOKENS,
     SOL_H3_STATIC_SHAPES or SOL_H3_DYNAMIC_TEXT_LENGTH; 0.2's has none of them. Such a patch tokenizes as plain does
     and compiles as SOL_H3_STATIC_SHAPES=0 and SOL_H3_DYNAMIC_TEXT_LENGTH=0 do, and 0.2's refines as joint does."""
     package = Path(directory) / f"package-{version}"
     shutil.copytree(Path(__file__).resolve().parent / "stub" / "runtime", package / "runtime",
                     ignore=shutil.ignore_patterns("__pycache__"))
-    missing = {"0.3": "prompt_tokens_mode, compile_dynamic, dynamic_text_length",
-               "0.2": "stage2_audio_mode, prompt_tokens_mode, compile_dynamic, dynamic_text_length"}[version]
+    missing = {"0.5": "stage2_keyframe_mode",
+               "0.3": "prompt_tokens_mode, compile_dynamic, dynamic_text_length, stage2_keyframe_mode",
+               "0.2": "stage2_audio_mode, prompt_tokens_mode, compile_dynamic, dynamic_text_length, "
+                      "stage2_keyframe_mode"}[version]
     with (package / "runtime" / "config.py").open("a") as f:
         f.write(f"\ndel {missing}   # the patch of {version} has no such setting\n")
     return package
 
 
 # What an older patch is asked for, and how the studio and the launcher answer: None = starts; otherwise the start of
-# the refusal, which ends "needs a newer patch than the one applied in <package>; run install/10-sana.sh". An empty
-# value is the default, as unset.
+# the refusal, which ends "needs a newer patch than the one applied in <package>; run install/10-sana.sh" (and, for
+# the keyframe pin's default, " (or set SOL_H3_STAGE2_KEYFRAME=off)": KEYFRAME_DEFAULT_REFUSAL). An empty value is
+# the default, as unset. On the DGX Spark (these cases) SOL_H3_STAGE2_KEYFRAME's default is pin since 0.5.2.
+KEYFRAME_DEFAULT_REFUSAL = "SOL_H3_STAGE2_KEYFRAME=pin (the default since 0.5.2)"
 OLDER_PATCH_CASES = (
     ("0.3", {}, "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4)"),        # a git pull without install/10-sana.sh
     ("0.3", {"SOL_H3_PROMPT_TOKENS": "minimax"}, "SOL_H3_PROMPT_TOKENS=minimax"),
@@ -1168,19 +1192,28 @@ OLDER_PATCH_CASES = (
      "SOL_H3_DYNAMIC_TEXT_LENGTH=1 (the default since 0.4)"),
     ("0.3", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "1"},
      "SOL_H3_DYNAMIC_TEXT_LENGTH=1"),
-    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain", "SOL_H3_STATIC_SHAPES": " 0", "SOL_H3_DYNAMIC_TEXT_LENGTH": " 0"}, None),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain", "SOL_H3_STATIC_SHAPES": " 0", "SOL_H3_DYNAMIC_TEXT_LENGTH": " 0"},
+     KEYFRAME_DEFAULT_REFUSAL),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": " Plain", "SOL_H3_STATIC_SHAPES": " 0", "SOL_H3_DYNAMIC_TEXT_LENGTH": " 0",
+             "SOL_H3_STAGE2_KEYFRAME": "off"}, None),
     ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0"},
      "SOL_H3_STAGE2_AUDIO=frozen (the default since 0.3)"),
     ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0",
              "SOL_H3_STAGE2_AUDIO": "frozen"}, "SOL_H3_STAGE2_AUDIO=frozen"),
     ("0.2", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0",
-             "SOL_H3_STAGE2_AUDIO": "JOINT"}, None),
+             "SOL_H3_STAGE2_AUDIO": "JOINT", "SOL_H3_STAGE2_KEYFRAME": "OFF"}, None),
+    ("0.5", {}, KEYFRAME_DEFAULT_REFUSAL),                 # a git pull without install/10-sana.sh: 0.5 never pins
+    ("0.5", {"SOL_H3_STAGE2_KEYFRAME": " Off"}, None),
+    ("0.5", {"SOL_H3_STAGE2_KEYFRAME": "pin"}, "SOL_H3_STAGE2_KEYFRAME=pin"),
+    ("0.5", {"SOL_H3_STAGE2_KEYFRAME": "Draft"}, "SOL_H3_STAGE2_KEYFRAME=Draft"),
+    ("0.3", {"SOL_H3_PROMPT_TOKENS": "plain", "SOL_H3_STATIC_SHAPES": "0", "SOL_H3_DYNAMIC_TEXT_LENGTH": "0",
+             "SOL_H3_STAGE2_KEYFRAME": "pin"}, "SOL_H3_STAGE2_KEYFRAME=pin"),
 )
 
 
 def older_patch_settings(settings):
     return {"SOL_H3_PROMPT_TOKENS": "", "SOL_H3_STAGE2_AUDIO": "", "SOL_H3_STATIC_SHAPES": "",
-            "SOL_H3_DYNAMIC_TEXT_LENGTH": "", **settings}
+            "SOL_H3_DYNAMIC_TEXT_LENGTH": "", "SOL_H3_STAGE2_KEYFRAME": "", **settings}
 
 
 class BadPromptTokens(unittest.TestCase):
@@ -1192,7 +1225,7 @@ class BadPromptTokens(unittest.TestCase):
         started fine and every clip came out plain (#38)."""
         d = Path(tempfile.mkdtemp(prefix="lf-studio-old-"))
         try:
-            packages = {version: older_patch_package(d, version) for version in ("0.3", "0.2")}
+            packages = {version: older_patch_package(d, version) for version in ("0.5", "0.3", "0.2")}
             for i, (version, settings, refused) in enumerate(OLDER_PATCH_CASES):
                 package = packages[version]
                 studio = StubStudio(d / f"case-{i}", env=older_patch_settings(settings), package=package)
@@ -1204,6 +1237,11 @@ class BadPromptTokens(unittest.TestCase):
                     studio.start()
                 self.assertIn(f"{refused} needs a newer patch than the one applied in {package.resolve()}; "
                               "run install/10-sana.sh", str(e.exception))
+                opt_out = "; run install/10-sana.sh (or set SOL_H3_STAGE2_KEYFRAME=off)"
+                if refused == KEYFRAME_DEFAULT_REFUSAL:                 # the default: off starts too
+                    self.assertIn(opt_out, str(e.exception))
+                else:
+                    self.assertNotIn("(or set", str(e.exception))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -1222,8 +1260,8 @@ class BadPromptTokens(unittest.TestCase):
 
 class LauncherSettingsCheck(unittest.TestCase):
     """bin/lf-studio --check runs the patch's settings checks (SOL_H3_STAGE2_AUDIO, SOL_H3_PROMPT_TOKENS,
-    SOL_H3_STATIC_SHAPES, SOL_H3_DYNAMIC_TEXT_LENGTH) in the package, here the stub runtime, and refuses a bad value
-    with its message, or a value an older patch can't give (#38)."""
+    SOL_H3_STATIC_SHAPES, SOL_H3_DYNAMIC_TEXT_LENGTH, SOL_H3_STAGE2_KEYFRAME) in the package, here the stub runtime, and
+    refuses a bad value with its message, or a value an older patch can't give (#38)."""
 
     def setUp(self):
         self.d = Path(tempfile.mkdtemp(prefix="lf-studio-check-"))
@@ -1263,6 +1301,11 @@ class LauncherSettingsCheck(unittest.TestCase):
             code, out = self.check(SOL_H3_DYNAMIC_TEXT_LENGTH=value)
             self.assertEqual(code, 1, out)
             self.assertIn(f"REFUSED - SOL_H3_DYNAMIC_TEXT_LENGTH must be 0 or 1, not {value!r}", out)
+        for value in ("off", "Pin", "draft", " "):                         # " ": the default, pin
+            self.assertEqual(self.check(SOL_H3_STAGE2_KEYFRAME=value)[0], 0, value)
+        code, out = self.check(SOL_H3_STAGE2_KEYFRAME="first")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - SOL_H3_STAGE2_KEYFRAME must be one of ('off', 'pin', 'draft'), not 'first'", out)
 
     def test_api_setting(self):
         """LFSTUDIO_API (#58): 1, 0, or unset or empty (on); any other value is refused with the server's words."""
@@ -1293,6 +1336,11 @@ class LauncherSettingsCheck(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn(f"REFUSED - {refused} needs a newer patch than the one applied in", out)
             self.assertIn("run install/10-sana.sh", out)
+            self.assertNotIn("(see bin/env.example)", out)                  # exit 4 (a newer patch), not 3
+            if refused == KEYFRAME_DEFAULT_REFUSAL:
+                self.assertIn("; run install/10-sana.sh (or set SOL_H3_STAGE2_KEYFRAME=off)", out)
+            else:
+                self.assertNotIn("(or set", out)
 
 
 class TrashPurge(Delete):
