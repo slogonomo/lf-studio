@@ -354,7 +354,8 @@ LightX2V Turbo, the second model, is off unless `LFSTUDIO_MODELS` lists it
 ([INSTALL.md](INSTALL.md#experimental-lightx2v-turbo)). Each of its clips has a directory of its own,
 `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/<session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case>/`,
 with `prompt.txt` and `encode.log` (the prompt encode's output), `qwen/` (and for Keyframes `qwen-text/`, the prompt
-without its keyframe references), and `turbo/` with `job.json` (what the studio asked for), `worker.log` (the job's
+without its keyframe references; none for a prompt that is nothing but its keyframe line, which is encoded again
+without it, as the server log says), and `turbo/` with `job.json` (what the studio asked for), `worker.log` (the job's
 output) and `receipt.json` (its times, peak memory and lowest MemAvailable). A failed clip's card shows the error.
 
 **No Model row on the page.** The studio runs with `LFSTUDIO_MODELS` unset or `sol-h3` alone (the default): the page
@@ -407,7 +408,9 @@ ran out of memory. Usually another app grew meanwhile; `turbo/worker.log` shows 
 
 **`the prompt encode failed: ...`** (or `refused the clip`). The prompt encode runs a Qwen worker of its own, in the
 studio's Qwen container (Docker), as the Sol-H3 models do; `encode.log` in the clip's directory has its output. A
-container that won't start fails the clip, with no retry: see [Loading fails](#loading-fails).
+container that won't start fails the clip, with no retry: see [Loading fails](#loading-fails). When the guard or a
+Cancel had to kill the encode, the studio also stops the Qwen worker it left (the log says `stopping the Qwen worker
+the prompt encode left`).
 
 **A queue of Sol-H3 and LightX2V Turbo clips is slow.** Clips run in order, and each change of model costs time: a
 LightX2V Turbo clip closes the Sol-H3 models first (about 40 s), and the next Sol-H3 clip loads them again (about
