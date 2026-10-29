@@ -3811,7 +3811,8 @@ class ModelChoiceOff(unittest.TestCase):
     def test_v051s_client(self):
         """v0.5.1's lf-cli (from git) and this one print the same against a studio with the model choice off: a
         generate that waits and saves the clip, status and the status of a clip (their usage lines differ: this one
-        lists the model's flags too)."""
+        lists the model's flags too). The generate's progress lines of the clip while it runs are compared apart:
+        which a client prints depends on what its first look finds (queued, running or done), not on the client."""
         old = release_client("v0.5.1", self.d / "v0.5.1-client")
         if not old:
             self.skipTest("v0.5.1 is not in this copy's git history")
@@ -3826,6 +3827,12 @@ class ModelChoiceOff(unittest.TestCase):
         made = {name: cli(s.url, "generate", "--prompt", "a test clip", "--seed", "4", "--wait", "--out",
                           str(out / f"{name}.mp4"), client=client, stderr=True) for name, client in clients.items()}
         self.assertEqual(made["now"][0], 0, made["now"])
+        running = ["starting", "generating", "saving the clip"]          # in the order a clip goes through them
+        for name, (code, stdout, stderr) in made.items():
+            seen = [line for line in stderr.splitlines() if line in running]
+            self.assertEqual(seen, sorted(set(seen), key=running.index), (name, stderr))
+            made[name] = (code, stdout, "".join(line for line in stderr.splitlines(True)
+                                                if line.rstrip("\n") not in running))
         ids = [j["id"] for j in s.state()["jobs"]]
         self.same({name: normalized(json.dumps(answer).replace(f"{name}.mp4", "<file>"), s.root, s.url, out, ids=ids)
                    for name, answer in made.items()}, "lf-cli generate --wait --out")
