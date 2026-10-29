@@ -214,10 +214,11 @@ path_re() {
 }
 # Pipeline workers run in their own sessions, so stopping the server's process group does not reach them.
 # Their command lines name runtime.worker and an options file under this runtime root's web-UI outputs. So do the GPU
-# jobs the server runs in groups of their own (webui/server.py gpu_process): the experimental Upscale's job
-# (upscale/regen2k_job.py --job <runtime root>/outputs/webui/...), LightX2V Turbo's job (jobs/h3turbo_job.py --job ...)
-# and its prompt encode (bench/h3turbo_encode.py --case ...), and any later job script of upscale/, jobs/ or bench/.
-WORKER_RE="($(path_re "$PKG")/(runtime|qwen_python\.sh)|runtime\.worker --module [a-z0-9]+ --options $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/|$(path_re "$REPO")/(upscale|jobs|bench)/[a-z0-9_]+\.py --(job|case) $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/)"
+# jobs the server runs in groups of their own (webui/server.py gpu_process), each by its script's name: the
+# experimental Upscale's job (upscale/regen2k_job.py --job <runtime root>/outputs/webui/...), LightX2V Turbo's job
+# (jobs/h3turbo_job.py --job ...) and its prompt encode (bench/h3turbo_encode.py --case ...). Other scripts of bench/
+# are left alone.
+WORKER_RE="($(path_re "$PKG")/(runtime|qwen_python\.sh)|runtime\.worker --module [a-z0-9]+ --options $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/|$(path_re "$REPO")/(upscale/regen2k_job\.py --job|jobs/h3turbo_job\.py --job|bench/h3turbo_encode\.py --case) $(path_re "$SOL_H3_SPARK_RUNTIME_ROOT")/outputs/webui/)"
 SERVER_RE="$(path_re "$SERVER")"
 
 stop_containers() {   # $1 = docker stop | docker rm -f

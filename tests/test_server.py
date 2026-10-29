@@ -4133,15 +4133,19 @@ class LauncherModels(LauncherSettingsCheck):
         self.refused(f"{turbo}no {lora} (the 4-step LoRA; install/66-h3turbo.sh fetches it); set it up", **settings)
 
     def test_kill_ends_left_over_jobs(self):
-        """--kill (and the launcher's cleanup) find LightX2V Turbo's job and prompt encode by their command lines
-        (jobs/*.py --job, bench/*.py --case under this runtime root's web-UI outputs), not one elsewhere."""
+        """--kill (and the launcher's cleanup) find LightX2V Turbo's job and prompt encode by their scripts' names and
+        command lines (jobs/h3turbo_job.py --job, bench/h3turbo_encode.py --case under this runtime root's web-UI
+        outputs), not one elsewhere, nor another script of bench/ or jobs/ on a studio case."""
         repo, runtime = Path(__file__).resolve().parents[1], self.d / "runtime"
         case = runtime / "outputs" / "webui" / f"20261028-000000-{TURBO}-576p-t2va-landscape-5s" / "web_x"
         sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
         procs = [subprocess.Popen(sleeper + [str(repo / rel), flag, str(path)], start_new_session=True)
                  for rel, flag, path in (("jobs/h3turbo_job.py", "--job", case / "turbo" / "job.json"),
                                          ("bench/h3turbo_encode.py", "--case", case),
-                                         ("jobs/h3turbo_job.py", "--job", self.d / "bench" / "job.json"))]
+                                         ("jobs/h3turbo_job.py", "--job", self.d / "bench" / "job.json"),
+                                         ("bench/research_probe.py", "--case", case),
+                                         ("jobs/other_job.py", "--job", case / "turbo" / "job.json"),
+                                         ("bench/h3turbo_encode.py", "--job", case))]
         self.addCleanup(lambda: [p.kill() or p.wait() for p in procs if p.poll() is None])
         env = {k: v for k, v in os.environ.items() if not k.startswith(("SOL_H3_", "LFSTUDIO_", "SOLH3_"))}
         env.update(LFSTUDIO_ENV=str(self.d / "no-env-file"), LFSTUDIO_SANA=str(self.d / "no-sana"),
@@ -4152,7 +4156,7 @@ class LauncherModels(LauncherSettingsCheck):
                              timeout=60)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual([procs[0].wait(timeout=10), procs[1].wait(timeout=10)], [-signal.SIGKILL] * 2)
-        self.assertIsNone(procs[2].poll())
+        self.assertEqual([p.poll() for p in procs[2:]], [None] * 4)
 
 
 class TurboSeam(unittest.TestCase):
