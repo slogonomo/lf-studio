@@ -643,7 +643,7 @@ class ApiOn(ApiTest):
         self.assertIs(self.studio.state()["api"], True)
         jid = self.submit_ok({"prompt": "x", "seconds": 6})
         code, _, answer = self.studio.request("POST", "/api/generate", json.dumps({"prompt": "y"}).encode(),
-                                              {"Content-Type": "application/json", "X-LFStudio-Client": "lf-cli/0.5.0"})
+                                              {"Content-Type": "application/json", "X-LFStudio-Client": "lf-cli/0.5.1"})
         self.assertEqual(code, 200, answer)
         self.assertEqual(self.get_job(jid)[0], 200)
         self.studio.wait([jid, json.loads(answer)["id"]], timeout=30)
@@ -671,7 +671,7 @@ class ApiOff(ApiTest):
         b = "apioffboundary"
         form = (f'--{b}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nx\r\n--{b}--\r\n').encode()
         self.assert_off("POST", "/api/generate", form, {"Content-Type": f"multipart/form-data; boundary={b}",
-                                                        "X-LFStudio-Client": "lf-cli/0.5.0"})
+                                                        "X-LFStudio-Client": "lf-cli/0.5.1"})
         self.assertEqual(self.studio.state()["jobs"], [])                     # nothing queued, no files kept
         self.assertEqual(self.inputs(), [])
         jid = self.generate()                                                 # the page's form

@@ -530,7 +530,7 @@ class Switchboard(unittest.TestCase):
         method, path, headers, body = fake.requests[-1]
         self.assertEqual((method, path, headers["X-Switchboard-Wait"]), ("POST", "/api/generate", "900"))
         self.assertEqual(headers["Accept"], "application/json")
-        self.assertTrue(headers["User-Agent"].startswith("lf-cli/0.5.0"))
+        self.assertTrue(headers["User-Agent"].startswith("lf-cli/0.5.1"))
         self.assertEqual(headers["X-LFStudio-Client"], headers["User-Agent"])    # #58: a studio with the API off
         self.assertNotIn("Authorization", headers)                               # DECISIONS 2: no credentials
         p = self.sol(fake, "fetch", jid, "--wake")
@@ -1050,7 +1050,7 @@ class Source(unittest.TestCase):
         shutil.copy(BIN, d / "lf-cli")
         p = subprocess.run([sys.executable, "-I", str(d / "lf-cli"), "--version"], capture_output=True, text=True,
                            cwd=d, timeout=30, env=client_env())
-        self.assertEqual((p.returncode, p.stdout.strip()), (0, "lf-cli 0.5.0"))
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, "lf-cli 0.5.1"))
         self.assertEqual(sorted(x.name for x in d.iterdir()), ["lf-cli"])
 
 
