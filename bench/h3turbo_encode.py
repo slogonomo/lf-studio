@@ -39,8 +39,9 @@ like a reference is listed in its notes.
 Output in --case (a new or empty directory under $SOL_H3_SPARK_RUNTIME_ROOT, which is all the Qwen container sees; the
 frames must be under it too): qwen/conditioning.{pt,json} (the clip's), for fl2va qwen-text/conditioning.{pt,json},
 qwen-text/prompt.txt and qwen-text/text-only.json (what was dropped, and the notes), qwen-worker/ (the worker's log) and
-encode.json (the canvas, the rows, the times, the sha256 of this helper, its wrapper and the job, and the job.json
-fields that go with it, with the job's MODEL). Each encode's receipt is checked: its task, prompt, shape, payload
+encode.json (the canvas, the rows, the times, the sha256 of this helper, its wrapper and the job, the job's MODEL as
+"model", and "for_job", the job.json fields that go with it: with seconds, seed, steps, lora, shift and paths a
+job.json the job takes). Each encode's receipt is checked: its task, prompt, shape, payload
 sha256, the canvas of its images and its vision rows (rows - text_tokens = keyframes x (image tokens + 2)). --check
 validates everything, prints the plan and starts nothing, writes nothing.
 Exit status: 0 done, 1 an encode failed or its receipt does not match, 2 refused (nothing started), 143 SIGTERM.
@@ -414,9 +415,9 @@ def encode(plan, Worker, paths, config, case):
     finally:
         worker.close()                                          # the close op, then TERM/KILL of its group
     summary["total_s"] = round(time.monotonic() - start, 2)
-    summary["for_job"] = {"model": load_job_module().MODEL, "task": plan["task"], "orientation": plan["orientation"],
-                          "resolution": plan["resolution"], "conditioning": str(root / "qwen" / "conditioning.pt"),
-                          "qwen_canvas": plan["canvas_mode"],
+    summary["model"] = load_job_module().MODEL          # the job's model id (not a job.json field)
+    summary["for_job"] = {"task": plan["task"], "orientation": plan["orientation"], "resolution": plan["resolution"],
+                          "conditioning": str(root / "qwen" / "conditioning.pt"), "qwen_canvas": plan["canvas_mode"],
                           "first_frame": plan["frames"].get("first"), "last_frame": plan["frames"].get("last")}
     (root / "encode.json").write_text(json.dumps(summary, indent=1) + "\n")
     return summary

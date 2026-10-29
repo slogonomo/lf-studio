@@ -489,12 +489,17 @@ class ScriptTests(Fixture):
         self.assertEqual(saved["text_only"]["notes"], [])
         self.assertEqual(saved["encodes"]["qwen"]["vision_rows"], 578)
         self.assertEqual(saved["encodes"]["qwen-text"]["vision_rows"], 0)
-        self.assertEqual(saved["for_job"], {"model": "lightx2v-turbo", "task": "fl2va", "orientation": "landscape",
-                                            "resolution": "576p",
+        self.assertEqual(saved["model"], "lightx2v-turbo")
+        self.assertEqual(saved["for_job"], {"task": "fl2va", "orientation": "landscape", "resolution": "576p",
                                             "conditioning": str(self.case / "qwen" / "conditioning.pt"),
                                             "qwen_canvas": "canvas", "first_frame": str(self.first),
                                             "last_frame": None})
         self.assertNotIn("prompt", saved)
+        # for_job and the job's other fields make a job.json the job takes
+        job = helper.load_job_module()
+        data = dict(json.loads(json.dumps(saved["for_job"])), seconds=5, seed=7, steps=4, lora="/l/lora.safetensors",
+                    shift=[6, 3], paths={"base_model": "/b"})
+        self.assertEqual(job.parse_job(data, str(self.case / "turbo"))["keyframes"], ["first"])
 
     def test_t2va(self):
         result = self.run_helper(*self.args(first=False))
