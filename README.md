@@ -110,17 +110,17 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
 - **Only 5 s text clips (t2va) for now, 16:9 or 9:16.** NVIDIA's pipeline is fixed at 121 frames, and Keyframes and
   Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with the
   reason. NVIDIA's code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA
-  file changed). It has as many tokens as 16:9, so the same times are expected. **9:16 has not run on the GPU yet**,
-  and NVIDIA trained its refiner on 16:9 video.
-- **It is slow.** On one DGX Spark a 2-step upscale takes about 11 min at 1080p and 20 min at 2K
-  (27 min with 3 steps): ~3 min reading the clip, the refine (2.4 min per step at 1080p, 6.3 min at 2K: there most of
-  the time), the decode (2-3 min) and the load. The models load in ~25 s with LF Studio's O_DIRECT loader
-  (`LFSTUDIO_UPSCALE_LOAD=fast`, the default; 21 s measured in the bench, not yet in the studio's own job), or in
-  ~7.5 min with NVIDIA's own loading (`LFSTUDIO_UPSCALE_LOAD=standard`, the fallback; 455 s in the job's 2K run).
-  **4K is untested in the studio:** one bench run with the same 4K forward took about 67 min after its load (2 steps of
-  28 min), and the studio's job has not run it end to end yet. While it runs the studio's models are closed; the next
-  clip loads them again, and with `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the
-  upscale is done.
+  file changed). It has as many tokens as 16:9, and in the one clean run so far (1080p) it took the same time as a
+  16:9 clip. 2K has run too; **9:16 has not run at 4K yet**, and NVIDIA trained its refiner on 16:9 video.
+- **It is slow.** On one DGX Spark a 2-step upscale takes about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K
+  (26 min at 2K with 3 steps): ~2 min reading the clip, the refine (2.5 min per step at 1080p, 6.3 min at 2K, 28 min at
+  4K: there most of the time), the decode (2-3 min, 6.6 min at 4K) and the load. The models load in ~22 s with LF
+  Studio's O_DIRECT loader (`LFSTUDIO_UPSCALE_LOAD=fast`, the default; measured in the studio's job, with the same
+  video as NVIDIA's loading, bit for bit), or in ~7.5 min with NVIDIA's own loading (`LFSTUDIO_UPSCALE_LOAD=standard`,
+  the fallback; 455 s in the job's 2K run). **4K is the slowest by far** and needs the most memory: the studio's job
+  has run it end to end once, a 16:9 clip in 66 min (94.5 GiB on the GPU at its peak); a 9:16 clip has not been
+  upscaled to 4K yet. While an upscale runs the studio's models are closed; the next clip loads them again, and with
+  `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person.
