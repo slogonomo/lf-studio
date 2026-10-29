@@ -398,7 +398,9 @@ if problems:
         refuse "LFSTUDIO_API=$LFSTUDIO_API: must be 1 (on, the default) or 0 (off) (see bin/env.example)"
     # the experimental Upscale's settings and files, checked by its job's own code (standard library only, so the
     # studio's Python runs it): the settings as the server reads them (studio_settings; exit 3), its Python, and
-    # NVIDIA's package and the weights where they say, and the fast load's upscale/fastload.py (check_weights; exit 4).
+    # NVIDIA's package and the weights where they say, and the fast load's upscale/fastload.py (check_weights; exit 4),
+    # and the prompt encode that encodes a Keyframes or Reference clip's text (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, as the
+    # server reads it; exit 4).
     # NVIDIA's files that its 9:16 route is pinned to (nvidia_files) only get a note (exit 5): the job refuses a 9:16
     # clip with other ones, but not a 16:9 one. The job runs nothing else here.
     if [[ "${LFSTUDIO_UPSCALE:-0}" == 1 ]]; then
@@ -414,6 +416,9 @@ if problems:
 if not os.access(settings["python"], os.X_OK):
     print("no Python at LFSTUDIO_UPSCALE_PYTHON=%s (the Open-H3-Regenerate-2K environment)" % settings["python"])
     sys.exit(4)
+if not os.path.isfile(os.path.expanduser(sys.argv[2])):
+    print("no prompt encode at %s (it encodes the text of Keyframes and Reference clips)" % os.path.expanduser(sys.argv[2]))
+    sys.exit(4)
 try:
     job.check_weights({k: settings[k] for k in ("package", "weights", "base_model", "load")} | {"output": Path("/")})
 except job.JobError as error:
@@ -426,7 +431,7 @@ if differ:
     print("NVIDIA\x27s package (LFSTUDIO_UPSCALE_PKG) has other files than the Upscale\x27s 9:16 route was written "
           "for (%s; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips will be refused (16:9 clips are not checked "
           "against these files)" % ", ".join(differ))
-    sys.exit(5)' "$REPO/upscale/regen2k_job.py" 2>&1)
+    sys.exit(5)' "$REPO/upscale/regen2k_job.py" "${LFSTUDIO_H3TURBO_ENCODE_SCRIPT:-$REPO/bench/h3turbo_encode.py}" 2>&1)
         rc=$?
         f=$(grep . <<<"$f" | tail -n 1)
         case $rc in

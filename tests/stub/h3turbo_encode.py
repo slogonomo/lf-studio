@@ -19,7 +19,9 @@ SIGTERM (Cancel) ends it at once with exit status 143, as the real one closes it
 done, 1 failed ("[h3turbo-encode] failed: ..."), 2 refused ("[h3turbo-encode] refused: ..."), 143 SIGTERM.
   STUB_QWEN_S       seconds the encode takes (default 0.5)
   STUB_QWEN_FAIL    1: fail as a Qwen worker that died (exit 1); "receipt": fail as an encode whose receipt does not
-                    match what was asked (exit 1, the real one's line)
+                    match what was asked (exit 1, the real one's line); for what the server checks itself after an
+                    encode that ends well (exit 0): "no-conditioning" writes no qwen/conditioning.{pt,json},
+                    "other-prompt" and "other-task" a receipt of another prompt or task
   STUB_QWEN_TERM    "ignore": SIGTERM does nothing (a worker that does not answer)
   STUB_QWEN_LOG     a file each run appends a JSON line to ({"pid", "argv"})
   STUB_QWEN_WORKER_S  start a stand-in of its transient Qwen worker, as runtime.pipeline.Worker starts the real one:
@@ -114,7 +116,7 @@ def main(argv):
         if (case / sub).exists():
             print(f"{TAG} refused: {case / sub} exists: use a new --case", flush=True)
             return 2
-    prompt = args.prompt_file.read_text(encoding="utf-8")
+    prompt = args.prompt_file.read_text(encoding="utf-8").strip()     # as the real one reads it: universal newlines
     frames = {anchor: str(path) for anchor, path in (("first", args.first), ("last", args.last)) if path}
     if args.upscale and frames:
         print(f"{TAG} refused: --upscale encodes text alone: no --first or --last", flush=True)
@@ -170,6 +172,14 @@ def main(argv):
                                                             "chars": len(text_only["prompt"])})
         summary["encodes"]["qwen-text"] = {"rows": rows}
         summary["text_only"] = {"dropped": text_only["dropped"], "chars": len(text_only["prompt"])}
+    fail = os.environ.get("STUB_QWEN_FAIL")
+    if fail == "no-conditioning":
+        for name in ("conditioning.pt", "conditioning.json"):
+            (case / "qwen" / name).unlink()
+    elif fail in ("other-prompt", "other-task"):
+        receipt = json.loads((case / "qwen" / "conditioning.json").read_text())
+        receipt.update({"prompt": receipt["prompt"] + " (another)"} if fail == "other-prompt" else {"task": "fl2va"})
+        write_json(case / "qwen" / "conditioning.json", receipt)
     summary["total_s"] = round(time.monotonic() - start, 2)
     write_json(case / "encode.json", summary)
     print(json.dumps(summary, indent=1), flush=True)

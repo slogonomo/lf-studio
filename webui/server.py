@@ -1604,6 +1604,8 @@ def upscale_sources(job):
 
 
 AUDIO_FILE = {SOL_H3: "Stage-1 audio (stage1/stage1_direct_tensors.pt)", TURBO: "audio (turbo/audio.pt)"}
+UPSCALE_NO_T2VA = ("the Upscale encodes this clip's prompt as text alone first, which needs the t2va path manifest "
+                   "(run install/70-manifests.sh)")
 NOTHING_LEFT = {"fl2va": "nothing is left of the prompt without its keyframe line: the Upscale needs text",
                 "ref2va": "nothing is left of the prompt without its references: the Upscale needs text"}
 
@@ -1611,12 +1613,15 @@ NOTHING_LEFT = {"fl2va": "nothing is left of the prompt without its keyframe lin
 @functools.lru_cache(maxsize=256)
 def text_rewrite(task, prompt):
     """upscale_text's rewrite, as JSON (cached: with_upscalable asks for it on every /api/state, and a prompt never
-    changes)."""
+    changes). Its line breaks are LF: a prompt from the page's form has CRLF ones (a browser's multipart), which
+    text_only_prompt keeps, and the prompt encode reads its --prompt-file with LF ones (Python's universal newlines),
+    so its receipt's prompt is the text with LF; the record, prompt-text-only.txt and the receipt then agree."""
     rewrite = TEXT_REWRITES.text_only_prompt if task == "fl2va" else TEXT_REWRITES.ref_text_only_prompt
     try:
         result = rewrite(prompt)
     except ValueError:
         return json.dumps({"error": NOTHING_LEFT[task]})
+    result["prompt"] = re.sub(r"\r\n?", "\n", result["prompt"])
     return json.dumps({k: result[k] for k in ("prompt", "dropped", "notes")})
 
 
@@ -1649,8 +1654,8 @@ def upscalable(job):
     5 s clip of the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's Text and
     Keyframes clips at either size), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes
     turned): not yet the other lengths (NVIDIA's pipeline is fixed at 121 frames), and not a Keyframes or Reference
-    clip with nothing left of its prompt without its pictures. Looks at the clip's files: call it without `lock`, with
-    a copy of the job."""
+    clip with nothing left of its prompt without its pictures, nor one whose text must be encoded while the studio has
+    no t2va path manifest (the encode's). Looks at the clip's files: call it without `lock`, with a copy of the job."""
     if is_upscale(job):
         return 400, "an upscale can't be upscaled again"
     model = job_model(job)
@@ -1676,6 +1681,8 @@ def upscalable(job):
     sources = upscale_sources(job)
     if sources is None or sources["conditioning"] is not None and not sources["conditioning"].is_file():
         return 409, "the clip's working files (its session directory) are gone, so it can't be upscaled"
+    if sources["text"] == "encode" and "t2va" not in ready_tasks():     # the encode is a t2va one: its manifest
+        return 409, UPSCALE_NO_T2VA
     answer = {"clip_audio": sources["pcm"].is_file()}
     answer.update({key: sources[key] for key in ("text", "video") if sources[key] != "clip"})     # what is new only
     return 200, answer
@@ -1825,13 +1832,15 @@ def prepare_video_command(src, dst, size, how):
     """ffmpeg for a LightX2V Turbo clip's MP4 the job can't take as it is (upscale_sources' "video"): stretched to the
     768p canvas (LANCZOS, as the Upscale's GPU validation of 576p clips did: never cover-cropped, so it stays on the
     keyframe's grid) and/or cut to its first 121 frames (a clip with a last keyframe has 124: the frames it keeps after
-    121 run up to that keyframe), H.264 CRF 12. Its sound is copied, cut to the same length, for the mux."""
+    121 run up to that keyframe), H.264 CRF 12. Its sound is copied for the mux: as it is, every packet, when the
+    clip is only stretched (no frame limit or -t then: either one ends the copied sound a packet early), cut to the 121
+    frames' length when it is cut."""
     frames = regen.FINAL["frames"]
     scale = ["-vf", f"scale={size[0]}:{size[1]}:flags=lanczos"] if "stretch" in how else []
-    return (["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?",
-             "-frames:v", str(frames)] + scale +
-            ["-r", "24", "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "copy",
-             "-t", f"{frames / 24:.6f}", "-movflags", "+faststart", str(dst)])
+    cut = (["-frames:v", str(frames)], ["-t", f"{frames / 24:.6f}"]) if "trim" in how else ([], [])
+    return (["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?"] + cut[0]
+            + scale + ["-r", "24", "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                       "-c:a", "copy"] + cut[1] + ["-movflags", "+faststart", str(dst)])
 
 
 def build_input(job, parent, sources, case):
@@ -1927,9 +1936,11 @@ def encode_upscale_text(job, parent, case, view):
         receipt = None
     if not (view / "qwen" / "conditioning.pt").is_file() or not isinstance(receipt, dict):
         raise UpscaleFailed(f"the prompt encode wrote no qwen/conditioning.pt and .json; see {log_path}")
-    if receipt.get("task") != "t2va" or receipt.get("prompt") != text:
-        raise UpscaleFailed(f"the prompt encode's conditioning is not of the text asked for (task "
-                            f"{receipt.get('task')}); see {log_path}")
+    differs = [key for key, want in (("task", "t2va"), ("prompt", text)) if receipt.get(key) != want]
+    if differs:
+        raise UpscaleFailed(f"the prompt encode's conditioning is not of the text asked for: its "
+                            f"{' and '.join(differs)} differ{'s' * (len(differs) == 1)} (task {receipt.get('task')}); "
+                            f"see {log_path}")
     try:
         summary = json.loads((view / "encode.json").read_text())
     except (OSError, ValueError) as error:
@@ -2040,7 +2051,8 @@ def upscale_process(job, out, job_path, sound):
     its progress as job["upscale_phase"], the guard LFSTUDIO_UPSCALE_GUARD_GIB). The job ends when this process does
     (--parent: PR_SET_PDEATHSIG), so a server killed hard does not leave it running unguarded. Then the clip's sound
     goes in, copied from `sound`, the input folder's MP4 (the clip's own, or its prepared copy, whose sound is the
-    clip's cut to the 121 frames kept). Returns the MP4; raises with the job's own error line."""
+    clip's as it is, or cut to the 121 frames kept for a clip that is cut). Returns the MP4; raises with the job's own
+    error line."""
     log_path = out / "worker.log"
 
     def on_phase(name):
