@@ -1,0 +1,24 @@
+# Open-H3-Regenerate-2K env for the DGX Spark (GB10, aarch64). NVIDIA's models/Open-H3-Regenerate-2K/requirements.txt
+# at Sana 6e4a44002149418a547434b91d7280a8bbdcace3, with the deviations marked "# CHANGED".
+torch==2.11.0+cu130
+torchvision==0.26.0+cu130
+torchaudio==2.11.0+cu130
+diffusers==0.40.0
+transformers==5.6.0
+huggingface-hub==1.26.0
+accelerate==1.14.0
+safetensors==0.8.0              # CHANGED from 0.7.0: diffusers 0.40.0 requires safetensors>=0.8.0
+peft==0.21.2
+einops==0.8.2
+imageio-ffmpeg==0.6.0           # CHANGED from 0.5.1: 0.5.1's aarch64 wheel bundles ffmpeg 4.2.2; 0.6.0 bundles 7.0.2 (as LF Studio Stage 1)
+numpy==2.3.5
+pillow==13.0.0                  # CHANGED from 11.3.0: LF Studio #69 (Pillow advisories of 2026-10-22)
+sentencepiece==0.2.1
+protobuf==6.33.6
+av==16.1.0
+triton==3.7.0                   # NVIDIA's pin; torch 2.11.0+cu130 declares triton==3.6.0 -> overrides file
+cuda-python==13.4.4
+nvidia-cutlass-dsl[cu13]==4.6.2 # CHANGED: [cu13] extra (CUDA 13 DSL libs), as LF Studio installs it
+flash-attn-4==4.0.0b27          # only for --vae fast
+quack-kernels==0.6.4            # only for --vae fast
+certifi>=2026.10.19             # ADDED: LF Studio's CA-bundle floor (emSign ECC Root CA - G3 withdrawal)

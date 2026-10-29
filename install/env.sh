@@ -85,6 +85,12 @@ export SOL_H3_SPARK_QWEN_IMAGE=${SOL_H3_SPARK_QWEN_IMAGE:-sol-h3-spark-qwen}
 export SOL_H3_SPARK_QWEN_WEIGHTS_ROOT=${SOL_H3_SPARK_QWEN_WEIGHTS_ROOT:-$LFSTUDIO_CHECKPOINTS/Comfy-MiniMax-H3}
 export SOL_H3_SPARK_COMFY_ROOT=${SOL_H3_SPARK_COMFY_ROOT:-$LFSTUDIO_HOME/sources/ComfyUI}
 LFSTUDIO_TASKS=${LFSTUDIO_TASKS:-t2va fl2va ref2va}   # which tasks to download and prepare
+# The experimental Upscale (off unless LFSTUDIO_UPSCALE=1; bin/env.example): where install/65-regen2k.sh puts
+# NVIDIA's Open-H3-Regenerate-2K and its weights, and the MiniMax-H3 base model it reads. The server's defaults
+# (upscale/regen2k_job.py, studio_settings). Its Python is always the venv 65 builds, $LFSTUDIO_HOME/envs/regen2k.
+LFSTUDIO_UPSCALE_PKG=${LFSTUDIO_UPSCALE_PKG:-$LFSTUDIO_HOME/Open-H3-Regenerate-2K}
+LFSTUDIO_UPSCALE_WEIGHTS=${LFSTUDIO_UPSCALE_WEIGHTS:-$LFSTUDIO_CHECKPOINTS/Open-H3-Regenerate-2K}
+LFSTUDIO_UPSCALE_BASE=${LFSTUDIO_UPSCALE_BASE:-$LFSTUDIO_CHECKPOINTS/MiniMax-H3}
 # The machine (docs/RTX5090.md): spark (default) = NVIDIA's Sol-H3-Spark package on a DGX Spark, rtx5090 =
 # Sol-H3-RTX5090 on a workstation with one RTX 5090. It picks the package, the Sana commit, the patch and the
 # install variants. install/00-check.sh and 90-env.sh detect the GPU and suggest or write it.

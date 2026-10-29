@@ -3,7 +3,8 @@
 Loading and generating are `sleep` processes in their own sessions, like the real workers, so the server can stop
 them (a stopped warm-up, a cancelled clip). A pipeline whose worker was stopped by a signal is broken like a real one
 whose workers died: it fails until it is closed and a new one is started. Each clip is a small ffmpeg test pattern
-with a tone, with the requested format and length.
+with a tone, with the requested format and length, next to stand-ins for the real clip's working files the Upscale
+reads (qwen/conditioning.pt and stage1/stage1_direct_tensors.pt).
   STUB_LOAD_S    seconds the loading pass waits before its clip (default 3)
   STUB_CLIP_S    seconds per clip once loaded (default 2)
   STUB_CLOSE_S   seconds close() takes (default 0; the real pipeline needs ~40 s)
@@ -61,6 +62,9 @@ class Pipeline:
         if finish:
             (request / "FINISHING").touch()
             time.sleep(finish)
+        for name in ("qwen/conditioning.pt", "stage1/stage1_direct_tensors.pt"):
+            (request / name).parent.mkdir(parents=True, exist_ok=True)       # a real clip's working files (the
+            (request / name).write_bytes(b"stub " + name.encode())          # Upscale reads them), as stand-ins
         w, h = self.size
         out = request / "stage2" / f"refined_{w}x{h}_{self.seconds * 24 + 1}f.mp4"
         out.parent.mkdir(parents=True, exist_ok=True)

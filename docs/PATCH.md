@@ -209,7 +209,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   Pages read this way stay out of the page cache, which on GB10 competes with GPU memory.
   Stage1 routes FastVideo's `safe_open`, its LoRA `load_file` and its component loader through it; Stage2 routes
   `safetensors.safe_open`.
-- **Files.** `runtime/fastload.py` (new), `runtime/stage1.py`, `runtime/stage2.py`.
+- **Files.** `runtime/fastload.py` (new), `runtime/stage1.py`, `runtime/stage2.py`. The experimental Upscale's job
+  loads with a copy of `runtime/fastload.py`, `upscale/fastload.py` (outside the patch); `tests/test_upscale.py`
+  checks that the two are the same, so a change here is copied there.
 - **Switches.** `SPARK_FAST_SAFETENSORS=0` (upstream loading), `SPARK_DIRECT_IO=0` (no O_DIRECT, mmap + copy),
   `SPARK_DIRECT_AHEAD=0` (no read-ahead of the next window).
 - **Measured.** Together with item 6: first clip 177 → 127 s; H3 shards 33 → 15 s; LTX transformer (42 GB)

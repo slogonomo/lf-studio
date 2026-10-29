@@ -270,6 +270,84 @@ may run. Set `LFSTUDIO_MCP_WAIT_S` below that limit and let the agent call `wait
 **MCP: `out must be inside LFSTUDIO_OUT_DIR ... or the working directory`.** The MCP server saves only there, unless
 its environment has `LFSTUDIO_MCP_OUT_ANYWHERE=1`. Point `LFSTUDIO_OUT_DIR` at the folder you want.
 
+## Upscale (experimental)
+
+The Upscale is off unless `LFSTUDIO_UPSCALE=1` ([INSTALL.md](INSTALL.md#experimental-upscale)). Each upscale has a
+directory of its own, `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/<session>-upscale-<resolution>/<case>/regen/`, with
+`job.json` (what the studio asked for), `worker.log` (the job's output) and `receipt.json` (its times, sigmas, peak
+memory and lowest MemAvailable per phase). A failed upscale's card shows the job's own error line.
+
+**No Upscale button on the cards.** The studio runs with the Upscale off (the default), or with
+`LFSTUDIO_BACKEND=rtx5090`, where it does not run. Set `LFSTUDIO_UPSCALE=1` and restart.
+
+**The Upscale button is greyed out.** It says why when you point at it, or click or tap it: for now it takes finished
+5 s text clips only, 16:9 or 9:16 (`Upscale takes 5 s clips only, for now ...`, `Upscale takes text-to-video (t2va)
+clips only, for now`), and it reads the clip's working files, which clips made before per-clip folders, or whose
+session folder was removed, no longer have (`the clip's working files (its session directory) are gone`).
+
+**`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
+`missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's
+environment, NVIDIA's package and the weights at start. Run `install/65-regen2k.sh`, or set `LFSTUDIO_UPSCALE=0`.
+`LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only` means `LFSTUDIO_BACKEND=rtx5090`: the
+release needs ~100 GiB of GPU memory.
+
+**`not enough free memory for an upscale: N GiB available with the models closed, 110 GiB needed`** (115 GiB at
+4K). The studio closed its own models, and something else still holds the memory (another app, a container). Close it
+and try again; `LFSTUDIO_UPSCALE_MIN_FREE_GIB` changes the floor, and 4K always needs 5 GiB more than it (measured in
+the job: ~101 GiB used at 2K, ~105 GiB at 4K).
+
+**`stopped: MemAvailable was below 5 GiB for 3 s`.** The Upscale's own memory guard killed the job (SIGKILL, so its
+`receipt.json` still says `running`) before the machine ran out (on GB10's unified memory that can hang the box), and
+before the launcher's guard would have stopped the whole studio. Usually another app grew meanwhile; at 4K it can be the
+job itself (in its one 4K run so far, a 16:9 clip, MemAvailable came down from 116.4 to 11.1 GiB, so ~105 GiB used: a 4K
+upscale that starts with just the floor's 110 GiB free comes down below 5 GiB;
+[PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). At 4K, ~111 GiB or more free at the start
+avoids it. `worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
+
+**It sits at "Upscaling · loading its models" for minutes.** With the fast load (`LFSTUDIO_UPSCALE_LOAD=fast`, the
+default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (21.5-21.9 s in the studio's job, its
+clean runs); "reading the clip" before it takes ~2 min from the final clip, and the refine and decode after it ~7-22 min
+at 1080p and 2K and ~63-91 min at 4K, with 2 or 3 steps
+([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). Minutes at loading mean the standard load
+(`LFSTUDIO_UPSCALE_LOAD=standard`, NVIDIA's loaders through mmap: ~7.5 min, 455 s measured), or files the fast load
+could not read with O_DIRECT and read through mmap instead: `worker.log` in the upscale's `regen/` folder says
+`fast load: N files, M of them through mmap`, and its `receipt.json` has the same as `"load"`. All of them through mmap,
+and `O_DIRECT off` in `worker.log`, mean `SPARK_FAST_SAFETENSORS=0` or `SPARK_DIRECT_IO=0` in the studio's settings: the
+job inherits the patch's switches (the studio's start log warns about it).
+
+**An upscale fails while it loads its models.** With the fast load, the default, try `LFSTUDIO_UPSCALE_LOAD=standard`
+(NVIDIA's own loading, ~7.5 min) and restart the studio; the fast load has run in the studio's job only a few times so
+far, on one DGX Spark, so its `worker.log` is worth a report. `LFSTUDIO_UPSCALE_PREREAD=1` at start is refused with the
+fast load (`only with LFSTUDIO_UPSCALE_LOAD=standard`): it fills the page cache, which the fast load reads past. An
+upscale waits while any clip is queued, also one queued after it, since it closes the studio's models; the next clip
+loads them again, and with `LFSTUDIO_PRELOAD=1` the studio warms them up again once the upscale is done.
+
+**An upscale of a 9:16 clip fails at once with `NVIDIA's package is not the one this wrapper was written for
+(6e4a440): {'open_h3/pipeline.py': ...}`.** The job takes a 9:16 clip through NVIDIA's code with the shapes turned,
+and does so only with the NVIDIA files it was written against (`open_h3/pipeline.py`, `open_h3/upscaler.py` and
+`open_h3/upscaler_node.py`, by SHA-256, `None` for a file that is not there; also the 16:9 sizes in them, and no 9:16
+entry of NVIDIA's own). The studio's start log says so too, as a note (`NVIDIA's package (LFSTUDIO_UPSCALE_PKG) has
+other files than the Upscale's 9:16 route was written for (open_h3/pipeline.py changed, ...)`). `LFSTUDIO_UPSCALE_PKG`
+names another version of NVIDIA's package, or its files were changed: point it at the extract of the pinned commit
+that `install/65-regen2k.sh` makes (`$LFSTUDIO_HOME/sources/sana-6e4a440/models/Open-H3-Regenerate-2K`, its default
+link). 16:9 clips are not checked against these files.
+
+**Cancel of an upscale shows "Cancelling" for up to ~20 s.** The job stops once the GPU call under way returns; if
+that takes longer than 20 s, the studio kills it. Either way the next job starts only after it is gone.
+
+**The person in the upscale looks different.** "Full re-generate" (NVIDIA's setting, start noise 0.909) redraws
+faces. Use "Balanced" or "Faithful".
+
+**Delete of a clip says `an upscale of this clip is queued or running; cancel it first, or wait for it`.** The
+upscale reads the clip's files.
+
+**`install/65-regen2k.sh`: `... exists but this script did not make it`.** A venv at `envs/regen2k` that the step did
+not build is never touched; move it away. `the packages of install/freeze/regen2k-lock.txt did not install`: a
+network error or a package that changed on the index (every one is checked against its SHA-256); run the step again
+and it goes on. `does not have NVIDIA's SHA-256 (kept as ....bad)`: a weight file that is not NVIDIA's; the bad file is
+kept for a look, and a run again downloads it anew. `ignored the Range request`: something between you and Hugging Face
+(a proxy, `HF_ENDPOINT`) does not pass on byte ranges, which the AdaLN table needs.
+
 ## Stopping
 
 Ctrl-C, SIGTERM or SIGHUP: the server closes its pipeline (up to ~40 s; the launcher waits up to

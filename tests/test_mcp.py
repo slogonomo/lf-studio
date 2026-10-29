@@ -184,7 +184,7 @@ class Protocol(McpTest):
         self.assertIn("2026-07-28", e["data"]["supported"])
         self.assertIn("2025-11-25", e["data"]["supported"])
         r = self.m.request("tools/list", {"_meta": MODERN_META})["result"]
-        self.assertEqual(len(r["tools"]), 6)
+        self.assertEqual(len(r["tools"]), 7)
         self.assertIn("_meta", r)
         e = self.m.request("tools/list", {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}})["error"]
         self.assertEqual(e["code"], -32602)
@@ -219,10 +219,11 @@ class Protocol(McpTest):
             self.assertIn(words, text(r))
 
     def test_tools_list(self):
-        """9.3 #4: six flat tools Claude Code accepts, with short enough descriptions."""
+        """9.3 #4: seven flat tools Claude Code accepts (upscale is the experimental Upscale's), with short enough
+        descriptions."""
         r = self.m.request("tools/list")["result"]
         self.assertEqual([t["name"] for t in r["tools"]], ["generate", "wait", "status", "cancel", "fetch",
-                                                            "prompt_guide"])
+                                                            "upscale", "prompt_guide"])
         self.assertEqual((r["ttlMs"], r["cacheScope"]), (3600000, "public"))
         for tool in r["tools"]:
             schema = tool["inputSchema"]
@@ -234,6 +235,14 @@ class Protocol(McpTest):
             self.assertLessEqual(len(tool["description"]), 2048)
         self.assertEqual(r["tools"][0]["inputSchema"]["properties"]["seconds"],
                          {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went after 0.5.0
+        upscale = r["tools"][5]["description"]
+        for words in ("Experimental", "5 s text clips (t2va), 16:9 or 9:16", "2K is 1440x2560", "redraws faces",
+                      "closes the studio's models", "4K has run once, with a 16:9 clip; not yet with a 9:16 one"):
+            self.assertIn(words, upscale)
+        self.assertNotIn("untested", upscale)
+        self.assertNotIn("draft", upscale)                                       # from the clip's MP4 only
+        self.assertEqual(set(r["tools"][5]["inputSchema"]["properties"]),
+                         {"id", "resolution", "strength", "audio", "seed", "wait_s", "out", "poster"})
         generate = r["tools"][0]["description"]
         self.assertIn("stretched or cropped", generate)                          # DECISIONS 12
         self.assertIn("change the seed", generate)                               # DECISIONS 14
@@ -483,6 +492,89 @@ class ApiOff(McpTest):
         r = m.call("status")
         self.assertFalse(r["isError"], text(r))
         self.assertIn(f"{jid}  done", text(r))
+
+
+class Upscale(McpTest):
+    """The upscale tool (the experimental Upscale: the stub studio has it on, with a stand-in job of about 1 s)."""
+
+    def clip(self, **kw):
+        jid = self.studio.generate(**kw)[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        return jid
+
+    def test_upscale_and_save(self):
+        jid = self.clip(seed=9)
+        m = self.mcp()
+        r = m.call("upscale", {"id": jid, "resolution": "4k", "strength": "full", "wait_s": 30})
+        self.assertFalse(r["isError"], text(r))
+        self.assertEqual([c["type"] for c in r["content"]], ["text", "resource_link", "image"])
+        rec = r["structuredContent"]
+        uid, path = rec["id"], Path(rec["path"])
+        self.assertEqual((rec["kind"], rec["parent"], rec["state"], rec["resolution"], rec["strength"]),
+                         ("upscale", jid, "done", "4k", "full"))
+        self.assertEqual(path, self.work / "lf-clips" / f"lf-studio_t2va_5s_seed9_{jid[:6]}_4k_{uid[:6]}.mp4")
+        self.assertTrue(path.is_file())
+        self.assertTrue(text(r).startswith(f"Queued upscale {uid} of clip {jid} (4k, full). Upscale "
+                                           f"{uid} is done: saved {path} ("), text(r))
+        self.assertIn(f"4k of clip {jid}, full).", text(r))
+        r = m.call("upscale", {"id": jid, "wait_s": 0})                         # the studio's defaults, no wait
+        self.assertFalse(r["isError"], text(r))
+        rec = r["structuredContent"]
+        self.assertEqual((rec["state"], rec["resolution"], rec["strength"], rec["audio"]),
+                         ("queued", "2k", "balanced", "clip"))
+        self.assertIn(f'Upscale {rec["id"]} is queued, next in line. Call wait with id "{rec["id"]}"', text(r))
+        r = m.call("wait", {"id": rec["id"], "wait_s": 30, "poster": False})
+        self.assertFalse(r["isError"], text(r))
+        self.assertEqual(Path(r["structuredContent"]["path"]).name,
+                         f"lf-studio_t2va_5s_seed9_{jid[:6]}_2k_{rec['id'][:6]}.mp4")
+
+    def test_errors(self):
+        ten = self.clip(seconds=10)
+        m = self.mcp()
+        for args, words in (({"id": ten}, "Upscale takes 5 s clips only"), ({"id": "f" * 32}, "no such clip"),
+                            ({"id": "nope"}, "not a clip id"), ({"id": ten, "resolution": "8k"},
+                                                                "resolution must be one of 1080p, 2k, 4k"),
+                            ({"id": ten, "seed": -1}, "seed must be 0 or more"), ({}, "id is required"),
+                            ({"id": ten, "steps": 3}, 'unknown argument "steps"'),
+                            ({"id": ten, "source": "draft"}, 'unknown argument "source"')):
+            r = m.call("upscale", args)
+            self.assertTrue(r["isError"], args)
+            self.assertIn(words, text(r))
+        self.assertEqual([j.get("kind") for j in self.studio.state()["jobs"]], [None])       # nothing queued
+
+
+class UpscaleCancel(McpTest):
+    """cancel on an upscale says so, queued or running (its job stops within about 20 s, not the clip's ~40 s)."""
+    load_s, clip_s = 1, 4
+    studio_env = {"STUB_UPSCALE_S": "30"}
+
+    def test_queued_and_running(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid], timeout=60)
+        m = self.mcp()
+        busy = self.studio.generate(seed=2)[1]["id"]                         # the upscale waits for it
+        uid = m.call("upscale", {"id": jid, "wait_s": 0})["structuredContent"]["id"]
+        r = m.call("cancel", {"id": uid})
+        self.assertEqual((r["isError"], text(r).split("\n\n")[0]),
+                         (False, f"Upscale {uid} was cancelled (it had not started)."))
+        self.studio.wait([busy], timeout=60)
+        uid = m.call("upscale", {"id": jid, "wait_s": 0})["structuredContent"]["id"]
+        self.studio.wait_for(lambda st: any(j["id"] == uid and j["status"] == "upscaling" for j in st["jobs"]), 30)
+        r = m.call("cancel", {"id": uid})
+        self.assertEqual((r["isError"], text(r).split("\n\n")[0]),
+                         (False, f"Upscale {uid} is being cancelled: its job stops within about 20 s."))
+        self.assertEqual(self.studio.wait([uid], timeout=30)[0]["status"], "cancelled")
+
+
+class UpscaleOff(McpTest):
+    studio_env = {"LFSTUDIO_UPSCALE": "0"}
+
+    def test_off(self):
+        jid = self.studio.generate()[1]["id"]
+        self.studio.wait([jid], timeout=60)
+        r = self.mcp().call("upscale", {"id": jid})
+        self.assertEqual((r["isError"], text(r)), (True, "the experimental Upscale is off on this studio "
+                                                         "(LFSTUDIO_UPSCALE=1 turns it on)"))
 
 
 class LongClips(McpTest):

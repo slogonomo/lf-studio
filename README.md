@@ -99,6 +99,40 @@ timings, and a Stage-2 replay bench with bit-exact and picture checks
 **Tests** (`tests/`): the server and the API clients end to end against a GPU-free stub of the pipeline, and the
 page in a browser; see [AGENTS.md](AGENTS.md).
 
+## Experimental: Upscale
+
+Off by default, DGX Spark only. With `LFSTUDIO_UPSCALE=1` and the optional install step `install/65-regen2k.sh`, a
+finished clip's card gets an **Upscale** button. NVIDIA's
+[Open-H3-Regenerate-2K](https://github.com/NVlabs/Sana/tree/sol-engine/models/Open-H3-Regenerate-2K) re-renders the
+clip with MiniMax-H3 at 1080p, 2K (2560×1440, or 1440×2560 for a 9:16 clip) or 4K, and the result comes as a card of
+its own, with the clip's own sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and the MCP
+tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
+
+- **Only 5 s text clips (t2va) for now, 16:9 or 9:16.** NVIDIA's pipeline is fixed at 121 frames, and Keyframes and
+  Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with the
+  reason. NVIDIA's code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA
+  file changed). It has as many tokens as 16:9, and in the one clean run so far (1080p) it took the same time as a
+  16:9 clip. 2K has run too; **9:16 has not run at 4K yet**, and NVIDIA trained its refiner on 16:9 video.
+- **It is slow.** On one DGX Spark a 2-step upscale takes about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K
+  (26 min at 2K with 3 steps): ~2 min reading the clip, the refine (2.5 min per step at 1080p, 6.3 min at 2K, 28 min at
+  4K: there most of the time), the decode (2-3 min, 6.6 min at 4K) and the load. The models load in ~22 s with LF
+  Studio's O_DIRECT loader (`LFSTUDIO_UPSCALE_LOAD=fast`, the default; measured in the studio's job; at 2K the same
+  video as NVIDIA's loading, bit for bit), or in ~7.5 min with NVIDIA's own loading (`LFSTUDIO_UPSCALE_LOAD=standard`,
+  the fallback; 455 s in the job's 2K run). **4K is the slowest by far** and needs the most memory: the studio's job
+  has run it end to end once, a 16:9 clip in 66 min (94.5 GiB on the GPU at its peak); a 9:16 clip has not been
+  upscaled to 4K yet. While an upscale runs the studio's models are closed; the next clip loads them again, and with
+  `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
+  Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
+- **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
+  much sharper picture but redraws faces into a different-looking person.
+  "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the
+  clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
+  defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
+
+Not yet: Keyframes and Reference clips, lengths other than 5 s, and NVIDIA's faster Sol-Attn forward. Setup:
+[docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
+
 ## Deviations from NVIDIA's validated recipe
 
 NVIDIA validated the 5 s, 16:9 route. Portrait output is not quality-validated (the LoRAs, upscaler and adapter
@@ -189,6 +223,7 @@ own license; read it before you download or use the model or its outputs:
 | [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) | refiner, LoRA, VAEs, offline prompt-cache weights | gated; LTX-2.x Community License Agreement |
 | [LBH-123-AI/Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) ([source](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler)) | H3 ×2 latent upscaler | weights: the model card states Apache-2.0 (in its text at NVIDIA's pinned revision 13ccf95, and in its metadata since 2026-09-17). Source: MIT since 2026-09-17 (commit 40316cf); NVIDIA's pinned source revision d7c01b9 has no license file. NVIDIA's notices say no license is declared. Not redistributed here or by NVIDIA. |
 | [Efficient-Large-Model/H3-to-LTX-Latent-Adapter](https://huggingface.co/Efficient-Large-Model/H3-to-LTX-Latent-Adapter) | H3-to-LTX latent adapter | the model card assigns no separate weight license |
+| [Efficient-Large-Model/Open-H3-Regenerate-2K](https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K) | the experimental Upscale only (`install/65-regen2k.sh`): refiner LoRA, Sharp curve branches, latent upscaler | its card: the refiner LoRA follows the MiniMax H3 Community License, territory, use and redistribution terms included; the parts NVIDIA did not train keep their own licenses: the latent upscaler (the LBH-123-AI one above), and the [LightX2V FL2VA Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo) and [LMS Sharp](https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI) LoRAs merged into its LoRA. "This bundle is not covered by a single blanket license." The Sharp AdaLN table it needs is read from the Comfy-Org/MiniMax-H3 file above. |
 
 Sol-H3-Spark's own [THIRD_PARTY_NOTICES.md](https://github.com/NVlabs/Sana/blob/sol-engine/models/minimax_h3/Sol-H3-Spark/THIRD_PARTY_NOTICES.md)
 lists the pinned revisions and terms.
@@ -201,6 +236,11 @@ lists the pinned revisions and terms.
   the runtime and the install flow this repo builds on are theirs.
 - Built on MiniMax-H3, FastVideo/FastH3 (Hao AI Lab), LTX-2.5 (Lightricks), Sol-Attn, ComfyUI, LightX2V, the
   LBH-123-AI H3 latent upscaler and the Efficient-Large-Model H3-to-LTX adapter.
+- The experimental Upscale runs **Open-H3-Regenerate-2K** by NVIDIA Research
+  ([project page](https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/),
+  [code](https://github.com/NVlabs/Sana/tree/sol-engine/models/Open-H3-Regenerate-2K)), with the SoL-Refiner
+  refinement recipe. Its LoRA merges LightX2V's FL2VA Turbo adapter and Alissonerdx's LMS Sharp LoRA. NVIDIA asks
+  users to cite the SoL-Refiner paper together with the project page (the last two entries below).
 
 ```bibtex
 @misc{li2026solvideoinferenceengine,
@@ -219,6 +259,26 @@ lists the pinned revisions and terms.
   author={Li, Haopeng and Li, Yitong and Chen, Junsong and Ye, Tian and Liu, Haozhe and Yu, Jincheng and Wang, Duomin and Zhang, Ruihua and Xie, Zeke and Xie, Enze and Han, Song},
   journal={arXiv preprint arXiv:2607.24027},
   year={2026}
+}
+
+@misc{liu2026solrefiner,
+  title         = {{SoL-Refiner}: Speed-of-Light One-Step Refinement for High-Resolution Video},
+  author        = {Haozhe Liu and Tian Ye and Shuchen Xue and Yitong Li and
+                   Junsong Chen and Haopeng Li and Jincheng Yu and Duomin Wang and
+                   Ruihua Zhang and Lei Zhu and Song Han and Enze Xie},
+  year          = {2026},
+  eprint        = {2609.37969},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV},
+  url           = {https://arxiv.org/abs/2609.37969}
+}
+
+@misc{gao2026openh3regenerate2k,
+  title        = {Open-H3-Regenerate-2K: High-Resolution Video Refinement with Few-Step Diffusion},
+  author       = {Sensen Gao and Haozhe Liu and Yitong Li and Haopeng Li and Tian Ye and Jia-Wang Bian and Song Han and Enze Xie},
+  year         = {2026},
+  howpublished = {\url{https://nvlabs.github.io/Sana/Open-H3-Regenerate-2K/}},
+  note         = {Project page}
 }
 ```
 

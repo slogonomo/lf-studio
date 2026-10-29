@@ -5,6 +5,9 @@ usage: tests/stub/studio.py [--port N] [--dir DIR] [--load-s S] [--clip-s S] [--
 
 Everything (runtime root, state, manifests) goes under --dir, default a new temp directory, so it never touches
 a real install. Ctrl-C stops it. Open the printed URL, or point tests/ui_test.py at it.
+The experimental Upscale is on (LFSTUDIO_UPSCALE=1), with tests/stub/upscale_job.py as its job
+(LFSTUDIO_UPSCALE_SCRIPT) and this Python as its environment; the server reads MemAvailable from a file under --dir
+(LFSTUDIO_TEST_MEMINFO, 117.7 GiB; StubStudio.set_memory changes it), not from the machine.
 It stops at once, with a non-zero exit status, if the port is in use, and it exits non-zero if the server stops
 by itself. The tests import StubStudio from here.
 """
@@ -56,12 +59,23 @@ class StubStudio:
             d.mkdir(parents=True, exist_ok=True)
         for task in ("t2va", "fl2va", "ref2va"):
             (self.root / f"paths-{task}.json").write_text("{}")
-        self.env = dict(os.environ, SOL_H3_SPARK_RUNTIME_ROOT=str(self.runtime),
+        # the server reads MemAvailable (the Upscale's memory floor and guard) from this file, not from the machine's
+        self.meminfo = self.root / "meminfo"
+        self.set_memory(117.7)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("LFSTUDIO_UPSCALE")}
+        self.env.update(SOL_H3_SPARK_RUNTIME_ROOT=str(self.runtime),
                         LFSTUDIO_PATHS=str(self.root / "paths-{task}.json"), LFSTUDIO_STATE_DIR=str(self.state_dir),
                         LFSTUDIO_HOST="127.0.0.1", LFSTUDIO_PORT=str(self.port),
                         LFSTUDIO_PRELOAD="1" if preload else "0",
                         STUB_LOAD_S=str(load_s), STUB_CLIP_S=str(clip_s), PYTHONDONTWRITEBYTECODE="1",
-                        LFSTUDIO_MAX_QUEUED="100")      # some tests queue more clips at once than the default 20
+                        LFSTUDIO_MAX_QUEUED="100",      # some tests queue more clips at once than the default 20
+                        # the experimental Upscale, on, with tests/stub/upscale_job.py for upscale/regen2k_job.py
+                        LFSTUDIO_UPSCALE="1", LFSTUDIO_UPSCALE_PYTHON=sys.executable,
+                        LFSTUDIO_UPSCALE_SCRIPT=str(HERE / "upscale_job.py"),
+                        LFSTUDIO_UPSCALE_PKG=str(self.root / "regen2k" / "package"),
+                        LFSTUDIO_UPSCALE_WEIGHTS=str(self.root / "regen2k" / "weights"),
+                        LFSTUDIO_UPSCALE_BASE=str(self.root / "regen2k" / "base"),
+                        LFSTUDIO_TEST_MEMINFO=str(self.meminfo), STUB_UPSCALE_S="1")
         self.env.pop("LFSTUDIO_PUBLISH_DIR", None)
         self.env.pop("LFSTUDIO_ALLOWED_HOSTS", None)
         self.env.pop("LFSTUDIO_API", None)
@@ -100,6 +114,14 @@ class StubStudio:
         self.stop()
         raise RuntimeError(f"stub studio did not start in {timeout} s: "
                            f"{self.log.read_bytes()[since:].decode(errors='replace')[-2000:]}")
+
+    def set_memory(self, available_gib):
+        """What the server reads as MemAvailable from now on (LFSTUDIO_TEST_MEMINFO), in /proc/meminfo's format."""
+        kib = lambda gib: int(gib * 1048576)                                          # noqa: E731
+        tmp = self.meminfo.with_name(".meminfo.tmp")
+        tmp.write_text(f"MemTotal:       {kib(121.7)} kB\nMemFree:        {kib(available_gib)} kB\n"
+                       f"MemAvailable:   {kib(available_gib)} kB\nCached:         0 kB\n")
+        os.replace(tmp, self.meminfo)                                                 # never read half-written
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
@@ -157,6 +179,10 @@ class StubStudio:
                  **fields):
         return self.post("/api/generate", dict(task=task, orientation=orientation, seconds=seconds, prompt=prompt,
                                                seed=seed, **fields), files)
+
+    def upscale(self, jid, **fields):
+        """POST /api/upscale for clip `jid`; returns (status, parsed JSON)."""
+        return self.post("/api/upscale", json_body=dict(id=jid, **fields))
 
     def all_jobs(self):
         """Every job the gallery can reach, by id: /api/state, then /api/jobs page by page."""

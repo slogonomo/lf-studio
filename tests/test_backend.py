@@ -5,6 +5,8 @@ CPU only, against the stub runtime. nvidia-smi, uname, gcc, docker and sg are sm
 CPU type and the compiler of the machine running the tests do not matter. The install scripts run with --dry-run
 only, with their home, settings file and temp files in a temp directory.
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio, free_port  # noqa: E402
@@ -238,6 +241,16 @@ class LauncherRtx5090(LauncherTest):
         self.assertEqual(code, 1, out)
         self.assertIn("REFUSED - SOL_H3_PROMPT_TOKENS must be one of", out)
 
+    def test_no_upscale(self):
+        """The experimental Upscale (LFSTUDIO_UPSCALE=1) needs the DGX Spark: refused first; 0 passes."""
+        code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="1", FAKE_VRAM_FREE_MIB="30000")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED - LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only, not with "
+                      "LFSTUDIO_BACKEND=rtx5090", out)
+        code, out = self.check(LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0", LFSTUDIO_MIN_FREE_GIB="0",
+                               FAKE_VRAM_FREE_MIB="30000")
+        self.assertEqual(code, 0, out)
+
 
 class LauncherBackendRefusals(LauncherTest):
     def test_invalid_backend(self):
@@ -353,9 +366,10 @@ class ServerBackend(unittest.TestCase):
             s.stop()
 
     def test_rtx5090(self):
-        s = self.studio("rtx", LFSTUDIO_BACKEND="rtx5090").start()
+        s = self.studio("rtx", LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="0").start()   # (the stub turns it on)
         try:
             self.assertEqual(s.state()["backend"], "rtx5090")
+            self.assertIs(s.state()["upscale"], False)
             page = s.get("/")[2].decode()
             self.assertIn('<meta name="lf-studio-backend" content="rtx5090">', page)
             self.assertNotIn('content="spark"', page)
@@ -366,6 +380,18 @@ class ServerBackend(unittest.TestCase):
         with self.assertRaises(RuntimeError) as e:
             self.studio("bad", LFSTUDIO_BACKEND="gb10").start()
         self.assertIn("LFSTUDIO_BACKEND=gb10: must be spark or rtx5090", str(e.exception))
+
+    def test_upscale_refused_on_rtx5090(self):
+        """The experimental Upscale needs the DGX Spark: the server stops with LFSTUDIO_UPSCALE=1 on the RTX 5090."""
+        with self.assertRaises(RuntimeError) as e:
+            self.studio("rtx-upscale", LFSTUDIO_BACKEND="rtx5090", LFSTUDIO_UPSCALE="1").start()
+        self.assertIn("LFSTUDIO_UPSCALE=1: the experimental Upscale runs on the DGX Spark only, not with "
+                      "LFSTUDIO_BACKEND=rtx5090", str(e.exception))
+        s = self.studio("spark-upscale", LFSTUDIO_UPSCALE="1").start()      # unset backend: the Spark
+        try:
+            self.assertIs(s.state()["upscale"], True)
+        finally:
+            s.stop()
 
 
 PAGE = (REPO / "webui" / "index.html").read_text()
@@ -504,8 +530,8 @@ class InstallDryRun(unittest.TestCase):
 
     def test_scripts(self):
         self.assertEqual(INSTALL, ["00-check.sh", "05-python.sh", "10-sana.sh", "20-weights.sh", "30-sources.sh",
-                                   "40-stage1.sh", "50-stage2.sh", "60-qwen-image.sh", "70-manifests.sh",
-                                   "80-prompt-cache.sh", "90-env.sh"])
+                                   "40-stage1.sh", "50-stage2.sh", "60-qwen-image.sh", "65-regen2k.sh",
+                                   "70-manifests.sh", "80-prompt-cache.sh", "90-env.sh"])
 
     def test_spark(self):
         out = self.spark()
@@ -525,6 +551,7 @@ class InstallDryRun(unittest.TestCase):
         self.assertIn("models/minimax_h3/Sol-H3-Spark &&", out["20-weights.sh"][1])
         self.assertIn("--include-offline", out["20-weights.sh"][1])
         self.assertIn("python3.12 prepare.py --fetch-sources", out["30-sources.sh"][1])
+        self.assertIn("uv-aarch64-unknown-linux-gnu.tar.gz", out["65-regen2k.sh"][1])        # InstallRegen2k: more
         code, text = out["40-stage1.sh"]
         if code == 0:                                       # needs /usr/local/cuda, as before
             self.assertIn("fastvideo-kernel", text)
@@ -599,6 +626,8 @@ class InstallDryRun(unittest.TestCase):
         self.assert_pip_update(text, "stage2", build=True)
         self.assertEqual(out["60-qwen-image.sh"][0], 0)
         self.assertNotIn("docker build", out["60-qwen-image.sh"][1])
+        self.assertIn("nothing to do (the experimental Upscale runs on the DGX Spark only)", out["65-regen2k.sh"][1])
+        self.assertNotIn("+ ", out["65-regen2k.sh"][1])
         text = out["70-manifests.sh"][1]
         self.assertIn(f"--python-qwen {self.d}/home/sol-h3/envs/stage1/bin/python", text)
         self.assertNotIn("qwen_python.sh", text)
@@ -903,6 +932,325 @@ class InstallDryRun(unittest.TestCase):
             self.assertEqual(code, 2, f"{name}: {text}")
             self.assertIn("LFSTUDIO_BACKEND=gb10: must be spark or rtx5090", text)
 
+
+
+# uv for install/65-regen2k.sh run for real: it reports 0.13.4, installs nothing (pip-fails next to it: pip install
+# fails), and its venv's python only logs its calls and exits FAKE_PY_RC (default 1: the import check fails)
+FAKE_UV = r"""#!/bin/bash
+d=$(dirname "$0")
+echo "$*" >> "$d/uv.log"
+case "$1" in
+    --version) echo "uv 0.13.4 (aarch64-unknown-linux-gnu)" ;;
+    python) [[ "$2" == install ]] ;;
+    venv) v="${@: -1}"; mkdir -p "$v/bin"
+          printf '#!/bin/bash\necho "$*" >> "$(dirname "$0")/python.log"\nexit ${FAKE_PY_RC:-1}\n' > "$v/bin/python"
+          chmod 755 "$v/bin/python" ;;
+    pip) [[ ! -f "$d/pip-fails" ]] ;;
+    *) exit 3 ;;
+esac
+"""
+SANA_REV = "6e4a44002149418a547434b91d7280a8bbdcace3"
+
+
+class InstallRegen2k(unittest.TestCase):
+    """install/65-regen2k.sh, the experimental Upscale's optional step (DGX Spark only): its --dry-run, and runs for
+    real with a fake uv, where every failed step stops it and the venv is marked done only after its import check
+    (#74). Everything in a temp directory; the Sana clone is replaced by an extract that is already there."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="lf-studio-regen2k-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.fake = fake_bin(self.d / "fake")
+        self.home = self.d / "home" / "sol-h3"
+        (self.d / "tmp").mkdir()
+        self.home.mkdir(parents=True)
+
+    def run_65(self, *args, **settings):
+        env = clean_env(HOME=str(self.d / "home"), TMPDIR=str(self.d / "tmp"), LFSTUDIO_ENV=str(self.d / "no-env-file"),
+                        LFSTUDIO_HOME=str(self.home), PATH=f"{self.fake}{os.pathsep}{os.environ['PATH']}",
+                        FAKE_ARCH="aarch64", FAKE_GPU="NVIDIA GB10")
+        env.update(settings)
+        run = subprocess.run(["bash", str(REPO / "install" / "65-regen2k.sh"), *args], env=env, capture_output=True,
+                             text=True, timeout=120)
+        return run.returncode, run.stdout + run.stderr
+
+    def test_dry_run(self):
+        code, text = self.run_65("--dry-run")
+        self.assertEqual(code, 0, text)
+        h, lock = str(self.home), str(REPO / "install" / "freeze" / "regen2k-lock.txt")
+        uv = f"{h}/bin/uv"
+        for line in (
+                "+ curl -fL --retry 3 -o "
+                f"{h}/cache/downloads/uv-0.13.4/uv-aarch64-unknown-linux-gnu.tar.gz.part "
+                "https://github.com/astral-sh/uv/releases/download/0.13.4/uv-aarch64-unknown-linux-gnu.tar.gz",
+                "1ae72b4718729e2ccc4f1ae2c6d1e531ca8467800e0546e9130b3886023a60ab",
+                f"+ {uv} python install --no-bin 3.11.17",
+                f"+ git -C {h}/Sana fetch --filter=blob:none origin {SANA_REV}",
+                f"+ git -C {h}/Sana archive {SANA_REV} models/Open-H3-Regenerate-2K techniques/sparse_backends | tar",
+                f"+ ln -sfn {h}/sources/sana-6e4a440/models/Open-H3-Regenerate-2K {h}/Open-H3-Regenerate-2K",
+                f"+ {uv} venv --python 3.11.17 {h}/envs/regen2k\n",
+                f"+ {uv} pip install --python {h}/envs/regen2k/bin/python --no-deps --require-hashes --only-binary "
+                ":all: --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu130 "
+                f"--index-strategy unsafe-best-match -r {lock}\n",
+                f"+ {uv} pip install --python {h}/envs/regen2k/bin/python --no-deps --no-build-isolation "
+                f"{h}/sources/sana-6e4a440/techniques/sparse_backends\n",
+                f"+ {h}/envs/regen2k/bin/python -I -B {REPO}/install/regen2k_weights.py --weights "
+                f"{h}/checkpoints/Open-H3-Regenerate-2K --upscaler-copy "
+                f"{h}/checkpoints/H3-upscaler/minimax_h3_latent_upscaler_3d_bf16.safetensors\n"):
+            self.assertIn(line, text)
+        order = [text.index(x) for x in ("venv --python", "--require-hashes", "sparse_backends\n", "echo done",
+                                         "regen2k_weights.py")]
+        self.assertEqual(order, sorted(order), "the venv is marked done after its import check, before the weights")
+        self.assertNotIn("pip install --python", text.split("venv --python")[0])
+        self.assertNotIn(" -m pip", text)                   # uv's venv has no pip, and none is used
+        self.assertFalse(any(self.home.iterdir()), "a dry run writes nothing")
+
+    def test_dry_run_settings(self):
+        """LFSTUDIO_UPSCALE_PKG and _WEIGHTS go where they say; another LFSTUDIO_UPSCALE_PYTHON is refused, since this
+        step builds its own venv only; x86_64 is refused unless dry."""
+        code, text = self.run_65("--dry-run", LFSTUDIO_UPSCALE_PKG=str(self.d / "pkg"),
+                                 LFSTUDIO_UPSCALE_WEIGHTS=str(self.d / "w"))
+        self.assertEqual(code, 0, text)
+        self.assertIn(f"ln -sfn {self.home}/sources/sana-6e4a440/models/Open-H3-Regenerate-2K {self.d}/pkg\n", text)
+        self.assertIn(f"--weights {self.d}/w ", text)
+        code, text = self.run_65("--dry-run", LFSTUDIO_UPSCALE_PYTHON="/usr/bin/python3")
+        self.assertEqual(code, 1, text)
+        self.assertIn("LFSTUDIO_UPSCALE_PYTHON=/usr/bin/python3: this script builds", text)
+        code, text = self.run_65(FAKE_ARCH="x86_64", FAKE_GPU="NVIDIA GH200")
+        self.assertEqual(code, 1, text)
+        self.assertIn("uname -m is x86_64", text)
+
+    def fake_uv(self, pip_fails=False):
+        uv = self.home / "bin" / "uv"
+        uv.parent.mkdir(parents=True, exist_ok=True)
+        uv.write_text(FAKE_UV)
+        uv.chmod(0o755)
+        if pip_fails:
+            (uv.parent / "pip-fails").touch()
+        src = self.home / "sources" / "sana-6e4a440"                # the extract, as if made before
+        (src / "models" / "Open-H3-Regenerate-2K").mkdir(parents=True)
+        (src / ".lf-studio-commit").write_text(SANA_REV + "\n")
+        return uv.parent
+
+    def test_a_failed_step_stops_it(self):
+        """#74: a failed install stops the script and leaves the venv unmarked; the next run goes on in it; the
+        import check gates the done mark; FORCE=1 moves the venv aside and builds a new one."""
+        bin_dir = self.fake_uv(pip_fails=True)
+        venv, lock = self.home / "envs" / "regen2k", REPO / "install" / "freeze" / "regen2k-lock.txt"
+        mark = venv / "lf-studio-install.txt"
+        sha = subprocess.run(["sha256sum", str(lock)], capture_output=True, text=True, check=True).stdout.split()[0]
+        code, text = self.run_65()
+        self.assertEqual(code, 1, text)
+        self.assertIn("ERROR: the packages of install/freeze/regen2k-lock.txt did not install", text)
+        self.assertNotIn("=== 65-regen2k.sh: weights", text)
+        self.assertEqual(mark.read_text(), f"building {sha}\n")
+        self.assertEqual((self.home / "Open-H3-Regenerate-2K").resolve(),
+                         self.home / "sources" / "sana-6e4a440" / "models" / "Open-H3-Regenerate-2K")
+        (bin_dir / "pip-fails").unlink()
+        code, text = self.run_65()                                          # the import check fails (FAKE_PY_RC)
+        self.assertEqual(code, 1, text)
+        self.assertIn("an earlier run stopped while installing into it: going on", text)
+        self.assertIn("ERROR: the import check of", text)
+        self.assertEqual(mark.read_text(), f"building {sha}\n")
+        self.assertEqual(sum(line.startswith("venv ") for line in (bin_dir / "uv.log").read_text().splitlines()), 1)
+        code, text = self.run_65(FAKE_PY_RC="0")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(mark.read_text(), f"done {sha}\n")
+        calls = (venv / "bin" / "python.log").read_text()
+        self.assertIn(f"-I -B {REPO}/install/regen2k_weights.py --weights {self.home}/checkpoints/Open-H3-Regenerate-2K",
+                      calls)
+        self.assertIn(f"{REPO}/upscale/regen2k_job.py {self.home}/Open-H3-Regenerate-2K", calls)   # the job's check
+        code, text = self.run_65(FAKE_PY_RC="0")
+        self.assertEqual(code, 0, text)
+        self.assertIn("already there (FORCE=1 builds it again)", text)
+        code, text = self.run_65(FAKE_PY_RC="0", FORCE="1")
+        self.assertEqual(code, 0, text)
+        moved = [p.name for p in venv.parent.iterdir() if p.name.startswith("regen2k.")]
+        self.assertEqual(len(moved), 1, moved)
+        self.assertRegex(moved[0], r"^regen2k\.\d{8}-\d{6}$")
+        self.assertEqual(mark.read_text(), f"done {sha}\n")
+
+    def test_a_package_link_of_someone_else_is_not_touched(self):
+        """LFSTUDIO_UPSCALE_PKG: a link this step made to an earlier extract is replaced; a directory or a link of
+        someone else's stops it."""
+        self.fake_uv()
+        pkg, ours = self.home / "Open-H3-Regenerate-2K", self.home / "sources" / "sana-6e4a440"
+        pkg.symlink_to(self.home / "sources" / "sana-0000000" / "models" / "Open-H3-Regenerate-2K")
+        code, text = self.run_65(FAKE_PY_RC="0")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(os.readlink(pkg), str(ours / "models" / "Open-H3-Regenerate-2K"))
+        pkg.unlink()
+        pkg.symlink_to(self.d / "my-own-copy")
+        code, text = self.run_65(FAKE_PY_RC="0")
+        self.assertEqual(code, 1, text)
+        self.assertIn("exists and is not a link this script made", text)
+        self.assertEqual(os.readlink(pkg), str(self.d / "my-own-copy"))
+
+    def test_a_venv_of_someone_else_is_not_touched(self):
+        self.fake_uv()
+        other = self.home / "envs" / "regen2k" / "bin"
+        other.mkdir(parents=True)
+        (other / "keep").write_text("mine")
+        code, text = self.run_65(FAKE_PY_RC="0")
+        self.assertEqual(code, 1, text)
+        self.assertIn("exists but this script did not make it", text)
+        self.assertEqual(sorted(p.name for p in other.iterdir()), ["keep"])
+        self.assertNotIn("pip", (self.home / "bin" / "uv.log").read_text())
+
+
+class Regen2kWeights(unittest.TestCase):
+    """install/regen2k_weights.py: the release's files are kept, linked or downloaded and checked (with a stand-in
+    huggingface_hub), and Sharp's AdaLN table is read by HTTP range from a fake Hugging Face (HF_ENDPOINT)."""
+
+    def setUp(self):
+        import hashlib
+        import importlib.util
+        self.d = Path(tempfile.mkdtemp(prefix="lf-studio-weights-"))
+        self.addCleanup(shutil.rmtree, self.d, True)
+        spec = importlib.util.spec_from_file_location("regen2k_weights", REPO / "install" / "regen2k_weights.py")
+        self.w = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.w)
+        self.w.say = lambda text: None                                     # its progress lines
+        self.data = {name: f"bytes of {name}".encode() for name in self.w.FILES}
+        self.w.FILES = {name: hashlib.sha256(b).hexdigest() for name, b in self.data.items()}
+        self.cache, self.downloads = {}, []
+        fake = type(sys)("huggingface_hub")
+
+        def hf_hub_download(repo, name, revision=None, local_files_only=False, local_dir=None):
+            self.assertEqual((repo, revision), (self.w.RELEASE["repo"], self.w.RELEASE["revision"]))
+            if local_files_only:
+                if name not in self.cache:
+                    raise FileNotFoundError(name)
+                return str(self.cache[name])
+            self.downloads.append(name)
+            path = Path(local_dir) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(self.data[name] if name != "lora/sharp_curve_branches.safetensors" or not self.corrupt
+                             else b"corrupt")
+            return str(path)
+        fake.hf_hub_download = hf_hub_download
+        self.corrupt = False
+        sys.modules["huggingface_hub"] = fake
+        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
+
+    def test_kept_linked_downloaded(self):
+        weights = self.d / "weights"
+        lora = "lora/open_h3_regenerate_2k_lora.safetensors"
+        cached = self.d / "hub" / "snapshot" / lora                        # in the Hugging Face cache already
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(self.data[lora])
+        self.cache[lora] = cached
+        copy = self.d / "H3-upscaler.safetensors"                          # the studio's own upscaler, same bytes
+        copy.write_bytes(self.data[self.w.UPSCALER])
+        for name, digest in self.w.FILES.items():
+            self.w.release_file(weights, name, digest, str(copy))
+        self.assertEqual(os.readlink(weights / lora), str(cached))
+        self.assertEqual(os.readlink(weights / self.w.UPSCALER), str(copy))
+        self.assertEqual(self.downloads, ["lora/sharp_curve_branches.safetensors"])
+        self.assertFalse((weights / "lora/sharp_curve_branches.safetensors").is_symlink())
+        before = sorted(p.stat().st_mtime_ns for p in self.d.rglob("*") if p.is_file())
+        for name, digest in self.w.FILES.items():                         # again: everything is kept
+            self.w.release_file(weights, name, digest, str(copy))
+        self.assertEqual(len(self.downloads), 1)
+        self.assertEqual(sorted(p.stat().st_mtime_ns for p in self.d.rglob("*") if p.is_file()), before)
+        self.assertEqual(cached.read_bytes(), self.data[lora])            # the cache was only read
+
+    def test_a_bad_download_is_set_aside(self):
+        self.corrupt = True
+        weights, name = self.d / "weights", "lora/sharp_curve_branches.safetensors"
+        with self.assertRaises(self.w.Failed) as e:
+            self.w.release_file(weights, name, self.w.FILES[name])
+        self.assertIn("does not have NVIDIA's SHA-256", str(e.exception))
+        self.assertEqual(sorted(p.name for p in (weights / "lora").iterdir()), ["sharp_curve_branches.safetensors.bad"])
+
+    def serve(self, body, ranges=True, redirect=None, auth=None):
+        """A fake Hugging Face that serves `body` for the pinned Comfy-Org file, by Range unless `ranges` is false, or
+        redirects it to `redirect` (another server's address). `auth`: a list for the Authorization headers seen."""
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        seen = []
+        path = f"/{self.w.CURVE['repo']}/resolve/{self.w.CURVE['revision']}/{self.w.CURVE['file']}"
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append(self.headers.get("Range"))
+                if auth is not None:
+                    auth.append(self.headers.get("Authorization"))
+                if redirect:                                # as Hugging Face sends a file to its CDN
+                    self.send_response(302)
+                    self.send_header("Location", redirect + self.path)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if self.path != path:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                m = re.fullmatch(r"bytes=(\d+)-(\d+)", self.headers.get("Range") or "")
+                data = body[int(m.group(1)):int(m.group(2)) + 1] if m and ranges else body
+                self.send_response(206 if m and ranges else 200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}", seen
+
+    def checkpoint(self, table, dtype="F32", shape=(1025, 8)):
+        """A safetensors file whose second tensor is `table` (bytes)."""
+        import struct
+        header = json.dumps({"other": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]},
+                             "adaln_t_table": {"dtype": dtype, "shape": list(shape),
+                                               "data_offsets": [16, 16 + len(table)]}}).encode()
+        return struct.pack("<Q", len(header)) + header + b"\x00" * 16 + table
+
+    def test_table_by_range(self):
+        import hashlib
+        table = bytes(range(256)) * 128 + b"\x01" * 32                     # 32,800 bytes, like the real one
+        url, seen = self.serve(self.checkpoint(table) + b"\xff" * 4096)     # (the rest of the checkpoint)
+        dest = self.d / "weights" / "lora" / "adaln_t_table.bin"
+        with self.assertRaises(self.w.Failed) as e:                         # not NVIDIA's bytes: nothing written
+            self.w.fetch_table(dest, url)
+        self.assertIn("does not have the SHA-256", str(e.exception))
+        self.assertFalse(dest.parent.exists() and any(dest.parent.iterdir()))
+        self.w.CURVE = dict(self.w.CURVE, sha256=hashlib.sha256(table).hexdigest())
+        self.w.fetch_table(dest, url)
+        self.assertEqual(dest.read_bytes(), table)
+        self.assertTrue(all(r and r.startswith("bytes=") for r in seen), seen)         # never the whole file
+        url, _ = self.serve(self.checkpoint(table), ranges=False)
+        with self.assertRaises(self.w.Failed) as e:
+            self.w.fetch_table(self.d / "other.bin", url)
+        self.assertIn("ignored the Range request", str(e.exception))
+        url, _ = self.serve(self.checkpoint(table[:32768], shape=(1024, 8)))
+        with self.assertRaises(self.w.Failed) as e:
+            self.w.fetch_table(self.d / "other.bin", url)
+        self.assertIn("is F32 [1024, 8], not F32 [1025, 8]", str(e.exception))
+        self.assertFalse((self.d / "other.bin").exists())
+
+    def test_no_token_goes_along(self):
+        """HF_TOKEN in the environment never reaches the table's host, nor the host it redirects to (urllib passes
+        an Authorization header on through a redirect, to any host)."""
+        import hashlib
+        table = bytes(range(256)) * 128 + b"\x02" * 32
+        self.w.CURVE = dict(self.w.CURVE, sha256=hashlib.sha256(table).hexdigest())
+        cdn_auth, hub_auth = [], []
+        cdn, cdn_seen = self.serve(self.checkpoint(table), auth=cdn_auth)
+        hub, _ = self.serve(b"", redirect=cdn.replace("127.0.0.1", "localhost"), auth=hub_auth)   # another host name
+        weights = self.d / "weights"
+        for name, data in self.data.items():                                 # the release files are in place
+            (weights / name).parent.mkdir(parents=True, exist_ok=True)
+            (weights / name).write_bytes(data)
+        with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_secret", "HF_ENDPOINT": hub}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.w.main(["--weights", str(weights)]), 0)
+        self.assertEqual((weights / "lora" / "adaln_t_table.bin").read_bytes(), table)
+        self.assertEqual(len(cdn_seen), 3)                                  # header length, header, the tensor
+        self.assertEqual((hub_auth, cdn_auth), ([None] * 3, [None] * 3))
 
 
 # A venv's python for pillow_update: `pip show -q`, `pip uninstall -y` and `pip install` act on the package names in
