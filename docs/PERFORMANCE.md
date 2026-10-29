@@ -243,12 +243,20 @@ shape.
 
 ## Experimental Upscale (Open-H3-Regenerate-2K)
 
-Measured on one DGX Spark (GB10) on 2026-10-28, 5 s t2va clips, NVIDIA's standard forward (BF16, dense attention
-through cuDNN, about 90 TFLOPS) and its released VAE, the LoRA merged once in place (bit-identical to NVIDIA's merge,
-checked). The numbers come from three kinds of runs, kept apart here: the studio's own job (`upscale/regen2k_job.py`)
-in a staging studio with nothing else loaded, with the fast load (its default) and, earlier, with the standard load;
-the bench wrapper the job was made from (the same NVIDIA code and changes, the studio stopped), with the standard load;
-and that bench wrapper with the fast load. Each has one run per resolution and orientation it was measured at.
+Measured on one DGX Spark (GB10) on 2026-10-28 unless marked, 5 s clips, NVIDIA's standard forward (BF16, dense
+attention through cuDNN, about 90 TFLOPS) and its released VAE, the LoRA merged once in place (bit-identical to
+NVIDIA's merge, checked). The numbers come from four kinds of runs, kept apart here:
+
+- the studio's own job (`upscale/regen2k_job.py`) in a staging studio with nothing else loaded, with the fast load (its
+  default) and, earlier, with the standard load: t2va clips, and on 2026-10-29 Keyframes, Reference and LightX2V Turbo
+  clips (below);
+- the bench wrapper the job was made from (the same NVIDIA code and changes, the studio stopped), with the standard
+  load;
+- that bench wrapper with the fast load;
+- research runs: the job on LightX2V Turbo clips in folders built by hand, and the prompt encode on its own ("Measured
+  apart", below).
+
+The first tables have one run per resolution and orientation; the runs through the studio on 2026-10-29 add more.
 
 **The job itself, fast load** (staging studio, with the job as it was just before it took 9:16 clips: its calls into
 NVIDIA's code for a 16:9 clip are unchanged since, which `tests/test_upscale.py` checks; one 16:9 clip (1344×768) to
@@ -299,11 +307,66 @@ them. The 1080p run had the machine to itself and came out as the 16:9 one did, 
 (143-144 s per step against 149-151 s, and 144 s in the bench; peak 81.26 against 81.29 GiB; lowest MemAvailable 28.5
 against 27.4 GiB). That fits the counts: the latent grids are the 16:9 ones turned, so the refine has the same number of
 tokens at each resolution (133,200 video rows at 2K, for example), the decode the same number of 256 px tiles and the
-upscaler the same scale factors. The page and the client show the 16:9 times for a 9:16 clip. **9:16 at 4K has not
-run**; there the upscaler goes through the 2K grid (turned), as for 16:9.
+upscaler the same scale factors. A clean 9:16 run at 2K came the next day, through the studio (below: 1117.4 s with a
+9 s encode of its text, against 1122.6 s for 16:9). The page and the client show the 16:9 times for a 9:16 clip. **9:16
+at 4K has not run**; there the upscaler goes through the 2K grid (turned), as for 16:9.
 
-**The job itself, standard load** (earlier that day, the same staging studio and 16:9 clip, an earlier version of the
-job too; 2K, `balanced`, audio `clip`):
+**Every 5 s clip: Keyframes, Reference and LightX2V Turbo clips.** The studio now gives the job every 5 s clip
+through an input folder of its own (docs/API.md, Upscale): the clip's MP4 (a LightX2V Turbo clip at 576p stretched to
+768p, one with a last keyframe cut to 121 frames), its audio, and a prompt conditioning of text alone (for Sol-H3
+Keyframes and Reference clips encoded first). The job's work is a Text clip's work: the same frames, sizes and steps.
+
+Through the studio (a staging studio of this version on the same DGX Spark, 2026-10-29, driven by `lf-cli`; one clip of
+each kind, made in that studio just before; nothing else loaded, so no models to close, and MemAvailable
+116.3-116.7 GiB at each job's start; the fast load, `balanced`, the clip's audio; the time from the job's start to the
+MP4 with the clip's sound, the encode included; the stages from the job's `receipt.json`):
+
+| The clip | What the studio does with it | To | From the job's start to the MP4 | Refine, per step | Peak allocated | Lowest MemAvailable |
+|---|---|---|---|---|---|---|
+| Sol-H3 Keyframes, a first frame, 9:16 | its text encoded first (9.2 s) | 1080p (1080×1920) | **566.8 s (9:27)** | 143.9 s, 142.7 s | 81.29 GiB | 29.2 GiB |
+| Sol-H3 Reference, one picture, 16:9 | its text encoded first (9.2 s) | 1080p | **562.9 s (9:23)** | 143.6 s, 142.4 s | 81.30 GiB | 28.8 GiB |
+| LightX2V Turbo Text, 576p 16:9 | stretched to 768p; its own text | 1080p | **554.4 s (9:14)** | 143.4 s, 142.4 s | 81.29 GiB | 28.4 GiB |
+| LightX2V Turbo Keyframes, 768p 16:9, first and last keyframes | cut from 124 frames to 121; its `qwen-text/` | 1080p | **553.6 s (9:14)** | 142.6 s, 142.1 s | 81.27 GiB | 28.0 GiB |
+| The Sol-H3 Keyframes clip again | its text encoded again (9.1 s) | 2K (1440×2560) | **1117.4 s (18:37)** | 375.9 s, 375.9 s | 91.09 GiB | 16.8 GiB |
+
+The other stages, at 1080p (2K): encoding the final clip 128.3-128.6 s (128.3 s), its audio 0.6-0.7 s, the load
+21.7-21.9 s (21.8 s), the latent upscaler 2.9-3.0 s (4.3 s), the VAE decode 105.1-105.3 s (181.3 s), the MP4 3.2-3.6 s
+(14.2 s).
+
+- **Times:** each came 1-4 % under the Sol-H3 Text clip's time at its resolution (574.2 s at 1080p, 1122.6 s at 2K,
+  the first table) plus its encode, so the Text clip's times hold for these kinds. The 2K run is the clean 9:16 run at
+  2K that the table above lacks: 376 s per step against 379-380 s for 16:9, the same peak, its lowest MemAvailable
+  16.8 GiB against 15.7 GiB.
+- **The encode** (status `encoding the prompt`) took 9.1-9.2 s in all. Its receipts: task t2va, the text asked for, no
+  vision rows (195 and 232 rows, the text's tokens alone). The 2K upscale's encode of the Keyframes clip's text wrote
+  the same `conditioning.pt` as the 1080p one's, byte for byte, and so did a LightX2V Turbo Keyframes clip's
+  `qwen-text/` of the same prompt (encoded with that clip in the studio's queue:
+  [LightX2V Turbo](#experimental-lightx2v-turbo)). So such a clip's `qwen-text/` is what an encode at upscale time
+  would give.
+- **The sound:** each upscale has the clip's own: every AAC packet of a linked or stretched clip (5.04 s), and for the
+  clip cut to 121 frames 5.02 s of its 5.17 s, cut with the picture. That cut leaves out the clip's last 3 frames, the
+  last of them the one anchored to the last keyframe (issue #85).
+- **Cancel** about 2 s into the encode (an upscale of the Reference clip) stopped it in 5.4 s, with no encode or job
+  process, Qwen container or GPU memory left, and no job started.
+- **Not run through the studio:** LightX2V Turbo's 768p Text clips (linked as they are), its Keyframes clips at 576p
+  (stretched; the research runs below) or at 768p without a last keyframe (linked), one whose text is encoded at upscale
+  time (a Keyframes clip without `qwen-text/`), and 4K of any clip but a 16:9 Text clip (no 9:16 clip has run at 4K).
+  Expected: a Text clip's times, plus the encode where there is one.
+
+Measured apart:
+
+| | Measured | How |
+|---|---|---|
+| LightX2V Turbo 576p Keyframes clips (a first frame), stretched to 768p | **1080p 558-576 s (~9.5 min), 2K 1107 s (16:9) and 1136 s (9:16) (~19 min)**; peak allocated 81.3 / 91.1 GiB; lowest MemAvailable 28.0-28.8 / 15.8-16.6 GiB | research runs on one DGX Spark (2026-10-28): this job with the fast load, `balanced`, the clip's audio, on folders built by hand much as the studio now builds them, with two differences: the audio was decoded from the clip's AAC track (not its `audio.pt`), and the text alone was a Sol-H3 Text clip's own conditioning, made by the studio for each prompt without its picture references (not `bench/h3turbo_encode.py --upscale`); the LANCZOS stretch as now; four clips at 1080p (one 16:9, three 9:16), two at 2K; from the job's start to its MP4 without sound (the studio adds the mux, a few seconds, and closing its models, ~40 s) |
+| The upscale's prompt encode (Sol-H3 Keyframes and Reference clips; a LightX2V Turbo Keyframes clip without its own text) | 9.1-18 s in all, 1.1-1.8 s of it the encode; ~15 GiB while its Qwen worker lives | the times: ten runs of the same helper (`bench/h3turbo_encode.py`) for LightX2V Turbo clips on the GPU, 2026-10-28; the memory (15.1-15.4 GiB): the receipts of the studio's own Qwen encodes on the same machine |
+| The stretch of a 576p clip to 768p | 0.55-0.92 s | two clips, on the CPU |
+
+So the page shows the Text clip's times for every 5 s clip, plus 15 s in its progress bar for an upscale whose text is
+encoded first, and its popover says of the kinds not run through the studio yet (above) that this kind of clip has not
+been upscaled on the GPU through the studio yet.
+
+**The job itself, standard load** (2026-10-28, before the fast load's runs, the same staging studio and 16:9 clip, an
+earlier version of the job too; 2K, `balanced`, audio `clip`):
 
 | Stage | Time |
 |---|---|
@@ -357,7 +420,8 @@ runs above did (128-133 s).
   neither depends on the resolution. In all, with 2 steps (`faithful`, `balanced`) about 10 min at 1080p, 19 min at 2K
   and 1.1 h at 4K; with 3 (`full`) about 13 min, 26 min and 1.6 h. The popover shows the 2-step times with the
   studio's load (`/api/state` `upscale_load`; with the standard load ~19 min, ~28 min and ~1.2 h), the same for a
-  9:16 clip. A run with the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
+  9:16 clip and for every other 5 s clip (15 s more in the progress bar when its text is encoded first). A run with
+  the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
   page cache first) loaded in 539 s, against 445 s without; the files were cached already, so this says little about
   a cold start.
 - 4K: the stock block forward with only its FFN in 8 sequence chunks ran out of memory in the first step (the bench's
@@ -387,10 +451,11 @@ studio stopped, one clip per process as the studio runs it (its imports and the 
 LightX2V's 4-step v1.3 LoRA, the Qwen conditioning at the 384p draft canvas unless marked. Most prompt conditionings
 came from `bench/h3turbo-encode.sh`, the prompt encode the studio runs; the 10 and 14 s runs and two 5 s runs took a
 studio clip's own conditioning. 15 runs, MemAvailable 116.2-116.9 GiB at each start. These are the job's own times;
-in the studio a clip also waits for the Sol-H3 models to close when they are loaded (about 40 s), and has its poster
-made. The last three rows are a later session on the same machine (2026-10-29, after the staging run of the studio's
-queue below): one Text run each, by hand in the same way, on the conditioning of a 576p Text clip of that staging
-studio (no keyframe, so it holds for every size and length).
+in the studio a clip also waits for the Sol-H3 models to close when they are loaded (6.8 and 7.0 s through the
+studio's queue, below; up to 40 s when a worker doesn't answer), and has its poster made. The last three rows are a
+later session on the same machine (2026-10-29, after the staging run of the studio's queue below): one Text run each, by
+hand in the same way, on the conditioning of a 576p Text clip of that staging studio (no keyframe, so it holds for every
+size and length).
 
 | Clip | Rows | Step (mean) | Decode | The job's process | Lowest MemAvailable | Peak allocated |
 |---|---|---|---|---|---|---|
@@ -456,15 +521,19 @@ studio (no keyframe, so it holds for every size and length).
   at 768p, 660 and 1440 s for 15 s; within 8 % of every run of the first session (the job's process, plus the measured
   or the estimated prompt encode, plus the poster's 2 s), and within 2.2 % of the three longer ones (660 s against
   646 s at 576p 15 s, 1070 against 1050 at 768p 12 s, 1440 against 1439 at 768p 15 s).
-- **The studio's queue** (a staging studio of this version on the same DGX Spark, 2026-10-29: a second studio with its
-  own port and state, driven by `lf-cli`, one clip each). From the prompt encode to the poster: 191-204 s for 5 s at
-  576p (Text, a first frame, first + last, a last frame alone; estimate 200 s), 338 s at 768p (350 s), and 399 s for a
-  10 s clip with a first frame at 576p (400 s), queued after a Sol-H3 clip, whose models it closed first. Given the same
-  prompt, keyframes and seed as the first session's runs by hand, each of these six clips' latents were identical to
-  theirs, bit for bit, and so were the prompt encode's tensors (the conditioning files differ only in the keyframe
-  paths they record). A Cancel during the prompt encode stopped the clip in 8 s, one at the job's first step in 2 s,
-  with no process, Qwen container or GPU memory left behind; the refusals (Reference, the Upscale of such a clip) came
-  back with their reasons.
+- **The studio's queue** (a staging studio on the same DGX Spark, 2026-10-29, with this version's LightX2V Turbo before
+  the Upscale took its clips: a second studio with its own port and state, driven by `lf-cli`, one clip each). From the
+  prompt encode to the poster: 191-204 s for 5 s at 576p (Text, a first frame, first + last, a last frame alone;
+  estimate 200 s), 338 s at 768p (350 s), and 399 s for a 10 s clip with a first frame at 576p (400 s), queued after a
+  Sol-H3 clip, whose models it closed first: 7.0 s from the clip's start to its prompt encode, the close and the
+  memory check (`wall_s` less `e2e_s`; with nothing loaded the two are equal). Given the same prompt, keyframes and seed
+  as the first session's runs by hand, each of these six clips' latents were identical to theirs, bit for bit, and so
+  were the prompt encode's tensors (the conditioning files differ only in the keyframe paths they record). A Cancel
+  during the prompt encode stopped the clip in 8 s, one at the job's first step in 2 s, with no process, Qwen container
+  or GPU memory left behind; the refusals (Reference, and the Upscale of such a clip, which that version did not offer
+  yet) came back with their reasons. In the Upscale's staging run later that day (this version), a 576p Text clip took
+  188 s and a 768p clip with first and last keyframes 363 s (350 s), its 124 frames kept; the first closed a Sol-H3
+  Reference session in 6.8 s.
 
 ## Replay bench: Stage 2 on saved drafts
 

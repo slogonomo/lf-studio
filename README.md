@@ -113,11 +113,13 @@ page in a browser; see [AGENTS.md](AGENTS.md).
 Every clip is made with **Sol-H3**, NVIDIA's two-stage pipeline above, unless you pick another model. Off by default
 and on the DGX Spark only, `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo` and the optional install step
 `install/66-h3turbo.sh` add an experimental second model, **LightX2V Turbo**: the full MiniMax-H3 in one stage with
-LightX2V's [turbo LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo), 4 steps. It keeps the look of a keyframe:
-in a research probe on one DGX Spark (11 Keyframes clips of 5 s), frame 0 matched the first frame at 30-36 dB PSNR
-(compared at 384p), Sol-H3's clips of the same prompts and frames at 18-23 dB. The page then gets a Model row at the
-top of the prompt card, and agents and scripts name the model (`lf-cli generate --model lightx2v-turbo`, the MCP tool
-`generate`); `lf-cli models` and the MCP tool `models` list what each model makes.
+LightX2V's [turbo LoRA](https://huggingface.co/lightx2v/Minimax-h3-Turbo), 4 steps. It keeps its keyframes: in a
+research probe on one DGX Spark (11 Keyframes clips of 5 s), frame 0 matched the first frame at 30-36 dB PSNR
+(compared at 384p), and in the job's own runs a clip with a last frame ended on it (30.9-34.3 dB). Sol-H3 has held the
+first frame since 0.5.2 (30-38 dB, measured on other clips), but not a last one. Sol-H3's clips of the probe's
+prompts and frames, made before 0.5.2, were at 18-23 dB. The page then gets a Model row at the top of the prompt card,
+and agents and scripts name the model (`lf-cli generate --model lightx2v-turbo`, the MCP tool `generate`); `lf-cli
+models` and the MCP tool `models` list what each model makes.
 
 - **What it makes:** Text and Keyframes (a first frame, a last frame alone, or both), 5, 6, 7, 8, 10, 12 or 15 s,
   16:9 or 9:16, at 576p (1024×576, the default) or 768p (1344×768). Reference shows greyed out, with the reason. What
@@ -129,14 +131,17 @@ top of the prompt card, and agents and scripts name the model (`lf-cli generate 
   2.9-3.2 min for a 5 s clip at 576p and 5.5-5.8 min at 768p, 6.4 and 13.5 min for 10 s, and 10.1 min for 14 s at
   576p; in one Text run each on 2026-10-29, 10.5 min for 15 s at 576p, and 17.3 and 23.8 min for 12 and 15 s at 768p.
   The prompt encode adds 9-18 s ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-lightx2v-turbo)). Through the
-  studio's own queue (a staging studio on one DGX Spark, 2026-10-29, one clip each), 5 s clips took 3.2-3.4 min at
-  576p and 5.6 min at 768p, and a 10 s clip at 576p 6.7 min, prompt encode included. The studio shows an estimate per
-  size and length until it has measured a clip of its own (about 3:20 at 576p and 5:50 at 768p for 5 s, 11:00 and
-  24:00 for 15 s). A clip closes the Sol-H3 models first when they are loaded (about 40 s), and the next Sol-H3 clip
-  loads them again. A 768p clip of 12 s or more needs more free memory to start (103 GiB at 12 s, 107 at 15 s,
-  against 100). 6, 7 and 8 s, 12 s at 576p, and Keyframes clips longer than 14 s at 576p or 10 s at 768p (only Text
-  ran at those lengths) have not run on the GPU: their times and memory floors are estimates from the runs above.
-- **Not yet:** upscaling its clips, keeping its model loaded between clips, and Reference.
+  studio's own queue (staging studios on one DGX Spark, 2026-10-29, one clip each), 5 s clips took 3.1-3.4 min at
+  576p and 5.6 min at 768p (6 min with first and last keyframes), and a 10 s clip at 576p 6.7 min, prompt encode
+  included. The studio shows an estimate per size and length until it has measured a clip of its own (about 3:20 at
+  576p and 5:50 at 768p for 5 s, 11:00 and 24:00 for 15 s). A clip closes the Sol-H3 models first when they are
+  loaded (7 s in two staging runs, up to 40 s when a worker doesn't answer), and the next Sol-H3 clip loads them
+  again. A 768p clip of 12 s or more needs more free memory
+  to start (103 GiB at 12 s, 107 at 15 s, against 100). 6, 7 and 8 s, 12 s at 576p, and Keyframes clips longer than
+  14 s at 576p or 10 s at 768p (only Text ran at those lengths) have not run on the GPU: their times and memory floors
+  are estimates from the runs above.
+- **Not yet:** upscaling its clips longer than 5 s (its 5 s clips can be upscaled), keeping its model loaded
+  between clips, and Reference.
 
 With the setting off the studio is as it was. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-lightx2v-turbo); the API:
@@ -152,11 +157,21 @@ clip with MiniMax-H3 at 1080p, 2K (2560×1440, or 1440×2560 for a 9:16 clip) or
 its own, with the clip's own sound. Agents and scripts have it too: `POST /api/upscale`, `lf-cli upscale` and the MCP
 tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
 
-- **Only 5 s text clips (t2va) for now, 16:9 or 9:16.** NVIDIA's pipeline is fixed at 121 frames, and Keyframes and
-  Reference clips first need a text-only encode of their prompt. Other cards show the button disabled, with the
-  reason. NVIDIA's code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA
-  file changed). It has as many tokens as 16:9, and in the one clean run so far (1080p) it took the same time as a
-  16:9 clip. 2K has run too; **9:16 has not run at 4K yet**, and NVIDIA trained its refiner on 16:9 video.
+- **5 s clips for now, 16:9 or 9:16, of every mode and model**: Sol-H3's Text, Keyframes and Reference clips and
+  LightX2V Turbo's Text and Keyframes clips. NVIDIA's pipeline is fixed at 121 frames, so other lengths are not yet
+  (their cards show the button disabled, with the reason). The job refines against text alone: a Keyframes or Reference
+  clip's prompt is encoded first without its pictures (its keyframe line, or its references, taken out; ~15 s more). A
+  LightX2V Turbo clip at 576p is stretched to 768p first, and one with a last keyframe (124 frames) gives its first 121,
+  so the frame anchored to your last keyframe is left out ([#85](https://github.com/slogonomo/lf-studio/issues/85)).
+  Through the studio on one DGX Spark (2026-10-29, one clip of each kind), a Sol-H3 Keyframes clip (9:16), a Sol-H3
+  Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with first and last keyframes each took 9.2-9.4 min to
+  1080p, the encode included, as a Text clip does (9.6 min); the Keyframes clip took 18.6 min to 2K. LightX2V Turbo's
+  768p Text clips and its other Keyframes clips (576p, or without a last keyframe) have not been upscaled through the
+  studio yet (576p Keyframes clips have been, by hand in research runs): the popover says so for them, and their times
+  are a Text clip's ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). NVIDIA's
+  code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA file changed). It
+  has as many tokens as 16:9 and took the same time at 1080p and 2K; **9:16 has not run at 4K yet**, and NVIDIA trained
+  its refiner on 16:9 video.
 - **It is slow.** On one DGX Spark a 2-step upscale takes about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K
   (26 min at 2K with 3 steps): ~2 min reading the clip, the refine (2.5 min per step at 1080p, 6.3 min at 2K, 28 min at
   4K: there most of the time), the decode (2-3 min, 6.6 min at 4K) and the load. The models load in ~22 s with LF
@@ -173,7 +188,8 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
   defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
 
-Not yet: Keyframes and Reference clips, lengths other than 5 s, and NVIDIA's faster Sol-Attn forward. Setup:
+Not yet: lengths other than 5 s, keeping a Keyframes clip's first frame (your picture) in the upscale, and NVIDIA's
+faster Sol-Attn forward. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
 

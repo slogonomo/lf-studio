@@ -32,11 +32,13 @@ What this wrapper changes, and why:
   in 2.8 s, the native and refined latents bit-identical to a standard load's, ~1.9 GB of anonymous memory in the
   process, 40.0 GiB MemAvailable after the load; in this job, below. "standard" is NVIDIA's own loading, the fallback
   (~7.5 min). The latent upscaler's checkpoint (0.7 GB) loads through NVIDIA's node either way.
-- The text: the clip's own prompt conditioning (qwen/conditioning.pt; t2va: prompt_embeds [1, L, 5120] bf16, every
-  text_token_tag 1) instead of loading the 32B text encoder (66.7 GB). It is the same layer-50 hidden state, from
+- The text: a prompt conditioning of LF Studio's (the case's qwen/conditioning.pt, text alone: t2va, prompt_embeds
+  [1, L, 5120] bf16, every text_token_tag 1; the clip's own, or one made without its pictures, below) instead of
+  loading the 32B text encoder (66.7 GB). It is the same layer-50 hidden state, from
   LF Studio's NVFP4 encoder: close to NVIDIA's BF16 one, not bit-identical.
-- The audio the refine attends to. "silence" is NVIDIA's. "clip" is the clip's own Stage-1 audio
-  (stage1/stage1_direct_tensors.pt["audio"]) through the audio VAE, encoded as encode_silence encodes its zeros.
+- The audio the refine attends to. "silence" is NVIDIA's. "clip" is the clip's own audio (the case's
+  stage1/stage1_direct_tensors.pt["audio"]: Sol-H3's Stage-1 audio, or a LightX2V Turbo clip's audio.pt) through the
+  audio VAE, encoded as encode_silence encodes its zeros.
 - The strength: start_sigma re-noises from there on NVIDIA's shifted_grid; null keeps NVIDIA's schedule for the
   steps (3 steps: 0.909375, which regenerates faces: a sharper, different-looking person).
 - Memory, for GB10 again. The DiT is freed before the decode (a job is the only work in its process; at 4K the
@@ -61,10 +63,17 @@ What this wrapper changes, and why:
   landscape one. check_package pins NVIDIA's pipeline.py, upscaler.py and upscaler_node.py (sha256) for this, and
   refuses a portrait key NVIDIA has itself; bin/lf-studio notes at start when the package's files are other ones.
 
-The input: the clip's MP4 (stage2/refined_*.mp4), through NVIDIA's encode_video at 768p (1344x768, or 768x1344 for
-9:16). Scope: t2va clips, 5 s (121 frames at 24 fps, the length NVIDIA's pipeline is fixed at), 16:9 or 9:16. fl2va
-and ref2va need a text-only encode of the prompt (their conditioning interleaves the pictures), the other lengths
-the studio offers (6 to 15 s) changes to NVIDIA's fixed length: follow-ups.
+The input: job.json "case", a folder in the shape of a Sol-H3 clip's own: stage2/refined_*.mp4 (the clip's MP4,
+through NVIDIA's encode_video at 768p: 1344x768, or 768x1344 for 9:16), qwen/conditioning.pt (text alone: t2va) and,
+for audio clip, stage1/stage1_direct_tensors.pt ({"audio": (1, 2, samples)} PCM at 32 kHz). The studio's server builds
+it for every upscale (webui/server.py build_input: the upscale's input/ folder) from any finished 5 s clip: Sol-H3's
+Text, Keyframes and Reference clips and LightX2V Turbo's Text and Keyframes clips, 16:9 or 9:16. It links the clip's
+MP4 (a LightX2V Turbo clip at 576p stretched to 768p, one with a last keyframe cut to its first 121 frames), its audio
+(a LightX2V Turbo clip's turbo/audio.pt) and a conditioning of text alone: the clip's own for a Text clip, a LightX2V
+Turbo Keyframes clip's qwen-text/, or an encode of the prompt without its keyframe line or its references for the
+others (bench/h3turbo_encode.py --upscale). This job takes that folder as it took a Sol-H3 Text clip's own: 5 s (121
+frames at 24 fps, the length NVIDIA's pipeline is fixed at), 16:9 or 9:16, a t2va conditioning. The other lengths the
+studio offers (6 to 15 s) change NVIDIA's fixed length: a follow-up.
 
 Measured on a DGX Spark (GB10), 2026-10-28: this job run by a staging studio with nothing else loaded, 5 s clips,
 balanced (2 steps from 0.7), the clip's audio, standard forward and VAE, cuDNN attention, one run each. A 16:9 clip with
@@ -75,7 +84,10 @@ of it), steps of 151+149 / 379+380 / 1684+1688 s (at 4K every block ran lean_for
 / 94.46 GiB, lowest MemAvailable 27.4 / 15.7 / 11.1 GiB. At 2K the video is the same, bit for bit, as with the standard
 load (the same clip and seed), which took 1620.8 s: encode_video 185 s, load 455 s (the merge 74 s of it), the refine
 and decode as above. A 9:16 clip with the fast load at 1080p: steps of 143+144 s, 553.9 s, peak 81.26 GiB, as 16:9 (the
-same number of tokens); at 2K it ran too, beside other work on the machine (not a clean measurement); at 4K not yet. The
+same number of tokens); at 2K, cleanly, on 2026-10-29 (a Keyframes clip, through the studio): steps of 376+376 s,
+1117.4 s with a 9.1 s encode of its text, peak 91.09 GiB, lowest MemAvailable 16.8 GiB, as 16:9; at 4K not yet. That
+day the studio also took that clip, a Sol-H3 Reference clip, a LightX2V Turbo 576p Text clip (stretched) and a 768p
+one with a last keyframe (cut to 121 frames) through this job to 1080p: 553.6-566.8 s each, as a Text clip. The
 bench wrapper it is derived from: docs/PERFORMANCE.md.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
@@ -455,14 +467,15 @@ def check_text(cond):
         raise JobError("the conditioning has no prompt_embeds and text_token_tags")
     task = cond.get("task")
     if task not in (None, "t2va"):
-        raise JobError(f"the conditioning is {task}'s: only t2va clips can be upscaled for now "
-                       "(fl2va/ref2va need a text-only encode of the prompt)")
+        raise JobError(f"the conditioning is {task}'s, not text alone (t2va): the studio gives fl2va and ref2va clips "
+                       "a text-only encode of their prompt (qwen-text/, or the upscale's own encode)")
     tags = [int(tag) for tag in cond["text_token_tags"].flatten().tolist()]
     if not tags:
         raise JobError("the conditioning has no rows")
     other = sum(tag != 1 for tag in tags)
     if other:
-        raise JobError(f"the conditioning has {other} non-text rows (fl2va/ref2va): it needs a text-only encode")
+        raise JobError(f"the conditioning has {other} non-text rows (fl2va/ref2va): it needs a text-only encode of "
+                       "the prompt")
     shape = tuple(cond["prompt_embeds"].shape)
     if shape != (1, len(tags), TEXT_WIDTH):
         raise JobError(f"prompt_embeds {shape} do not match {len(tags)} text rows of {TEXT_WIDTH}")

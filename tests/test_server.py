@@ -7,6 +7,7 @@ import ast
 import base64
 import concurrent.futures
 import contextlib
+import errno
 import hashlib
 import importlib.util
 import io
@@ -2185,8 +2186,9 @@ class CancelRace(CancelTest):
 
 
 # ------------------------------------------------------------------------------------------ the experimental Upscale
-UPSCALE_LENGTH = "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"
-NOT_T2VA = "Upscale takes text-to-video (t2va) clips only, for now"
+UPSCALE_LENGTH = "Upscale takes 5 s clips for now: other lengths not yet (NVIDIA's pipeline is fixed at 121 frames)"
+NOTHING_LEFT = "nothing is left of the prompt without its keyframe line: the Upscale needs text"
+TEXT_CLIP = {"ok": True, "clip_audio": True}     # a Sol-H3 Text clip's upscalable, as before every clip was taken
 FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
 PARENT_BUSY = "an upscale of this clip is queued or running; cancel it first, or wait for it"
 
@@ -2283,7 +2285,7 @@ class Upscale(UpscaleTest):
         self.assertEqual(st["upscale_defaults"], {"resolution": "2k", "strength": "balanced",
                                                   "audio": "clip"})            # the page's choices start there
         self.assertEqual(st["upscale_load"], "fast")                         # the page's times: LFSTUDIO_UPSCALE_LOAD
-        self.assertEqual(st["jobs"][0]["upscalable"], {"ok": True, "clip_audio": True})
+        self.assertEqual(st["jobs"][0]["upscalable"], TEXT_CLIP)
         uid = self.upscale(parent["id"])
         job = self.done(uid)
         self.assertEqual({k: job[k] for k in ("task", "orientation", "seconds", "prompt", "seed")},
@@ -2345,7 +2347,7 @@ class Upscale(UpscaleTest):
                          (1, 99, 3, None, "fast"))                      # LFSTUDIO_UPSCALE_LOAD's default
         data = json.loads((self.regen(job) / "job.json").read_text())
         root = self.dir / "regen2k"                     # tests/stub/studio.py's LFSTUDIO_UPSCALE_PKG and so on
-        self.assertEqual(data, {"version": 1, "case": str(Path(parent["output"]).parents[1]),
+        self.assertEqual(data, {"version": 1, "case": str(self.regen(job).parent / "input"),
                                 "resolution": "1080p", "steps": 3, "start_sigma": None, "seed": 99,
                                 "audio": "silence", "load": "fast", "preread": False,
                                 "paths": {"package": str(root / "package"), "weights": str(root / "weights"),
@@ -2362,7 +2364,7 @@ class Upscale(UpscaleTest):
         """A 5 s 9:16 t2va clip at each resolution: the output upright (the job takes the orientation from the clip's
         MP4; job.json has no field for it), named by its size."""
         parent = self.clip(orientation="portrait")
-        self.assertEqual(self.studio.job(parent["id"])["upscalable"], {"ok": True, "clip_audio": True})
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"], TEXT_CLIP)
         for resolution, name in (("2k", "regen_1440x2560_121f.mp4"), ("1080p", "regen_1080x1920_121f.mp4"),
                                  ("4k", "regen_2160x3840_121f.mp4")):
             job = self.done(self.upscale(parent["id"], resolution=resolution))
@@ -2468,17 +2470,23 @@ class UpscaleRefusals(UpscaleTest):
         self.assertEqual([j["id"] for j in self.studio.state()["jobs"]], [jid])           # nothing queued
 
     def test_clips_it_cannot_upscale(self):
+        """Other lengths than 5 s (not yet, every task), a Keyframes clip whose prompt is nothing but its keyframe line
+        (no text without it), a failed clip."""
         ten = self.clip(seconds=10, seed=2)
         six = self.clip(orientation="portrait", seconds=6, seed=6)     # 3 s went after 0.5.0: see OldLengths
-        fl2va = self.clip(task="fl2va", seed=3, files={"first_frame": [("f.png", png())]})
+        fl2va = self.clip(task="fl2va", seed=3, seconds=8, files={"first_frame": [("f.png", png())]})
+        line = ("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully "
+                "referenced.")
+        bare = self.clip(task="fl2va", seed=7, prompt=line, files={"first_frame": [("f.png", png())]})
         failed = self.studio.wait([self.generate(prompt="STUB_FAIL", seed=4)])[0]
-        for job, code, why in ((ten, 400, UPSCALE_LENGTH), (six, 400, UPSCALE_LENGTH), (fl2va, 400, NOT_T2VA),
-                               (failed, 409, "the clip failed")):
+        for job, code, why in ((ten, 400, UPSCALE_LENGTH), (six, 400, UPSCALE_LENGTH), (fl2va, 400, UPSCALE_LENGTH),
+                               (bare, 400, NOTHING_LEFT), (failed, 409, "the clip failed")):
             self.assertEqual(self.studio.upscale(job["id"]), (code, {"error": why}), job["id"])
         found = {j["id"]: j.get("upscalable") for j in self.studio.state()["jobs"]}
-        self.assertEqual((found[ten["id"]], found[six["id"]], found[fl2va["id"]], found[failed["id"]]),
+        self.assertEqual((found[ten["id"]], found[six["id"]], found[fl2va["id"]], found[bare["id"]],
+                          found[failed["id"]]),
                          ({"ok": False, "why": UPSCALE_LENGTH}, {"ok": False, "why": UPSCALE_LENGTH},
-                          {"ok": False, "why": NOT_T2VA}, None))
+                          {"ok": False, "why": UPSCALE_LENGTH}, {"ok": False, "why": NOTHING_LEFT}, None))
         uid = self.upscale(self.clip(seed=5)["id"])
         self.assertEqual(self.studio.upscale(uid), (400, {"error": "an upscale can't be upscaled again"}))  # queued
         self.done(uid)
@@ -2488,9 +2496,9 @@ class UpscaleRefusals(UpscaleTest):
         parent = self.clip()
         case = Path(parent["output"]).parents[1]
         upscalable = lambda: self.studio.job(parent["id"])["upscalable"]        # noqa: E731
-        self.assertEqual(upscalable(), {"ok": True, "clip_audio": True})
+        self.assertEqual(upscalable(), TEXT_CLIP)
         (case / "stage1" / "stage1_direct_tensors.pt").unlink()
-        self.assertEqual(upscalable(), {"ok": True, "clip_audio": False})
+        self.assertEqual(upscalable(), dict(TEXT_CLIP, clip_audio=False))
         no_audio = (409, {"error": "the clip has no Stage-1 audio (stage1/stage1_direct_tensors.pt); ask for audio "
                                    "silence"})
         self.assertEqual(self.studio.upscale(parent["id"]), no_audio)          # audio clip is the default
@@ -2930,6 +2938,344 @@ class UpscaleWhileMoving(UpscaleTest):
         self.assertEqual([j["id"] for j in self.studio.state()["jobs"] if j.get("kind") == "upscale"], [])
 
 
+def load_rewrites():
+    """bench/h3turbo_encode.py, for its text rewrites (text_only_prompt, ref_text_only_prompt), as the server loads
+    it."""
+    spec = importlib.util.spec_from_file_location("rewrites_under_test", REPO_DIR / "bench" / "h3turbo_encode.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+KEYFRAME_PROMPT = ("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully "
+                   "referenced.\n\nintegrated_multimodal_description: [Shot 1] The kitchen shown in <Picture 1>; a "
+                   "kettle steams.\n\noverall_soundscape: A kettle whistles.\n\nnon_diegetic_music: N/A")
+REFERENCE_PROMPT = ("subject_definitions:\n<Subject 1> is the woman in <Picture 1>, with short red hair.\n<Audio 1> is "
+                    "the voice-timbre reference for <Subject 1> (S1).\n\nsummary:\n[reference generation + audio "
+                    "reference] <Subject 1> greets the camera.\n\nretention_analysis:\n<Subject 1>: fully_preserved."
+                    "\n\ndetailed_description:\n[Shot 1] A medium shot frames <Subject 1> (S1) on a snowy street. "
+                    "She says in the warm voice referenced from <Audio 1>, <d>[English] Welcome back.</d>\n\n"
+                    "overall_soundscape:\nSoft wind.\n\nnon_diegetic_music:\nN/A")
+
+
+def inode(path):
+    return os.stat(path).st_ino
+
+
+class EveryClipParts:
+    """What UpscaleEveryClip and UpscaleEncode share (a mixin: no tests of its own): the logs of the stand-ins' runs,
+    and an upscale's statuses."""
+
+    def seed(self):
+        self.studio.env.update(STUB_UPSCALE_LOG=str(self.dir / "upscale-jobs.log"),
+                               STUB_QWEN_LOG=str(self.dir / "encodes.log"), **self.env)
+
+    def encodes(self):
+        log = self.dir / "encodes.log"
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def statuses(self, uid, timeout=60):
+        """The (status, upscale_phase) an upscale goes through, polled until it has finished; its record."""
+        seen, deadline = [], time.time() + timeout
+        while time.time() < deadline:
+            rec = json.loads(self.studio.get(f"/api/jobs/{uid}")[2])
+            step = (rec["status"], rec.get("upscale_phase"))
+            if step not in seen:
+                seen.append(step)
+            if rec["state"] not in ("queued", "running"):
+                return seen, rec
+            time.sleep(0.02)
+        self.fail(f"upscale {uid} did not finish: {seen}")
+
+
+class UpscaleEveryClip(EveryClipParts, UpscaleTest):
+    """The Upscale takes every finished 5 s clip: a Sol-H3 Keyframes clip (any keyframes) and a Reference clip get a
+    conditioning of text alone made for the upscale (the prompt encode, --upscale, of the prompt without its keyframe
+    line or its references), after the models close and before the job, under the same Cancel. Every upscale reads an
+    input folder of its own (job.json "case"): the clip's files linked, source.json."""
+    env = {"STUB_UPSCALE_S": "1"}
+
+    def test_a_keyframes_clip(self):
+        """A first frame: upscalable with its text encoded; the statuses in order; the encode's arguments; the input
+        folder (the clip's MP4 and audio linked, the encode's qwen/, source.json) and job.json; the record's text."""
+        self.studio.stop()                 # the models' close takes a second, so "freeing memory" is seen
+        self.studio.env.update(STUB_QWEN_S="1.5", STUB_UPSCALE_S="2", STUB_CLOSE_S="1")
+        self.studio.start()
+        parent = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=3, files={"first_frame": [("f.png", png())]})
+        want = load_rewrites().text_only_prompt(KEYFRAME_PROMPT)
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                         {"ok": True, "clip_audio": True, "text": "encode"})
+        self.assertEqual(self.studio.state()["session"]["state"], "ready")
+        uid = self.upscale(parent["id"], resolution="1080p")
+        seen, rec = self.statuses(uid)
+        self.assertEqual(rec["state"], "done", rec.get("error"))
+        steps = [st for st, _ in seen if st not in ("queued", "starting")]          # (those two may pass unseen)
+        self.assertEqual([st for i, st in enumerate(steps) if st not in steps[:i]],
+                         ["freeing memory", "encoding the prompt", "upscaling", "done"])
+        self.assertIn(("encoding the prompt", "prompt"), seen)
+        job = self.studio.job(uid)
+        self.assertEqual(job["text"], {"source": "encode", "prompt": want["prompt"], "dropped": want["dropped"],
+                                       "notes": want["notes"], "rows": job["text"]["rows"],
+                                       "encode_s": job["text"]["encode_s"]})
+        self.assertNotIn("Picture", job["text"]["prompt"])
+        self.assertGreater(job["text"]["rows"], 0)
+        self.assertEqual((job["parent_model"], job["video"]), ("sol-h3", "clip"))
+        self.assertNotIn("parent_opts", job)
+        case = Path(job["case_dirs"][0])
+        view = case / "input"
+        encode, = self.encodes()
+        self.assertEqual(encode["argv"], ["--case", str(view), "--prompt-file", str(case / "prompt-text-only.txt"),
+                                          "--orientation", "landscape", "--seed", "3", "--case-id", job["case_id"],
+                                          "--package", str(self.studio.package), "--upscale"])
+        self.assertEqual((case / "prompt-text-only.txt").read_text(encoding="utf-8"), want["prompt"])
+        self.assertEqual(sorted(p.name for p in case.iterdir()),
+                         ["encode.log", "input", "prompt-text-only.txt", "regen"])
+        self.assertEqual(sorted(str(p.relative_to(view)) for p in view.rglob("*") if p.is_file()),
+                         ["encode.json", "qwen-worker/worker.log", "qwen/conditioning.json", "qwen/conditioning.pt",
+                          "source.json", f"stage1/stage1_direct_tensors.pt", f"stage2/{Path(parent['output']).name}"])
+        parent_case = Path(parent["output"]).parents[1]
+        self.assertEqual(inode(view / "stage2" / Path(parent["output"]).name), inode(parent["output"]))
+        self.assertEqual(inode(view / "stage1" / "stage1_direct_tensors.pt"),
+                         inode(parent_case / "stage1" / "stage1_direct_tensors.pt"))
+        cond = json.loads((view / "qwen" / "conditioning.json").read_text())
+        self.assertEqual((cond["task"], cond["prompt"]), ("t2va", want["prompt"]))
+        self.assertEqual(json.loads((case / "regen" / "job.json").read_text())["case"], str(view))
+        source = json.loads((view / "source.json").read_text())
+        self.assertEqual({k: source[k] for k in ("parent", "model", "options", "task", "orientation", "seconds",
+                                                 "video")},
+                         {"parent": parent["id"], "model": "sol-h3", "options": None, "task": "fl2va",
+                          "orientation": "landscape", "seconds": 5, "video": "clip"})
+        self.assertEqual(source["text"]["prompt"], want["prompt"])
+        self.assertEqual(source["files"][f"stage2/{Path(parent['output']).name}"],
+                         {"from": parent["output"], "how": "link",
+                          "sha256": hashlib.sha256(Path(parent["output"]).read_bytes()).hexdigest()})
+        self.assertEqual(source["files"]["qwen/conditioning.pt"]["how"], "encode")
+        self.assertEqual(source["files"]["qwen/conditioning.pt"]["sha256"],
+                         hashlib.sha256((view / "qwen" / "conditioning.pt").read_bytes()).hexdigest())
+        self.assertIn("encoding the text of", self.studio.log.read_text())
+        # the mux took the clip's own sound; Delete and Undo move the input folder with the rest
+        self.assertEqual(probe(job["output"])["audio"]["duration"], probe(parent["output"])["audio"]["duration"])
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": uid}), (200, {"ok": True}))
+        self.assertFalse(case.exists())
+        self.assertEqual(self.studio.post("/api/undelete", json_body={"id": uid})[0], 200)
+        self.assertTrue((view / "source.json").is_file())
+
+    def test_a_prompt_with_crlf_line_breaks(self):
+        """The page's form sends a prompt's line breaks as CRLF (a browser's multipart), and the studio keeps them;
+        the prompt encode reads its prompt file with LF ones. The text the upscale records, writes and checks the
+        receipt against has LF line breaks, so the upscale finishes."""
+        prompt = KEYFRAME_PROMPT.replace("\n", "\r\n")
+        parent = self.clip(task="fl2va", prompt=prompt, seed=8, files={"first_frame": [("f.png", png())]})
+        self.assertEqual(self.studio.job(parent["id"])["prompt"], prompt)                 # kept as it came
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"]["text"], "encode")
+        job = self.done(self.upscale(parent["id"]))
+        want = load_rewrites().text_only_prompt(KEYFRAME_PROMPT)["prompt"]
+        case = Path(job["case_dirs"][0])
+        self.assertEqual((job["text"]["prompt"], (case / "prompt-text-only.txt").read_bytes().decode()), (want, want))
+        self.assertNotIn("\r", job["text"]["prompt"])
+        self.assertEqual(json.loads((case / "input" / "qwen" / "conditioning.json").read_text())["prompt"], want)
+        self.assertEqual(json.loads((case / "input" / "source.json").read_text())["text"]["prompt"], want)
+
+    def test_the_clip_deleted_afterwards(self):
+        """The input folder's files are links: Delete of the clip, and its trash emptied, leave the upscale playable
+        and its input folder whole."""
+        parent = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=9, files={"first_frame": [("f.png", png())]})
+        job = self.done(self.upscale(parent["id"]))
+        mp4 = Path(job["case_dirs"][0]) / "input" / "stage2" / Path(parent["output"]).name
+        self.assertEqual(os.stat(mp4).st_nlink, 2)
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": parent["id"]}), (200, {"ok": True}))
+        self.assertFalse(Path(parent["output"]).exists())
+        trash = self.studio.runtime / "trash" / parent["id"]
+        self.assertTrue(trash.is_dir())
+        shutil.rmtree(trash)                                                     # as the trash is emptied later
+        rec = json.loads(self.studio.get(f"/api/jobs/{job['id']}")[2])
+        self.assertEqual(rec["state"], "done")
+        status, _, body = self.studio.get(rec["urls"]["video"])
+        self.assertEqual((status, body), (200, Path(job["output"]).read_bytes()))
+        self.assertEqual((os.stat(mp4).st_nlink, probe(mp4)["video"]["nb_frames"]), (1, "121"))
+        self.assertTrue((mp4.parents[1] / "stage1" / "stage1_direct_tensors.pt").is_file())
+
+    def test_no_t2va_manifest(self):
+        """The upscale's encode is a t2va one: without the t2va path manifest a clip whose text must be encoded is
+        refused with the reason (a Text clip, which needs no encode, is not)."""
+        kf = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=10, files={"first_frame": [("f.png", png())]})
+        text = self.clip(seed=11)
+        (self.studio.root / "paths-t2va.json").unlink()
+        why = ("the Upscale encodes this clip's prompt as text alone first, which needs the t2va path manifest (run "
+               "install/70-manifests.sh)")
+        self.assertEqual(self.studio.job(kf["id"])["upscalable"], {"ok": False, "why": why})
+        self.assertEqual(self.studio.upscale(kf["id"]), (409, {"error": why}))
+        self.assertEqual(self.studio.job(text["id"])["upscalable"], {"ok": True, "clip_audio": True})
+
+    def test_every_set_of_keyframes(self):
+        """A last frame alone and first + last: the same text-only route; the encode never gets a keyframe."""
+        line = "For the target video, at 5.00 seconds into the target video, <Picture 1> is fully referenced."
+        for files, seed in (({"last_frame": [("l.png", png())]}, 4),
+                            ({"first_frame": [("f.png", png())], "last_frame": [("l.png", png())]}, 5)):
+            parent = self.clip(task="fl2va", prompt=line + "\nA red kite rises.", seed=seed, files=files)
+            self.assertEqual(self.studio.job(parent["id"])["upscalable"]["text"], "encode")
+            job = self.done(self.upscale(parent["id"]))
+            self.assertEqual(job["text"]["prompt"], "A red kite rises.")
+        self.assertEqual(len(self.encodes()), 2)
+        self.assertFalse(any(a in r["argv"] for r in self.encodes() for a in ("--first", "--last")))
+
+    def test_a_reference_clip(self):
+        """Its prompt as t2va's three fields (ref_text_only_prompt): no labels, the dialogue as it was."""
+        parent = self.clip(task="ref2va", prompt=REFERENCE_PROMPT, seed=6, orientation="portrait",
+                           files={"ref_images": [("r.png", png())]})
+        want = load_rewrites().ref_text_only_prompt(REFERENCE_PROMPT)
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                         {"ok": True, "clip_audio": True, "text": "encode"})
+        job = self.done(self.upscale(parent["id"]))
+        self.assertEqual({k: job["text"].get(k) for k in ("source", "prompt", "dropped", "notes")},
+                         {"source": "encode", "prompt": want["prompt"], "dropped": want["dropped"], "notes": []})
+        text = job["text"]["prompt"]
+        self.assertTrue(text.startswith("integrated_multimodal_description: [Shot 1] A medium shot frames the woman "
+                                        "(S1) on a snowy street. She says, <d>[English] Welcome back.</d>"), text)
+        self.assertIsNone(re.search(r"<(?:Picture|Audio|Video|Subject) \d+>", text))
+        case = Path(job["case_dirs"][0])
+        self.assertEqual((case / "prompt-text-only.txt").read_text(encoding="utf-8"), text)
+        encode, = self.encodes()
+        self.assertEqual(encode["argv"][encode["argv"].index("--orientation") + 1], "portrait")
+        self.assertEqual(json.loads((case / "input" / "qwen" / "conditioning.json").read_text())["prompt"], text)
+
+    def test_nothing_left_of_a_reference_prompt(self):
+        parent = self.clip(task="ref2va", prompt="<Picture 1>", files={"ref_images": [("r.png", png())]})
+        why = "nothing is left of the prompt without its references: the Upscale needs text"
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"], {"ok": False, "why": why})
+        self.assertEqual(self.studio.upscale(parent["id"]), (400, {"error": why}))
+
+    def test_reference_prompts_with_chains_of_definitions(self):
+        """A chain of 1000 subject definitions (<Subject 1> is <Subject 2>, ...), which a recursive rewrite could
+        not resolve, and one that doubles at each link: /api/state, /api/jobs, the record and /api/upscale answer
+        (they ask for the rewrite of every finished clip), the first upscalable, the second refused as too long."""
+        def prompt(n, ref):
+            lines = [f"<Subject {i}> is {ref.format(i + 1)}" for i in range(1, n)] + [f"<Subject {n}> is a dog"]
+            return "subject_definitions:\n" + "\n".join(lines) + "\n\ndetailed_description: <Subject 1> runs."
+        long = self.clip(task="ref2va", prompt=prompt(1000, "<Subject {}>"), files={"ref_images": [("r.png", png())]})
+        wide = self.clip(task="ref2va", prompt=prompt(40, "<Subject {0}> and <Subject {0}>"),
+                         files={"ref_images": [("r.png", png())]})
+        too_long = {"ok": False, "why": "the prompt is too long as text alone: with its subjects written out it has "
+                                        "more than 32768 characters"}
+        for jobs in (self.studio.state()["jobs"], json.loads(self.studio.get("/api/jobs")[2])["jobs"]):
+            found = {j["id"]: j.get("upscalable") for j in jobs}
+            self.assertEqual((found[long["id"]], found[wide["id"]]),
+                             ({"ok": True, "clip_audio": True, "text": "encode"}, too_long))
+        self.assertEqual(self.studio.upscale(wide["id"]), (400, {"error": too_long["why"]}))
+        job = self.done(self.upscale(long["id"]))
+        self.assertEqual(job["text"]["prompt"], "integrated_multimodal_description: A dog runs.")
+        self.assertNotIn("Traceback", self.studio.log.read_text())
+
+    def test_a_text_clip_reads_its_own_folder_too(self):
+        """A Sol-H3 Text clip: no encode, its own qwen/ linked into the input folder."""
+        parent = self.clip()
+        job = self.done(self.upscale(parent["id"]))
+        view = Path(job["case_dirs"][0]) / "input"
+        parent_case = Path(parent["output"]).parents[1]
+        self.assertEqual(inode(view / "qwen" / "conditioning.pt"), inode(parent_case / "qwen" / "conditioning.pt"))
+        self.assertEqual((job["text"], self.encodes()), ({"source": "clip"}, []))
+        self.assertEqual(json.loads((view / "source.json").read_text())["files"]["qwen/conditioning.pt"]["how"], "link")
+
+
+class UpscaleEncode(EveryClipParts, UpscaleTest):
+    """The upscale's prompt encode: Cancel stops it at once (and its Qwen worker), a failed encode or one whose receipt
+    does not match fails the upscale with its reason, and the memory floor is checked again after it."""
+    env = {"STUB_UPSCALE_S": "1", "STUB_QWEN_S": "30"}
+
+    def keyframes_clip(self, seed=3):
+        return self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=seed, files={"first_frame": [("f.png", png())]})
+
+    def encode_pid(self, uid):
+        self.until(uid, lambda j: j["status"] == "encoding the prompt")
+        deadline = time.time() + 10
+        while not self.encodes() and time.time() < deadline:
+            time.sleep(0.05)
+        return self.encodes()[-1]["pid"]
+
+    def test_cancel_during_the_encode(self):
+        self.studio.stop()
+        self.studio.env["STUB_QWEN_WORKER_S"] = "60"
+        self.studio.start()
+        uid = self.upscale(self.keyframes_clip()["id"])
+        pid = self.encode_pid(uid)
+        self.assertEqual(worker_groups(self.studio.proc.pid), [pid])            # in a process group of its own
+        rec = json.loads(self.studio.get(f"/api/jobs/{uid}")[2])
+        self.assertEqual((rec["state"], rec["phase"], rec["upscale_phase"]), ("running", "encoding", "prompt"))
+        self.assertNotIn(rec["status"], idle_values())                           # busy for spark-switchboard
+        view = Path(rec["case_dirs"][0]) / "input"
+        deadline = time.time() + 10
+        while not (view / "qwen-worker" / "worker.pid").is_file() and time.time() < deadline:
+            time.sleep(0.05)
+        worker = int((view / "qwen-worker" / "worker.pid").read_text())
+        self.addCleanup(lambda: alive(worker) and os.killpg(worker, signal.SIGKILL))
+        t0 = time.time()
+        self.assertEqual(self.cancel(uid)[0], 200)
+        job = self.studio.wait([uid], timeout=30)[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertLess(time.time() - t0, 5, "stopped right away")
+        self.assertFalse(alive(pid))
+        gone_soon(self, worker)                                                  # it closed its worker
+        self.assertEqual((self.job_pids(), worker_groups(self.studio.proc.pid)), ([], []))   # no job started
+        self.assertFalse((Path(job["case_dirs"][0]) / "regen" / "job.json").exists())
+        self.assertEqual(self.studio.post("/api/delete", json_body={"id": uid}), (200, {"ok": True}))
+
+    def test_an_encode_that_ignores_sigterm(self):
+        """SIGKILL 20 s after the SIGTERM, and the server stops the Qwen worker it left."""
+        self.studio.stop()
+        self.studio.env.update(STUB_QWEN_WORKER_S="90", STUB_QWEN_TERM="ignore")
+        self.studio.start()
+        uid = self.upscale(self.keyframes_clip()["id"])
+        pid = self.encode_pid(uid)
+        view = Path(self.studio.job(uid)["case_dirs"][0]) / "input"
+        deadline = time.time() + 10
+        while not (view / "qwen-worker" / "worker.pid").is_file() and time.time() < deadline:
+            time.sleep(0.05)
+        worker = int((view / "qwen-worker" / "worker.pid").read_text())
+        self.addCleanup(lambda: alive(worker) and os.killpg(worker, signal.SIGKILL))
+        self.assertEqual(self.cancel(uid)[0], 200)
+        self.assertEqual(self.studio.wait([uid], timeout=40)[0]["status"], "cancelled")
+        self.assertFalse(alive(pid))
+        gone_soon(self, worker)
+        log = self.studio.log.read_text()
+        self.assertIn(f"cancel: the upscale's prompt encode {pid} is still there 20 s after SIGTERM: SIGKILL", log)
+        self.assertIn("stopping the Qwen worker the prompt encode left", log)
+
+    def test_failures(self):
+        parent = self.keyframes_clip()
+        self.studio.stop()
+        for hook, why in (("1", "UpscaleFailed: the prompt encode failed: RuntimeError: Worker exited with code 1 "
+                                "(STUB_QWEN_FAIL)"),
+                          ("receipt", "UpscaleFailed: the prompt encode failed: the qwen/ encode does not match: "
+                                      "['prompt']"),
+                          # an encode that ends well (exit 0), and the server's own checks of what it wrote
+                          ("no-conditioning", "UpscaleFailed: the prompt encode wrote no qwen/conditioning.pt and "
+                                              ".json; see {log}"),
+                          ("other-prompt", "UpscaleFailed: the prompt encode's conditioning is not of the text asked "
+                                           "for: its prompt differs (task t2va); see {log}"),
+                          ("other-task", "UpscaleFailed: the prompt encode's conditioning is not of the text asked "
+                                         "for: its task differs (task fl2va); see {log}")):
+            self.studio.env.update(STUB_QWEN_S="0.2", STUB_QWEN_FAIL=hook)
+            self.studio.start()
+            job = self.studio.wait([self.upscale(parent["id"])], timeout=30)[0]
+            log = Path(job["case_dirs"][0]) / "encode.log"
+            self.assertEqual((job["status"], job["error"]), ("failed", why.format(log=log)))
+            self.assertEqual(self.job_pids(), [])
+            self.studio.stop()
+
+    def test_the_floor_again_after_the_encode(self):
+        parent = self.keyframes_clip()
+        self.studio.stop()
+        self.studio.env["STUB_QWEN_S"] = "2"
+        self.studio.start()
+        uid = self.upscale(parent["id"])
+        self.encode_pid(uid)
+        self.studio.set_memory(60)                       # something else took memory while the encode ran
+        job = self.studio.wait([uid], timeout=30)[0]
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("not enough free memory for an upscale: 60.0 GiB available", job["error"])
+        self.assertEqual(self.job_pids(), [])
+
+
 class UpscaleOff(StudioTest):
     """LFSTUDIO_UPSCALE=0 (the default outside the tests): /api/upscale answers 404, nothing has "upscalable", and the
     other upscale settings are not read."""
@@ -2983,6 +3329,31 @@ class BadUpscaleSettings(unittest.TestCase):
             self.assertIn(message, str(e.exception))
         studio = StubStudio(d / "empty", env={"LFSTUDIO_UPSCALE": ""}).start()      # empty: the default, off
         try:
+            self.assertIs(studio.state()["upscale"], False)
+        finally:
+            studio.stop()
+
+    def test_the_prompt_encode_and_its_rewrites(self):
+        """With the Upscale on, the prompt encode it runs for a Keyframes or Reference clip's text
+        (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, with LightX2V Turbo off too) must be there, and the repo's
+        bench/h3turbo_encode.py, whose rewrites the server imports, readable (here a copy of the server whose copy of
+        it is broken)."""
+        d = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        with self.assertRaises(RuntimeError) as e:
+            StubStudio(d / "a", env={"LFSTUDIO_H3TURBO_ENCODE_SCRIPT": str(d / "none.py")}).start(timeout=10)
+        self.assertIn(f"LFSTUDIO_UPSCALE=1: no prompt encode at {d / 'none.py'}", str(e.exception))
+        repo = d / "repo"
+        for rel in ("webui/server.py", "upscale/regen2k_job.py"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_DIR / rel, repo / rel)
+        (repo / "bench").mkdir()
+        (repo / "bench" / "h3turbo_encode.py").write_text("def broken(:\n")
+        with self.assertRaises(RuntimeError) as e:
+            StubStudio(d / "b", server=repo / "webui" / "server.py").start(timeout=10)
+        self.assertIn(f"LFSTUDIO_UPSCALE=1: cannot read {repo / 'bench' / 'h3turbo_encode.py'} (", str(e.exception))
+        studio = StubStudio(d / "c", server=repo / "webui" / "server.py", env={"LFSTUDIO_UPSCALE": "0"}).start()
+        try:                                                    # with the Upscale off, nothing reads it
             self.assertIs(studio.state()["upscale"], False)
         finally:
             studio.stop()
@@ -3048,6 +3419,9 @@ class LauncherUpscale(LauncherSettingsCheck):
         self.refused(f"{upscale}no Python at LFSTUDIO_UPSCALE_PYTHON={self.d / 'nothing'} (the "
                      "Open-H3-Regenerate-2K environment); set it up, or set LFSTUDIO_UPSCALE=0",
                      **dict(settings, LFSTUDIO_UPSCALE_PYTHON=str(self.d / "nothing")))
+        self.refused(f"{upscale}no prompt encode at {self.d / 'none.py'} (it encodes the text of Keyframes and "
+                     "Reference clips); set it up, or set LFSTUDIO_UPSCALE=0",
+                     **settings, LFSTUDIO_H3TURBO_ENCODE_SCRIPT=str(self.d / "none.py"))
         lora = self.d / "regen2k" / "weights" / "lora" / "open_h3_regenerate_2k_lora.safetensors"
         lora.unlink()
         self.refused(f"{upscale}missing weights: {lora}; set it up", **settings)
@@ -3056,10 +3430,11 @@ class LauncherUpscale(LauncherSettingsCheck):
                      **settings)
 
     def test_the_fast_load_needs_its_loader(self):
-        """A checkout without upscale/fastload.py (here a copy of the launcher, the server and the job) is refused with
-        the fast load, the default, and passes with the standard load, which does without it."""
+        """A checkout without upscale/fastload.py (here a copy of the launcher, the server, the job and the prompt
+        encode) is refused with the fast load, the default, and passes with the standard load, which does without
+        it."""
         repo = self.d / "repo"
-        for rel in ("bin/lf-studio", "webui/server.py", "upscale/regen2k_job.py"):
+        for rel in ("bin/lf-studio", "webui/server.py", "upscale/regen2k_job.py", "bench/h3turbo_encode.py"):
             (repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(Path(__file__).resolve().parents[1] / rel, repo / rel)
         settings = self.regen2k()
@@ -3086,7 +3461,8 @@ class LauncherUpscale(LauncherSettingsCheck):
         self.assertIn(note.format("open_h3/pipeline.py changed, open_h3/upscaler.py missing, "
                                   "open_h3/upscaler_node.py missing"), out)
         repo = self.d / "repo"
-        for rel in ("bin/lf-studio", "webui/server.py", "upscale/regen2k_job.py", "upscale/fastload.py"):
+        for rel in ("bin/lf-studio", "webui/server.py", "upscale/regen2k_job.py", "upscale/fastload.py",
+                    "bench/h3turbo_encode.py"):
             (repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(Path(__file__).resolve().parents[1] / rel, repo / rel)
         job = (repo / "upscale/regen2k_job.py").read_text()
@@ -3235,6 +3611,75 @@ class ServerParts(unittest.TestCase):
         self.assertEqual(problems(steps, other=(dict(steps, type="string", default="4", choices=({"value": "4"},)),)),
                          ["other: option steps is of type string, another model's of type integer"])
 
+    def test_registry_upscale_entries(self):
+        """A model's "upscale" entry may only name the studio's tasks and lengths; the registry's own pass."""
+        end = {"task": ("t2va",), "seconds": (5,)}
+
+        def problems(upscale):
+            models = {"sol-h3": {"options": (), "offers": (dict(end),), "not_yet": (), "upscale": upscale}}
+            return server_function("registry_problems", MODELS=models, END_STATE=end, OPTION_KINDS={},
+                                   TASKS=("t2va", "fl2va", "ref2va"), DURATIONS=(5, 6))()
+        self.assertEqual(problems({"tasks": ("t2va", "ref2va"), "seconds": (5,)}), [])
+        self.assertEqual(problems({"tasks": ("i2v",), "seconds": (5, 3)}),
+                         ["sol-h3: the Upscale's task i2v is not one of ('t2va', 'fl2va', 'ref2va')",
+                          "sol-h3: the Upscale's length 3 is not one of (5, 6)"])
+        registry = server_value("MODELS", SOL_H3="sol-h3", TURBO=TURBO, TASKS=("t2va", "fl2va", "ref2va"),
+                                FRAME_SETS=("first", "last", "first+last"), END_STATE={},
+                                BACKENDS={"spark": 0, "rtx5090": 0}, DURATIONS=(5, 6, 7, 8, 10, 12, 15))
+        self.assertEqual({mid: m["upscale"] for mid, m in registry.items()},
+                         {"sol-h3": {"tasks": ("t2va", "fl2va", "ref2va"), "seconds": (5,)},
+                          TURBO: {"tasks": ("t2va", "fl2va"), "seconds": (5,)}})
+
+    def test_link_or_copy(self):
+        """The input folder's files: hardlinks, or copies where a link can't be made (another filesystem)."""
+        tmp = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "a").write_bytes(b"clip")
+        link_or_copy = server_function("link_or_copy", os=os, shutil=shutil)
+        self.assertEqual(link_or_copy(tmp / "a", tmp / "b"), "link")
+        self.assertEqual(inode(tmp / "a"), inode(tmp / "b"))
+
+        def no_link(src, dst):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        link_or_copy = server_function("link_or_copy", os=types.SimpleNamespace(link=no_link), shutil=shutil)
+        self.assertEqual(link_or_copy(tmp / "a", tmp / "c"), "copy")
+        self.assertEqual(((tmp / "c").read_bytes(), inode(tmp / "c") != inode(tmp / "a")), (b"clip", True))
+
+    def test_the_stretch_and_the_cut(self):
+        """prepare_video_command on a 124-frame 576p clip with sound: 1344x768, 121 frames at 24 fps, its sound cut to
+        about the 121 frames (copied); a 768p clip is cut but not scaled."""
+        tmp = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src = tmp / "clip_1024x576_124f.mp4"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1024x576:r=24",
+                        "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=32000:duration=5.1667", "-frames:v",
+                        "124", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                        str(src)], check=True, timeout=120)
+        regen = types.SimpleNamespace(FINAL={"frames": 121, "fps": "24/1"})
+        command = server_function("prepare_video_command", regen=regen)
+        out = tmp / "refined_1344x768_121f.mp4"
+        subprocess.run(command(src, out, (1344, 768), "stretch+trim"), check=True, timeout=120)
+        streams = probe(out)
+        self.assertEqual((streams["video"]["width"], streams["video"]["height"], streams["video"]["nb_frames"],
+                          streams["video"]["r_frame_rate"]), (1344, 768, "121", "24/1"))
+        self.assertEqual((streams["audio"]["codec_name"], streams["audio"]["sample_rate"]), ("aac", "32000"))
+        self.assertLess(abs(float(streams["audio"]["duration"]) - 121 / 24), 0.07)
+        self.assertNotIn("-vf", command(src, out, (1344, 768), "trim"))
+        self.assertIn("scale=768:1344:flags=lanczos", command(src, out, (768, 1344), "stretch"))
+        # a 576p clip of 121 frames (Text, or a first frame only), stretched alone: its sound is copied as it is, every
+        # AAC packet (-t 121/24 or -frames:v 121 would drop the last one)
+        src = tmp / "clip_1024x576_121f.mp4"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1024x576:r=24",
+                        "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=32000", "-frames:v", "121",
+                        "-af", "atrim=end_sample=161333", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt",
+                        "yuv420p", "-c:a", "aac", str(src)], check=True, timeout=120)
+        self.assertFalse({"-t", "-frames:v"} & set(command(src, out, (1344, 768), "stretch")))
+        subprocess.run(command(src, out, (1344, 768), "stretch"), check=True, timeout=120)
+        streams, clip = probe(out), probe(src)
+        self.assertEqual((streams["video"]["width"], streams["video"]["nb_frames"]), (1344, "121"))
+        self.assertEqual([streams["audio"][k] for k in ("nb_frames", "duration")],
+                         [clip["audio"][k] for k in ("nb_frames", "duration")])
+
     def test_model_refusal_of_values_made_apart(self):
         """A table of two rows (LightX2V Turbo's before its 15 s and 768p 12 s ran on the GPU: 576p up to 12 s, 768p up
         to 10 s, 15 s not yet): a value no row has gets its reason, values each made in another row that they are not
@@ -3366,7 +3811,8 @@ class ModelChoiceOff(unittest.TestCase):
     def test_v051s_client(self):
         """v0.5.1's lf-cli (from git) and this one print the same against a studio with the model choice off: a
         generate that waits and saves the clip, status and the status of a clip (their usage lines differ: this one
-        lists the model's flags too)."""
+        lists the model's flags too). The generate's progress lines of the clip while it runs are compared apart:
+        which a client prints depends on what its first look finds (queued, running or done), not on the client."""
         old = release_client("v0.5.1", self.d / "v0.5.1-client")
         if not old:
             self.skipTest("v0.5.1 is not in this copy's git history")
@@ -3381,6 +3827,12 @@ class ModelChoiceOff(unittest.TestCase):
         made = {name: cli(s.url, "generate", "--prompt", "a test clip", "--seed", "4", "--wait", "--out",
                           str(out / f"{name}.mp4"), client=client, stderr=True) for name, client in clients.items()}
         self.assertEqual(made["now"][0], 0, made["now"])
+        running = ["starting", "generating", "saving the clip"]          # in the order a clip goes through them
+        for name, (code, stdout, stderr) in made.items():
+            seen = [line for line in stderr.splitlines() if line in running]
+            self.assertEqual(seen, sorted(set(seen), key=running.index), (name, stderr))
+            made[name] = (code, stdout, "".join(line for line in stderr.splitlines(True)
+                                                if line.rstrip("\n") not in running))
         ids = [j["id"] for j in s.state()["jobs"]]
         self.same({name: normalized(json.dumps(answer).replace(f"{name}.mp4", "<file>"), s.root, s.url, out, ids=ids)
                    for name, answer in made.items()}, "lf-cli generate --wait --out")
@@ -3842,6 +4294,24 @@ class TurboPlainTokens(TurboTest):
         self.turbo(prompt="A man says hello.")
 
 
+class TurboDialogue(TurboTest):
+    """With SOL_H3_PROMPT_TOKENS unset (minimax, the default), a LightX2V Turbo prompt with MiniMax's dialogue tokens
+    runs, and its encode gets it as written (TurboPlainTokens: refused with plain)."""
+
+    def seed(self):
+        super().seed()
+        self.studio.env.pop("SOL_H3_PROMPT_TOKENS", None)
+
+    def test_runs(self):
+        prompt = "A man looks up and says, <d>[English] Hello there.</d>"
+        job = self.done(self.turbo(prompt=prompt))
+        case = Path(job["case_dirs"][0])
+        self.assertEqual((case / "prompt.txt").read_text(), prompt)
+        self.assertEqual(json.loads((case / "qwen" / "conditioning.json").read_text())["prompt"], prompt)
+        encode, = self.runs("encodes.log")
+        self.assertEqual(encode["argv"][encode["argv"].index("--prompt-file") + 1], str(case / "prompt.txt"))
+
+
 class TurboQueue(TurboTest):
     """One queue for every clip, in order (strict FIFO across models), upscales after them; no warm-up after a LightX2V
     Turbo clip."""
@@ -4189,6 +4659,12 @@ class TurboFailure(TurboTest):
         job = self.failed(STUB_H3TURBO_OUTPUT="bad")
         self.assertEqual(job["error"], f"ModelJobFailed: the LightX2V Turbo job's clip_1024x576_121f.mp4 can't be "
                                        f"read; see {log(job)}")
+        publish = self.dir / "publish"                          # 576x1024 under the name of 1024x576: not taken
+        job = self.failed(STUB_H3TURBO_OUTPUT="size", LFSTUDIO_PUBLISH_DIR=str(publish))
+        self.assertEqual(job["error"], "ModelJobFailed: the LightX2V Turbo job's clip_1024x576_121f.mp4 is 576x1024, "
+                                       "not 1024x576")
+        self.assertNotIn("output", job)
+        self.assertEqual(list(publish.iterdir()), [])
 
     def test_no_python_and_no_lora(self):
         job = self.failed(LFSTUDIO_H3TURBO_PYTHON=str(self.dir / "nothing"))
@@ -4213,14 +4689,149 @@ class TurboWithoutUpscale(TurboTest):
 
 
 class TurboUpscale(TurboTest):
-    """A LightX2V Turbo clip can't be upscaled yet (it has no Stage-2 files, and its sizes are other ones)."""
+    """The Upscale takes every 5 s LightX2V Turbo clip, Text and Keyframes, at either size, 16:9 or 9:16: its input
+    folder links the clip's 768p MP4 and stretches a 576p one to 768p (LANCZOS; 121 frames), cuts a clip with a last
+    keyframe (124 frames) to its first 121, links its audio.pt as the job's audio, and its qwen/ (Text) or qwen-text/
+    (Keyframes: made with the clip) as its text; a Keyframes clip without qwen-text/ gets the upscale's encode. The
+    result has the clip's sound, cut to the frames kept."""
+    env = {"STUB_UPSCALE_S": "1"}
 
-    def test_refused(self):
-        jid = self.turbo()
-        self.done(jid)
-        why = "Upscale of LightX2V Turbo clips comes in a later version"
-        self.assertEqual(self.studio.job(jid)["upscalable"], {"ok": False, "why": why})
-        self.assertEqual(self.studio.upscale(jid), (400, {"error": why}))
+    def view(self, job):
+        return Path(job["case_dirs"][0]) / "input"
+
+    def input_mp4(self, job):
+        mp4, = (self.view(job) / "stage2").glob("refined_*.mp4")
+        return mp4
+
+    def test_text_576p_stretched(self):
+        parent = self.done(self.turbo(seed=4))
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                         {"ok": True, "clip_audio": True, "video": "stretch"})
+        job = self.done(self.upscale(parent["id"], resolution="1080p"))
+        self.assertEqual((job["parent_model"], job["parent_opts"]["resolution"], job["video"], job["text"]),
+                         (TURBO, "576p", "stretch", {"source": "clip"}))
+        mp4 = self.input_mp4(job)
+        self.assertEqual(mp4.name, "refined_1344x768_121f.mp4")
+        streams = probe(mp4)
+        self.assertEqual((streams["video"]["width"], streams["video"]["height"], streams["video"]["nb_frames"],
+                          streams["video"]["r_frame_rate"]), (1344, 768, "121", "24/1"))
+        parent_case = Path(parent["output"]).parents[1]
+        view = self.view(job)
+        self.assertEqual(inode(view / "stage1" / "stage1_direct_tensors.pt"), inode(parent_case / "turbo" / "audio.pt"))
+        self.assertEqual(inode(view / "qwen" / "conditioning.pt"), inode(parent_case / "qwen" / "conditioning.pt"))
+        source = json.loads((view / "source.json").read_text())
+        self.assertEqual((source["model"], source["options"]["resolution"], source["video"]),
+                         (TURBO, "576p", "stretch"))
+        self.assertEqual(source["files"]["stage2/refined_1344x768_121f.mp4"]["how"], "stretch")
+        self.assertEqual(source["files"]["stage1/stage1_direct_tensors.pt"],
+                         {"from": str(parent_case / "turbo" / "audio.pt"), "how": "link",
+                          "sha256": hashlib.sha256((parent_case / "turbo" / "audio.pt").read_bytes()).hexdigest()})
+        self.assertEqual(self.runs("encodes.log")[1:], [])                      # the clip's own encode only
+        out = probe(job["output"])
+        self.assertEqual(Path(job["output"]).name, "regen_1920x1080_121f.mp4")
+        for key in ("codec_name", "sample_rate", "channels", "nb_frames", "duration"):   # its sound as it is: only
+            self.assertEqual(out["audio"][key], probe(parent["output"])["audio"][key], key)  # stretched, not cut
+        self.assertEqual(json.loads((Path(job["case_dirs"][0]) / "regen" / "job.json").read_text())["case"], str(view))
+
+    def test_text_768p_portrait_linked(self):
+        parent = self.done(self.turbo(orientation="portrait", resolution="768p"))
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                         {"ok": True, "clip_audio": True})
+        job = self.done(self.upscale(parent["id"]))
+        self.assertEqual(inode(self.input_mp4(job)), inode(parent["output"]))
+        self.assertEqual(self.input_mp4(job).name, "refined_768x1344_121f.mp4")      # named as the job finds it
+        self.assertEqual(Path(job["output"]).name, "regen_1440x2560_121f.mp4")
+        self.assertEqual(json.loads((self.view(job) / "source.json").read_text())["files"][
+            "stage2/refined_768x1344_121f.mp4"]["how"], "link")
+        for key in ("nb_frames", "duration"):                                    # its sound, copied as it is
+            self.assertEqual(probe(job["output"])["audio"][key], probe(parent["output"])["audio"][key])
+
+    def test_keyframes_with_the_text_made_with_the_clip(self):
+        """A first frame at 576p: qwen-text/ is its text (no encode), stretched as a Text clip."""
+        prompt = ("For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
+                  "\nA kite.")
+        parent = self.done(self.turbo(task="fl2va", prompt=prompt, files={"first_frame": [("a.png", png())]}))
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                         {"ok": True, "clip_audio": True, "text": "generation", "video": "stretch"})
+        job = self.done(self.upscale(parent["id"]))
+        self.assertEqual(job["text"], {"source": "generation", "prompt": parent["text_only"]["prompt"],
+                                       "dropped": parent["text_only"]["dropped"]})
+        parent_case = Path(parent["output"]).parents[1]
+        self.assertEqual(inode(self.view(job) / "qwen" / "conditioning.pt"),
+                         inode(parent_case / "qwen-text" / "conditioning.pt"))
+        self.assertEqual(json.loads((self.view(job) / "qwen" / "conditioning.json").read_text())["task"], "t2va")
+        self.assertEqual(len(self.runs("encodes.log")), 1)
+
+    def test_a_last_keyframe_cut_to_121_frames(self):
+        """124 frames at 5 s, its last keyframe on the last: the input is its first 121 (768p: cut; 576p: stretched
+        and cut), its sound cut with it, and the upscale has 121 frames."""
+        line = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; "
+                "Picture 2 aligns with the 5.00-second mark.\nA dancer turns slowly.")
+        both = {"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}
+        for resolution, video in (("768p", "trim"), ("576p", "stretch+trim")):
+            with self.subTest(resolution):
+                parent = self.done(self.turbo(task="fl2va", prompt=line, resolution=resolution, files=both,
+                                              seed=7 if resolution == "768p" else 8))
+                self.assertEqual(probe(parent["output"])["video"]["nb_frames"], "124")
+                self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                                 {"ok": True, "clip_audio": True, "text": "generation", "video": video})
+                job = self.done(self.upscale(parent["id"]))
+                self.assertEqual(job["video"], video)
+                mp4 = probe(self.input_mp4(job))
+                self.assertEqual((mp4["video"]["width"], mp4["video"]["height"], mp4["video"]["nb_frames"]),
+                                 (1344, 768, "121"))
+                self.assertLess(float(mp4["audio"]["duration"]), 5.1)
+                self.assertGreater(float(probe(parent["output"])["audio"]["duration"]), 5.15)
+                out = probe(job["output"])
+                self.assertEqual(out["video"]["nb_frames"], "121")
+                self.assertEqual(out["audio"]["duration"], mp4["audio"]["duration"])     # the cut sound, copied
+                self.assertEqual(json.loads((self.view(job) / "source.json").read_text())["files"][
+                    "stage2/refined_1344x768_121f.mp4"]["how"], video)
+
+    def test_keyframes_without_qwen_text_get_the_upscales_encode(self):
+        prompt = ("For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
+                  "\nA kite.")
+        parent = self.done(self.turbo(task="fl2va", prompt=prompt, resolution="768p",
+                                      files={"first_frame": [("a.png", png())]}))
+        shutil.rmtree(Path(parent["output"]).parents[1] / "qwen-text")          # an older clip, say
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                         {"ok": True, "clip_audio": True, "text": "encode"})
+        job = self.done(self.upscale(parent["id"]))
+        self.assertEqual((job["text"]["source"], job["text"]["prompt"]), ("encode", "A kite."))
+        run = self.runs("encodes.log")[-1]
+        self.assertEqual(run["argv"][-1], "--upscale")
+        self.assertEqual(run["argv"][run["argv"].index("--case") + 1], str(self.view(job)))
+
+    def test_nothing_left_of_the_prompt(self):
+        """A prompt of its keyframe line alone: the clip is made (without qwen-text/), its Upscale refused."""
+        line = "For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
+        parent = self.done(self.turbo(task="fl2va", prompt=line, files={"first_frame": [("a.png", png())]}))
+        self.assertIsNone(parent["text_only"])
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"], {"ok": False, "why": NOTHING_LEFT})
+        self.assertEqual(self.studio.upscale(parent["id"]), (400, {"error": NOTHING_LEFT}))
+
+    def test_other_lengths_not_yet_and_the_audio(self):
+        parent = self.done(self.turbo(seconds=6))
+        self.assertEqual(self.studio.upscale(parent["id"]), (400, {"error": UPSCALE_LENGTH}))
+        parent = self.done(self.turbo(seed=3))
+        (Path(parent["output"]).parent / "audio.pt").unlink()
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                         {"ok": True, "clip_audio": False, "video": "stretch"})
+        self.assertEqual(self.studio.upscale(parent["id"]),
+                         (409, {"error": "the clip has no audio (turbo/audio.pt); ask for audio silence"}))
+        job = self.done(self.upscale(parent["id"], audio="silence"))
+        self.assertFalse((self.view(job) / "stage1").exists())
+
+    def test_with_the_model_turned_off(self):
+        """LightX2V Turbo off (LFSTUDIO_MODELS unset): a clip it made earlier stays upscalable; the Upscale needs
+        nothing of the model's own."""
+        parent = self.done(self.turbo())
+        self.restart(LFSTUDIO_MODELS="")
+        self.assertNotIn("models", self.studio.state())
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"],
+                         {"ok": True, "clip_audio": True, "video": "stretch"})
+        job = self.done(self.upscale(parent["id"]))
+        self.assertEqual((job["parent_model"], job["video"]), (TURBO, "stretch"))
 
 
 class TurboLoad(TurboTest):
@@ -4391,7 +5002,8 @@ class TurboSeam(unittest.TestCase):
 
     def registry(self):
         return server_value("MODELS", SOL_H3="sol-h3", TURBO=TURBO, END_STATE={}, BACKENDS={},
-                            FRAME_SETS=server_value("FRAME_SETS"), DURATIONS=server_value("DURATIONS"))[TURBO]
+                            FRAME_SETS=server_value("FRAME_SETS"), DURATIONS=server_value("DURATIONS"),
+                            TASKS=server_value("TASKS"))[TURBO]
 
     def job_data(self, **changes):
         """A job.json as the server's turbo_job_data writes it."""
@@ -4532,6 +5144,35 @@ class TurboEncodeSeam(TurboTest):
         self.assertTrue(m and m.group(1) == "refused" and no_text_only in m.group(2), printed.getvalue())
         plan = helper.make_plan(helper.parse_args(argv + [no_text_only]), environ, helper.load_job_module())
         self.assertNotIn("text_only", plan)
+
+    def test_the_upscales_encode(self):
+        """The Upscale's prompt encode of a Sol-H3 Keyframes clip: the real encode takes the arguments run_upscale gives
+        it (--upscale, the input folder, the text-only prompt file), plans a t2va encode of exactly that text, and
+        writes what encode_upscale_text reads (qwen/conditioning.pt and .json: t2va, that prompt; encode.json's
+        rows)."""
+        parent = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=3, files={"first_frame": [("f.png", png())]})
+        job = self.done(self.upscale(parent["id"]))
+        helper = self.load_helper()
+        environ = {"SOL_H3_SPARK_RUNTIME_ROOT": str(self.studio.runtime),
+                   "LFSTUDIO_PATHS": str(self.studio.root / "paths-{task}.json")}
+        argv = self.runs("encodes.log")[-1]["argv"]
+        case = Path(argv[argv.index("--case") + 1])
+        self.assertEqual(case, Path(job["case_dirs"][0]) / "input")
+        argv[argv.index("--case") + 1] = str(case.with_name("input-seam"))      # the upscale's folder has its files
+        plan = helper.make_plan(helper.parse_args(argv), environ, helper.load_job_module())
+        self.assertEqual((plan["task"], plan["use"], plan["keyframes"], plan["prompt"], plan["case_id"], plan["seed"]),
+                         ("t2va", "upscale", [], job["text"]["prompt"], job["case_id"], 3))
+        plan["prompt_tokens"] = "minimax"
+        spec = {"case_id": plan["case_id"], "prompt": plan["prompt"], "seed": plan["seed"], "task": "t2va"}
+        with contextlib.redirect_stderr(io.StringIO()):
+            summary = helper.encode(plan, self.worker(plan), {}, {}, spec)
+        seam = case.with_name("input-seam")
+        receipt = json.loads((seam / "qwen" / "conditioning.json").read_text())
+        self.assertEqual((receipt["task"], receipt["prompt"]), ("t2va", job["text"]["prompt"]))
+        self.assertTrue((seam / "qwen" / "conditioning.pt").is_file())
+        self.assertEqual(json.loads((seam / "encode.json").read_text())["encodes"]["qwen"]["rows"],
+                         summary["encodes"]["qwen"]["rows"])
+        self.assertNotIn("for_job", summary)
 
     @staticmethod
     def worker(plan):

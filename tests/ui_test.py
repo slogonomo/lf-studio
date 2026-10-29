@@ -257,11 +257,27 @@ with sync_playwright() as p:
           and all(not remix for s, kind, up, remix in ups if kind == "upscale"),
           f"Upscale only on finished clips with it on ({'on' if on else 'off'}), no Remix or Upscale on an upscale "
           f"({sum(kind == 'upscale' for _, kind, _, _ in ups)} upscales)")
-    # a disabled Upscale button says why (a clip it can't take, as one of another model); clips of another model than
-    # the studio's own name it in a tag of their own
+    # a disabled Upscale button says why (a clip it can't take yet, as one longer than 5 s); clips of another model
+    # than the studio's own name it in a tag of their own
     reasons = pg.evaluate("[...document.querySelectorAll('.job .act.up[aria-disabled=true]:not([hidden])')]"
                           ".map(b => b.title)")
     check(all(reasons), f"a disabled Upscale button says why ({len(reasons)} disabled)")
+    # the Upscale popover of a Keyframes clip says which text the Upscale uses (its prompt without the keyframe line);
+    # Escape closes it, nothing is sent
+    kf = pg.evaluate("(() => { const c = [...document.querySelectorAll('.job:not([data-kind])')].find(c => "
+                     "c.dataset.status === 'done' && (known.get(c.dataset.id) || {}).task === 'fl2va' && "
+                     "c.querySelector('.act.up[aria-disabled=false]:not([hidden])'));"
+                     " return c ? c.dataset.id : null; })()")
+    if kf:
+        pg.click(f'.job[data-id="{kf}"] .act.up')
+        pg.wait_for_selector("#uppop", state="visible")
+        note = pg.inner_text("#upinput") if pg.is_visible("#upinput") else ""
+        check(note.startswith("Uses your prompt without its keyframe line"),
+              f"the Upscale popover of a Keyframes clip says which text it uses ({note[:60]!r})")
+        pg.keyboard.press("Escape")
+        pg.wait_for_selector("#uppop", state="hidden")
+    else:
+        skip("the Upscale popover of a Keyframes clip (none here that the Upscale takes)")
     tags = pg.evaluate("[...document.querySelectorAll('.job .tag.model')].map(t => t.textContent)")
     check(all(tags), f"clips of another model show it in a tag ({len(tags)}: {sorted(set(tags))})")
     # durations are rounded to whole seconds before they are split (#26): "2:00 min", never "1:60 min"

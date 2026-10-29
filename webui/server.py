@@ -19,27 +19,42 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   or the first frame of a reference video, as a JPEG at most 640 px wide (made on the first request, kept with the
   clip's input files; an image ffmpeg can't read goes out as it is). 404 for t2va.
 - Experimental, with LFSTUDIO_UPSCALE=1: POST /api/upscale {"id", "resolution", "strength", "audio", "seed"} upscales a
-  finished 5 s t2va clip ("id"), 16:9 or 9:16, from its MP4, to 1080p, 2k (2560x1440, or 1440x2560 for 9:16; the
-  default) or 4k with NVIDIA's Open-H3-Regenerate-2K (upscale/regen2k_job.py, run in its own environment; it upscales
-  a 9:16 clip through NVIDIA's code with the shapes turned, see its docstring). strength: faithful, balanced or full
-  (upscale/regen2k_job.py STRENGTHS; default LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is
-  refined against (default LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). The upscale is a job of its
-  own (kind "upscale", parent = the clip; task, format, length, prompt and seed copied from it; "load" =
-  LFSTUDIO_UPSCALE_LOAD) in the same queue, where it waits while any clip is queued. It frees the memory first (status
-  "freeing memory": the session is closed), refuses to start below LFSTUDIO_UPSCALE_MIN_FREE_GIB of MemAvailable, then
-  runs the job in a process group of its own (status "upscaling", "upscale_phase" from the job's "[lf-studio] phase"
-  lines), so Cancel stops it; it stops the job when MemAvailable stays below LFSTUDIO_UPSCALE_GUARD_GIB for 3 s. The
-  clip's sound is copied in (ffmpeg, no re-encode). Its files go into a session directory of their own,
-  <session>-upscale-<resolution>/<case_id>/regen/, so Delete and Undo move only them; a clip can't be deleted while an
-  upscale of it is queued or running. No retry after a failure.
+  finished 5 s clip ("id") of a task and model the models' "upscale" tables have (MODELS: Sol-H3's t2va, fl2va and
+  ref2va clips, LightX2V Turbo's t2va and fl2va clips at 576p or 768p), 16:9 or 9:16, from its MP4, to 1080p, 2k
+  (2560x1440, or 1440x2560 for 9:16; the default) or 4k with NVIDIA's Open-H3-Regenerate-2K (upscale/regen2k_job.py,
+  run in its own environment; it upscales a 9:16 clip through NVIDIA's code with the shapes turned, see its
+  docstring). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS; default
+  LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
+  LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). The upscale is a job of its own (kind "upscale",
+  parent = the clip; task, format, length, prompt and seed copied from it; "load" = LFSTUDIO_UPSCALE_LOAD;
+  "parent_model" and "parent_opts", the clip's model and options; "video", what is done to its MP4 (upscale_sources);
+  "text", what it is refined against: {"source": "clip"}, the clip's own conditioning, or {"source": "generation" (a
+  LightX2V Turbo Keyframes clip's qwen-text/, made with it) | "encode", "prompt", "dropped", "notes"}, the clip's prompt
+  without its pictures (upscale_text), with "rows" and "encode_s" once encoded) in the same queue, where it waits while
+  any clip is queued. It frees the memory first (status "freeing memory": the session is closed), refuses to start
+  below LFSTUDIO_UPSCALE_MIN_FREE_GIB of MemAvailable, then, in one pipeline_call so that Cancel stops each step:
+  builds its input folder (build_input: <case>/input/, the clip's MP4, audio and text alone, linked; a LightX2V Turbo
+  clip at 576p stretched to 768p, one with a last keyframe, 124 frames, cut to its first 121; source.json), for a clip
+  without a conditioning of text alone encodes one (status "encoding the prompt", upscale_phase "prompt": the prompt
+  encode, LFSTUDIO_H3TURBO_ENCODE_SCRIPT --upscale, a transient Qwen worker, as a process group of its own; the memory
+  floor again after it) and runs the job on that folder in a process group of its own (status "upscaling",
+  "upscale_phase" from the job's "[lf-studio] phase" lines); it stops the job when MemAvailable stays below
+  LFSTUDIO_UPSCALE_GUARD_GIB for 3 s. The clip's sound is copied in from the input folder's MP4 (ffmpeg, no re-encode;
+  for a clip cut to 121 frames, cut with them). Its files go into a session directory of its own,
+  <session>-upscale-<resolution>/<case_id>/ (input/, regen/; with an encode also prompt-text-only.txt and encode.log),
+  so Delete and Undo move only them; a clip can't be deleted while an upscale of it is queued or running. No retry
+  after a failure.
   Answers: 200 {"id", "job"}, 400 for a bad field (any other key too, "source" among them: there is no draft source any
-  more) or a clip of another kind or length (fl2va, ref2va, anything but 5 s), 404 for an unknown clip (and for
-  everything with the Upscale off), 409 for a clip that is not done, being moved, or without the files needed (its
-  session directory; for audio clip its Stage-1 audio), 429 when the queue is full. /api/state has "upscale" (on or
-  off), "upscale_defaults" (null with it off, else what a request without those keys gets: {"resolution", "strength",
+  more) or a clip it does not take (another length than 5 s, not yet; a Keyframes or Reference clip with nothing left
+  of its prompt without its pictures), 404 for an unknown clip (and for everything with the Upscale off), 409 for a clip
+  that is not done, being moved, or without the files needed (its session directory; for audio clip its audio: Sol-H3's
+  Stage-1 audio, LightX2V Turbo's turbo/audio.pt), 429 when the queue is full. /api/state has "upscale" (on or off),
+  "upscale_defaults" (null with it off, else what a request without those keys gets: {"resolution", "strength",
   "audio"}, for the page's choices) and "upscale_load" (null with it off, else LFSTUDIO_UPSCALE_LOAD, for the page's
   expected times); with it on, every finished job in /api/state, /api/jobs and the API record has "upscalable": {"ok":
-  true, "clip_audio": bool} or {"ok": false, "why": "..."}.
+  true, "clip_audio": bool} (with "text": "generation" or "encode" when it is not refined against the clip's own
+  conditioning, and "video": "stretch", "trim" or "stretch+trim" when its MP4 is not taken as it is) or {"ok": false,
+  "why": "..."}.
 - The model of a clip ("model" in POST /api/generate, the form and JSON): sol-h3 (Sol-H3, NVIDIA's two-stage
   pipeline above; the default: a request without a model and a record without one mean sol-h3) or, experimental and on
   the DGX Spark only with LFSTUDIO_MODELS=sol-h3,lightx2v-turbo, lightx2v-turbo (LightX2V Turbo: the full MiniMax-H3 in
@@ -69,9 +84,10 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   start after one). Its record has "model", "model_opts" (the options, the size, the LoRA, the Qwen canvas and its image
   tokens) and the job's times and memory; its files go into
   <session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case_id>/ (qwen/, qwen-text/, turbo/), its name has
-  the model and the options: lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. It can't be upscaled
-  yet. With LFSTUDIO_MODELS unset (sol-h3 only) everything is as before: no "models", no new keys in the records or the
-  session, the page as it is; "model": "sol-h3" is taken, another model is refused.
+  the model and the options: lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. A 5 s one can be
+  upscaled (above), also with the model turned off since. With LFSTUDIO_MODELS unset (sol-h3 only) everything is as
+  before: no "models", no new keys in the records or the session, the page as it is; "model": "sol-h3" is taken,
+  another model is refused.
 
 For agents and scripts (#29; docs/API.md):
 - POST /api/generate takes the page's multipart form or a JSON object (json_form): the same fields, files as base64
@@ -203,6 +219,8 @@ import contextlib
 import email.parser
 import email.policy
 import errno
+import functools
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -413,7 +431,8 @@ if UPSCALE:
 # "not_yet", why it does not make the rest of END_STATE (what every model is meant to make in the end: Sol-H3's) or of
 # its options' choices yet. Offering more is a change of this data, after a GPU validation; the page and the clients
 # follow it. A model that "runs" a "job" is a GPU job of its own per clip (run_model_job); "setting" names its
-# settings, LFSTUDIO_<setting>_*.
+# settings, LFSTUDIO_<setting>_*. "upscale": the finished clips of the model the experimental Upscale takes, by task and
+# length (upscalable; every format the job has a shape for): every 5 s clip each model makes, so far.
 SOL_H3, TURBO = "sol-h3", "lightx2v-turbo"
 DEFAULT_MODEL = SOL_H3           # a request without a model, and every record without one (all clips before 0.6)
 FRAME_SETS = ("first", "last", "first+last")      # an fl2va clip's keyframes
@@ -422,7 +441,7 @@ MODELS = {
     SOL_H3: {
         "name": "Sol-H3", "about": "NVIDIA's Sol two-stage pipeline: a MiniMax-H3 draft at 384p refined by LTX-2.5",
         "runs": "session", "experimental": False, "backends": tuple(BACKENDS), "options": (),
-        "offers": (dict(END_STATE),), "not_yet": ()},
+        "offers": (dict(END_STATE),), "not_yet": (), "upscale": {"tasks": TASKS, "seconds": (5,)}},
     TURBO: {
         "name": "LightX2V Turbo", "setting": "H3TURBO",
         "about": "the full MiniMax-H3 in one stage with LightX2V's turbo LoRA: keeps the look of your keyframe",
@@ -447,11 +466,14 @@ MODELS = {
         # seconds a clip takes, by its options and length, until one has been measured here (remember_job_time): the
         # job's estimate_s (the GPU validation's receipts: the prompt encode, the process and its load, 4 steps by the
         # rows of the clip's sequence, the decode by its frames and pixels; measured at 576p 5, 10, 14 and 15 s and
-        # 768p 5, 10, 12 and 15 s, the rest estimated), to 10 s; +~40 s when the Sol-H3 session must close first.
+        # 768p 5, 10, 12 and 15 s, the rest estimated), to 10 s; +~7 s when the Sol-H3 session must close first.
         # tests/test_server.py TurboSeam checks them against the job, for every clip offered.
         "estimates_s": {"576p/4/5": 200, "576p/4/6": 250, "576p/4/7": 280, "576p/4/8": 310, "576p/4/10": 400,
                         "576p/4/12": 500, "576p/4/15": 660, "768p/4/5": 350, "768p/4/6": 470, "768p/4/7": 530,
-                        "768p/4/8": 600, "768p/4/10": 820, "768p/4/12": 1070, "768p/4/15": 1440}},
+                        "768p/4/8": 600, "768p/4/10": 820, "768p/4/12": 1070, "768p/4/15": 1440},
+        # both sizes: a 576p clip is stretched to 768p for the Upscale's job, and one with a last keyframe (124
+        # frames at 5 s) cut to its first 121 (upscale_sources, build_input)
+        "upscale": {"tasks": ("t2va", "fl2va"), "seconds": (5,)}},
 }
 
 
@@ -479,7 +501,8 @@ def registry_problems():
     """What is wrong with MODELS' tables (a bug; the server stops): an option of a type the requests can't carry (the
     form and JSON carry strings and integers: json_form, check_model, lf-cli), with a value or default not of its
     type or a default not among its choices, or of another type than an option of the same name of another model; a
-    row without a dimension of the model or with a value it can't have, or a value not offered without a reason."""
+    row without a dimension of the model or with a value it can't have, or a value not offered without a reason; an
+    Upscale entry with a task or a length the studio does not have."""
     found, kinds = [], {}
     for mid, m in MODELS.items():
         for o in m["options"]:
@@ -509,6 +532,10 @@ def registry_problems():
                 if offered == bool(reasons):
                     found.append(f"{mid}: {d} {v} is {'offered and has' if offered else 'not offered and has no'} "
                                  "reason not yet")
+        up = m.get("upscale", {"tasks": (), "seconds": ()})
+        found += [f"{mid}: the Upscale's task {t} is not one of {TASKS}" for t in up["tasks"] if t not in TASKS]
+        found += [f"{mid}: the Upscale's length {v} is not one of {DURATIONS}" for v in up["seconds"]
+                  if v not in DURATIONS]
     return found
 
 
@@ -553,6 +580,19 @@ if TURBO in ENABLED:
         fail(f"{H3TURBO_SCRIPT} has no LoRA preset for {', '.join(map(str, missing))} steps, which MODELS offers")
     if not H3TURBO_ENCODE.is_file():
         fail(f"LFSTUDIO_MODELS has {TURBO}: no prompt encode at {H3TURBO_ENCODE}")
+# The Upscale's text of a Keyframes or Reference clip (upscale_text): the prompt encode's own rewrites, text_only_prompt
+# and ref_text_only_prompt (standard library on import), always from this repo's bench/h3turbo_encode.py; the encode
+# itself runs LFSTUDIO_H3TURBO_ENCODE_SCRIPT (--upscale), with LightX2V Turbo on or off.
+TEXT_REWRITES, REWRITES_FILE = None, REPO_ROOT / "bench" / "h3turbo_encode.py"
+if UPSCALE:
+    try:
+        spec = importlib.util.spec_from_file_location("lf_studio_text_rewrites", REWRITES_FILE)
+        TEXT_REWRITES = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(TEXT_REWRITES)
+    except (OSError, ImportError, SyntaxError) as error:
+        fail(f"LFSTUDIO_UPSCALE=1: cannot read {REWRITES_FILE} ({error})")
+    if not H3TURBO_ENCODE.is_file():
+        fail(f"LFSTUDIO_UPSCALE=1: no prompt encode at {H3TURBO_ENCODE}")
 for d in (INPUTS, SESSIONS, STATE_DIR) + ((PUBLISH,) if PUBLISH else ()):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -1498,7 +1538,7 @@ UPSCALE_REQUEST = ("id", "resolution", "strength", "audio", "seed")    # POST /a
 FREE_WAIT_S = 5                  # how long a memory floor waits for a closed session's memory to come back
 GPU_JOB_STOP_S = 20              # Cancel and shutdown: SIGKILL a GPU job's process this long after its SIGTERM
 UPSCALE_FREE_WAIT_S, UPSCALE_STOP_S = FREE_WAIT_S, GPU_JOB_STOP_S      # their names up to 0.5.1
-UPSCALE_LENGTH = "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"
+UPSCALE_LENGTH = "Upscale takes 5 s clips for now: other lengths not yet (NVIDIA's pipeline is fixed at 121 frames)"
 # a guard: every orientation the studio makes (runtime.geometry's ORIENTATIONS) is one of the job's SHAPES
 # (tests/test_upscale.py checks it), so only an orientation added later gets this
 UPSCALE_SHAPE = "Upscale needs a 16:9 or 9:16 clip (1344x768 or 768x1344)"
@@ -1531,46 +1571,136 @@ def mem_available_gib():
     return None
 
 
-def upscale_files(job):
-    """A finished clip's files an upscale reads, from its record: {"case", "final", "conditioning", "pcm"} (the last
-    two may be missing), or None when its own directory or its MP4 is gone (a clip from before per-clip
-    directories, or one whose session directory was pruned)."""
+MP4_SIZE = re.compile(r"_(\d+)x(\d+)_(\d+)f\.mp4$")     # a LightX2V Turbo clip's clip_<W>x<H>_<frames>f.mp4
+
+
+def upscale_sources(job):
+    """What an upscale of a finished clip reads, from its record and its files (build_input puts them into the
+    upscale's input folder): {"case", "final" (its MP4), "video" (what build_input does to the MP4: "clip", taken as it
+    is, or for a LightX2V Turbo clip "stretch" from 576p to 768p, "trim" to its first 121 frames (a clip with a last
+    keyframe has 124), or "stretch+trim"), "pcm" (its audio for audio clip, which may be missing: Sol-H3's Stage-1
+    audio or LightX2V Turbo's turbo/audio.pt), "text" (where its conditioning of text alone comes from: "clip", its
+    own (t2va); "generation", the one a LightX2V Turbo Keyframes clip made with itself, qwen-text/; "encode", one made
+    for the upscale) and "conditioning" (that file, None for "encode")}, or None when its own directory or its MP4 is
+    gone (a clip from before per-clip directories, or one whose session directory was pruned). The case is the MP4's
+    grandparent for both models: <case>/stage2/refined_*.mp4 (Sol-H3), <case>/turbo/clip_*.mp4 (LightX2V Turbo)."""
     if not job.get("output"):
         return None
     final = Path(job["output"])
-    case = final.parent.parent                         # <session>/<case_id>/stage2/<clip>.mp4
+    case = final.parent.parent
     if case.name != job.get("case_id") or not in_sessions(case) or not final.is_file():
         return None
-    return {"case": case, "final": final, "conditioning": case / "qwen" / "conditioning.pt",
-            "pcm": case / "stage1" / "stage1_direct_tensors.pt"}
+    turbo = job_model(job) == TURBO
+    video = []
+    if turbo:                              # Sol-H3's MP4 is the job's input as it is (the job checks it)
+        m = MP4_SIZE.search(final.name)
+        size, frames = ((int(m.group(1)), int(m.group(2))), int(m.group(3))) if m else (None, None)
+        if size != regen.SHAPES[job["orientation"]]["input"]:
+            video.append("stretch")
+        if frames != regen.FINAL["frames"]:
+            video.append("trim")
+    sources = {"case": case, "final": final, "video": "+".join(video) or "clip",
+               "pcm": case / ("turbo/audio.pt" if turbo else "stage1/stage1_direct_tensors.pt")}
+    if job.get("task") == "t2va":
+        sources.update(text="clip", conditioning=case / "qwen" / "conditioning.pt")
+    elif turbo and (case / "qwen-text" / "conditioning.pt").is_file():
+        sources.update(text="generation", conditioning=case / "qwen-text" / "conditioning.pt")
+    else:                                  # Sol-H3 Keyframes and Reference clips, and a Turbo one without qwen-text/
+        sources.update(text="encode", conditioning=None)
+    return sources
+
+
+AUDIO_FILE = {SOL_H3: "Stage-1 audio (stage1/stage1_direct_tensors.pt)", TURBO: "audio (turbo/audio.pt)"}
+UPSCALE_NO_T2VA = ("the Upscale encodes this clip's prompt as text alone first, which needs the t2va path manifest "
+                   "(run install/70-manifests.sh)")
+NOTHING_LEFT = {"fl2va": "nothing is left of the prompt without its keyframe line: the Upscale needs text",
+                "ref2va": "nothing is left of the prompt without its references: the Upscale needs text"}
+UNREADABLE = "the Upscale can't write this clip's prompt as text alone (the studio's log has why)"
+
+
+@functools.lru_cache(maxsize=256)
+def text_rewrite(task, prompt):
+    """upscale_text's rewrite, as JSON (cached: with_upscalable asks for it on every /api/state, and a prompt never
+    changes). Its line breaks are LF: a prompt from the page's form has CRLF ones (a browser's multipart), which
+    text_only_prompt keeps, and the prompt encode reads its --prompt-file with LF ones (Python's universal newlines),
+    so its receipt's prompt is the text with LF; the record, prompt-text-only.txt and the receipt then agree."""
+    rewrite = TEXT_REWRITES.text_only_prompt if task == "fl2va" else TEXT_REWRITES.ref_text_only_prompt
+    try:
+        result = rewrite(prompt)
+    except TEXT_REWRITES.TooLong as error:
+        return json.dumps({"error": str(error)})
+    except ValueError:
+        return json.dumps({"error": NOTHING_LEFT[task]})
+    except Exception as error:      # never a reason for /api/state, /api/jobs or a record to fail (with_upscalable)
+        log(f"the Upscale's rewrite of a {task} prompt failed: {type(error).__name__}: {str(error)[:200]}")
+        return json.dumps({"error": UNREADABLE})
+    result["prompt"] = re.sub(r"\r\n?", "\n", result["prompt"])
+    return json.dumps({k: result[k] for k in ("prompt", "dropped", "notes")})
+
+
+def upscale_text(job):
+    """A Keyframes (fl2va) or Reference (ref2va) clip's prompt as text alone, what the Upscale's encode reads in place
+    of the pictures (bench/h3turbo_encode.py: text_only_prompt drops the keyframe line and the picture references,
+    ref_text_only_prompt writes a Reference prompt as t2va's three fields): {"prompt", "dropped", "notes"}, or
+    {"error"} when nothing is left, when it would be longer than the encode takes, or when the rewrite fails; None
+    for a t2va clip."""
+    if job.get("task") not in NOTHING_LEFT:
+        return None
+    return json.loads(text_rewrite(job["task"], job.get("prompt") or ""))
+
+
+def text_record(parent, source):
+    """An upscale's record of its text (submit_upscale): {"source": upscalable's "text"} and, for a text of the clip's
+    prompt without its pictures, "prompt", "dropped" and "notes" (a LightX2V Turbo Keyframes clip's: what its encode
+    recorded as text_only)."""
+    record = {"source": source}
+    if source == "generation" and isinstance(parent.get("text_only"), dict):
+        record.update(prompt=parent["text_only"].get("prompt"), dropped=parent["text_only"].get("dropped"))
+    elif source != "clip":
+        record.update(upscale_text(parent) or {})
+    return record
 
 
 def upscalable(job):
-    """Whether a job can be upscaled now: (200, {"clip_audio"}, whether its Stage-1 audio is there for audio clip)
-    or (the HTTP status, why not). It takes finished 5 s t2va clips, 16:9 or 9:16 (the job upscales 9:16 through
-    NVIDIA's code with the shapes turned): NVIDIA's pipeline is fixed at 121 frames, and fl2va and ref2va clips need
-    a text-only encode of their prompt first (follow-ups). Looks at the clip's files: call it without `lock`, with a
-    copy of the job."""
+    """Whether a job can be upscaled now: (200, {"clip_audio"[, "text"][, "video"]}) or (the HTTP status, why not).
+    clip_audio: whether its audio is there for audio clip; text and video: upscale_sources', each only when it is not
+    "clip" (so a Sol-H3 Text clip's answer is as before the Upscale took every clip). It takes every finished
+    5 s clip of the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's Text and
+    Keyframes clips at either size), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes
+    turned): not yet the other lengths (NVIDIA's pipeline is fixed at 121 frames), and not a Keyframes or Reference
+    clip with nothing left of its prompt without its pictures (or a text alone too long), nor one whose text must be
+    encoded while the studio has no t2va path manifest (the encode's). Looks at the clip's files: call it without
+    `lock`, with a copy of the job."""
     if is_upscale(job):
         return 400, "an upscale can't be upscaled again"
-    if job_model(job) != SOL_H3:
-        name = MODELS.get(job_model(job), {}).get("name", job_model(job))
-        return 400, f"Upscale of {name} clips comes in a later version"
-    if job.get("task") != "t2va":
-        return 400, "Upscale takes text-to-video (t2va) clips only, for now"
-    if job.get("seconds", 5) != 5:
+    model = job_model(job)
+    spec = MODELS.get(model, {})
+    name = spec.get("name", model)
+    if "upscale" not in spec:
+        return 400, f"Upscale does not take {name} clips"
+    takes = spec["upscale"]
+    if job.get("task") not in takes["tasks"]:
+        return 400, f"Upscale does not take {name}'s {job.get('task')} clips"
+    if job.get("seconds", 5) not in takes["seconds"]:      # later: the other lengths, by the job's frames per length
         return 400, UPSCALE_LENGTH
     if job.get("orientation") not in regen.SHAPES:
         return 400, UPSCALE_SHAPE
+    text = upscale_text(job)
+    if text and "error" in text:
+        return 400, text["error"]
     if job.get("status") != "done":
         return 409, {"queued": "the clip is still queued", "failed": "the clip failed",
                      "cancelled": "the clip was cancelled"}.get(job.get("status"), "the clip is still being made")
     if job.get("moving"):
         return 409, "the clip is being moved; try again in a moment"
-    files = upscale_files(job)
-    if files is None or not files["conditioning"].is_file():
+    sources = upscale_sources(job)
+    if sources is None or sources["conditioning"] is not None and not sources["conditioning"].is_file():
         return 409, "the clip's working files (its session directory) are gone, so it can't be upscaled"
-    return 200, {"clip_audio": files["pcm"].is_file()}
+    if sources["text"] == "encode" and "t2va" not in ready_tasks():     # the encode is a t2va one: its manifest
+        return 409, UPSCALE_NO_T2VA
+    answer = {"clip_audio": sources["pcm"].is_file()}
+    answer.update({key: sources[key] for key in ("text", "video") if sources[key] != "clip"})     # what is new only
+    return 200, answer
 
 
 def with_upscalable(records):
@@ -1639,16 +1769,19 @@ def submit_upscale(raw):
     if code != 200:
         return code, {"error": info}
     if audio == "clip" and not info["clip_audio"]:
-        return 409, {"error": "the clip has no Stage-1 audio (stage1/stage1_direct_tensors.pt); ask for audio "
-                              "silence"}
+        return 409, {"error": f"the clip has no {AUDIO_FILE[job_model(parent)]}; ask for audio silence"}
     sigma, steps = regen.STRENGTHS[strength]
     uid = uuid.uuid4().hex
     job = {"id": uid, "kind": "upscale", "parent": jid, "case_id": f"up_{time.strftime('%H%M%S')}_{uid[:6]}",
            "task": parent["task"], "orientation": parent["orientation"], "seconds": parent.get("seconds", 5),
            "prompt": parent["prompt"], "seed": parent["seed"], "resolution": resolution, "strength": strength,
            "steps": steps, "start_sigma": sigma, "audio": audio,
-           "refine_seed": parent["seed"] if seed is None else seed, "load": UPSCALE_CONF["load"], "status": "queued",
-           "created": time.time()}
+           "refine_seed": parent["seed"] if seed is None else seed, "load": UPSCALE_CONF["load"],
+           "parent_model": job_model(parent), "text": text_record(parent, info.get("text", "clip")),
+           "video": info.get("video", "clip"),
+           "status": "queued", "created": time.time()}
+    if parent.get("model_opts"):
+        job["parent_opts"] = dict(parent["model_opts"])
     with lock:
         full = queue_full()
         now = find_job(jid)
@@ -1686,10 +1819,170 @@ def enough_memory(floor):
     return best
 
 
+UPSCALE_INPUT = "input"         # the upscale's input folder in its case: job.json "case"
+UPSCALE_ENCODE_LABELS = ("the upscale's prompt encode", "the running upscale's prompt encode")
+VIDEO_PREP_S = 600               # the longest a stretch or trim of a clip's MP4 may take (~1 s on a DGX Spark)
+
+
+def link_or_copy(src, dst):
+    """A file into the upscale's input folder: a hardlink (no extra space; the clip's Delete later leaves it), or a
+    copy across filesystems. Returns which."""
+    try:
+        os.link(src, dst)
+        return "link"
+    except OSError:
+        shutil.copy2(src, dst)
+        return "copy"
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(8 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def prepare_video_command(src, dst, size, how):
+    """ffmpeg for a LightX2V Turbo clip's MP4 the job can't take as it is (upscale_sources' "video"): stretched to the
+    768p canvas (LANCZOS, as the Upscale's GPU validation of 576p clips did: never cover-cropped, so it stays on the
+    keyframe's grid) and/or cut to its first 121 frames (a clip with a last keyframe has 124: the frames it keeps after
+    121 run up to that keyframe), H.264 CRF 12. Its sound is copied for the mux: as it is, every packet, when the
+    clip is only stretched (no frame limit or -t then: either one ends the copied sound a packet early), cut to the 121
+    frames' length when it is cut."""
+    frames = regen.FINAL["frames"]
+    scale = ["-vf", f"scale={size[0]}:{size[1]}:flags=lanczos"] if "stretch" in how else []
+    cut = (["-frames:v", str(frames)], ["-t", f"{frames / 24:.6f}"]) if "trim" in how else ([], [])
+    return (["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?"] + cut[0]
+            + scale + ["-r", "24", "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                       "-c:a", "copy"] + cut[1] + ["-movflags", "+faststart", str(dst)])
+
+
+def build_input(job, parent, sources, case):
+    """The upscale's input folder, <case>/input/ (job.json "case"), in the shape of a Sol-H3 clip's own, so the job
+    reads every clip as it reads a Sol-H3 Text clip (its case_inputs): stage2/refined_*.mp4 (the clip's MP4, linked;
+    for a LightX2V Turbo clip at 576p or with a last keyframe, prepare_video_command's 1344x768 or 768x1344, 121
+    frames), stage1/stage1_direct_tensors.pt (its audio, linked: Sol-H3's Stage-1 audio, or LightX2V Turbo's
+    audio.pt, the PCM of the frames it made), and qwen/ (its conditioning of text alone, linked: the clip's own or its
+    qwen-text/; none yet when the text is encoded for the upscale, encode_upscale_text). Records it all in source.json
+    (write_source). Returns (the folder, its MP4, the files so far)."""
+    view = case / UPSCALE_INPUT
+    (view / "stage2").mkdir(parents=True)
+    files = {}
+    if sources["video"] == "clip":     # named as the job finds it: a LightX2V Turbo clip's clip_* as refined_*
+        name = sources["final"].name
+        mp4 = view / "stage2" / (name if name.startswith("refined_") else "refined_" + name.partition("_")[2])
+        how = link_or_copy(sources["final"], mp4)
+    else:
+        width, height = regen.SHAPES[parent["orientation"]]["input"]
+        mp4 = view / "stage2" / f"refined_{width}x{height}_{regen.FINAL['frames']}f.mp4"
+        partial = mp4.with_name(f".{mp4.stem}.part.mp4")
+        try:
+            r = subprocess.run(prepare_video_command(sources["final"], partial, (width, height), sources["video"]),
+                               capture_output=True, text=True, timeout=VIDEO_PREP_S)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise UpscaleFailed(f"could not prepare the clip's MP4 ({sources['video']}): {error}") from None
+        if r.returncode != 0 or not partial.is_file():
+            partial.unlink(missing_ok=True)
+            raise UpscaleFailed(f"could not prepare the clip's MP4 ({sources['video']}; ffmpeg: "
+                                f"{regen.one_line(r.stderr)[-300:]})")
+        os.replace(partial, mp4)
+        how = sources["video"]
+    files[f"stage2/{mp4.name}"] = {"from": str(sources["final"]), "how": how}
+    if sources["pcm"].is_file():
+        (view / "stage1").mkdir()
+        pcm = view / "stage1" / "stage1_direct_tensors.pt"
+        files[f"stage1/{pcm.name}"] = {"from": str(sources["pcm"]), "how": link_or_copy(sources["pcm"], pcm)}
+    if sources["conditioning"] is not None:
+        (view / "qwen").mkdir()
+        for name in ("conditioning.pt", "conditioning.json"):
+            src = sources["conditioning"].parent / name
+            if src.is_file():
+                files[f"qwen/{name}"] = {"from": str(src), "how": link_or_copy(src, view / "qwen" / name)}
+    # Later, not in this version (each needs the job's support and a GPU run first): the clip's first frame for a pinned
+    # refine ("Keep my first frame": a keyframe/first.<ext> link here and a "pin" key in job.json, which the job does
+    # not take yet; research runs held frame 0 closer to the picture at 1080p, only partly at 2K), and the other
+    # lengths (the job's fixed 121 frames; with them a clip of 124 could keep its last 3: 124 frames is the VAE's own
+    # 5 s length, which NVIDIA's encode_video pads 121 frames to).
+    write_source(job, parent, view, files)
+    return view, mp4, files
+
+
+def write_source(job, parent, view, files):
+    """<input>/source.json: where the upscale's input comes from: the clip (id, model and its options, task,
+    orientation, length), what was done to its MP4, its text (the upscale's record of it) and per file where from, how
+    (link, copy, stretch, trim, encode) and its sha256."""
+    for rel, entry in files.items():
+        if "sha256" not in entry and (view / rel).is_file():
+            entry["sha256"] = file_sha256(view / rel)
+    regen.write_json(view / "source.json", {
+        "parent": parent["id"], "case_id": parent.get("case_id"), "model": job_model(parent),
+        "options": parent.get("model_opts"), "task": parent.get("task"), "orientation": parent.get("orientation"),
+        "seconds": parent.get("seconds", 5), "video": job.get("video"), "text": job.get("text"), "files": files})
+
+
+def encode_upscale_text(job, parent, case, view):
+    """The upscale's conditioning of text alone, for a clip that has none (upscale_sources' "encode": a Sol-H3
+    Keyframes or Reference clip, a LightX2V Turbo Keyframes clip without qwen-text/): the prompt encode
+    (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, bench/h3turbo_encode.py --upscale) of the clip's prompt without its pictures
+    (job["text"]["prompt"], <case>/prompt-text-only.txt), a t2va encode with a transient Qwen worker into
+    <input>/qwen/, as a GPU process of its own (gpu_process: Cancel and shutdown stop it, and it stops its worker;
+    after an encode that ended badly, stop_encode_worker). Its log is <case>/encode.log. Then its receipt: t2va, of
+    that prompt. Returns its summary (encode.json)."""
+    text, prompt_file, log_path = job["text"]["prompt"], case / "prompt-text-only.txt", case / "encode.log"
+    prompt_file.write_text(text, encoding="utf-8")
+    command = [sys.executable, "-I", "-B", str(H3TURBO_ENCODE), "--case", str(view), "--prompt-file", str(prompt_file),
+               "--orientation", parent["orientation"], "--seed", str(parent["seed"]), "--case-id", job["case_id"],
+               "--package", str(PKG), "--upscale"]
+    code, seen = gpu_process(command, dict(os.environ, LFSTUDIO_PATHS=PATHS_TEMPLATE), PKG, log_path, encode_line,
+                             None, UPSCALE_ENCODE_LABELS, (UPSCALE_CONF["guard_gib"], "the upscale's prompt encode"),
+                             UpscaleFailed, f"cannot start the prompt encode {H3TURBO_ENCODE}",
+                             f"encoding the text of {parent['case_id']} for upscale {job['case_id']} (pid {{pid}})")
+    if code not in (0, 2):                 # killed (the guard, a SIGKILL after Cancel or shutdown) or failed; a refusal
+        stop_encode_worker(view)           # (2) started nothing
+    what = "refused the text" if code == 2 else "failed"
+    if seen.get("error"):
+        seen["error"] = f"the prompt encode {what}: {seen['error']}"
+    job_ended(code, seen, UpscaleFailed, "LFSTUDIO_UPSCALE_GUARD_GIB", UPSCALE_CONF["guard_gib"],
+              f"the prompt encode {what} (exit code {code}); see {log_path}")
+    try:
+        receipt = json.loads((view / "qwen" / "conditioning.json").read_text())
+    except (OSError, ValueError):
+        receipt = None
+    if not (view / "qwen" / "conditioning.pt").is_file() or not isinstance(receipt, dict):
+        raise UpscaleFailed(f"the prompt encode wrote no qwen/conditioning.pt and .json; see {log_path}")
+    differs = [key for key, want in (("task", "t2va"), ("prompt", text)) if receipt.get(key) != want]
+    if differs:
+        raise UpscaleFailed(f"the prompt encode's conditioning is not of the text asked for: its "
+                            f"{' and '.join(differs)} differ{'s' * (len(differs) == 1)} (task {receipt.get('task')}); "
+                            f"see {log_path}")
+    try:
+        summary = json.loads((view / "encode.json").read_text())
+    except (OSError, ValueError) as error:
+        log("no readable encode.json from the upscale's prompt encode:", error)
+        summary = {}
+    return summary
+
+
+def upscale_floor(job, floor):
+    """Raise UpscaleFailed when MemAvailable stays below the upscale's floor (enough_memory: it waits up to
+    FREE_WAIT_S for closed workers' memory to come back)."""
+    available = enough_memory(floor)
+    if available is None and floor > 0:
+        log(f"upscale: cannot read MemAvailable from {MEMINFO}; starting without the memory check")
+    if available is not None and available < floor:
+        extra = f" plus {regen.FLOOR_4K_EXTRA_GIB:g} GiB at 4K" if floor != UPSCALE_CONF["min_free_gib"] else ""
+        raise UpscaleFailed(f"not enough free memory for an upscale: {available:.1f} GiB available with the models "
+                            f"closed, {floor:g} GiB needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB{extra}); close other apps")
+
+
 def run_upscale(job):
-    """An upscale (the docstring): free the memory and check it, write job.json into a session directory of its own,
-    run the job there (upscale_process, under pipeline_call so that Cancel stops it), then the poster, the record and
-    the publish copy. Raises when it fails or is cancelled; no retry."""
+    """An upscale (the docstring): free the memory and check it, then in a session directory of its own and under one
+    pipeline_call (so that Cancel stops each step): its input folder (build_input: the clip's files linked, a LightX2V
+    Turbo clip's MP4 stretched or cut), for a clip without a conditioning of text alone the prompt encode
+    (encode_upscale_text, status "encoding the prompt", then the memory check again: the Qwen worker's memory comes
+    back), job.json ("case": the input folder) and the job (upscale_process); then the poster, the record and the
+    publish copy. Raises when it fails or is cancelled; no retry."""
     if job.get("cancel_requested"):
         raise Cancelled("cancelled before it started")
     job["status"] = "freeing memory"
@@ -1707,16 +2000,13 @@ def run_upscale(job):
     if code != 200:
         raise UpscaleFailed(f"the clip can't be upscaled now: {info}")
     if job["audio"] == "clip" and not info["clip_audio"]:
-        raise UpscaleFailed("the clip's Stage-1 audio is gone")
-    files = upscale_files(parent)
+        raise UpscaleFailed(f"the clip's {AUDIO_FILE[job_model(parent)].split(' (')[0]} is gone")
+    sources = upscale_sources(parent)
+    if (job.get("text") or {}).get("source") != sources["text"]:      # e.g. its qwen-text/ went since the request
+        job["text"] = text_record(parent, sources["text"])
+    job["video"] = sources["video"]
     floor = regen.min_free_for(job["resolution"], UPSCALE_CONF["min_free_gib"])
-    available = enough_memory(floor)
-    if available is None and floor > 0:
-        log(f"upscale: cannot read MemAvailable from {MEMINFO}; starting without the memory check")
-    if available is not None and available < floor:
-        extra = f" plus {regen.FLOOR_4K_EXTRA_GIB:g} GiB at 4K" if floor != UPSCALE_CONF["min_free_gib"] else ""
-        raise UpscaleFailed(f"not enough free memory for an upscale: {available:.1f} GiB available with the models "
-                            f"closed, {floor:g} GiB needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB{extra}); close other apps")
+    upscale_floor(job, floor)              # before anything of its own: a start that can't make it starts nothing
     case = new_session_dir(f"upscale-{job['resolution']}") / job["case_id"]
     out = case / "regen"
     with lock:
@@ -1725,18 +2015,36 @@ def run_upscale(job):
     out.mkdir(parents=True)
     job.setdefault("case_dirs", []).append(str(case))      # for Delete, even if it fails
     job_path = out / "job.json"
-    data = {"version": regen.JOB_VERSION, "case": str(files["case"]),
-            "resolution": job["resolution"], "steps": job["steps"], "start_sigma": job["start_sigma"],
-            "seed": job["refine_seed"], "audio": job["audio"], "load": job.get("load", UPSCALE_CONF["load"]),
-            "preread": UPSCALE_CONF["preread"],
-            "paths": {"package": str(UPSCALE_CONF["package"]), "weights": str(UPSCALE_CONF["weights"]),
-                      "base_model": str(UPSCALE_CONF["base_model"]), "output": str(out)},
-            "meta": {"studio_job": job["id"], "parent": job["parent"], "strength": job["strength"]}}
-    regen.parse_job(data, out)             # the job's own check of job.json: a JobError (ValueError) is a bug here
-    regen.write_json(job_path, data)
-    job.update(status="upscaling", phase_since=time.time(), upscale_phase="starting")
     t0 = time.time()
-    final = pipeline_call(job, lambda: upscale_process(job, out, job_path, files["final"]), "upscale failed")
+
+    def prepare_and_run():
+        view, mp4, files = build_input(job, parent, sources, case)
+        if job.get("cancel_requested"):
+            raise Cancelled("cancelled while its input was prepared")
+        if sources["text"] == "encode":
+            job.update(status="encoding the prompt", phase_since=time.time(), upscale_phase="prompt")
+            summary = encode_upscale_text(job, parent, case, view)
+            job["text"].update(rows=(summary.get("encodes") or {}).get("qwen", {}).get("rows"),
+                               encode_s=round(time.time() - job["phase_since"], 1))
+            for name in ("conditioning.pt", "conditioning.json"):
+                files[f"qwen/{name}"] = {"from": "encode", "how": "encode"}
+            write_source(job, parent, view, files)
+            if job.get("cancel_requested"):    # Cancel came as the encode ended: the job is not started
+                raise Cancelled("cancelled after the prompt encode")
+            upscale_floor(job, floor)          # the Qwen worker's ~15 GiB back
+        data = {"version": regen.JOB_VERSION, "case": str(view),
+                "resolution": job["resolution"], "steps": job["steps"], "start_sigma": job["start_sigma"],
+                "seed": job["refine_seed"], "audio": job["audio"], "load": job.get("load", UPSCALE_CONF["load"]),
+                "preread": UPSCALE_CONF["preread"],
+                "paths": {"package": str(UPSCALE_CONF["package"]), "weights": str(UPSCALE_CONF["weights"]),
+                          "base_model": str(UPSCALE_CONF["base_model"]), "output": str(out)},
+                "meta": {"studio_job": job["id"], "parent": job["parent"], "strength": job["strength"]}}
+        regen.parse_job(data, out)         # the job's own check of job.json: a JobError (ValueError) is a bug here
+        regen.write_json(job_path, data)
+        job.update(status="upscaling", phase_since=time.time(), upscale_phase="starting")
+        return upscale_process(job, out, job_path, mp4)
+
+    final = pipeline_call(job, prepare_and_run, "upscale failed")
     make_poster(final)
     job.pop("upscale_phase", None)
     job.update(output=str(final), e2e_s=round(time.time() - t0, 1))
@@ -1753,11 +2061,13 @@ def run_upscale(job):
 UPSCALE_LABELS = ("the upscale's job", "the running upscale")      # in the log: for Cancel, for shutdown
 
 
-def upscale_process(job, out, job_path, parent_mp4):
+def upscale_process(job, out, job_path, sound):
     """The upscale's job (LFSTUDIO_UPSCALE_SCRIPT: upscale/regen2k_job.py) with the Regen-2K Python (gpu_process:
     its progress as job["upscale_phase"], the guard LFSTUDIO_UPSCALE_GUARD_GIB). The job ends when this process does
     (--parent: PR_SET_PDEATHSIG), so a server killed hard does not leave it running unguarded. Then the clip's sound
-    goes in, copied. Returns the MP4; raises with the job's own error line."""
+    goes in, copied from `sound`, the input folder's MP4 (the clip's own, or its prepared copy, whose sound is the
+    clip's as it is, or cut to the 121 frames kept for a clip that is cut). Returns the MP4; raises with the job's own
+    error line."""
     log_path = out / "worker.log"
 
     def on_phase(name):
@@ -1778,7 +2088,7 @@ def upscale_process(job, out, job_path, parent_mp4):
     partial = out / f".{final.stem}.part.mp4"
     job["upscale_phase"] = "adding the sound"
     try:
-        mux = subprocess.run(regen.mux_command(silent, parent_mp4, partial), capture_output=True, text=True,
+        mux = subprocess.run(regen.mux_command(silent, sound, partial), capture_output=True, text=True,
                              timeout=600)
     except (OSError, subprocess.SubprocessError) as error:
         raise UpscaleFailed(f"could not add the clip's sound: {error}") from None

@@ -237,7 +237,9 @@ class Protocol(McpTest):
         self.assertEqual(r["tools"][0]["inputSchema"]["properties"]["seconds"],
                          {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went after 0.5.0
         upscale = r["tools"][5]["description"]
-        for words in ("Experimental", "5 s text clips (t2va), 16:9 or 9:16", "2K is 1440x2560", "redraws faces",
+        for words in ("Experimental", "5 s clips, 16:9 or 9:16", "of every mode and model",
+                      "Keyframes or Reference clip", "stretched to 768p", "cut to its first 121 frames",
+                      "2K is 1440x2560", "redraws faces",
                       "closes the studio's models", "4K has run once, with a 16:9 clip; not yet with a 9:16 one"):
             self.assertIn(words, upscale)
         self.assertNotIn("untested", upscale)
@@ -545,9 +547,9 @@ class Upscale(McpTest):
     def test_errors(self):
         ten = self.clip(seconds=10)
         m = self.mcp()
-        for args, words in (({"id": ten}, "Upscale takes 5 s clips only"), ({"id": "f" * 32}, "no such clip"),
-                            ({"id": "nope"}, "not a clip id"), ({"id": ten, "resolution": "8k"},
-                                                                "resolution must be one of 1080p, 2k, 4k"),
+        for args, words in (({"id": ten}, "Upscale takes 5 s clips for now: other lengths not yet"),
+                            ({"id": "f" * 32}, "no such clip"), ({"id": "nope"}, "not a clip id"),
+                            ({"id": ten, "resolution": "8k"}, "resolution must be one of 1080p, 2k, 4k"),
                             ({"id": ten, "seed": -1}, "seed must be 0 or more"), ({}, "id is required"),
                             ({"id": ten, "steps": 3}, 'unknown argument "steps"'),
                             ({"id": ten, "source": "draft"}, 'unknown argument "source"')):

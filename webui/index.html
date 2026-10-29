@@ -365,6 +365,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
     <label class="opt"><input type="radio" name="up_strength" value="full"><span>Full re-generate<small>NVIDIA's setting, one step more: sharpest, but it redraws faces into a different-looking person</small></span></label>
   </div>
   <p class="note" id="upportrait" hidden>9:16 comes out upright (2K: 1440×2560). NVIDIA trained its refiner on 16:9 video</p>
+  <p class="note" id="upinput" hidden></p>
   <p class="note">Unloads the models while it runs</p>
   <div class="errtxt" id="uperr" role="alert"></div>
   <div class="row"><button type="button" class="act" id="upclose">Cancel</button><button type="button" class="act pri" id="upgo">Upscale</button></div>
@@ -425,11 +426,30 @@ const isUp=j=>j.kind==='upscale';
 const UPSCALE={"1080p":{name:'1080p',base:315,step:150,size:[1920,1080]},"2k":{name:'2K',base:405,step:380,size:[2560,1440]},
   "4k":{name:'4K',base:625,step:1685,size:[3840,2160]}};
 const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==='portrait'?[s[1],s[0]]:s).join('×');};
+// +15 s for an upscale whose text is encoded first (the clip's prompt without its pictures: ~9-18 s with its Qwen
+// worker's start, measured with LightX2V Turbo's prompt encode; 9.1-9.2 s in the studio's upscales)
 const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
-  return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0);};
+  return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0);};
+// What the Upscale does with a clip besides its MP4 (/api/state upscalable: "text", where its text alone comes from;
+// "video", what is done to the MP4), for the popover; nothing for a Sol-H3 Text clip, which it takes as it is.
+// UP_RAN: the routes (model, text, video) that have run on the GPU through the studio, each in a Text clip's time plus
+// its encode (docs/PERFORMANCE.md): Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's 576p Text clip
+// (stretched) and its 768p clip with a last keyframe (cut to 121 frames, its own text alone). Any other route has not:
+// UP_UNRUN says so, and its times are a Text clip's
+const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation trim'];
+const UP_UNRUN="This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's";
+const upNotes=(j,u)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='generation';
+  if(own)n.push(j.task==='ref2va'?'Uses your prompt with the references taken out':'Uses your prompt without its keyframe line');
+  if(u.text==='encode')n[n.length-1]+=', encoded first (~15 s)';
+  if(/stretch/.test(u.video||''))n.push('From the 576p clip, stretched to 768p first');
+  if(/trim/.test(u.video||''))n.push('Its first 121 frames: the last 3, up to your last keyframe, are left out');
+  if(!UP_RAN.includes([jobModel(j),u.text||'clip',u.video||'clip'].join(' ')))n.push(UP_UNRUN);
+  return n.join('. ');};
+// an upscale's card: the text it used, when not the clip's own prompt
+const upText=j=>j.text&&j.text.prompt?(j.task==='ref2va'?'prompt without its references':'prompt without its keyframe line'):'';
 const STRENGTH={faithful:'Faithful',balanced:'Balanced',full:'Full re-generate'};
 const UP_PHASE={starting:'starting',encoding:'reading the clip',loading:'loading its models',decoding:'decoding',
-  saving:'saving','adding the sound':"adding the clip's sound"};
+  saving:'saving','adding the sound':"adding the clip's sound",prompt:'encoding the prompt'};
 // durations: whole seconds first (none, negative or not a number: 0), then minutes and seconds, so 119.6 s reads
 // 2:00 and never 1:60 (#26); from an hour on (an upscale) hours too, 1:02:05. fmtS rounds ("45 s", "2:05 min",
 // "1:02:05"), clock counts up like a stopwatch (floors)
@@ -472,7 +492,7 @@ const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 // its title and stays selectable, so no field changes another; a pick it can't make disables Generate and #err says
 // why. Choices persist per browser: lfstudio.model and lfstudio.opt.<model>.<option>.
 let MODELS=(()=>{try{const t=JSON.parse(($('lf-models')||{}).textContent||'null');return Array.isArray(t)?t:[];}catch(e){return [];}})();
-const CLOSE_S=40;                       // closing the loaded Sol-H3 session first (docs/PERFORMANCE.md: ~40 s)
+const CLOSE_S=7;                        // closing the loaded Sol-H3 session first (docs/PERFORMANCE.md: 6.8-7.0 s)
 const modelOf=id=>MODELS.find(m=>m.id===id);
 const multi=()=>MODELS.length>1;
 const modelDefault=()=>(MODELS.find(m=>m.default)||{}).id||'sol-h3';      // a record without a model is the default's
@@ -761,10 +781,13 @@ function card(j){const d=document.createElement('article');d.className='job';d.d
   if(!isUp(j)&&jobModel(j)!==modelDefault()){const mt=document.createElement('span');mt.className='tag model';mt.textContent=modelTag(j);
     body.querySelector('.tags').append(mt);}
   // an upscale: "2K upscale", its clip's mode and length; no Remix (its settings are its clip's) and no Upscale
+  // (of a clip of another model than the studio's own: a fourth tag, "of LightX2V Turbo 576p")
   if(isUp(j)){t[0].textContent=`${(UPSCALE[j.resolution]||{name:j.resolution}).name} upscale`;t[1].textContent=TASK[j.task]||j.task;
-    body.querySelector('.reuse-all').remove();body.querySelector('.act.up').remove();}
+    body.querySelector('.reuse-all').remove();body.querySelector('.act.up').remove();
+    if(j.parent_model&&j.parent_model!==modelDefault()){const mt=document.createElement('span');mt.className='tag model';
+      mt.textContent='of '+modelTag({model:j.parent_model,model_opts:j.parent_opts});body.querySelector('.tags').append(mt);}}
   else body.querySelector('.act.up').onclick=e=>{if(e.detail>1)return;openUpscale(j.id,e.currentTarget,e.detail===0);};
-  const p=body.querySelector('.p');p.textContent=j.prompt;p.onclick=()=>p.classList.toggle('open');
+  const p=body.querySelector('.p');p.textContent=isUp(j)&&upText(j)?j.text.prompt:j.prompt;p.onclick=()=>p.classList.toggle('open');
   if(j.seed==null)body.querySelector('.seedt').remove();else{body.querySelector('.seedv').textContent=j.seed;seedPick(body.querySelector('.seedv'));}
   // Remix loads the clip's seed but leaves "New random seed every run" as it is: ticked, the next run still gets a
   // new seed (#14); unticked, it keeps the clip's seed. A clip of a length no longer offered (3 or 4 s, up to
@@ -915,7 +938,7 @@ function update(d,j,queue,s,t){
   if(stEl.className!=='st '+cls)stEl.className='st '+cls;
   setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='cancelled'?'Cancelled':cancelling?'Cancelling'
     :j.status==='queued'?'Queued':isUp(j)?'Upscaling':runsJob(j)?JOB_ST[j.status]||'Generating':loading?'Loading models':'Generating');
-  const when=stamp(j.created)+(isUp(j)?` · ${STRENGTH[j.strength]||j.strength}`:'');
+  const when=stamp(j.created)+(isUp(j)?` · ${STRENGTH[j.strength]||j.strength}${upText(j)?` · its ${upText(j)}`:''}`:'');
   setText(d.querySelector('.when'),j.e2e_s?`${when} · ${j.includes_model_load?`${fmtS(j.e2e_s)} incl. model load`:j.cold_start_s?`made in ${fmtS(j.e2e_s)} · +${fmtS(j.cold_start_s)} model load`:`made in ${fmtS(j.e2e_s)}`}`:when);
   setText(d.querySelector('.errtxt'),j.status==='cancelled'?'':j.error||(j.first_error?'Recovered after: '+j.first_error:''));
   const media=d.querySelector('.media');
@@ -934,7 +957,8 @@ function update(d,j,queue,s,t){
     else if(j.status==='queued'){const pos=queue.findIndex(x=>x.id===j.id)+1;setText(big,'Queued');setText(small,pos>1?`${pos-1} ahead`:s.preloading&&!isUp(j)&&!runsJob(j)?'starts after the warm-up':'next up');bar.hidden=true;}
     else if(isUp(j)){bar.hidden=false;const el=t-(j.started||j.created),eta=upEta(j);
       setText(big,clock(el));
-      setText(small,j.status==='upscaling'?`Upscaling · ${UP_PHASE[j.upscale_phase]||j.upscale_phase||'starting'}`:j.status==='freeing memory'?'Freeing memory · closing the models':'Starting');
+      setText(small,j.status==='upscaling'?`Upscaling · ${UP_PHASE[j.upscale_phase]||j.upscale_phase||'starting'}`:j.status==='freeing memory'?'Freeing memory · closing the models'
+        :j.status==='encoding the prompt'?'Encoding the prompt · as text alone':'Starting');
       const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
     // a clip of a job model: its timer from its start; the bar against its model's time for its options and length,
     // plus the close of the studio's models while that runs, or the time the close took (seen as the prompt encode
@@ -1024,6 +1048,7 @@ function openUpscale(id,btn,keyboard){const j=known.get(id);if(!j)return;
     upSize(i.value,j.orientation)+(i.value==='4k'&&j.orientation==='portrait'?
       " · the studio's 4K upscale has not been run with a 9:16 clip yet":'');});
   $('upportrait').hidden=j.orientation!=='portrait';
+  const notes=upNotes(j,j.upscalable);setText($('upinput'),notes);$('upinput').hidden=!notes;
   const std=state.upscale_load==='standard';              // the times with the studio's load (LFSTUDIO_UPSCALE_LOAD)
   pop.querySelectorAll('small[data-standard]').forEach(e=>{if(e.dataset.fast==null)e.dataset.fast=e.textContent;
     setText(e,std?e.dataset.standard:e.dataset.fast);});

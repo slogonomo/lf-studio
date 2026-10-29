@@ -18,13 +18,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
-from test_server import (BOTH, NOT_REF2VA, TURBO, finished_job, history, mp4, png,  # noqa: E402
-                         release_server)
+from test_server import (BOTH, KEYFRAME_PROMPT, NOT_REF2VA, REFERENCE_PROMPT, TURBO,  # noqa: E402
+                         UPSCALE_LENGTH, finished_job, history, mp4, png, release_server)
 
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
     sync_playwright = None
+
+# the Upscale popover's note on a clip whose route has not run on the GPU through the studio yet (the page's UP_UNRUN:
+# not on Sol-H3's clips, LightX2V Turbo's 576p Text clips or its 768p clips with a last keyframe, its UP_RAN)
+UP_UNRUN = "This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's"
 
 
 @unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")
@@ -462,7 +466,8 @@ class UiTestScript(unittest.TestCase):
                             env={"LFSTUDIO_RESHAPE": reshape, "LFSTUDIO_API": api}, models=models)
         studio.start()
         self.addCleanup(studio.stop)
-        first = [studio.turbo(seed=3)[1]["id"]] if models else []      # a LightX2V Turbo clip before the session
+        # a LightX2V Turbo clip before the session, 6 s: a clip the Upscale doesn't take yet (its button disabled)
+        first = [studio.turbo(seed=3, seconds=6)[1]["id"]] if models else []
         ids = first + [studio.generate(task="fl2va", files={"first_frame": [("first.png", png())]})[1]["id"],
                        studio.generate()[1]["id"]]
         self.assertEqual([job["status"] for job in studio.wait(ids)], ["done"] * len(ids))
@@ -478,6 +483,8 @@ class UiTestScript(unittest.TestCase):
     def test_reshape_on(self):
         out = self.run_ui_test("1")
         for check in ("SKIP model choice checks (one model on this studio)",
+                      "PASS the Upscale popover of a Keyframes clip says which text it uses ('Uses your prompt without "
+                      "its keyframe line, encoded first (~')",
                       "PASS Generate keeps the models when the format differs",
                       "PASS Generate keeps the models when the length differs",
                       "PASS Generate warns about a reload when the mode differs"):
@@ -491,12 +498,12 @@ class UiTestScript(unittest.TestCase):
 
     def test_with_the_model_choice(self):
         """LightX2V Turbo on (LFSTUDIO_MODELS), with one of its clips in the gallery before the two Sol-H3 clips: the
-        Model row's checks, its clip's tag and its Upscale button's reason, and the rest as before (Sol-H3, the
-        default, is picked in a new browser)."""
+        Model row's checks, its clip's tag, and the rest as before (Sol-H3, the default, is picked in a new browser).
+        Its clip is 6 s, a length the Upscale doesn't take yet: its button is the one disabled, with the reason."""
         out = self.run_ui_test("1", models=BOTH)
         for check in (f"PASS fields unchanged after model -> {TURBO}", "PASS fields unchanged after model -> sol-h3",
                       f"PASS model {TURBO}: what it doesn't make yet is greyed out with the reason (1)",   # Reference
-                      "PASS a disabled Upscale button says why (2 disabled)",     # its clip and the fl2va one
+                      "PASS a disabled Upscale button says why (1 disabled)",     # its 6 s clip: not yet
                       "PASS clips of another model show it in a tag (1: ['LightX2V Turbo 576p'])",
                       "PASS Generate keeps the models when the format differs"):
             self.assertIn(check, out)
@@ -601,7 +608,7 @@ class ReleaseReviewPage(PageTest):
 class OldLengths(PageTest):
     """3 and 4 s went after 0.5.0: the page offers 5-15 s, a length kept from 0.5.0 reads 5 s, and clips of 3 and 4 s
     made before still list and play, and Remix brings them back at 5 s without an error. Their Upscale button is
-    disabled with the reason (5 s clips only)."""
+    disabled with the reason (5 s clips for now)."""
 
     def seed(self):
         old = self.dir / "old"
@@ -637,10 +644,9 @@ class OldLengths(PageTest):
             self.assertEqual(self.page.get_attribute(f"{card} video", "src"), f"/video/{jid}")
             self.assertIn(f"_{seconds}s_", self.page.get_attribute(f"{card} a.act", "download"))
             self.assertEqual(self.page.evaluate("id => fetch('/video/' + id).then(r => r.status)", jid), 200)
-        up = f"{self.card('3' * 32)} .act.up"                                   # the Upscale takes 5 s clips only
+        up = f"{self.card('3' * 32)} .act.up"                                   # the Upscale takes 5 s clips
         self.page.wait_for_selector(f'{up}[aria-disabled="true"]', state="attached")
-        self.assertEqual(self.page.get_attribute(up, "title"),
-                         "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)")
+        self.assertEqual(self.page.get_attribute(up, "title"), UPSCALE_LENGTH)
         self.pick("seconds", "10")
         self.page.click(f"{self.card('3' * 32)} .reuse-all")                   # t2va, 3 s
         self.page.wait_for_function("document.getElementById('toast').textContent"
@@ -1548,7 +1554,7 @@ class UpscalePage(UpscaleCards, PageTest):
         self.assertEqual(self.visible(ok), ["Remix", "Download", "Upscale", "Delete"])
         why = self.page.get_attribute(f"{self.card(ten)} .act.up", "title")
         self.assertEqual((self.page.get_attribute(f"{self.card(ten)} .act.up", "aria-disabled"), why),
-                         ("true", "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"))
+                         ("true", UPSCALE_LENGTH))
         self.page.click(f"{self.card(ten)} .act.up", force=True)             # aria-disabled: the reason, also on a
                                                                                # phone
         self.page.wait_for_function("t => document.getElementById('toast').textContent === t", arg=why)
@@ -1735,6 +1741,77 @@ class UpscaleDefaults(UpscaleCards, PageTest):
         text = self.page.inner_text("#uppop")
         for words in ("1080p\n~19 min", "2K\n~28 min", "4K\n~1.2 h", "in all, with a ~7.5 min load"):
             self.assertIn(words, text)
+
+
+class UpscaleEveryClipPage(UpscaleCards, PageTest):
+    """Every 5 s clip has the button on: a Keyframes and a Reference clip say in the popover what text the Upscale
+    uses (their prompt without the pictures, encoded first); other lengths say not yet. The upscale's card shows the
+    text it used, and its progress while that text is encoded."""
+
+    def seed(self):
+        self.studio.env.update(STUB_QWEN_S="20")
+
+    def test_keyframes_and_reference_clips(self):
+        kf = self.done_clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=71, files={"first_frame": [("f.png", png())]})
+        ref = self.done_clip(task="ref2va", prompt=REFERENCE_PROMPT, seed=72, files={"ref_images": [("r.png", png())]})
+        long = self.done_clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=8, seed=73,
+                              files={"first_frame": [("f.png", png())]})
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        for jid in (kf, ref):
+            self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "aria-disabled"), "false")
+        self.assertEqual((self.page.get_attribute(f"{self.card(long)} .act.up", "aria-disabled"),
+                          self.page.get_attribute(f"{self.card(long)} .act.up", "title")), ("true", UPSCALE_LENGTH))
+        self.open_popover(kf)                        # routes that have run through the studio: no UP_UNRUN
+        self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt without its keyframe line, encoded first "
+                                                           "(~15 s)")
+        self.page.keyboard.press("Escape")
+        self.open_popover(ref)
+        self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt with the references taken out, encoded "
+                                                           "first (~15 s)")
+        with self.page.expect_request("**/api/upscale") as request:
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data), {"id": ref, "resolution": "2k", "strength": "balanced"})
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        card = self.card(job["id"])
+        self.page.wait_for_function(f"(document.querySelector('{card} .ph2 .small') || {{}}).textContent "
+                                    "=== 'Encoding the prompt · as text alone'", timeout=30000)
+        self.assertEqual(self.page.inner_text(f"{card} .st"), "Upscaling")
+        self.assertEqual(self.page.inner_text(f"{card} .p"), job["text"]["prompt"])      # the text it uses
+        self.assertNotIn("<Subject 1>", self.page.inner_text(f"{card} .p"))
+        self.assertIn("· its prompt without its references", self.page.inner_text(f"{card} .when"))
+        self.page.click(f"{card} .cancel")
+        self.page.wait_for_selector(f'{card}[data-status="cancelled"]', timeout=20000)
+
+    def test_eta_and_notes(self):
+        """+15 s for an encode in the expected time; the notes for each kind of clip, LightX2V Turbo's too, with
+        UP_UNRUN only on the routes that have not run on the GPU through the studio."""
+        self.assertEqual(self.page.evaluate("""[{resolution: '1080p', steps: 2, text: {source: 'encode'}},
+            {resolution: '1080p', steps: 2, text: {source: 'generation'}},
+            {resolution: '1080p', steps: 2, text: {source: 'clip'}}].map(upEta)"""), [630, 615, 615])
+        notes = self.page.evaluate(f"""[
+            [{{task: 't2va'}}, {{text: 'clip', video: 'clip'}}], [{{task: 't2va'}}, undefined],
+            [{{task: 'fl2va'}}, {{text: 'encode'}}], [{{task: 'ref2va', model: 'sol-h3'}}, {{text: 'encode'}}],
+            [{{task: 't2va', model: '{TURBO}'}}, {{video: 'stretch'}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'trim'}}],
+            [{{task: 't2va', model: '{TURBO}'}}, {{}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation'}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch'}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch+trim'}}],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'encode', video: 'trim'}}],
+            [{{task: 't2va'}}, {{video: 'stretch'}}]].map(([j, u]) => upNotes(j, u))""")
+        kf, stretch, trim = ("Uses your prompt without its keyframe line", "From the 576p clip, stretched to 768p first",
+                             "Its first 121 frames: the last 3, up to your last keyframe, are left out")
+        self.assertEqual(notes, [
+            "", "",                                                                  # Sol-H3 Text
+            f"{kf}, encoded first (~15 s)", "Uses your prompt with the references taken out, encoded first (~15 s)",
+            stretch,                                                                 # the turbo's 576p Text clip
+            f"{kf}. {trim}",                                                         # its 768p clip with a last keyframe
+            UP_UNRUN,                                                                # its 768p Text clip, as it is
+            f"{kf}. {UP_UNRUN}",                                                     # 768p, a first frame
+            f"{kf}. {stretch}. {UP_UNRUN}",                                          # 576p, a first frame
+            f"{kf}. {stretch}. {trim}. {UP_UNRUN}",                                  # 576p with a last keyframe
+            f"{kf}, encoded first (~15 s). {trim}. {UP_UNRUN}",                      # one without its qwen-text/
+            f"{stretch}. {UP_UNRUN}"])                                               # a route no model has
 
 
 class UpscalePageOff(PageTest):
@@ -2129,8 +2206,8 @@ class ModelRow(ModelPage):
 
 class ModelCards(ModelPage):
     """A LightX2V Turbo clip's card: its model in a tag of its own (none on Sol-H3's cards, which look as before), its
-    Upscale button disabled with the reason, the server's file name for Download; Remix brings each clip's model and
-    options back."""
+    Upscale button (a 5 s clip: on), the server's file name for Download; Remix brings each clip's model and options
+    back."""
 
     def test_cards_and_remix(self):
         sol = self.studio.generate(seed=21, prompt="a sol clip")[1]["id"]
@@ -2142,12 +2219,12 @@ class ModelCards(ModelPage):
         self.assertEqual(self.tags(sol), ["Text", "16:9", "5 s"])
         self.assertEqual(self.tags(turbo), ["Text", "9:16", "5 s", "LightX2V Turbo 768p"])
         up = f"{self.card(turbo)} .act.up"
-        why = "Upscale of LightX2V Turbo clips comes in a later version"
         self.assertEqual((self.page.get_attribute(up, "aria-disabled"), self.page.get_attribute(up, "title")),
-                         ("true", why))
-        self.page.click(up, force=True)                                      # the reason, also on a phone
-        self.page.wait_for_function("t => document.getElementById('toast').textContent === t", arg=why)
-        self.assertTrue(self.page.is_hidden("#uppop"))
+                         ("false", "Upscale to 1080p, 2K or 4K (experimental)"))
+        self.page.click(up)              # a 768p Text clip: as it is, with the note that it has not run on the GPU
+        self.page.wait_for_selector("#uppop", state="visible")
+        self.assertEqual(self.page.inner_text("#upinput"), UP_UNRUN)
+        self.page.keyboard.press("Escape")
         self.assertEqual(self.page.get_attribute(f"{self.card(sol)} .act.up", "aria-disabled"), "false")
         self.assertEqual(self.page.get_attribute(f"{self.card(turbo)} a.act", "download"),
                          f"lf-studio_{TURBO}-768p_t2va_5s_seed22_{turbo[:6]}.mp4")
@@ -2171,6 +2248,36 @@ class ModelCards(ModelPage):
                          (None, "1344×768", "MiniMax H3 draft → LTX-2.5 refine"))
         self.assertEqual(self.page.evaluate("localStorage['lfstudio.model']"), "sol-h3")
         self.assertEqual(self.page.evaluate(f"localStorage['lfstudio.opt.{TURBO}.resolution']"), "768p")  # its own
+
+
+class ModelUpscale(ModelPage):
+    """The Upscale of a LightX2V Turbo Keyframes clip at 576p with a last keyframe: the popover says what is done to it
+    (its text made with the clip, stretched to 768p, cut to its first 121 frames), and the upscale's card names the
+    model and size of its clip."""
+
+    def test_a_576p_clip_with_a_last_keyframe(self):
+        prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second "
+                  "mark; Picture 2 aligns with the 5.00-second mark.\nA dancer turns slowly.")
+        both = {"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}
+        jid = self.studio.turbo(task="fl2va", prompt=prompt, seed=81, files=both)[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        self.page.wait_for_selector(f"{self.card(jid)} video")
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        self.page.click(f"{self.card(jid)} .act.up")
+        self.page.wait_for_selector("#uppop", state="visible")
+        self.assertEqual(self.page.inner_text("#upinput"),
+                         "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first. Its "
+                         f"first 121 frames: the last 3, up to your last keyframe, are left out. {UP_UNRUN}")
+        self.page.click('#uppop label[for="up-1080p"]')
+        self.page.click("#upgo")
+        self.page.wait_for_selector("#uppop", state="hidden")
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        card = self.card(job["id"])
+        self.page.wait_for_selector(f"{card} video", timeout=30000)
+        self.assertEqual(self.tags(job["id"]), ["1080p upscale", "Keyframes", "5 s", "of LightX2V Turbo 576p"])
+        self.assertEqual(self.page.inner_text(f"{card} .p"), "A dancer turns slowly.")
+        self.assertIn("· its prompt without its keyframe line", self.page.inner_text(f"{card} .when"))
+        self.assertEqual(self.studio.job(job["id"])["video"], "stretch+trim")
 
 
 class ModelRunning(ModelPage):
@@ -2204,7 +2311,7 @@ class ModelRunning(ModelPage):
         self.page.wait_for_function("document.getElementById('loaded').textContent.endsWith('ready')")
         self.assertEqual(self.text("#loaded"), "Sol-H3 · Text · 16:9 · 5 s · ready")
         self.model(TURBO)
-        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~4:00 min est.")
+        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~3:27 min est.")   # 200 s + 7 s
         self.page.fill("#prompt", "a slow one")
         self.page.click("#go")
         jid = next(j["id"] for j in self.studio.wait_for(lambda s: len(s["jobs"]) == 2)["jobs"] if j["id"] != sol)
@@ -2247,7 +2354,7 @@ class ModelRunning(ModelPage):
         self.page.wait_for_selector(f'{self.card(sol)}[data-status="queued"]')
         self.assertEqual(self.text(f"{self.card(sol)} .ph2 .small"), "next up")
         self.model(TURBO)
-        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~4:00 min est.")
+        self.assertEqual(self.text("#go"), "Generate · closes Sol-H3 first · ~3:27 min est.")   # 200 s + 7 s
         self.assertEqual(self.page.get_attribute(f"{card} .cancel", "title"), "Stop this clip")
         self.page.click(f"{card} .cancel")
         self.page.wait_for_function("document.getElementById('toast').textContent === 'Stopping the clip'")
@@ -2304,8 +2411,10 @@ class ModelChoiceOffPage(unittest.TestCase):
     own server and page (from git; skipped in a copy without that history), seeded with the same clips, in the same
     browser: the same pixels (light and dark, 1280 px and a phone), and after the same clicks (every mode, format and
     length, a chip, a Remix of a 9:16 10 s clip and of a Text one, a refused Generate, a Generate and its clip) the same
-    texts, buttons and titles, the same request and the same choices kept in localStorage."""
+    texts, buttons and titles, the same request and the same choices kept in localStorage. What is new: the Upscale's
+    reason for a clip of another length than 5 s says those are not yet taken (the Upscale takes every 5 s clip)."""
     T0 = 1_760_000_000
+    NEW_TEXTS = {UPSCALE_LENGTH: "Upscale takes 5 s clips only, for now (NVIDIA's pipeline is fixed at 121 frames)"}
 
     @classmethod
     def setUpClass(cls):
@@ -2349,7 +2458,10 @@ class ModelChoiceOffPage(unittest.TestCase):
     def both(self, fn):
         """fn(studio) on each: {name: result}; then the same, or the difference shown."""
         got = {name: fn(s) for name, s in self.studios.items()}
-        self.assertEqual(got["now"], got["v0.5.1"])
+        now = json.dumps(got["now"])
+        for text, before in self.NEW_TEXTS.items():                          # what is new, as v0.5.1 said it
+            now = now.replace(json.dumps(text)[1:-1], json.dumps(before)[1:-1])
+        self.assertEqual(json.loads(now), json.loads(json.dumps(got["v0.5.1"])))
         return got["now"]
 
     def test_the_same_pixels(self):

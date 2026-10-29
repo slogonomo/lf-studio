@@ -292,17 +292,43 @@ its environment has `LFSTUDIO_MCP_OUT_ANYWHERE=1`. Point `LFSTUDIO_OUT_DIR` at t
 ## Upscale (experimental)
 
 The Upscale is off unless `LFSTUDIO_UPSCALE=1` ([INSTALL.md](INSTALL.md#experimental-upscale)). Each upscale has a
-directory of its own, `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/<session>-upscale-<resolution>/<case>/regen/`, with
+directory of its own, `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/<session>-upscale-<resolution>/<case>/`: `regen/`, with
 `job.json` (what the studio asked for), `worker.log` (the job's output) and `receipt.json` (its times, sigmas, peak
-memory and lowest MemAvailable per phase). A failed upscale's card shows the job's own error line.
+memory and lowest MemAvailable per phase); `input/`, what the job read (the clip's MP4, audio and text, linked or
+made for it, and `source.json`, which says from where and how); for a Keyframes or Reference clip also
+`prompt-text-only.txt` (the text it was refined against) and `encode.log`. A failed upscale's card shows the job's own
+error line.
 
 **No Upscale button on the cards.** The studio runs with the Upscale off (the default), or with
 `LFSTUDIO_BACKEND=rtx5090`, where it does not run. Set `LFSTUDIO_UPSCALE=1` and restart.
 
 **The Upscale button is greyed out.** It says why when you point at it, or click or tap it: for now it takes finished
-5 s text clips only, 16:9 or 9:16 (`Upscale takes 5 s clips only, for now ...`, `Upscale takes text-to-video (t2va)
-clips only, for now`), and it reads the clip's working files, which clips made before per-clip folders, or whose
-session folder was removed, no longer have (`the clip's working files (its session directory) are gone`).
+5 s clips, 16:9 or 9:16, of every mode and model; other lengths not yet (`Upscale takes 5 s clips for now: other
+lengths not yet ...`). It reads the clip's working files, which clips made before per-clip folders, or whose session
+folder was removed, no longer have (`the clip's working files (its session directory) are gone`). A Keyframes clip
+whose prompt is only its keyframe line (or a Reference prompt of references alone) has no text to refine against
+(`nothing is left of the prompt without its keyframe line: the Upscale needs text`): make the clip again with a few
+words of what happens in it. A Reference prompt whose subjects, written out where they are used, would pass 32768
+characters (`the prompt is too long as text alone ...`) can't be encoded as text either: define each subject in its own
+words rather than through others. `the Upscale can't write this clip's prompt as text alone` means the rewrite itself
+failed: the studio's log has the error.
+
+**An upscale of a Keyframes or Reference clip sits at "Encoding the prompt" or fails there.** Such a clip's prompt is
+encoded first without its pictures (a transient Qwen worker, 9-18 s, 9.1-9.2 s in the Upscale's GPU runs, ~15 GiB), the
+same encode LightX2V Turbo uses; its log is `encode.log` in the upscale's folder, the text it encoded
+`prompt-text-only.txt`, its summary `input/encode.json` and its Qwen worker's log `input/qwen-worker/`. `the prompt
+encode failed: ...` names the encode's own error (a Qwen container that did not start, for example: the same causes as a
+LightX2V Turbo clip's encode, below). `the prompt encode's conditioning is not of the text asked for: its prompt
+differs` (or `task`) means its receipt, `input/qwen/conditioning.json`, is of another text than `prompt-text-only.txt`:
+compare the two. A Cancel stops it at once; a Qwen worker it leaves behind is stopped by the studio. The encode needs
+the t2va path manifest: without it the Upscale button of such a clip says so (`... which needs the t2va path manifest
+(run install/70-manifests.sh)`). A Reference prompt is rewritten as text alone (its subjects as their definitions, its
+media labels out); if the result reads oddly, `prompt-text-only.txt` shows what the upscale used.
+
+**The upscale of a LightX2V Turbo clip is shorter than the clip.** A LightX2V Turbo clip with a last keyframe has 124
+frames (5.17 s), ending on that keyframe; the Upscale's job takes 121, so the upscale is its first 121 frames (5.04 s)
+and its sound is cut with them (the popover says so). It ends 3 frames before your last keyframe; keeping them is
+issue #85. A 576p clip is stretched to 768p first, as the popover says too.
 
 **`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
 `missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's
@@ -446,11 +472,13 @@ Cancel had to kill the encode, the studio also stops the Qwen worker it left (th
 the prompt encode left`).
 
 **A queue of Sol-H3 and LightX2V Turbo clips is slow.** Clips run in order, and each change of model costs time: a
-LightX2V Turbo clip closes the Sol-H3 models first (about 40 s), and the next Sol-H3 clip loads them again (about
-1-2 min). Nothing is warmed up after a LightX2V Turbo clip. Queue clips of one model together.
+LightX2V Turbo clip closes the Sol-H3 models first (about 7 s, up to 40 s when a worker doesn't answer), and the
+next Sol-H3 clip loads them again (about 1-2 min). Nothing is warmed up after a LightX2V Turbo clip. Queue clips of one
+model together.
 
-**The Upscale button of a LightX2V Turbo clip is greyed out** (`Upscale of LightX2V Turbo clips comes in a later
-version`). Not yet.
+**The Upscale button of a LightX2V Turbo clip is greyed out.** A 5 s clip of either size can be upscaled (also with
+the model turned off since); other lengths not yet. A Keyframes clip whose prompt was only its keyframe line has no text
+to refine against (its `qwen-text/` is missing for the same reason). See [Upscale](#upscale-experimental).
 
 ## Stopping
 

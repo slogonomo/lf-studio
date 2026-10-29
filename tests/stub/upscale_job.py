@@ -10,7 +10,11 @@ spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (
 121 frames at 24 fps, no audio, as the real job's MP4 has none; upright when the clip's MP4, <case>/stage2/
 refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json. SIGTERM (Cancel) ends it at once,
 like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status 143. With --parent, as the
-real job, it is killed when that process (the server) ends.
+real job, it is killed when that process (the server) ends. Before anything else it checks job.json's "case" as the
+real job does (the real job's own case_inputs, from upscale/regen2k_job.py: one stage2/refined_*.mp4, the conditioning,
+the audio for audio clip), and that its MP4 has the 121 frames at 24 fps the real job takes (check_final; the stub
+clips' size is their own) and that a conditioning.json beside the conditioning is t2va's (check_text); else, as the
+real job, a "refused" error line and exit status 2.
   STUB_UPSCALE_S          seconds the job takes (default 2)
   STUB_UPSCALE_FAIL       1: fail after loading, as a job that ran out of memory ("[lf-studio] error ...", exit 1)
   STUB_UPSCALE_LOG        a file each run appends a JSON line to ({"pid", "job", "argv"}), so a test can find a
@@ -20,6 +24,7 @@ real job, it is killed when that process (the server) ends.
                           (the server's mux fails)
 Standard library only, so it runs under -I with any Python 3.10+.
 """
+import importlib.util
 import json
 import os
 import signal
@@ -29,6 +34,7 @@ import time
 from pathlib import Path
 
 TAG = "[lf-studio]"
+REAL_JOB = Path(__file__).resolve().parents[2] / "upscale" / "regen2k_job.py"
 SIZE = {"1080p": (384, 216), "2k": (512, 288), "4k": (768, 432)}      # small; the server names the file by the setting
 
 
@@ -52,6 +58,36 @@ class Cancelled(BaseException):
 
 class OutOfMemoryError(RuntimeError):
     """As torch's: the real job's likely failure."""
+
+
+def real_job():
+    spec = importlib.util.spec_from_file_location("regen2k_job", REAL_JOB)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_case(job):
+    """The real job's checks of its input folder (the docstring): None, or why it is refused."""
+    regen = real_job()
+    try:
+        files = regen.case_inputs({"case": Path(job["case"]), "audio": job["audio"]})
+    except regen.JobError as error:
+        return str(error)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=nb_frames,r_frame_rate", "-of", "json", str(files["final"])],
+                           capture_output=True, text=True, timeout=60)
+    try:
+        stream = json.loads(probe.stdout)["streams"][0]
+        found = (stream.get("nb_frames"), stream.get("r_frame_rate"))
+    except (ValueError, KeyError, IndexError):
+        found = None
+    if found != (str(regen.FINAL["frames"]), regen.FINAL["fps"]):
+        return f"{files['final'].name} is {found}: not 121 frames at 24 fps"
+    receipt = files["conditioning"].with_suffix(".json")
+    if receipt.is_file() and json.loads(receipt.read_text()).get("task") not in (None, "t2va"):
+        return f"the conditioning is {json.loads(receipt.read_text())['task']}'s: it needs a text-only encode"
+    return None
 
 
 def cancel(signum, frame):
@@ -91,6 +127,12 @@ def main(argv):
             log.write(json.dumps({"pid": os.getpid(), "job": str(job_path), "argv": argv[1:]}) + "\n")
     receipt = {"state": "running", "pid": os.getpid(), "job": job, "orientation": orientation(job["case"]),
                "times_s": {}, "stub": True}
+    refused = check_case(job)
+    if refused:
+        receipt.update(state="refused", error=refused, exit_status=2)
+        write_json(out / "receipt.json", receipt)
+        say("error", refused)
+        return 2
     started, status = time.time(), 0
     phases = ["encoding", "loading"] + [f"refine {i}/{job['steps']}" for i in range(1, job["steps"] + 1)] + \
         ["decoding", "saving"]
