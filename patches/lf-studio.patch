@@ -2770,7 +2770,7 @@ index 4e6e910..fdccb3f 100644
      output = output * std + mean
      return output.to(dtype=normalized.dtype)
 diff --git a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
-index dafe5ee..bc37863 100644
+index dafe5ee..9c4d8d5 100644
 --- a/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
 +++ b/models/minimax_h3/Sol-H3-Spark/runtime/stage2_ops/models.py
 @@ -3,10 +3,16 @@
@@ -2972,7 +2972,7 @@ index dafe5ee..bc37863 100644
 -    models.audio_tools = compat.AudioLatentTools(compat.AudioPatchifier(patch_size=1),
 -        compat.AudioLatentShape.from_video_pixel_shape(pixel_shape))
 +    print(f"[lf-studio] {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} audio encoder built", flush=True)
-+    if image_encoder:
++    if image_encoder:     # lf-studio: the keyframe pin's encoder (SOL_H3_STAGE2_KEYFRAME=pin, fl2va sessions)
 +        build_image_encoder(models, paths, base=base, compat=compat, registry=registry)
      decoder_block = compat.VideoDecoder(str(paths["output_video_vae"]), models.dtype,
          models.device, registry=registry, alloc_trim_strategy=base.AllocatorTrimStrategy.DEFER)
@@ -2996,7 +2996,7 @@ index dafe5ee..bc37863 100644
          ("transformer", models.transformer), ("audio_encoder", models.audio_encoder),
          ("video_decoder", models.video_decoder), ("h3_upscaler", models.h3_upscaler),
          ("h3_ltx_adapter", models.h3_ltx_adapter.model))}
-+    if models.image_encoder is not None:
++    if models.image_encoder is not None:     # lf-studio: the keyframe pin's encoder (built above, before residency)
 +        models.residency["image_encoder"] = base._module_residency("image_encoder", models.image_encoder)
      gc.collect()
      torch.cuda.empty_cache()
@@ -5536,7 +5536,7 @@ index 052502f..8df301c 100644
          missing = copy.deepcopy(second)
          missing["layer_calls"][13] -= 1
 diff --git a/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py b/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
-index e233052..890d800 100644
+index e233052..3708e6f 100644
 --- a/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
 +++ b/models/minimax_h3/Sol-H3-Spark/tests/test_stage2_contract.py
 @@ -1,12 +1,22 @@
@@ -6315,7 +6315,7 @@ index e233052..890d800 100644
 +        cls = stage2._refiner_class(SimpleNamespace(), SimpleNamespace(OfficialCompatRefiner=Upstream), session)
 +        return object.__new__(cls)
 +
-+    def states(self, frames=121, height=768, width=1344, seed=1404):
++    def states(self, frames=121, height=768, width=1344, seed=42):
 +        from ltx_core.conditioning import VideoConditionByLatentIndex
 +        torch = self.torch
 +        video_tools, audio_tools = self.tools(frames, height, width)
