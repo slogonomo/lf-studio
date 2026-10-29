@@ -144,14 +144,14 @@ it without changing its token count, avoids it. Before the patch the 4th distinc
 **A Keyframes clip doesn't keep my image: another face, or its details redrawn.** The draft starts on your first
 frame, but in NVIDIA's route Stage 2, which refines it to 1344×768, refines every frame from 91 % noise, without the
 image and under a fixed generic prompt, so it repaints the first frame too (issue #57; NVIDIA's README guarantees
-neither the keyframes nor the identity). Measured on 6 clips, frame 0 against the image: 23-34 dB PSNR in the draft,
-16-23 dB after Stage 2. It can also draw people into the first frame of an empty scene. On the DGX Spark this is fixed
-by default since 0.5.2: Stage 2 holds the uploaded first frame (the keyframe pin,
-[PATCH.md](PATCH.md#19-stage-2-keyframe-pin)). Measured on one DGX Spark, frame 0 then matches the image at 30-38 dB,
-and in some clips the next frames keep the face better too. Only the first frame is held: later frames are still
-refined, so a clip with a lot of motion can still drift, and a last frame, Text and Reference clips are not changed.
-Check that `SOL_H3_STAGE2_KEYFRAME` is not `off` in the settings file. On the RTX 5090 the pin isn't there yet, so its
-Keyframes clips drift as before.
+neither the keyframes nor the identity). Measured on 6 clips, frame 0 against the image at the draft's size: 23-34 dB
+PSNR in the draft, 16-23 dB after Stage 2. It can also draw people into the first frame of an empty scene. On the DGX
+Spark this is fixed by default since 0.5.2: Stage 2 holds the uploaded first frame (the keyframe pin,
+[PATCH.md](PATCH.md#19-stage-2-keyframe-pin)). Measured on one DGX Spark at the output size, frame 0 then matches the
+image at 30-38 dB instead of 17-23 dB, and in some clips the next frames keep the face better too. Only the first
+frame is held: later frames are still refined, so a clip with a lot of motion can still drift, and a last frame,
+Text and Reference clips are not changed. Check that `SOL_H3_STAGE2_KEYFRAME` is not `off` in the settings file. On
+the RTX 5090 the pin isn't there yet, so its Keyframes clips drift as before.
 
 **The first run of a mode, format or length is much slower.** Its kernels are compiled once into
 `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile` (measured first runs: t2va 9:16 5 s 111 s, t2va 16:9 10 s 264 s,

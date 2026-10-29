@@ -338,6 +338,17 @@ On the RTX 5090 the same: `install/10-sana.sh` (with `LFSTUDIO_BACKEND=rtx5090` 
 version of `patches/lf-studio-rtx5090.patch`, reverses it, moves to a new `patches/BASE_COMMIT_RTX5090` if that
 changed, and applies the new one. A new patch file is all an update of the 5090 patch needs.
 
+### After 0.5.1
+
+On the DGX Spark the patch changed, so run `install/10-sana.sh` after the pull. Until then the studio refuses to start
+with "SOL_H3_STAGE2_KEYFRAME=pin (the default since 0.5.2) needs a newer patch than the one applied in ...; run
+install/10-sana.sh (or set SOL_H3_STAGE2_KEYFRAME=off)": the old patch never pins. With the new patch, Stage 2 holds a
+Keyframes clip's first frame (the keyframe pin, [PATCH.md](PATCH.md#19-stage-2-keyframe-pin)), so frame 0 matches your
+image much more closely. A Keyframes clip with a first frame made with 0.5.1 or earlier therefore doesn't come back from
+its seed unless you set `SOL_H3_STAGE2_KEYFRAME=off`. Text and Reference clips, and Keyframes clips with only a last
+frame, come out as before. A Keyframes session keeps the LTX-2.5 VAE's encoder loaded (608 MiB); the 110 GiB start floor
+stays. Nothing changes on the RTX 5090: its patch doesn't have the pin yet, and its default is `off`.
+
 ### After 0.5.0
 
 Clip lengths are 5, 6, 7, 8, 10, 12 and 15 s, on both backends: 3 and 4 s are gone (3 s clips never came out right).

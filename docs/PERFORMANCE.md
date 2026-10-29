@@ -219,7 +219,7 @@ wait for it. A change of mode still reloads.
 | `SOL_H3_RESIDENT_QWEN_EARLY` | 1 | 0 = the resident prompt encoder loads after the first clip, not during it |
 | `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB` | 32 up to 5 s, 34 above | MemAvailable needed to load it during the first clip, or right after a change back to 10 s or less |
 | `SOL_H3_DYNAMIC_TEXT_LENGTH` | 1 | 0 = Stage 1's body blocks compile per prompt length, not once per session |
-| `SOL_H3_STAGE2_KEYFRAME` | pin | Stage 2 holds a Keyframes clip's first frame: frame 0 at 30-38 dB against the image instead of 17-23 dB, Stage 2 time unchanged (37.4 s against 37.5 s warm at 5 s, 83.6 s against 83.8 s at 10 s), 608 MiB more memory in Keyframes sessions (one DGX Spark, 2026-10-29; [PATCH.md](PATCH.md#19-stage-2-keyframe-pin)). `off` = upstream: Stage 2 repaints it |
+| `SOL_H3_STAGE2_KEYFRAME` | pin | Stage 2 holds a Keyframes clip's first frame: frame 0 at 30-38 dB against the image instead of 17-23 dB, Stage 2 time unchanged (37.4 s against 37.5 s warm at 5 s, 83.6 s against 83.8 s at 10 s), 608 MiB more resident in Keyframes sessions (the encoder's weights) and a clip's lowest MemAvailable 0.6-1.0 GiB lower (one DGX Spark, 2026-10-29; [PATCH.md](PATCH.md#19-stage-2-keyframe-pin)). `off` = upstream: Stage 2 repaints it |
 | `LFSTUDIO_PRELOAD` (web UI) | 1 | 0 = no warm-up of the last settings at launch |
 | `LFSTUDIO_RESHAPE` (web UI) | 1 | 0 = another length or format closes the session and loads the models again |
 
