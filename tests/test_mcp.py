@@ -206,7 +206,9 @@ class Protocol(McpTest):
         codes = [n["error"]["code"] for n in self.m.notes if n.get("error")]
         self.assertEqual(sorted(codes), [-32700, -32600])
         for args, words in [({"prompt": "x", "frist_frame": "a.png"}, 'unknown argument "frist_frame"'),
-                            ({"prompt": "x", "seconds": 9}, "seconds must be one of 3, 4, 5"),
+                            ({"prompt": "x", "seconds": 9}, "seconds must be one of 5, 6, 7, 8, 10, 12, 15"),
+                            ({"prompt": "x", "seconds": 3}, "seconds must be one of 5, 6, 7, 8, 10, 12, 15"),
+                            ({"prompt": "x", "seconds": 4}, "seconds must be one of 5, 6, 7, 8, 10, 12, 15"),
                             ({"prompt": "x", "seconds": "5"}, "seconds must be an integer"),
                             ({"prompt": "x", "seed": -1}, "seed must be 0 or more"),
                             ({"prompt": "x", "references": "a.png"}, "references must be a list of strings"),
@@ -231,6 +233,8 @@ class Protocol(McpTest):
             for name in schema["properties"]:
                 self.assertRegex(name, r"^[A-Za-z0-9_.-]{1,64}$")
             self.assertLessEqual(len(tool["description"]), 2048)
+        self.assertEqual(r["tools"][0]["inputSchema"]["properties"]["seconds"],
+                         {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went after 0.5.0
         upscale = r["tools"][5]["description"]
         for words in ("Experimental", "5 s text clips (t2va), 16:9 or 9:16", "2K is 1440x2560", "redraws faces",
                       "closes the studio's models", "4K has run once, with a 16:9 clip; not yet with a 9:16 one"):
@@ -287,7 +291,7 @@ class Tools(McpTest):
         m = self.mcp()
         hello = {"capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}
         m.request("initialize", dict(hello, protocolVersion="2025-03-26"))
-        r = m.call("generate", {"prompt": "x", "seconds": 3, "wait_s": 30})
+        r = m.call("generate", {"prompt": "x", "seconds": 6, "wait_s": 30})
         self.assertFalse(r["isError"], text(r))
         self.assertEqual([c["type"] for c in r["content"]], ["text", "image"])
         jid, url = r["structuredContent"]["id"], r["structuredContent"]["url"]

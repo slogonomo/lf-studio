@@ -44,6 +44,10 @@ def finished_job(jid="0" * 32, task="t2va", orientation="landscape", seconds=5, 
                  "created": time.time() - 3600}, **extra)
 
 
+# the refusal of a length that went after 0.5.0 (3 and 4 s), by /api/generate (after "ValueError: ") and /api/load
+GONE = "duration must be 5, 6, 7, 8, 10, 12 or 15 seconds (3 and 4 s are no longer offered)"
+
+
 class StudioTest(unittest.TestCase):
     """One fresh stub studio per test. Subclasses set the timings; seed() writes state before start."""
     load_s, clip_s, preload = 2, 1, False
@@ -964,7 +968,7 @@ class ReleaseReview(StudioTest):
         self.assertEqual(self.old.stat().st_size, 600_000)
 
     def warm_up_source(self):
-        jid = self.generate(task="fl2va", seconds=3, files={"first_frame": [("f.png", png())]})
+        jid = self.generate(task="fl2va", seconds=6, files={"first_frame": [("f.png", png())]})
         self.studio.wait([jid])
         self.studio.wait_for(lambda st: st["session"]["state"] == "ready", timeout=30)
         return jid
@@ -991,7 +995,7 @@ class FixReview(ReleaseReview):
     test_delete_during_a_requested_warm_up = None
 
     def clip(self):
-        jid = self.generate(seconds=3)
+        jid = self.generate(seconds=6)
         return self.studio.wait([jid])[0]
 
     def test_pruned_clip_waits_for_its_publish_copy(self):
@@ -1343,6 +1347,8 @@ class LoadSelected(StudioTest):
         self.assertEqual(code, 409)
         self.assertIn("no earlier fl2va clip", body["error"])
         self.assertEqual(self.studio.post("/api/load", json_body={"task": "t2va"})[0], 400)
+        for seconds, error in ((3, GONE), (4, GONE), (9, "duration must be 5, 6, 7, 8, 10, 12 or 15 seconds")):
+            self.assertEqual(self.load(seconds=seconds), (400, {"error": error}))     # 3 and 4 s went after 0.5.0
         jid = self.generate(task="fl2va", seconds=8, files={"first_frame": [("f.png", png())]})
         self.studio.wait_for(lambda st: any(j["id"] == jid and j["status"] != "queued" for j in st["jobs"]))
         self.assertEqual(self.load()[0], 409)                                # a clip is running
@@ -1387,10 +1393,10 @@ class LoadDuringClose(StudioTest):
 
     def test_other_settings_clip_cancels_the_request(self):
         self.closing()
-        job = self.studio.wait([self.generate(seconds=3)], timeout=60)[0]
+        job = self.studio.wait([self.generate(seconds=6)], timeout=60)[0]
         self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
         self.no_warm_up_for_the_request()
-        self.assertEqual(self.studio.state()["session"]["key"], ["t2va", "landscape", 3])
+        self.assertEqual(self.studio.state()["session"]["key"], ["t2va", "landscape", 6])
 
     def test_unload_cancels_the_request(self):
         self.closing()
@@ -1403,8 +1409,8 @@ class LoadDuringClose(StudioTest):
 
     def test_newer_request_wins(self):
         self.closing()
-        self.assertEqual(self.load(orientation="landscape", seconds=3)[0], 200)
-        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 3]
+        self.assertEqual(self.load(orientation="landscape", seconds=6)[0], 200)
+        self.studio.wait_for(lambda st: st["session"]["key"] == ["t2va", "landscape", 6]
                              and st["session"]["state"] == "ready", timeout=30)
         self.no_warm_up_for_the_request()
         self.assertEqual(len(self.open_pipelines()), 1)
@@ -1446,7 +1452,7 @@ class Reshape(StudioTest):
 
     def test_same_task_keeps_the_models(self):
         self.assertTrue(self.studio.state()["reshape"])
-        plan = [("landscape", 5), ("portrait", 10), ("landscape", 5), ("landscape", 3)]
+        plan = [("landscape", 5), ("portrait", 10), ("landscape", 5), ("landscape", 6)]
         jobs = [self.studio.wait([self.generate(orientation=o, seconds=s, seed=n)], timeout=60)[0]
                 for n, (o, s) in enumerate(plan)]
         self.assertEqual([j["status"] for j in jobs], ["done"] * 4)
@@ -1457,18 +1463,18 @@ class Reshape(StudioTest):
             w, h = (336, 192) if orientation == "landscape" else (192, 336)
             self.assertEqual(Path(job["output"]).name, f"refined_{w}x{h}_{seconds * 24 + 1}f.mp4")   # its own shape
         [session] = self.sessions()                                          # one pipeline for all four
-        self.assertEqual([r["to"]["seconds"] for r in self.reshapes(session)], [10, 5, 3])
+        self.assertEqual([r["to"]["seconds"] for r in self.reshapes(session)], [10, 5, 6])
         st = self.studio.state()["session"]
-        self.assertEqual((st["key"], st["state"]), (["t2va", "landscape", 3], "ready"))
+        self.assertEqual((st["key"], st["state"]), (["t2va", "landscape", 6], "ready"))
         log = self.studio.log.read_text()
         self.assertNotIn("closing session", log)
         self.assertIn("reshaping session ('t2va', 'landscape', 5) -> ('t2va', 'portrait', 10)", log)
-        again = self.studio.wait([self.generate(seconds=3, seed=9)], timeout=30)[0]
+        again = self.studio.wait([self.generate(seconds=6, seed=9)], timeout=30)[0]
         self.assertNotIn("reshaped_from", again)                             # the same settings: a warm clip
 
     def test_another_task_reloads(self):
         self.studio.wait([self.generate()], timeout=30)
-        job = self.studio.wait([self.generate(task="fl2va", orientation="portrait", seconds=3,
+        job = self.studio.wait([self.generate(task="fl2va", orientation="portrait", seconds=6,
                                               files={"first_frame": [("f.png", png())]})], timeout=60)[0]
         self.assertEqual((job["status"], job["includes_model_load"]), ("done", True))
         self.assertNotIn("reshaped_from", job)
@@ -1638,7 +1644,7 @@ class ReshapeWarmUpLate(ReshapeWarmUp):
     def test_late_waits_and_changes_the_shape(self):
         s = self.warming()
         time.sleep(max(0, s["takeover_until"] - s["since"]) + 0.8)
-        waiting = self.generate(orientation="portrait", seconds=3)            # the warm-up's task: it waits
+        waiting = self.generate(orientation="portrait", seconds=6)            # the warm-up's task: it waits
         other = self.generate(task="fl2va", files={"first_frame": [("f.png", png())]})   # kept for `waiting`
         jw, jo = self.studio.wait([waiting, other], timeout=60)
         self.assertNotIn("aborting preload", self.studio.log.read_text())
@@ -1709,6 +1715,66 @@ class WarmUpSkipsDeleted(StudioTest):
     def test_warm_up_uses_the_newest_clip_not_deleted(self):
         s = self.studio.wait_for(lambda s: s["session"].get("loading_key"))["session"]
         self.assertEqual(s["loading_key"], ["t2va", "portrait", 5])
+
+
+class OldLengths(StudioTest):
+    """3 and 4 s went after 0.5.0: clips made at those lengths stay in the history. They list, play, download and give
+    their files to Remix as before; the remix itself takes a length offered."""
+
+    def seed(self):
+        self.old = self.dir / "old"
+        self.old.mkdir()
+        for seconds in (3, 4):
+            (self.old / f"{seconds}.mp4").write_bytes(mp4(seconds))
+        (self.old / "first.png").write_bytes(png())
+        self.write_state([finished_job("3" * 32, seconds=3, output=str(self.old / "3.mp4"), created=1),
+                          finished_job("4" * 32, task="fl2va", orientation="portrait", seconds=4, created=2,
+                                       first_frame=str(self.old / "first.png"), output=str(self.old / "4.mp4"))])
+
+    def test_listed_played_and_remixed(self):
+        self.assertEqual({j["id"]: j["seconds"] for j in self.studio.state()["jobs"]}, {"3" * 32: 3, "4" * 32: 4})
+        for jid, seconds in (("3" * 32, 3), ("4" * 32, 4)):
+            code, headers, data = self.studio.get(f"/video/{jid}")
+            self.assertEqual((code, data), (200, (self.old / f"{seconds}.mp4").read_bytes()))
+            self.assertIn(f"_{seconds}s_seed7_", headers["Content-Disposition"])
+            self.assertEqual(self.studio.get(f"/poster/{jid}")[0], 200)
+            rec = json.loads(self.studio.get(f"/api/jobs/{jid}")[2])
+            self.assertEqual((rec["state"], rec["seconds"]), ("done", seconds))
+        listing = json.loads(self.studio.get(f"/api/inputs/{'4' * 32}")[2])
+        self.assertEqual(([i["name"] for i in listing["inputs"]["first_frame"]], listing["missing"]), (["first.png"], []))
+        code, body = self.studio.generate(task="fl2va", orientation="portrait", seconds=4, remix_from="4" * 32,
+                                          keep="first_frame:0")
+        self.assertEqual((code, body), (400, {"error": f"ValueError: {GONE}"}))
+        jid = self.generate(task="fl2va", orientation="portrait", seconds=5, remix_from="4" * 32, keep="first_frame:0")
+        job = self.studio.wait([jid], timeout=30)[0]
+        self.assertEqual((job["status"], job["seconds"]), ("done", 5), job.get("error"))
+        self.assertEqual(Path(job["first_frame"]).stat().st_ino, (self.old / "first.png").stat().st_ino)
+        self.assertEqual(self.studio.job("4" * 32)["seconds"], 4)          # the old clip is as it was
+
+
+class OldLengthWarmUp(StudioTest):
+    """A 0.5.0 state started by this server: the start-up warm-up after a 4 s clip (the last finished) loads 5 s, as
+    its Remix on the page does, and a 3 s clip that was queued or running when 0.5.0 stopped reads failed ("server
+    restarted") as any other, keeps its length and is not run or warmed up for."""
+    preload = True
+
+    def seed(self):
+        self.write_state([finished_job("1" * 32, seconds=10, created=1), finished_job("2" * 32, seconds=4, created=2),
+                          dict(finished_job("3" * 32, seconds=3, created=3), status="queued"),
+                          dict(finished_job("5" * 32, seconds=3, created=4), status="generating", started=4)])
+
+    def test_warm_up_at_5_s(self):
+        s = self.studio.wait_for(lambda s: s["session"].get("loading_key"))
+        self.assertEqual(s["session"]["loading_key"], ["t2va", "landscape", 5])
+        jobs = {j["id"]: j for j in s["jobs"]}
+        for jid in ("3" * 32, "5" * 32):
+            self.assertEqual((jobs[jid]["status"], jobs[jid].get("error"), jobs[jid]["seconds"]),
+                             ("failed", "server restarted", 3))
+        self.studio.wait_for(lambda s: s["session"]["key"] == ["t2va", "landscape", 5] and s["session"]["state"] == "ready")
+        self.assertIn("preloading ('t2va', 'landscape', 5)", self.studio.log.read_text())
+        sessions = [d.name for d in (self.studio.runtime / "outputs" / "webui").iterdir() if d.is_dir()]
+        self.assertTrue(sessions)
+        self.assertEqual([n for n in sessions if not re.search(r"-t2va-landscape-5s(-\d+)?$", n)], [])   # no 3 s one
 
 
 class WarmUpWithWarmTime(WarmUp):
@@ -1903,7 +1969,7 @@ class Cancel(CancelTest):
             self.assertEqual({z: [i["name"] for i in v] for z, v in listing["inputs"].items()},
                              {"first_frame": ["first.png"], "last_frame": ["last.png"]})
         old = self.studio.job(a)
-        jid = self.generate(task="fl2va", seconds=3, remix_from=a, keep="first_frame:0,last_frame:0")
+        jid = self.generate(task="fl2va", seconds=6, remix_from=a, keep="first_frame:0,last_frame:0")
         job = self.studio.wait([jid], timeout=30)[0]
         self.assertEqual(job["status"], "done", job.get("error"))
         for key in ("first_frame", "last_frame"):
@@ -2345,14 +2411,14 @@ class UpscaleRefusals(UpscaleTest):
 
     def test_clips_it_cannot_upscale(self):
         ten = self.clip(seconds=10, seed=2)
-        three = self.clip(orientation="portrait", seconds=3, seed=6)
+        six = self.clip(orientation="portrait", seconds=6, seed=6)     # (3 s went after 0.5.0)
         fl2va = self.clip(task="fl2va", seed=3, files={"first_frame": [("f.png", png())]})
         failed = self.studio.wait([self.generate(prompt="STUB_FAIL", seed=4)])[0]
-        for job, code, why in ((ten, 400, UPSCALE_LENGTH), (three, 400, UPSCALE_LENGTH), (fl2va, 400, NOT_T2VA),
+        for job, code, why in ((ten, 400, UPSCALE_LENGTH), (six, 400, UPSCALE_LENGTH), (fl2va, 400, NOT_T2VA),
                                (failed, 409, "the clip failed")):
             self.assertEqual(self.studio.upscale(job["id"]), (code, {"error": why}), job["id"])
         found = {j["id"]: j.get("upscalable") for j in self.studio.state()["jobs"]}
-        self.assertEqual((found[ten["id"]], found[three["id"]], found[fl2va["id"]], found[failed["id"]]),
+        self.assertEqual((found[ten["id"]], found[six["id"]], found[fl2va["id"]], found[failed["id"]]),
                          ({"ok": False, "why": UPSCALE_LENGTH}, {"ok": False, "why": UPSCALE_LENGTH},
                           {"ok": False, "why": NOT_T2VA}, None))
         uid = self.upscale(self.clip(seed=5)["id"])

@@ -424,8 +424,7 @@ class PageTexts(unittest.TestCase):
         self.assertIn(f'video with sound, on <span id="machine">{spark["name"]}</span></p>', PAGE)
         t = spark["times"]
         self.assertIn(f'<span id="timesnote">{t[0]}<b>{t[1]}</b>{t[2]}</span>', PAGE)
-        self.assertEqual(spark["eta"], {"3": 40, "4": 45, "5": 60, "6": 70, "7": 80, "8": 90, "10": 125, "12": 150,
-                                        "15": 195})
+        self.assertEqual(spark["eta"], {"5": 60, "6": 70, "7": 80, "8": 90, "10": 125, "12": 150, "15": 195})
 
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_apply_machine(self):

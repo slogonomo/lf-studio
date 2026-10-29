@@ -55,8 +55,8 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | Deviation | Default | How to stay on NVIDIA's route |
 |---|---|---|
 | Portrait 768×1344 output. Not quality-validated: the distilled LoRAs, the H3 upscaler and the H3-to-LTX adapter were trained and validated on landscape. | off | don't select 9:16 |
-| Clip lengths other than 5 s (3-15 s). NVIDIA validated 5 s only. | off | keep 5 s |
-| 3 s clips are below the 4-15 s that MiniMax lists for H3. | off | use 4 s or more |
+| Clip lengths other than 5 s (3-15 s; the studio offers 5, 6, 7, 8, 10, 12 and 15 s). NVIDIA validated 5 s only. | off | keep 5 s |
+| 3 s clips (`infer.py` and the bench; the studio dropped 3 and 4 s after 0.5.0) are below the 4-15 s that MiniMax lists for H3. | off | use 4 s or more |
 | The first-request cuDNN BSA self-check compares 8 calls with the Triton kernel instead of all 200. | on | `SOL_H3_BSA_CHECK_CALLS=200` |
 | Orientation and clip length are applied after the frozen-recipe hash check. `configs/default.json` is still checked against `FROZEN_RECIPE_SHA256` first, then portrait and length are derived from it, the same way upstream derives its Ref2VA options. `results.json` records the derived recipe. | off | landscape, 5 s |
 | Model loading overlaps (see below), so stages load at the same time instead of one after another. | on | no switch; `git apply -R` |
@@ -91,11 +91,13 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 
 - **Purpose.** Lengths other than the frozen 5 s. The draft length is 24 fps × seconds, snapped up to H3's
   17k+5 frame grid. The output is the largest 8m+1 frame count that fits in the draft, at most 65,536 Stage2 tokens.
+  The studio offers 5, 6, 7, 8, 10, 12 and 15 s; 3 and 4 s, offered up to 0.5.0, are gone from it (3 s clips never
+  came out right) and stay in the patch for `infer.py` and the bench.
 
   | Selected | Draft frames | Output frames | Output length | Prompt encoder |
   |---|---|---|---|---|
-  | 3 s | 73 | 73 | 3.04 s | resident |
-  | 4 s | 107 | 105 | 4.38 s | resident |
+  | 3 s (not in the studio) | 73 | 73 | 3.04 s | resident |
+  | 4 s (not in the studio) | 107 | 105 | 4.38 s | resident |
   | 5 s (frozen route) | 124 | 121 | 5.04 s | resident |
   | 6 s | 158 | 153 | 6.38 s | resident |
   | 7 s | 175 | 169 | 7.04 s | resident |
@@ -113,8 +115,8 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 - **Switch.** `infer.py --seconds N`, `Pipeline(..., seconds=N)` or `SOL_H3_SECONDS=N` (an `infer.py` default; the
   web server removes it from its environment, since a 5 s job is sent as "no length" = the frozen route). Unset =
   frozen 5 s route.
-- **Measured.** Warm clips: 3 s 35.8 s, 5 s 54-66 s, 10 s 123.2 s, 15 s 190.8 s.
-- **Deviation.** Not validated by NVIDIA; 3 s is below MiniMax's stated 4-15 s.
+- **Measured.** Warm clips: 5 s 54-66 s, 10 s 123.2 s, 15 s 190.8 s.
+- **Deviation.** Not validated by NVIDIA; 3 s (not in the studio) is below MiniMax's stated 4-15 s.
 
 ### 3. Prompt encoder per request for clips over 10 s
 

@@ -183,11 +183,11 @@ class CliTest(unittest.TestCase):
 class Generate(CliTest):
     def test_wait_and_save(self):
         """9.2 #1: generate --wait --out saves the MP4; stdout is its absolute path and nothing else."""
-        p = self.ok("generate", "--prompt", "a test clip", "--seconds", 3, "--wait", "--out", "c.mp4")
+        p = self.ok("generate", "--prompt", "a test clip", "--seconds", 6, "--wait", "--out", "c.mp4")
         out = self.work / "c.mp4"
         self.assertEqual(p.stdout, f"{out}\n")
-        self.assertAlmostEqual(duration(out), 3.04, delta=0.1)
-        self.assertRegex(p.stderr, r"queued [0-9a-f]{8} \(t2va, landscape, 3 s, seed \d+\), next in line")
+        self.assertAlmostEqual(duration(out), 6.04, delta=0.1)
+        self.assertRegex(p.stderr, r"queued [0-9a-f]{8} \(t2va, landscape, 6 s, seed \d+\), next in line")
         self.assertRegex(p.stderr, r"done in 0:0\d")
         self.assertEqual([f.name for f in self.work.iterdir()], ["c.mp4"])     # no .part left behind
 
@@ -267,6 +267,9 @@ class Generate(CliTest):
                 (["--first-frame", "a.gif"], "unsupported file type .gif"),
                 (["--first-frame", "missing.png"], "no such file: missing.png"),
                 (["--seconds", 9], re.compile(r"invalid choice: '?9'?")),     # Python 3.14 quotes the value
+                (["--seconds", 3], re.compile(r"invalid choice: '?3'? \(choose from '?5'?, '?6'?, '?7'?, '?8'?, "
+                                              r"'?10'?, '?12'?, '?15'?\)")),   # 3 and 4 s went after 0.5.0
+                (["--seconds", 4], re.compile(r"invalid choice: '?4'?")),
                 (["--task", "t2va", "--first-frame", "f.png"], "t2va takes no files"),
                 (["--first-frame", "f.png", "--ref", "f.png"], "can't go together"),
                 (["--task", "ref2va", "--first-frame", "f.png"], "--first-frame is used only by fl2va"),
@@ -783,6 +786,19 @@ class Guide(unittest.TestCase):
         m = re.search(r"<!-- prompt-guide:start -->(.*)<!-- prompt-guide:end -->", text, re.S)
         self.assertIsNotNone(m, "docs/API.md has no prompt-guide markers")
         self.assertEqual(m.group(1).strip(), cli.GUIDE.strip())
+
+    def test_lengths_offered(self):
+        """3 and 4 s went after 0.5.0: the guide, the usage, generate --help and the MCP instructions name 5-15 s."""
+        cli = load_cli()
+        self.assertEqual(cli.DURATIONS, (5, 6, 7, 8, 10, 12, 15))
+        self.assertIn("- `seconds`: 5, 6, 7, 8, 10, 12 or 15.\n", cli.GUIDE)
+        self.assertIn("[--seconds 5|6|7|8|10|12|15]", cli.__doc__)
+        self.assertIn(": 5-15 s,", cli.INSTRUCTIONS)
+        self.assertNotRegex(cli.INSTRUCTIONS, r"\b3 s\b")
+        p = subprocess.run([sys.executable, str(BIN), "generate", "--help"], capture_output=True, text=True,
+                           timeout=30, env=client_env())
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("--seconds S 5, 6, 7, 8, 10, 12 or 15 (default 5)", " ".join(p.stdout.split()))
 
     def test_examples_follow_the_rules(self):
         """The guide's examples keep its own rules, since agents copy them: the ref2va example's

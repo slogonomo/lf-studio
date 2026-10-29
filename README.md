@@ -32,7 +32,8 @@ Modes: text (t2va), first/last frame (fl2va), references (ref2va).
 
 **A web studio** (`webui/`, Python standard library only) that keeps the pipeline loaded between clips:
 
-- Modes Text, Keyframes and Reference (images, videos, audio, with H3's numbering), 16:9 or 9:16, 3-15 s.
+- Modes Text, Keyframes and Reference (images, videos, audio, with H3's numbering), 16:9 or 9:16, 5, 6, 7, 8, 10, 12
+  or 15 s.
 - Prompt examples and section chips in H3's prompt formats (from MiniMax's
   [prompt-writing guides](https://huggingface.co/MiniMaxAI/MiniMax-H3/tree/main/docs)); seed roll; settings
   remembered per browser.
@@ -75,7 +76,7 @@ one DGX Spark; each "Before" is described in its row:
 | t2va 16:9, 15 s, first clip | 681 s | 238 s | the pipeline before these changes: NVIDIA's flow with only this patch's length change (NVIDIA supports 5 s only) |
 | ref2va with a 5 s reference video, each clip | 400 s | 133 s | the same pipeline with NVIDIA's reference-video canvas (H3's native 768p) instead of this repo's draft canvas |
 | Formats | 16:9 | 16:9 and 9:16 | NVIDIA's Sol-H3-Spark |
-| Clip length | 5 s | 3-15 s | NVIDIA's Sol-H3-Spark |
+| Clip length | 5 s | 5-15 s | NVIDIA's Sol-H3-Spark |
 | Lip sync in dialogue: SyncNet confidence, man / woman, 8 clips (higher is better) | 4.4 / 3.5 | 7.8 / 5.2 | NVIDIA's Stage 2, which redraws the lips to a copy of the audio that it regenerates and then discards ([details](docs/PATCH.md#15-stage-2-audio-held-fixed-lip-sync)); H3's own draft scores 8.2 / 6.5 (4 of the clips) |
 
 The VAE fix alone, measured with this repo's loading changes already in on both sides: first clip fl2va (first +
@@ -135,14 +136,15 @@ Not yet: Keyframes and Reference clips, lengths other than 5 s, and NVIDIA's fas
 ## Deviations from NVIDIA's validated recipe
 
 NVIDIA validated the 5 s, 16:9 route. Portrait output is not quality-validated (the LoRAs, upscaler and adapter
-were trained on landscape). Lengths other than 5 s are not validated by NVIDIA, and 3 s is below the 4-15 s that
-MiniMax lists for H3. The first-request attention self-check covers 8 calls instead of 200. Portrait and length
-are derived after the frozen-recipe hash check. Stage 2 refines the video against the H3 audio held fixed instead of
-a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync. Since 0.4 the prompt
-encoder reads the dialogue tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does and H3 was trained
-with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). Also since 0.4, Stage 1 and Stage 2 compile with
-static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), Stage 1's body blocks compile once per session
-for any prompt length (`SOL_H3_DYNAMIC_TEXT_LENGTH=0` compiles them per length, as upstream does), and a session
+were trained on landscape). Lengths other than 5 s are not validated by NVIDIA. The studio offers 5-15 s, inside the
+4-15 s that MiniMax lists for H3; 3 and 4 s, offered up to 0.5.0, are gone (3 s clips never came out right), and the
+patch still takes them, for `infer.py` and the bench. The first-request attention self-check covers 8 calls instead of
+200. Portrait and length are derived after the frozen-recipe hash check. Stage 2 refines the video against the H3 audio
+held fixed instead of a re-noised copy that it regenerates and then discards (NVIDIA's contract), for better lip sync.
+Since 0.4 the prompt encoder reads the dialogue tags `<d>` and `</d>` as single tokens, as MiniMax's tokenizer does and
+H3 was trained with (`SOL_H3_PROMPT_TOKENS=minimax`; `plain` tokenizes as before). Also since 0.4, Stage 1 and Stage 2
+compile with static shapes (`SOL_H3_STATIC_SHAPES=0` compiles as upstream does), Stage 1's body blocks compile once per
+session for any prompt length (`SOL_H3_DYNAMIC_TEXT_LENGTH=0` compiles them per length, as upstream does), and a session
 changes its length and orientation in place, one worker rendering several shapes (`LFSTUDIO_RESHAPE=0` loads the models
 again). All of it can be switched back; see [docs/PATCH.md](docs/PATCH.md#deviations-from-nvidias-validated-recipe).
 

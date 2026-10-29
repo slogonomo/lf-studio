@@ -4,7 +4,7 @@
 One file, standard library only, Python 3.9 or later: copy it to any machine that can reach the studio.
 
   lf-cli generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
-         [--orientation landscape|portrait] [--seconds 3|4|5|6|7|8|10|12|15] [--seed N]
+         [--orientation landscape|portrait] [--seconds 5|6|7|8|10|12|15] [--seed N]
          [--first-frame FILE|URL] [--last-frame FILE|URL] [--ref FILE|URL]...
          [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
   lf-cli wait ID [--out PATH] [--poster] [--timeout S]
@@ -63,7 +63,7 @@ VERSION = "0.5.0"
 AGENT = f"lf-cli/{VERSION}"
 TASKS = ("t2va", "fl2va", "ref2va")
 ORIENTATIONS = ("landscape", "portrait")
-DURATIONS = (3, 4, 5, 6, 7, 8, 10, 12, 15)
+DURATIONS = (5, 6, 7, 8, 10, 12, 15)    # 3 and 4 s went after 0.5.0
 SIZES = {"landscape": (1344, 768), "portrait": (768, 1344)}
 FINISHED = ("done", "failed", "cancelled")
 # the experimental Upscale (POST /api/upscale, docs/API.md): what a request may ask for; the studio's defaults are
@@ -118,7 +118,7 @@ final 1344x768 video uses a fixed prompt of its own.
 - `ref2va`:
   - up to 9 images, 3 videos (2-15 s each) and 3 audio files, 12 files in total;
   - at least one image or video.
-- `seconds`: 3, 4, 5, 6, 7, 8, 10, 12 or 15.
+- `seconds`: 5, 6, 7, 8, 10, 12 or 15.
   - H3 was trained on 4-15 s; NVIDIA validated 5 s.
   - Every time in the prompt must fall inside the clip.
 - `orientation`: landscape (1344x768) or portrait (768x1344; portrait is not quality-validated).
@@ -286,8 +286,8 @@ sound), `<Video 1>` and `<Audio 2>` (the WAV). The prompt must then use those nu
 """
 
 INSTRUCTIONS = (
-    "LF Studio makes short video clips with sound on one DGX Spark or RTX 5090: 3-15 s, 1344x768 (landscape) or "
-    "768x1344 (portrait), 24 fps. One clip renders at a time: on a DGX Spark about 40 s for a 3 s clip to 3:15 for a "
+    "LF Studio makes short video clips with sound on one DGX Spark or RTX 5090: 5-15 s, 1344x768 (landscape) or "
+    "768x1344 (portrait), 24 fps. One clip renders at a time: on a DGX Spark about 1 min for a 5 s clip to 3:15 for a "
     "15 s clip once the models are loaded, plus about 1-2 min when they must load first (a different task than the "
     "last clip; a new format or length of the same task keeps them loaded and adds up to about 30 s the first time), "
     "plus any queue. Call prompt_guide once and write the prompt in H3's structured format: nothing rewrites it. Then "
@@ -2138,7 +2138,7 @@ def parser():
     g.add_argument("--task", choices=TASKS, help="default: fl2va with frames, ref2va with --ref, else t2va")
     g.add_argument("--orientation", choices=ORIENTATIONS,
                    help="default: from the first keyframe's shape, else landscape")
-    g.add_argument("--seconds", type=int, choices=DURATIONS, metavar="S", help="3, 4, 5, 6, 7, 8, 10, 12 or 15 "
+    g.add_argument("--seconds", type=int, choices=DURATIONS, metavar="S", help="5, 6, 7, 8, 10, 12 or 15 "
                                                                               "(default 5)")
     g.add_argument("--seed", type=int, metavar="N", help="default: random")
     g.add_argument("--first-frame", metavar="FILE|URL", help="fl2va: the first frame (an image)")
