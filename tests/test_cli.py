@@ -1023,6 +1023,20 @@ class Guide(unittest.TestCase):
         self.assertIsNotNone(m, "docs/API.md has no prompt-guide markers")
         self.assertEqual(m.group(1).strip(), cli.GUIDE.strip())
 
+    def test_as_v051(self):
+        """The prompt guide is v0.5.1's (from git): it is Sol-H3's, and lf-cli guide and the MCP prompt_guide say the
+        same on every studio, the model choice on or off. The models tool and docs/API.md's Models say the rest."""
+        try:
+            r = subprocess.run(["git", "-C", str(REPO), "show", "v0.5.1:bin/lf-cli"], capture_output=True, text=True,
+                               timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            r = None
+        if r is None or r.returncode:
+            self.skipTest("v0.5.1 is not in this copy's git history")
+        old = next(ast.literal_eval(n.value) for n in ast.parse(r.stdout).body
+                   if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "GUIDE")
+        self.assertEqual(load_cli().GUIDE, old)
+
     def test_lengths_offered(self):
         """3 and 4 s went after 0.5.0: the guide, the usage, generate --help and the MCP instructions name 5-15 s."""
         cli = load_cli()

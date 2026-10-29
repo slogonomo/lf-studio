@@ -556,6 +556,10 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'X-Switchboard-Wait: 
   -F resolution=768p -F 'prompt=<prompt.txt' -F first_frame=@kitchen.png "$S/api/generate"
 ```
 
+**Prompt and keyframes:** write the prompt as for Sol-H3 ([Prompt guide](#prompt-guide)): the model reads the same
+format, and a prompt of the keyframe line alone works too. A keyframe should have the shape of the clip's size
+(1024×576 at 576p, ...): one of another shape is stretched or cropped to fit, and `lf-cli` warns about it.
+
 **How it runs:** as a job of its own in the queue, in order with every other clip. It closes the Sol-H3 models first
 when they are loaded (`status` `freeing memory`, `phase` `unloading`; about 40 s), fails at once below
 `LFSTUDIO_H3TURBO_MIN_FREE_GIB` of free memory (default 100; "close other apps"), encodes the prompt with a Qwen
@@ -930,14 +934,7 @@ format, and MiniMax calls that format critical to the quality of the result, so 
 Plain prose is accepted. The prompt drives the draft picture and **all of the sound**. The refiner that makes the
 final 1344x768 video uses a fixed prompt of its own.
 
-That is Sol-H3, the studio's own model. A studio may offer other models too (`lf-cli models`, the MCP tool
-`models`), such as the experimental LightX2V Turbo, where MiniMax-H3 makes the whole clip from the prompt in one
-stage. They read the same format, so write it the same way.
-
 **1. Task, length, format**
-
-- `model`: without one, Sol-H3. Another model makes the tasks, lengths, formats and sizes it lists, at its own
-  sizes: a keyframe should then have the shape of that size.
 
 - `t2va`: text only. `fl2va`: a first frame, a last frame, or both (images).
   - A keyframe should have the clip's shape (1344x768 or 768x1344, or the same aspect ratio): one of another

@@ -86,7 +86,7 @@ OPTION_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 CORE_FIELDS = ("prompt", "task", "orientation", "seconds", "seed", "first_frame", "last_frame", "ref_images",
                "ref_videos", "ref_audio", "remix_from", "keep", "model")
 FRAME_SETS = {("first_frame",): "first", ("last_frame",): "last", ("first_frame", "last_frame"): "first+last"}
-IMG =(".png", ".jpg", ".jpeg", ".webp")
+IMG = (".png", ".jpg", ".jpeg", ".webp")
 VID = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
 AUD = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
 REF_ZONE = dict([(e, "ref_images") for e in IMG] + [(e, "ref_videos") for e in VID] + [(e, "ref_audio") for e in AUD])
@@ -123,14 +123,7 @@ format, and MiniMax calls that format critical to the quality of the result, so 
 Plain prose is accepted. The prompt drives the draft picture and **all of the sound**. The refiner that makes the
 final 1344x768 video uses a fixed prompt of its own.
 
-That is Sol-H3, the studio's own model. A studio may offer other models too (`lf-cli models`, the MCP tool
-`models`), such as the experimental LightX2V Turbo, where MiniMax-H3 makes the whole clip from the prompt in one
-stage. They read the same format, so write it the same way.
-
 **1. Task, length, format**
-
-- `model`: without one, Sol-H3. Another model makes the tasks, lengths, formats and sizes it lists, at its own
-  sizes: a keyframe should then have the shape of that size.
 
 - `t2va`: text only. `fl2va`: a first frame, a last frame, or both (images).
   - A keyframe should have the clip's shape (1344x768 or 768x1344, or the same aspect ratio): one of another
@@ -1790,9 +1783,10 @@ TOOLS = [
              "Default sol-h3 (Sol-H3: two stages, about 1 min for 5 s once loaded). Or another model this studio "
              "lists (the models tool, which says what each makes), e.g. lightx2v-turbo: experimental, one stage, "
              "keeps a keyframe's look. Checked against the studio before anything is sent")},
-         "resolution": {"type": "string", "description": "An option of the model: lightx2v-turbo 576p (the "
-                                                         "default, 1024x576) or 768p (1344x768)"},
-         "steps": {"type": "integer", "minimum": 1, "description": "An option of the model (lightx2v-turbo: 4)"},
+         "resolution": {"type": "string", "description": ("An option of the model, the clip's size (the models "
+                                                          "tool lists each model's choices)")},
+         "steps": {"type": "integer", "minimum": 1, "description": ("An option of the model (the models tool lists "
+                                                                    "each model's choices)")},
          "options": {"type": "object", "description": ("Other options of the model by name, as the models tool "
                                                        "lists them, e.g. {\"resolution\": \"768p\"}")},
          "wait_s": WAIT_S, "out": OUT, "poster": POSTER,
@@ -2519,9 +2513,10 @@ def parser():
     g.add_argument("--model", metavar="ID",
                    help=f"default {DEFAULT_MODEL} (Sol-H3); another model the studio lists (lf-cli models), e.g. the "
                         "experimental lightx2v-turbo. Checked against the studio before anything is sent")
-    g.add_argument("--resolution", metavar="R", help="an option of the model: lightx2v-turbo 576p (the default) or "
-                                                     "768p (as --option resolution=R)")
-    g.add_argument("--steps", type=int, metavar="N", help="an option of the model (as --option steps=N)")
+    g.add_argument("--resolution", metavar="R", help="an option of the model, the clip's size (as --option "
+                                                     "resolution=R; lf-cli models lists each model's choices)")
+    g.add_argument("--steps", type=int, metavar="N", help="an option of the model (as --option steps=N; lf-cli "
+                                                          "models lists each model's choices)")
     g.add_argument("--option", action="append", metavar="NAME=VALUE",
                    help="any option of the model, as lf-cli models lists them (repeat)")
     g.add_argument("--wait", action="store_true", help="wait for the clip and save the MP4 (into the current "
