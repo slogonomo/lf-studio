@@ -110,22 +110,24 @@ in a research probe on one DGX Spark (11 Keyframes clips of 5 s), frame 0 matche
 top of the prompt card, and agents and scripts name the model (`lf-cli generate --model lightx2v-turbo`, the MCP tool
 `generate`); `lf-cli models` and the MCP tool `models` list what each model makes.
 
-- **What it makes:** Text and Keyframes (a first frame, a last frame alone, or both), 16:9 or 9:16, at 576p
-  (1024×576, the default) in 5, 6, 7, 8, 10 or 12 s, or at 768p (1344×768) in 5 to 10 s. Reference and 15 s show
-  greyed out, with the reason. What each model makes is a table in the studio, so offering more is a change of that
-  table once a GPU run has validated it. A clip with a last frame ends on it: it keeps every frame the model makes (124
-  at 5 s, 5.17 s, where other clips keep the studio's 121), because the model anchors the last frame to its last one.
+- **What it makes:** Text and Keyframes (a first frame, a last frame alone, or both), 5, 6, 7, 8, 10, 12 or 15 s,
+  16:9 or 9:16, at 576p (1024×576, the default) or 768p (1344×768). Reference shows greyed out, with the reason. What
+  each model makes is a table in the studio, so offering more is a change of that table once a GPU run has validated
+  it. A clip with a last frame ends on it: it keeps every frame the model makes (124 at 5 s, 5.17 s, where other clips
+  keep the studio's 121), because the model anchors the last frame to its last one. 15 s makes 362 frames, a little
+  over the 15.0 s that Diffusers takes; the job lifts that limit for those clips only.
 - **It is slower.** Measured on one DGX Spark (its job run by hand, one clip per process, 4 steps): the job took
   2.9-3.2 min for a 5 s clip at 576p and 5.5-5.8 min at 768p, 6.4 and 13.5 min for 10 s, and 10.1 min for 14 s at
-  576p, the longest run; the prompt encode adds 9-18 s
-  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-lightx2v-turbo)). The studio shows an
-  estimate per size and length until it has measured a clip of its own (about 3:20 at 576p and 5:50 at 768p for 5 s,
-  6:40 and 13:40 for 10 s, 8:20 for 12 s at 576p). A clip closes the Sol-H3 models first when they are loaded (about
-  40 s), and the next Sol-H3 clip loads them again. 6, 7, 8 and 12 s have not run on the GPU yet: their times and
-  memory floors are estimates from the runs above.
-- **Not yet:** upscaling its clips, keeping its model loaded between clips, Reference, and 15 s and 768p 12 s (its
-  job takes them; they wait for a GPU run: 15 s makes 362 frames, a little over the 15.0 s that Diffusers takes, and
-  768p 12 s a longer sequence than any run so far).
+  576p; in one Text run each on 2026-10-29, 10.5 min for 15 s at 576p, and 17.3 and 23.8 min for 12 and 15 s at 768p.
+  The prompt encode adds 9-18 s ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-lightx2v-turbo)). Through the
+  studio's own queue (a staging studio on one DGX Spark, 2026-10-29, one clip each), 5 s clips took 3.2-3.4 min at
+  576p and 5.6 min at 768p, and a 10 s clip at 576p 6.7 min, prompt encode included. The studio shows an estimate per
+  size and length until it has measured a clip of its own (about 3:20 at 576p and 5:50 at 768p for 5 s, 11:00 and
+  24:00 for 15 s). A clip closes the Sol-H3 models first when they are loaded (about 40 s), and the next Sol-H3 clip
+  loads them again. A 768p clip of 12 s or more needs more free memory to start (103 GiB at 12 s, 107 at 15 s,
+  against 100). 6, 7 and 8 s, and 12 s at 576p, have not run on the GPU: their times and memory floors are estimates
+  from the runs above.
+- **Not yet:** upscaling its clips, keeping its model loaded between clips, and Reference.
 
 With the setting off the studio is as it was. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-lightx2v-turbo); the API:

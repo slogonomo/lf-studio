@@ -386,18 +386,19 @@ choice (`lf-cli models` says which models it has). `lf-cli` and the MCP server c
 Sol-H3 clip is made in its place.
 
 **400 `LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3`,
-`LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not 15 s: use Sol-H3`, `LightX2V Turbo does not make
-clips with ..., seconds 12, ..., resolution 768p, ... together yet`, `resolution must be 576p or 768p for
-lightx2v-turbo`, `steps must be 4 for lightx2v-turbo`.** What LightX2V Turbo makes is a table in the studio, and these
-are not in it yet; the page greys them out with the same reason. Use Sol-H3 for them, or 576p for 12 s. 15 s and 768p
-12 s wait for a GPU run. `resolution is an option of lightx2v-turbo; sol-h3 takes none`: the option goes with
+`resolution must be 576p or 768p for lightx2v-turbo`, `steps must be 4 for lightx2v-turbo`.** What LightX2V Turbo
+makes is a table in the studio, and these are not in it yet; the page greys them out with the same reason. Use
+Sol-H3 for them. `resolution is an option of lightx2v-turbo; sol-h3 takes none`: the option goes with
 `"model": "lightx2v-turbo"` only. (Before its GPU validation it also refused 6-12 s and a last frame alone, `LightX2V
-Turbo makes 5 s clips for now` and `... needs a first frame for now`; it makes those now.)
+Turbo makes 5 s clips for now` and `... needs a first frame for now`, and until 15 s and 768p 12 s had run on the GPU
+(one run each, on one DGX Spark, 2026-10-29), `LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not
+15 s: use Sol-H3` and `LightX2V Turbo does not make clips with ..., seconds 12, ..., resolution 768p, ... together
+yet`; it makes all those now.)
 
 **A LightX2V Turbo clip with a last frame is 3 frames longer** (124 frames at 5 s, `clip_..._124f.mp4`, where its
 other clips and Sol-H3's have 121). The model anchors the last frame to the last frame it makes, so such a clip keeps
 every frame made and ends on your last frame; the studio's usual length would end 3 frames (0.125 s) before it. At 6 to
-12 s it is 2 to 7 frames longer, with its sound as long.
+12 s it is 2 to 7 frames longer, at 15 s one (362), with its sound as long.
 
 **400 `lightx2v-turbo needs SOL_H3_PROMPT_TOKENS=minimax for a prompt with MiniMax's tokens (<d>, ...)`.** The
 studio's settings tokenize prompts as plain text (`SOL_H3_PROMPT_TOKENS=plain`), which splits `<d>` and the other
@@ -407,8 +408,10 @@ Remove the setting (minimax is the default), or write the prompt without those t
 **`not enough free memory for a LightX2V Turbo clip: N GiB available with the models closed, 100 GiB needed
 (LFSTUDIO_H3TURBO_MIN_FREE_GIB); close other apps`** (or, with a lower setting, `90 GiB needed (what a 576p 5 s clip
 needs, more than LFSTUDIO_H3TURBO_MIN_FREE_GIB=80)`). The studio closed the Sol-H3 models, and something else still
-holds the memory. Close it and try again. On one DGX Spark the job took 80-92 GiB of MemAvailable at its lowest (from
-about 117 GiB: 24.5 GiB left at 768p 10 s, the most it used). The setting is a minimum: below what the job's memory
+holds the memory. Close it and try again. On one DGX Spark the job took 80-98 GiB of MemAvailable at its lowest (from
+about 117 GiB: 24.5 GiB left at 768p 10 s, 22.5 at 768p 12 s; 768p 15 s, the most it used, took 97.6 GiB). A 768p clip
+of 12 s or more needs more than the default 100 GiB: 103 GiB at 12 s (`103 GiB needed (what a 768p 12 s clip needs,
+more than LFSTUDIO_H3TURBO_MIN_FREE_GIB=100)`) and 107 at 15 s. The setting is a minimum: below what the job's memory
 model says a clip of its size and length needs to stay above the job's own 6 GiB stop (90 GiB at 576p 5 s, 100 at
 768p 10 s), the clip would be stopped part way, so a lower value does not take it below that; 0 turns the check off
 ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)).

@@ -106,24 +106,25 @@ stand-in's, that the real job takes every clip the registry offers and gives its
 tables and answers are the real job's; and `TurboEncodeSeam` the real prompt encode's (the arguments the server gives
 it, its refusal line, the files and keys the server reads); `ModelChoiceOff` runs v0.5.1's server from git next to this
 one with the model choice off and compares what they answer, value by value, and v0.5.1's `lf-cli` with this one;
-`ServerParts` compiles parts of the server (`stop_job`, `registry_problems`) from its source with stand-ins, for what a
-stub studio can't reach on cue. `tests/test_api.py` has the API records (`Model*`). The `Model*` classes in
-`tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V Turbo doesn't make yet greyed out
-with the reason (Reference and 15 s, and 768p at 12 s, a size and length it makes apart only; with `not_yet_table`, its
-table before its GPU validation put into `/api/state`, also lengths and a last frame alone: no field changes another,
-Generate is disabled and says why), the header, the times per size and length and Generate's label per model, the
-request, the choices kept, the card's model tag, its Upscale button and download name, Remix, a clip's progress and the
-status line, Cancel, and a clip of a model that is off now; `ModelChoiceOffPage` loads this page and v0.5.1's (from git)
-side by side with the model choice off and compares their pixels, texts, requests and kept choices after the same
+`ServerParts` compiles parts of the server (`stop_job`, `registry_problems`, `model_refusal` on a table of two rows)
+from its source with stand-ins, for what a stub studio can't reach on cue. `tests/test_api.py` has the API records
+(`Model*`). The `Model*` classes in `tests/test_page.py` cover the page: the Model row and the Size row, what LightX2V
+Turbo doesn't make yet greyed out with the reason (Reference; with `not_yet_table`, its table before its GPU validation
+put into `/api/state`, also lengths and a last frame alone; with `apart_table`, its table before 15 s and 768p 12 s ran
+on the GPU, 15 s and 768p at 12 s, a size and length it made apart only: no field changes another, Generate is disabled
+and says why), the header, the times per size and length and Generate's label per model, the request, the choices kept,
+the card's model tag, its Upscale button and download name, Remix, a clip's progress and the status line, Cancel, and a
+clip of a model that is off now; `ModelChoiceOffPage` loads this page and v0.5.1's (from git) side by side with the
+model choice off and compares their pixels, texts, requests and kept choices after the same
 clicks; `MachineTexts` checks Sol-H3's times in the Model row per backend; `KeyframeLine` the fl2va keyframe line that
 the chip, the Example and the placeholder write for the keyframes attached (the prompt guide's line for one keyframe,
 the page's two-picture line for both). `tests/ui_test.py` checks the Model row when a studio has one (`UiTestScript`
 runs it with a LightX2V Turbo clip). The client: `Models`, `ModelsRunning`, `ModelsOff` and `ModelsOldStudio` in
 `tests/test_cli.py` (`lf-cli models`, `generate --model` with the model's options and its files, every refusal before
-anything is sent, the shape warning at the model's size, status and cancel while a clip runs, a studio with the model
-choice off, an older studio and one that spark-switchboard has stopped: fake servers), and `Models` and `ModelsOff` in
-`tests/test_mcp.py` (the `models` tool, `generate` with a model, the repeat key with the model and its options, the
-refusals; `FakeStudio` has the stopped studio).
+anything is sent, also of values a table makes apart only (a fake server), the shape warning at the model's size, status
+and cancel while a clip runs, a studio with the model choice off, an older studio and one that spark-switchboard has
+stopped: fake servers), and `Models` and `ModelsOff` in `tests/test_mcp.py` (the `models` tool, `generate` with a model,
+the repeat key with the model and its options, the refusals; `FakeStudio` has the stopped studio).
 
 `tests/test_backend.py` covers `LFSTUDIO_BACKEND` on the CPU: the launcher's `--check` and `--kill` with no backend
 (the Spark: its package, the Docker refusal, the 110 GiB floor), with `rtx5090` (a copy of the stub runtime as
@@ -168,11 +169,12 @@ torch is importable (CPU is enough) and are skipped otherwise.
 `tests/test_h3turbo_job.py` covers `jobs/h3turbo_job.py` on the CPU: job.json and its refusals, the geometry (every
 length against the patch's `runtime/geometry.py`, the frames a clip with a last frame keeps, the layout rows against the
 research probe's GPU receipts), the studio's model of a clip (memory floor per size and length, estimates) against the
-GPU validation's receipts, how a keyframe is fitted to the canvas, the sigmas, the LoRA header rules on sparse stand-in
-files, the conditioning checks, the settings and `--check-install`, the command line, the environment and the progress
-lines against `upscale/regen2k_job.py`'s, the memory trace, the fast load with stand-in loaders, `--check`, the receipt
-when a job is done, fails, is refused, is aborted for memory or gets SIGTERM, and `--parent`. Its torch parts (the LoRA
-hooks against PEFT, the conditioning tensors, and `run()` itself on a tiny random-weight MiniMax-H3 at the real 576p
+GPU validation's receipts and the later runs of 576p 15 s and 768p 12 and 15 s, how a keyframe is fitted to the canvas,
+the sigmas, the LoRA header rules on sparse stand-in files, the conditioning checks, the settings and `--check-install`,
+the command line, the environment and the progress lines against `upscale/regen2k_job.py`'s, the memory trace, the fast
+load with stand-in loaders, `--check`, the receipt when a job is done, fails, is refused, is aborted for memory or gets
+SIGTERM, and `--parent`. Its torch parts (the LoRA hooks against PEFT, the conditioning tensors, and `run()` itself on a
+tiny random-weight MiniMax-H3 at the real 576p
 canvases: t2va, a first frame, first + last and a last frame alone (the MP4 ends on the frame the last keyframe is
 anchored to), the memory abort and SIGTERM; on a small canvas 15 s, past diffusers' stock 15.0 s, with the limit raised
 for that clip and refused without it, and 14 s as stock) need torch and diffusers 0.40.0 and are skipped otherwise; run

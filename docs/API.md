@@ -311,12 +311,11 @@ behind:
    `lightx2v-turbo is off on this studio (LFSTUDIO_MODELS)`, an option of another model (`resolution is an option of
    lightx2v-turbo; sol-h3 takes none`), a value the model lacks (`resolution must be 576p or 768p for
    lightx2v-turbo`), and a clip outside what the model makes now, with its reason (`LightX2V Turbo makes Text
-   (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3`), or values it makes only apart
-   (`LightX2V Turbo does not make clips with task t2va, seconds 12, orientation landscape, resolution 768p, steps 4
-   together yet`). With
-   `SOL_H3_PROMPT_TOKENS=plain`, a LightX2V Turbo prompt that holds MiniMax's tokens (`<d>`, ...) is refused too.
-   With the model choice off, `"model": "sol-h3"` is taken and any other model refused; the form, lenient as ever,
-   ignores option fields, and JSON refuses them as unknown keys.
+   (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3`), or, for a model whose table
+   makes some values only apart (none does now), `<name> does not make clips with task ..., seconds ..., ...
+   together yet`. With `SOL_H3_PROMPT_TOKENS=plain`, a LightX2V Turbo prompt that holds MiniMax's tokens (`<d>`, ...)
+   is refused too. With the model choice off, `"model": "sol-h3"` is taken and any other model refused; the form,
+   lenient as ever, ignores option fields, and JSON refuses them as unknown keys.
 4. The pipeline's own check of the request.
 
 A refusal is 400 `{"error": "<type>: <message>"}`, for example `{"error": "ValueError: prompt is empty"}`.
@@ -429,7 +428,7 @@ One clip renders at a time. Measured on one DGX Spark ([PERFORMANCE.md](PERFORMA
 | t2va, the first clip after a change of task (the models load first; also after any change with `LFSTUDIO_RESHAPE=0`) | 5 s: 104-113 s in the studio, 99 s with `infer.py` · 15 s: 238 s with `infer.py` |
 | The first clip of fl2va (first and last frame) / ref2va (an image and a video), 5 s | 115 s / 178 s with `infer.py` |
 | Cancel of a running clip, until the pipeline has closed | about 40 s; the next clip then loads the models again |
-| LightX2V Turbo (experimental), 4 steps ([Models](#models-experimental-lightx2v-turbo)) | not measured in the studio's queue yet. Its job, run by hand on one DGX Spark (2026-10-28/29, one clip per process, its load included, the prompt encode not): 173-190 s for 5 s at 576p, 328-350 s at 768p; 387 s for 10 s at 576p, 813 s at 768p; 606 s for 14 s at 576p ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). The studio shows its estimate per size and length until it has measured a clip (5 s: about 3:20 at 576p, 5:50 at 768p; 10 s: about 6:40 and 13:40), plus about 40 s when the Sol-H3 models must close first |
+| LightX2V Turbo (experimental), 4 steps ([Models](#models-experimental-lightx2v-turbo)) | In the studio's queue (a staging studio on one DGX Spark, 2026-10-29, one clip each, the prompt encode included): 191-204 s for 5 s at 576p, 338 s at 768p, 399 s for 10 s at 576p. Its job, run by hand on one DGX Spark (2026-10-28/29, one clip per process, its load included, the prompt encode not): 173-190 s for 5 s at 576p, 328-350 s at 768p; 387 s for 10 s at 576p, 813 s at 768p; 606 s for 14 s and 632 s for 15 s at 576p; 1036 s for 12 s and 1425 s for 15 s at 768p ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). The studio shows its estimate per size and length until it has measured a clip (5 s: about 3:20 at 576p, 5:50 at 768p; 15 s: about 11:00 and 24:00), plus about 40 s when the Sol-H3 models must close first |
 
 Add the clips queued before it. The first run of a new setting after an install also compiles its kernels once
 (t2va 16:9 15 s: 357 s). The MP4s in one studio's publish folder were 3.2 MB on average and at most 7.7 MB (100
@@ -543,20 +542,17 @@ always been. A studio on a DGX Spark with `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo
 (`lightx2v-turbo`): the full MiniMax-H3 in one stage with LightX2V's turbo LoRA (`lightx2v/Minimax-h3-Turbo`), which
 keeps the look of a keyframe more closely than Sol-H3's draft and refine, and takes longer.
 
-**What it makes:** Text (t2va) and Keyframes (fl2va: a first frame, a last frame alone, or both), 16:9 or 9:16, in 4
-steps, at `576p` (1024×576 or 576×1024, the default) in 5, 6, 7, 8, 10 or 12 s, or at `768p` (1344×768 or 768×1344) in
-5, 6, 7, 8 or 10 s. Reference (ref2va) and 15 s are not offered yet: a request for them gets 400 with the reason, and
-the page shows them greyed out with it; so is 12 s at 768p (`LightX2V Turbo does not make clips with ..., seconds 12,
-..., resolution 768p, ... together yet`). Its job takes 15 s and 768p 12 s, but neither has run on the GPU yet: 15 s
-makes 362 frames (15.08 s), past the 15.0 s that Diffusers 0.40 takes, which the job raises for those clips alone
-(`jobs/h3turbo_job.py`, "Lengths"). Every model is meant to make all that Sol-H3 makes in the end. What a model makes
-now is data in the studio's table (`/api/state` `models`, below), so offering more needs no change in the page, `lf-cli`
-or the MCP server.
+**What it makes:** Text (t2va) and Keyframes (fl2va: a first frame, a last frame alone, or both), 5, 6, 7, 8, 10, 12
+or 15 s, 16:9 or 9:16, at `576p` (1024×576 or 576×1024, the default) or `768p` (1344×768 or 768×1344), in 4 steps.
+Reference (ref2va) is not offered yet: a request for it gets 400 with the reason, and the page shows it greyed out with
+it. Every model is meant to make all that Sol-H3 makes in the end. What a model makes now is data in the studio's
+table (`/api/state` `models`, below), so offering more needs no change in the page, `lf-cli` or the MCP server.
 
-**Its clip's length:** as Sol-H3's (121 frames at 5 s, 5.04 s; 289 at 12 s), except with a last frame: the model
+**Its clip's length:** as Sol-H3's (121 frames at 5 s, 5.04 s; 361 at 15 s), except with a last frame: the model
 anchors that keyframe to the last frame it makes, so such a clip keeps every frame made and ends on it (124 frames at
-5 s, 5.17 s; 158 at 6 s, 175, 192, 243 and 294 at 12 s), its sound as long. The clip's MP4 name has its frame count
-(`clip_1024x576_124f.mp4`).
+5 s, 5.17 s; 158 at 6 s, 175, 192, 243, 294 and 362 at 15 s), its sound as long. 15 s makes 362 frames (15.08 s),
+past the 15.0 s that Diffusers 0.40 takes: the job raises that limit for those clips alone (`jobs/h3turbo_job.py`,
+"Lengths"). The clip's MP4 name has its frame count (`clip_1024x576_124f.mp4`).
 
 **Request:** `"model": "lightx2v-turbo"` and its options, `"resolution": "576p"` or `"768p"` and `"steps": 4`, in the
 form or JSON of `POST /api/generate` ([Form fields](#form-fields)); left out, an option is the model's default.
@@ -573,21 +569,23 @@ format, and a prompt of the keyframe line alone works too. A keyframe should hav
 **How it runs:** as a job of its own in the queue, in order with every other clip. It closes the Sol-H3 models first
 when they are loaded (`status` `freeing memory`, `phase` `unloading`; about 40 s), fails at once below
 `LFSTUDIO_H3TURBO_MIN_FREE_GIB` of free memory (default 100; "close other apps"; the setting is a minimum: a clip
-needs at least what its job's memory model says one of its size and length takes, 90 GiB at 576p 5 s and 100 at 768p
-10 s, so a lower value does not take it below that), encodes the prompt with a Qwen
-worker of its own (`encoding the prompt`, `phase` `encoding`), then runs its GPU job (`loading models + generating`,
-then `generating`; `job_phase` says which step). Cancel stops it at any point. There is no retry after a failure and
-no warm-up after it: the next Sol-H3 clip loads its models again. A queue that mixes models pays a close or a load at
-each change. `POST /api/load` with `"model": "lightx2v-turbo"` answers 409 `LightX2V Turbo loads its model with each
+needs at least what its job's memory model says one of its size and length takes, 90 GiB at 576p 5 s, 100 at 768p
+10 s, 103 at 768p 12 s and 107 at 768p 15 s, so a lower value does not take it below that), encodes the prompt with a
+Qwen worker of its own (`encoding the prompt`, `phase` `encoding`), then runs its GPU job (`loading models +
+generating`, then `generating`; `job_phase` says which step). Cancel stops it at any point. There is no retry after a
+failure and no warm-up after it: the next Sol-H3 clip loads its models again. A queue that mixes models pays a close
+or a load at each change. `POST /api/load` with `"model": "lightx2v-turbo"` answers 409 `LightX2V Turbo loads its model with each
 clip; there is nothing to load ahead`.
 
-**Time:** not measured in the studio's queue yet. Its job, run by hand on one DGX Spark (2026-10-28/29, 4 steps, one
-clip per process with the model's load), took 173-190 s for 5 s at 576p and 328-350 s at 768p, 387 s and 813 s for 10
-s, and 606 s for 14 s at 576p; its prompt encode took 9-18 s
+**Time:** its job, run by hand on one DGX Spark (2026-10-28/29, 4 steps, one clip per process with the model's load),
+took 173-190 s for 5 s at 576p and 328-350 s at 768p, 387 s and 813 s for 10 s, and 606 s for 14 s at 576p; in one
+Text run each (2026-10-29), 632 s for 15 s at 576p, and 1036 s and 1425 s for 12 and 15 s at 768p. Its prompt encode
+took 9-18 s. In the studio's queue (a staging studio on one DGX Spark, 2026-10-29, one clip each), a 5 s clip took
+191-204 s at 576p and 338 s at 768p, and a 10 s clip at 576p 399 s, from the prompt encode to the poster
 ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). Until it has measured a clip of a size and length, the
 studio shows its estimate for it, from those runs (`eta_s`: about 3:20 at 576p and 5:50 at 768p for 5 s, 6:40 and 13:40
-for 10 s, 8:20 for 12 s at 576p), and the clip's own time after that. 6, 7, 8 and 12 s have not run on the GPU: their
-times and memory floors are estimates.
+for 10 s, 11:00 and 24:00 for 15 s), and the clip's own time after that. 6, 7 and 8 s, and 12 s at 576p, have not run
+on the GPU: their times and memory floors are estimates.
 
 **Files and names:** a LightX2V Turbo clip downloads as
 `lf-studio_lightx2v-turbo-<resolution>_<task>_<seconds>s_seed<seed>_<id6>.mp4`, and its `LFSTUDIO_PUBLISH_DIR` copy
@@ -612,21 +610,17 @@ loaded or loading, else `null`). `models` lists the models on, in order, each as
 {"id": "lightx2v-turbo", "name": "LightX2V Turbo", "runs": "job", "experimental": true, "default": false,
  "capabilities": {"task": [{"value": "t2va", "offered": true}, {"value": "fl2va", "offered": true},
                            {"value": "ref2va", "offered": false, "why": "LightX2V Turbo makes Text (t2va) and Keyframes (fl2va) clips for now, not Reference (ref2va): use Sol-H3"}],
-                  "seconds": [{"value": 5, "offered": true}, {"value": 6, "offered": true}, "...",
-                              {"value": 15, "offered": false, "why": "LightX2V Turbo makes clips of up to 12 s for now (10 s at 768p), not 15 s: use Sol-H3"}],
+                  "seconds": [{"value": 5, "offered": true}, {"value": 6, "offered": true}, "..."],
                   "...": "..."},
  "options": [{"name": "resolution", "label": "Size", "type": "string", "default": "576p",
               "choices": [{"value": "576p", "size": {"landscape": [1024, 576], "portrait": [576, 1024]}, "offered": true},
                           {"value": "768p", "size": {"landscape": [1344, 768], "portrait": [768, 1344]}, "offered": true}]},
              {"name": "steps", "label": "Steps", "type": "integer", "default": 4, "choices": [{"value": 4, "offered": true}]}],
  "combinations": [{"task": ["t2va", "fl2va"], "frames": ["first", "last", "first+last"],
-                   "seconds": [5, 6, 7, 8, 10, 12], "orientation": ["landscape", "portrait"],
-                   "resolution": ["576p"], "steps": [4]},
-                  {"task": ["t2va", "fl2va"], "frames": ["first", "last", "first+last"],
-                   "seconds": [5, 6, 7, 8, 10], "orientation": ["landscape", "portrait"],
-                   "resolution": ["768p"], "steps": [4]}],
+                   "seconds": [5, 6, 7, 8, 10, 12, 15], "orientation": ["landscape", "portrait"],
+                   "resolution": ["576p", "768p"], "steps": [4]}],
  "eta_s": {"576p/4/5": {"s": 200, "measured": false}, "576p/4/6": {"s": 250, "measured": false}, "...": "...",
-           "768p/4/10": {"s": 820, "measured": false}}}
+           "768p/4/15": {"s": 1440, "measured": false}}}
 ```
 
 With the model choice off (`LFSTUDIO_MODELS` unset, or `sol-h3` alone) the studio answers as before: no `models`, no
