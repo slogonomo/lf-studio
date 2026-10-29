@@ -26,6 +26,10 @@ try:
 except ImportError:
     sync_playwright = None
 
+# the Upscale popover's note on a clip whose route has not run on the GPU through the studio yet (every clip but a
+# Sol-H3 Text clip; the page's UP_UNRUN)
+UP_UNRUN = "This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's"
+
 
 @unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")
 class PageTest(unittest.TestCase):
@@ -479,6 +483,8 @@ class UiTestScript(unittest.TestCase):
     def test_reshape_on(self):
         out = self.run_ui_test("1")
         for check in ("SKIP model choice checks (one model on this studio)",
+                      "PASS the Upscale popover of a Keyframes clip says which text it uses ('Uses your prompt without "
+                      "its keyframe line, encoded first (~')",
                       "PASS Generate keeps the models when the format differs",
                       "PASS Generate keeps the models when the length differs",
                       "PASS Generate warns about a reload when the mode differs"):
@@ -1757,11 +1763,11 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
                           self.page.get_attribute(f"{self.card(long)} .act.up", "title")), ("true", UPSCALE_LENGTH))
         self.open_popover(kf)
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt without its keyframe line, encoded first "
-                                                           "(~15 s)")
+                                                           f"(~15 s). {UP_UNRUN}")
         self.page.keyboard.press("Escape")
         self.open_popover(ref)
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt with the references taken out, encoded "
-                                                           "first (~15 s)")
+                                                           f"first (~15 s). {UP_UNRUN}")
         with self.page.expect_request("**/api/upscale") as request:
             self.page.click("#upgo")
         self.assertEqual(json.loads(request.value.post_data), {"id": ref, "resolution": "2k", "strength": "balanced"})
@@ -1781,17 +1787,17 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.assertEqual(self.page.evaluate("""[{resolution: '1080p', steps: 2, text: {source: 'encode'}},
             {resolution: '1080p', steps: 2, text: {source: 'generation'}},
             {resolution: '1080p', steps: 2, text: {source: 'clip'}}].map(upEta)"""), [630, 615, 615])
-        notes = self.page.evaluate("""[
-            [{task: 't2va'}, {text: 'clip', video: 'clip'}], [{task: 't2va'}, {text: 'clip', video: 'stretch'}],
-            [{task: 'fl2va'}, {text: 'generation', video: 'stretch+trim'}],
-            [{task: 'fl2va'}, {text: 'encode', video: 'trim'}],
-            [{task: 't2va'}, undefined]].map(([j, u]) => upNotes(j, u))""")
+        notes = self.page.evaluate(f"""[
+            [{{task: 't2va'}}, {{text: 'clip', video: 'clip'}}], [{{task: 't2va'}}, {{text: 'clip', video: 'stretch'}}],
+            [{{task: 'fl2va'}}, {{text: 'generation', video: 'stretch+trim'}}],
+            [{{task: 'fl2va'}}, {{text: 'encode', video: 'trim'}}],
+            [{{task: 't2va'}}, undefined], [{{task: 't2va', model: '{TURBO}'}}, {{}}]].map(([j, u]) => upNotes(j, u))""")
         self.assertEqual(notes, [
-            "", "From the 576p clip, stretched to 768p first",
+            "", f"From the 576p clip, stretched to 768p first. {UP_UNRUN}",
             "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first. Its first 121 "
-            "frames: the last 3, up to your last keyframe, are left out",
+            f"frames: the last 3, up to your last keyframe, are left out. {UP_UNRUN}",
             "Uses your prompt without its keyframe line, encoded first (~15 s). Its first 121 frames: the last 3, up "
-            "to your last keyframe, are left out", ""])
+            f"to your last keyframe, are left out. {UP_UNRUN}", "", UP_UNRUN])     # a 768p Text clip of the turbo
 
 
 class UpscalePageOff(PageTest):
@@ -2201,9 +2207,9 @@ class ModelCards(ModelPage):
         up = f"{self.card(turbo)} .act.up"
         self.assertEqual((self.page.get_attribute(up, "aria-disabled"), self.page.get_attribute(up, "title")),
                          ("false", "Upscale to 1080p, 2K or 4K (experimental)"))
-        self.page.click(up)                                                  # a 768p Text clip: as it is, no note
+        self.page.click(up)              # a 768p Text clip: as it is, with the note that it has not run on the GPU
         self.page.wait_for_selector("#uppop", state="visible")
-        self.assertTrue(self.page.is_hidden("#upinput"))
+        self.assertEqual(self.page.inner_text("#upinput"), UP_UNRUN)
         self.page.keyboard.press("Escape")
         self.assertEqual(self.page.get_attribute(f"{self.card(sol)} .act.up", "aria-disabled"), "false")
         self.assertEqual(self.page.get_attribute(f"{self.card(turbo)} a.act", "download"),
@@ -2247,7 +2253,7 @@ class ModelUpscale(ModelPage):
         self.page.wait_for_selector("#uppop", state="visible")
         self.assertEqual(self.page.inner_text("#upinput"),
                          "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first. Its "
-                         "first 121 frames: the last 3, up to your last keyframe, are left out")
+                         f"first 121 frames: the last 3, up to your last keyframe, are left out. {UP_UNRUN}")
         self.page.click('#uppop label[for="up-1080p"]')
         self.page.click("#upgo")
         self.page.wait_for_selector("#uppop", state="hidden")

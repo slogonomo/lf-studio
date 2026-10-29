@@ -431,12 +431,16 @@ const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==
 const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
   return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0);};
 // What the Upscale does with a clip besides its MP4 (/api/state upscalable: "text", where its text alone comes from;
-// "video", what is done to the MP4), for the popover; nothing for a Sol-H3 Text clip, which it takes as it is
+// "video", what is done to the MP4), for the popover; nothing for a Sol-H3 Text clip, which it takes as it is. Every
+// other clip's route has not run on the GPU through the studio yet (docs/PERFORMANCE.md): UP_UNRUN says so, and its
+// times are a Text clip's, until the GPU runs of these routes
+const UP_UNRUN="This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's";
 const upNotes=(j,u)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='generation';
   if(own)n.push(j.task==='ref2va'?'Uses your prompt with the references taken out':'Uses your prompt without its keyframe line');
   if(u.text==='encode')n[n.length-1]+=', encoded first (~15 s)';
   if(/stretch/.test(u.video||''))n.push('From the 576p clip, stretched to 768p first');
   if(/trim/.test(u.video||''))n.push('Its first 121 frames: the last 3, up to your last keyframe, are left out');
+  if(jobModel(j)!=='sol-h3'||(u.text&&u.text!=='clip')||(u.video&&u.video!=='clip'))n.push(UP_UNRUN);
   return n.join('. ');};
 // an upscale's card: the text it used, when not the clip's own prompt
 const upText=j=>j.text&&j.text.prompt?(j.task==='ref2va'?'prompt without its references':'prompt without its keyframe line'):'';
