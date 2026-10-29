@@ -10,6 +10,11 @@ run and undoes it afterwards. In `--dry` and in the tests it is `Recorder`, whic
                                  decoder tiles along the frame's short and long side; (0, 0) = one tile on that side.
                                  The temporal tiles stay 128/24.
   run.profile_step(index)        torch.profiler around one denoise step (its timings are perturbed)
+  run.keyframe(mode)             SOL_H3_STAGE2_KEYFRAME for this run: off, pin (the first frame held at latent frame 0;
+                                 the default since 0.5.2) or draft (the draft's own frame 0 held). It applies to fl2va
+                                 drafts with a first frame only; other drafts run as off. pin builds the image encoder
+                                 once if the process lacks it (started with SOL_H3_STAGE2_KEYFRAME off or draft), and it
+                                 then stays loaded.
 
 The output canvas is fixed per process (Inductor compiles one shape), so an arm declares it (`canvas=480`) instead
 of setting it per run. 768 means the draft's own 2x canvas, as the studio renders.
@@ -19,6 +24,7 @@ other runtime check stays in force; the bench also checks after each run that th
 """
 
 SOL_LAYERS = 47                  # Sol attention layers per step (48-layer refiner, layer 0 dense): 3 steps = 141 calls
+KEYFRAME_MODES = ("off", "pin", "draft")       # runtime/config.py STAGE2_KEYFRAME_MODES
 TEMPORAL_TILES = (128, 24)
 # canvas -> (short side, long side) of the output; 768 = the draft's own 2x canvas (1344x768 or 768x1344)
 CANVASES = {768: None, 480: (480, 832), 384: (384, 672)}
@@ -82,6 +88,30 @@ def decode_long768(run):
 @arm("profile_step", est_s=36.7, desc="baseline with torch.profiler around denoise step 1 (timings perturbed)")
 def profile_step(run):
     run.profile_step(1)
+
+
+# ---- the user's first frame in Stage 2 (SOL_H3_STAGE2_KEYFRAME, issue #57; fl2va drafts with a first frame) -------
+@arm("keyframe_off", est_s=35.6, desc="no keyframe pin, whatever SOL_H3_STAGE2_KEYFRAME says (as before 0.5.2)")
+def keyframe_off(run):
+    run.keyframe("off")
+
+
+@arm("keyframe_pin", est_s=35.6, desc="the first frame, stretched to the canvas and encoded by the LTX-2.5 VAE, held "
+                                      "clean at latent frame 0 (the default since 0.5.2; as fast as keyframe_off)")
+def keyframe_pin(run):
+    run.keyframe("pin")
+
+
+@arm("keyframe_draft", est_s=35.6, desc="the draft's own frame-0 latent held clean at latent frame 0 (a control for "
+                                        "keyframe_pin)")
+def keyframe_draft(run):
+    run.keyframe("draft")
+
+
+@arm("keyframe_pin_steps2", est_s=27.5, desc="keyframe_pin with the 2-step refine 0.725/0.421875/0")
+def keyframe_pin_steps2(run):
+    run.keyframe("pin")
+    run.sigmas((0.725, 0.421875, 0.0))
 
 
 # ---- 832x480 (480x832 for portrait): own process, compiles new shapes on its first run (+70-80 s) ---------------
@@ -168,7 +198,7 @@ class Recorder:
         self.recipe_sigmas = tuple(recipe_sigmas)
         self.geo = geo
         self.values = {"sigmas": list(recipe_sigmas), "denoise": True, "tiles": default_tiles(geo),
-                       "profile_step": None}
+                       "profile_step": None, "keyframe": None}
         self.changed = []
 
     def sigmas(self, values):
@@ -197,6 +227,12 @@ class Recorder:
     def profile_step(self, index):
         self.values["profile_step"] = int(index)
         self.changed.append("profile_step")
+
+    def keyframe(self, mode):
+        if mode not in KEYFRAME_MODES:
+            raise ValueError(f"keyframe mode must be one of {KEYFRAME_MODES}, not {mode!r}")
+        self.values["keyframe"] = mode
+        self.changed.append("keyframe")
 
     @property
     def steps(self):
@@ -231,4 +267,12 @@ def settings(name, recipe_sigmas, native):
             "sigmas": rec.values["sigmas"], "steps": steps, "denoise": rec.values["denoise"],
             "tiles": tiles_hw(rec.values["tiles"], geo), "tiles_default": "tiles" not in rec.changed,
             "upscale_scale": round(upscale_scale(geo), 4), "video_tokens": video_tokens(geo),
-            "profile_step": rec.values["profile_step"], "relaxes": relaxes, "desc": a.desc}
+            "profile_step": rec.values["profile_step"], "keyframe": rec.values["keyframe"], "relaxes": relaxes,
+            "desc": a.desc}
+
+
+def keyframe_expected(mode, capture):
+    """The keyframe mode a run's Stage-2 receipt must show (stage2_keyframe): `mode` for an fl2va draft with a first
+    frame (its capture.json input_spec), "off" for any other draft (runtime/stage2.py keyframe_mode_for)."""
+    spec = capture.get("input_spec") or {}
+    return mode if capture.get("task") == "fl2va" and spec.get("first_frame") else "off"

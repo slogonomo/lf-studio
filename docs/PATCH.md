@@ -4,11 +4,12 @@
 [NVlabs/Sana](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3/Sol-H3-Spark) repository,
 branch `sol-engine`. It is a plain `git diff`: 27 files, 20 modified and 7 new.
 
-- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 135 CPU tests pass.
-- Also checked on `sol-engine` HEAD `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
-  69 CPU tests passed with the patch of that date. The upstream files the patch touches are identical in both commits.
-  The current patch also applies (`git apply --check`) to `670482d` and to `62da34b` (2026-10-11), where those files
-  are unchanged too.
+- Base: `6c2f582ba9681dfe352ae4ca23b6f0030cf120cf` (`patches/BASE_COMMIT`). Applies cleanly; 156 CPU tests pass.
+- Also checked on `sol-engine` `670482d8a857d578ac8a2ea89b052d0fb47badba` (2026-09-29): applies cleanly,
+  69 CPU tests passed with the patch of that date. The files the patch touches are byte-identical at `670482d` and at
+  `62da34b` (2026-10-11) (compared by tree), so it applies there as at the base. `sol-engine` `6e4a440` (2026-10-28)
+  changes `runtime/stage2.py` (its own `prepare_multimodal_states`, which holds the audio frozen), and neither this
+  patch nor 0.5.1's applies there.
 - 19 of the 20 modified files are in `models/minimax_h3/Sol-H3-Spark`. One is a shared Sana module:
   `models/minimax_h3/super_acceleration/stage2/refiner_encoder_ablation_single_gpu.py`.
 - Every modified file carries a `Modified by lf-studio` comment at its first change. Other changed lines are
@@ -24,10 +25,11 @@ git apply --check /path/to/lf-studio/patches/lf-studio.patch
 git apply /path/to/lf-studio/patches/lf-studio.patch
 
 # CPU tests (no GPU, no weights), with the Stage1 python. SOL_H3_SPARK_COMFY_ROOT (the pinned ComfyUI) lets the
-# prompt-token tests read its Qwen tokenizer files; without it 5 tests are skipped.
+# prompt-token tests read its Qwen tokenizer files, and the keyframe-pin tests find the pinned LTX-2 next to it
+# (sources/LTX-2, or SOL_H3_SPARK_LTX_ROOT); without it 8 tests are skipped (5 + 3).
 cd models/minimax_h3/Sol-H3-Spark
 SOL_H3_SPARK_COMFY_ROOT=~/sol-h3/sources/ComfyUI CUDA_VISIBLE_DEVICES= ~/sol-h3/envs/stage1/bin/python -B \
-    -m unittest discover -s tests   # Ran 135 tests ... OK (skipped=1)
+    -m unittest discover -s tests   # Ran 156 tests ... OK (skipped=1)
 
 # the skipped test (ComfyUI's own MiniMaxH3Tokenizer) needs ComfyUI's packages: run the prompt-token tests in the
 # Qwen image, on the CPU (no --gpus)
@@ -66,6 +68,7 @@ NVIDIA validated one route: 5 s, 1344×768 (16:9), with the checks described in 
 | A running session changes its clip length and orientation in place (reshape) instead of loading the models again. It gave the same Stage-1 latents as a fresh session at every shape checked, and the same MP4 wherever two fresh sessions agree (5 s, 10 s, 9:16). At 15 s Stage 2 differed between any two processes, reshaped or not, because three kernels were tuned again in each. 0.4 stops this re-tuning ([8](#8-inductor-autotune-cache-fix-torch-213), issue #51). In the staging check of 0.4, two fresh 15 s sessions and one reshaped from 10 s gave the same clip ([18](#18-reshape-another-length-or-orientation-without-a-reload)). | on (studio) | `LFSTUDIO_RESHAPE=0` (studio setting) |
 | Stage 1's regions and Stage 2's blocks compile with `torch.compile(dynamic=False)`: every graph is static, also after a shape change, apart from the dimensions that `SOL_H3_DYNAMIC_TEXT_LENGTH=1` marks dynamic ([17](#17-prompt-lengths-without-recompiles)). This changes Stage 1's graphs from the first request on: upstream compiles the regions for updates 2-4 with a dynamic size even then (inferred from the code). The output was the same with and without it in one GPU check (3 clips). See [18](#18-reshape-another-length-or-orientation-without-a-reload). | on | `SOL_H3_STATIC_SHAPES=0` |
 | Stage 1's 50 body blocks compile once per session for any prompt length, with symbolic sequence sizes, instead of a graph per prompt length. The output was bit-identical with and without it in two GPU checks (16 warm clips; in the 0.4 staging check, 5 clips against renders made before it). See [17](#17-prompt-lengths-without-recompiles). | on (since 0.4) | `SOL_H3_DYNAMIC_TEXT_LENGTH=0` |
+| Stage 2 holds a Keyframes (fl2va) clip's first frame clean at latent frame 0, encoded by the LTX-2.5 VAE, as NVIDIA's GB200 parent of this Stage 2 does; Sol-H3-Spark's Stage 2 never sees the image. Measured on the GPU: frame 0 at 30-38 dB against the image instead of 17-23 dB, Stage 2 no slower, a clip's lowest MemAvailable 0.6-1.0 GiB lower. The encoder's weights (608 MiB) stay resident in Keyframes sessions. See [19](#19-stage-2-keyframe-pin). | on (since 0.5.2) | `SOL_H3_STAGE2_KEYFRAME=off` |
 
 Everything here was run on one DGX Spark. It was not run on other hardware.
 
@@ -195,6 +198,11 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
   guard's 5 GiB. After the release, the bench traces had 34-39 GiB in every setting and the test studio 34.2-37.0 GiB,
   so the check passes in a normal session. It is there for a box with less free memory. `results.json` records the
   minimum that applied (`resident_qwen.min_gib`, `min_from`).
+  Since 0.5.2 a Keyframes session's Stage 2 also holds the keyframe pin's image encoder (608 MiB,
+  [19](#19-stage-2-keyframe-pin)), which is already in memory when the reading is taken. In one fl2va 16:9 10 s first
+  clip on a test studio (2026-10-29) the reading was 37.9 GiB with the pin and 39.1 GiB without, the encoder loaded
+  during the first clip both times, and the clip's lowest MemAvailable was 11.3 GiB against 11.9 GiB. The minimums
+  stay.
   With a cold compile cache (the first run of a format and length), Stage2's first refine also compiles and
   benchmarks kernels (max-autotune) while the encoder loads. That first clip is then likely slower than it would be
   without the load, and the kernel choices saved in the cache are timed under it (inferred, not measured).
@@ -284,7 +292,7 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 - **Measured.** 11/11 hits, no re-tuning; Stage2 first render 45-49 → 41 s; first clip 103-104 → 99.3/99.4 s.
   Specific to torch 2.13's Inductor; re-check it when the Stage2 torch changes. The 0.4 change is checked on the CPU
   only, with a stand-in `CachingAutotuner` that follows torch 2.13's halving, benchmark and coordinate-descent rules
-  and uses torch's own cache check (19). The GPU check (two fresh 15 s sessions and a reshaped one with the same MP4
+  and uses torch's own cache check (20). The GPU check (two fresh 15 s sessions and a reshaped one with the same MP4
   streams, no `tuned at run time` line after the first 15 s process) runs in staging.
 
 ### 9. VAEs built on the GPU
@@ -631,7 +639,129 @@ and identity are unchanged, and the image is 5-11% sharper.
     after the 15 s clips was back at its 5 s level (37.6 GiB). The BSA self-check ran 8 calls at each new shape.
 - **Deviation.** One worker renders several shapes; NVIDIA ran one shape per process (see the table above).
 
-### 19. Tests
+### 19. Stage-2 keyframe pin
+
+- **Purpose.** Issue #57. A Keyframes (fl2va) clip's draft keeps the uploaded first frame: Stage 1 gets it as clean
+  condition rows. Stage 2 never sees it. It starts every token, frame 0 included, at 9 % of the draft and 91 % noise
+  (sigma 0.909375) and refines for three updates under its fixed generic prompt, so it repaints the first frame and the
+  faces in it. That is upstream's route: Sol-H3-Spark's `first_frame_path` returns None and its
+  `encode_highres_first_frame` no conditioning, and its README guarantees neither the endpoints nor the identity.
+  Measured on the CPU from the saved Stage-1 latents of 6 fl2va clips (frame 0 against the input stretched to the
+  draft's grid): 23-34 dB PSNR and face SSIM 0.68-0.90 in the draft, 16-23 dB and 0.34-0.64 after Stage 2, which
+  painted another face in every frame. On the RTX 5090, whose Stage 2 does the same, it also drew people into the
+  first frame of two clips whose image and draft had nobody in it.
+- **What `pin` does.** What NVIDIA's GB200 parent of this Stage 2 does
+  (`super_acceleration/stage2/official_compat_h3_refiner_diagnostic.py`, `encode_highres_first_frame`; LTX-2's own
+  two-stage pipeline does the same in its second stage):
+  - Stage 2 takes the first frame from the capture's `input_spec`, the file Stage 1 read (the capture now also
+    records its sha256, which Stage 2 checks). It stretches it to the output canvas as H3 stretched it (LANCZOS, EXIF
+    orientation applied, no colour conversion: `qwen_ops/media.py`, the same as FastVideo's preparation of the first
+    keyframe), 1344×768 or 768×1344, and writes it to `keyframe_first_<W>x<H>.png` in the clip's `stage2` folder. LTX's
+    own loader would center-crop; on an image already at the canvas its resize changes nothing.
+  - The LTX-2.5 video VAE's encoder, built from the output VAE file the decoder uses (608 MiB in BF16), encodes it
+    after LTX's H.264 re-compression at the checkpoint's CRF (18): `ImageConditioningInput(frame_idx=0, strength=1.0)`
+    at the output canvas, which becomes `VideoConditionByLatentIndex(latent_idx=0)`.
+  - That latent replaces latent frame 0, Stage 2's first 1,008 tokens, with a denoise mask of 0: those tokens are
+    never noised, the transformer sees them at timestep 0, they stay clean through the three updates, and the decoder
+    decodes them. No token is added: the same shapes, compiled graphs and 141 Sol calls. Every other token gets the
+    same noise draw as without the pin, and the audio is unchanged.
+  - The encoder is built when Stage 2 loads, after the audio encoder, in fl2va sessions only. It runs uncompiled, so
+    the compile cache doesn't change.
+- **`draft`.** Holds the draft's own frame-0 latent (the adapter's output) the same way, without an encoder: frame 0
+  keeps the draft's identity at the draft's detail. A control for the GPU check, not meant for clips.
+- **What it doesn't change.** t2va and ref2va clips (no encoder is built, no conditioning added); fl2va clips with only
+  a last frame (nothing is at frame 0); the last frame of a first-and-last clip (H3 puts it at the draft's last frame,
+  1-7 frames after the output's last; a latent frame there covers 8 frames, and LTX-2 holds an image at a later frame
+  only with extra tokens and an attention mask, so new compiled graphs: not in this change); the generic Stage-2
+  prompt; frames 1 and later, which are still refined from 91 % noise (with frame 0 held, some keep the identity
+  better: measured below).
+- **Receipts.** In `stage2_result.json`: `stage2_keyframe` (what the clip got: off, pin or draft) and
+  `stage2_keyframe_setting`; `result.highres_first_frame` (None as before, or the source and its sha256, the PNG and its
+  sha256, canvas, resize, CRF, latent index 0, strength 1, tokens [0, 1008]);
+  `result.spatial_route.actual_calls.input_video_vae` 1 under a pin (always 0 before); the phases `keyframe_stretch_s`
+  and `highres_first_frame_condition_s` (the encode; on the RTX 5090 also `image_encoder_move_s`, the encoder's two
+  moves between the CPU and the GPU, which are part of it). Stage 2 checks that a pin encoded once and anything else
+  never, and that the encode gave one condition at latent index 0, strength 1, of this canvas's shape. The session
+  receipt: `refiner_recipe.stage2_keyframe`, a `stage2_keyframe` block, and `latent_only_transfer` false in an fl2va
+  session with `pin` (Stage 2 then reads the image too). The capture keeps `latent_only_transfer: true` (Stage 1 still
+  hands over only latents) and records `input_sha256` for the first and last frame. A first frame that is gone, or
+  changed since Stage 1 read it, fails the clip with its path.
+- **Cost.** +608 MiB resident in fl2va sessions with `pin`, loaded with Stage 2, before the resident prompt encoder's
+  memory check (item 4). Per clip: the stretch and PNG, 0.05-0.2 s on the DGX Spark's CPU (sources up to 4032×3024),
+  and one encode at the output canvas (on that CPU 2.8-3.1 s, and at most 0.4 GiB above the weights while it runs).
+  On the GPU (below) Stage 2 took no longer with the pin, encode included, and a clip's lowest MemAvailable was
+  0.6-1.0 GiB lower.
+- **Files.** `runtime/stage2.py`, `runtime/stage2_ops/models.py` (`build_image_encoder`), `runtime/config.py` (the
+  setting), `runtime/pipeline.py` (checks it first), `runtime/stage1_ops/capture.py` (`input_sha256`),
+  `tests/test_stage2_contract.py`, `tests/test_pipeline.py`, `tests/test_geometry.py`, `tests/test_reshape.py`.
+- **Switch.** `SOL_H3_STAGE2_KEYFRAME`: `pin` (the default since 0.5.2; empty is the default too), `off` (upstream's
+  route, as before 0.5.2) or `draft`, in any case. Another value fails when the pipeline is created; the studio and
+  `bin/lf-studio --check` refuse to start with it. They also refuse `pin` and `draft`, the default included, with a
+  patch from before this change, which never pins: run `install/10-sana.sh`, or set `off`. The same on the RTX 5090,
+  whose patch has the setting too since 0.5.2 ([RTX5090.md](RTX5090.md), item 19 there).
+- **Checked on the CPU.** With LTX-2's own conditioning, latent tools, noiser and Euler step (tests, item 20): at
+  16:9 5 s the pin keeps the 16,128 tokens, the mask and the positions; tokens 0-1,007 are the image's
+  with a mask of 0, every other token is bit-identical to `off`; frame 0 is the image after three Euler updates with
+  any prediction, and in the latent the decoder gets; frame 0 is 1,008 tokens at every studio length in both
+  orientations. With NVIDIA's own `encode_highres_first_frame` and the real encoder weights, on the CPU in the Stage2
+  env (not a test): one `VideoConditionByLatentIndex` with a (1, 128, 1, 24, 42) BF16 latent for 16:9 and
+  (1, 128, 1, 42, 24) for 9:16, CRF 18, 608.3 MiB of encoder weights.
+- **Measured on the GPU** (one DGX Spark, 2026-10-29). Stage 2 replayed from 7 saved Keyframes drafts (16:9 and
+  9:16, two with a first and a last frame) with the replay bench's keyframe arms
+  ([PERFORMANCE.md](PERFORMANCE.md#replay-bench-stage-2-on-saved-drafts)), started with `SOL_H3_STAGE2_KEYFRAME=pin`
+  so that the encoder was loaded as in a studio session, plus a Text and a Reference draft; then clips through a test
+  studio with `pin` (16:9 10 s, 9:16 15 s, 9:16 5 s with a first and a last frame, 16:9 5 s) and with `off` (the
+  10 s and 15 s ones again). Against the user's first frame, stretched to the canvas:
+
+  | | frame 0 PSNR | frame 0 face SSIM | frames 1-16 face SSIM |
+  |---|---|---|---|
+  | `off` (before 0.5.2) | 17-23 dB | 0.31-0.78 | 0.08-0.57 |
+  | `pin` | 30-38 dB | 0.78-0.97 | 0.08-0.69 |
+
+  - Frames 1-16 kept the identity clearly better in 3 of the 7 drafts (0.40 → 0.66, 0.48 → 0.62, 0.43 → 0.61), a
+    little better in two, and about the same in the fast-moving ones. In one draft Stage 2 turned a robot's
+    box-shaped head into a lantern with `off`; with `pin` the head stayed through frame 16.
+  - No flash: the change from frame 0 to frame 1, against the clip's median change from one frame to the next, was no
+    larger than with `off`.
+  - Stage 2 time: 37.4 s with `pin` against 37.5 s with `off` (warm replays, 5 s), 83.6 s against 83.8 s (studio,
+    10 s), 124.4 s against 126.9 s (studio, 15 s).
+  - Text and Reference drafts gave bit-identical video and audio with `off` and `pin`.
+  - Memory in the test studio (Stage 1 and the resident prompt encoder loaded too), lowest MemAvailable of a clip:
+    11.3 GiB with `pin` against 11.9 GiB with `off` at 16:9 10 s (the session's first clip; the resident prompt
+    encoder still loaded during it, item 4), 18.5 against 19.5 GiB at 9:16 15 s, 12.2-12.4 GiB at 5 s (`pin` only).
+  - The pin holds frame 0 only. Later frames are still repainted, so some drift remains in clips with a lot of
+    motion.
+
+  So `pin` became the default in 0.5.2.
+- **On the RTX 5090** (`patches/lf-studio-rtx5090.patch`, the same change). With the 5090's CPU offload the encoder
+  is built on the CPU, as the audio encoder and the video decoder are, and is on the GPU only for the one encode of a
+  pinned clip: after the H3 upscaler and the adapter are back on the CPU, before the transformer's blocks run.
+  Measured on a workstation with one RTX 5090 (2026-10-29), clips through a test studio with its own Stage-1
+  snapshots, fixed seeds, `off` and `pin` in sessions of their own: the 9:16 Keyframes clip of the report (5 s), a
+  second 9:16 clip from the same image, a 16:9 crop of it and a 16:9 first and last frame at 5 s, the first one at
+  10 and 15 s (`pin` only), and a Text and a Reference clip. Against the first frame, stretched to the canvas:
+
+  | | frame 0 PSNR | frame 0 SSIM | frame 0 face SSIM | frames 1-16 face SSIM (5 s) |
+  |---|---|---|---|---|
+  | `off` | 18.3-20.7 dB | 0.63-0.75 | 0.40-0.51 | 0.40-0.51 |
+  | `pin` | 32.5-36.1 dB | 0.93-0.96 | 0.85-0.90 | 0.51-0.60 |
+
+  - Frames 1-16 kept the face better in all three 5 s clips (0.41 → 0.60, 0.40 → 0.51, 0.51 → 0.59). At 10 and 15 s
+    frame 0 was the same as at 5 s (32.8 and 32.5 dB).
+  - Stage 2 time: 15.0-15.4 s with `pin` against 14.9-15.2 s with `off` (warm, 5 s), 20.2-20.8 s against 20.9-21.4 s
+    for a session's first clip. The encode (`highres_first_frame_condition_s`) took 0.20-0.35 s, the encoder's two
+    moves 0.14-0.18 s of that, the stretch 0.05-0.23 s.
+  - GPU memory: the same peak, 27.1 GiB with `pin` against 27.2 GiB with `off` on the card at the same desktop load
+    (warm 9:16 5 s; the desktop held 3.8 GiB). Host RAM: the encoder's 608 MiB (the Stage-2 worker's RSS, sampled every
+    0.5 s: 20.1-21.2 GiB in five pinned clips against 20.2 GiB in two), and the lowest MemAvailable 8.8 against 9.1 GiB
+    in a session's first clip, 6.6 against 6.9 GiB in the next.
+  - Text and Reference clips: no encoder built, no receipt entry, the same audio. The Reference video was
+    bit-identical with `off` and `pin`; the Text video was 82.8 dB from `off`'s with a session started the same way
+    (both from a Stage-1 snapshot; a clip from the same session position repeats bit-identically on the 5090), and
+    48.7 dB from one whose H3 was built instead, as two `off` clips differ.
+- **Deviation.** With `pin`, Stage 2 reads the keyframe image, which Sol-H3-Spark's route does not (see the table).
+
+### 20. Tests
 
 `tests/test_geometry.py` (new) covers the derived portrait geometry. `tests/test_pipeline.py` adds
 deliver-first, when the resident prompt encoder starts, the new `Pipeline` arguments and the compile-cache
@@ -668,13 +798,25 @@ while a reshape closes the encoder, a wait for a loading encoder that is interru
 (the minimum of item 4 for the new length, the session's prompt-token mode whether given to `Pipeline` or read from
 `SOL_H3_PROMPT_TOKENS`, two reshapes without a clip between them, never two resident encoders), a reshape before the
 first clip, and the `SPARK_DEBUG_AUTOTUNE` lines.
+`tests/test_stage2_contract.py` also covers the keyframe pin (19): the setting (`pin` when unset or empty), which
+clips it applies to, the stretch (against H3's preparation, also with EXIF orientation and a colour profile), a request
+through `Session.run` with a stand-in of NVIDIA's refiner in each mode and with the default (the record, the
+conditionings and the receipts; `off`, and the default for a last frame alone, t2va and ref2va, give upstream's record
+and an empty conditioning list), the encoder's construction, which sessions build it (also a `Session` made by its own
+`__init__` with the default: fl2va only) and the session receipt. With LTX-2's `ltx_core` (found
+next to `SOL_H3_SPARK_COMFY_ROOT`, or set `SOL_H3_SPARK_LTX_ROOT`; skipped otherwise) it checks the states, the Euler
+updates and the token counts with LTX-2's own classes. `tests/test_pipeline.py` checks the setting before any worker
+starts, `tests/test_geometry.py` the frame-0 tokens of every shape, and `tests/test_reshape.py` the keyframe canvas
+after a reshape and the capture's `input_sha256`.
 Settings: `PipelineReshapeTests` clears the 8 settings it reads (`SOL_H3_RESIDENT_QWEN_EARLY`,
 `SOL_H3_RESIDENT_QWEN_EARLY_MIN_GIB`, `SOL_H3_RESIDENT_QWEN_MAX_FRAMES`, `SOL_H3_PROMPT_TOKENS`,
 `SOL_H3_STATIC_SHAPES`, `SOL_H3_DYNAMIC_TEXT_LENGTH`, `SOL_H3_ORIENTATION`, `SOL_H3_SECONDS`), and `QwenReshapeTests`
 clears `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS`. `UserSettingsTests` runs both classes again with a user's own value
 of each of the 8. `tests/test_pipeline.py` clears the three `SOL_H3_RESIDENT_QWEN_*` settings in its tests of where
-the resident encoder starts. Other tests still read `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS`, so
-`install/10-sana.sh` runs the suite without the settings file's switches. 135 tests in total (upstream: 65).
+the resident encoder starts. In `tests/test_stage2_contract.py`, `Stage2KeyframeTests` clears `SOL_H3_STAGE2_KEYFRAME`,
+`SOL_H3_ORIENTATION`, `SOL_H3_SECONDS` and `SOL_H3_PROMPT_TOKENS`, and `KeyframePinLtxTests` clears the last three in
+its test of the studio's shapes. Other tests still read `SOL_H3_ORIENTATION` and `SOL_H3_SECONDS`, so
+`install/10-sana.sh` runs the suite without the settings file's switches. 156 tests in total (upstream: 65).
 
 ## All switches
 
@@ -695,6 +837,7 @@ the resident encoder starts. Other tests still read `SOL_H3_ORIENTATION` and `SO
 | `SOL_H3_VAE_ON_DEVICE` | 1 | 0 = build the VAEs on the CPU as upstream |
 | `SOL_H3_AUDIO_VAE_PREFETCH` | 1 | 0 = load the audio VAE when first needed |
 | `SOL_H3_STAGE2_AUDIO` | frozen | `joint` = upstream: Stage 2 re-noises and regenerates the audio it refines the video against |
+| `SOL_H3_STAGE2_KEYFRAME` | pin | `pin` = Stage 2 holds a Keyframes clip's first frame clean at latent frame 0 ([19](#19-stage-2-keyframe-pin)); `off` = upstream: Stage 2 repaints it; `draft` = the draft's own frame 0 (a control) |
 | `SOL_H3_PROMPT_TOKENS` | minimax | `plain` = as up to 0.3: the pinned ComfyUI splits MiniMax's 7 prompt tokens (`<d>`, `</d>`, ...) into text tokens; `minimax` reads each as one token, as in H3's training |
 | `SOL_H3_DYNAMIC_TEXT_LENGTH` | 1 | 0 = Stage 1's body blocks compile a graph per prompt length, as upstream; 1 = once per session for any length ([17](#17-prompt-lengths-without-recompiles)) |
 | `SOL_H3_STATIC_SHAPES` | 1 | 0 = upstream `torch.compile(dynamic=None)`: after a size change a graph may get dynamic sizes ([18](#18-reshape-another-length-or-orientation-without-a-reload)) |

@@ -203,7 +203,7 @@ def make_plan(a, out):
     info = planlib.package_info(package, setting("LFSTUDIO_SANA"), setting("LFSTUDIO_REPO"))
     return planlib.build(selected, planlib.parse_arms(a.arms or "baseline", a.repeats), package=package,
                          geometry=geometry, paths_template=setting("LFSTUDIO_PATHS"), out=out, label=a.label or "",
-                         stop_at=a.stop_at, info=info)
+                         stop_at=a.stop_at, info=info, keyframe_setting=os.environ.get("SOL_H3_STAGE2_KEYFRAME"))
 
 
 def cmd_run(a):
