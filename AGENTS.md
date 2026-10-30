@@ -136,7 +136,7 @@ for a stopped studio that does not know it, against fake servers: `Switchboard` 
 `UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a route has not run on the GPU through
 the studio (on the routes the page's `UP_RAN` leaves out), and the one that a length has not (its offer's `"ran"`), a
 long clip's times and the sizes its length does not have greyed with the reason (and the popover at 1080p for a 12 s
-clip), the encode's phase and time, the text an upscale used and its clip's model; in cards too narrow for the names,
+clip; `UpscaleOldClipPage` a 3 s clip's, its 4K greyed as "not this clip"), the encode's phase and time, the text an upscale used and its clip's model; in cards too narrow for the names,
 Upscale and Delete show icons, so the buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off),
 the popover (`ModelUpscale` its notes per size and Keep my frames: the box per ends, off with the reason at 4K and other
 strengths, "only partly" at 2K, its note only at a size where its route has not run, `pin` in the request, the card's

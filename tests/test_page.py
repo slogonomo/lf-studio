@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "stub"))
 from studio import StubStudio  # noqa: E402
 from test_server import (BOTH, KEYFRAME_PROMPT, NOT_REF2VA, REFERENCE_PROMPT, TURBO,  # noqa: E402
-                         UPSCALE_LENGTH, finished_job, history, mp4, png, release_server)
+                         UPSCALE_LENGTH, finished_job, history, mp4, png, release_server, session_clip)
 
 try:
     from playwright.sync_api import sync_playwright
@@ -1913,6 +1913,46 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.assertEqual(texts, ["first frame kept", "first and last frames kept",
                                  "first frame kept · last frame not kept (25.4 dB from your picture)",
                                  "last frame not kept: your picture changed since the clip was made", "", "", ""])
+
+
+class UpscaleOldClipPage(UpscaleCards, PageTest):
+    """Sol-H3's 3 s clips (made up to 0.5.0): the popover has their times at 1080p and 2K (estimates: the note says
+    they have not run) and 4K greyed as "not this clip" with the reason, as no other length has it; the request asks
+    for the size picked, and the upscale's card has its expected time from the 3 s row."""
+
+    def seed(self):
+        (self.studio.state_dir / "jobs.json").write_text(json.dumps([session_clip(
+            self.studio.runtime, "3" * 32, 3, "refined_336x192_73f.mp4", created=1, prompt="three seconds")]))
+
+    def test_a_3_s_clip(self):
+        jid = "3" * 32
+        self.page.wait_for_selector(f"{self.card(jid)} video")
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "aria-disabled"), "false")
+        self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "title"),
+                         "Upscale to 1080p or 2K (experimental)")
+        self.open_popover(jid)
+        self.assertEqual(self.checked("up_res"), "2k")                      # the studio's default: offered
+        self.assertEqual([self.page.is_disabled(f"#up-{r}") for r in ("1080p", "2k", "4k")], [False, False, True])
+        self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
+                         ["1920×1080", "2560×1440", "4K takes 5 s clips only: 1080p and 2K take this one"])
+        self.assertEqual([self.page.inner_text(f'#uppop label[for="up-{r}"] small') for r in ("1080p", "2k", "4k")],
+                         ["~6 min", "~9 min", "not this clip"])            # 209 + 2 x 63 s, 259 + 2 x 155 s
+        self.assertEqual(self.page.inner_text("#upinput"), UP_LEN_UNRUN)
+        self.page.click('#uppop label[for="up-4k"]', force=True)             # greyed: nothing changes
+        self.assertEqual(self.checked("up_res"), "2k")
+        self.pick("up_res", "1080p")
+        with self.page.expect_request("**/api/upscale") as request:
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data), {"id": jid, "resolution": "1080p", "strength": "balanced"})
+        self.page.wait_for_selector("#uppop", state="hidden")
+        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.assertEqual(self.page.evaluate("id => upEta(known.get(id))", job["id"]), 335)
+        self.studio.wait([job["id"]], timeout=60)
+        self.page.wait_for_selector(f"{self.card(job['id'])} video", timeout=30000)
+        self.assertEqual(self.page.eval_on_selector_all(f"{self.card(job['id'])} .tags .tag",
+                                                        "els => els.map(e => e.textContent)"),
+                         ["1080p upscale", "Text", "3 s"])
 
 
 class UpscalePageOff(PageTest):
