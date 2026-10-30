@@ -495,14 +495,15 @@ If a service file names its pidfile in the old folder, change it together with t
 **The install's own files.** Two files that 0.4 wrote under its name stop the install steps and the bench scripts
 (not the studio):
 
-- A venv that only 0.4 marked as built (`.sol-h3-studio-done` and no `.lf-studio-done` in `~/sol-h3/envs/stage1` or
-  `stage2`). Steps 40 and 50 would build into it again. Rename the marker:
-  `mv ~/sol-h3/envs/stage1/.sol-h3-studio-done ~/sol-h3/envs/stage1/.lf-studio-done`, and the same for `stage2`.
+- A venv that only 0.4 marked as built (`.sol-h3-studio-done` and no `.lf-studio-done` in `envs/stage1` or
+  `envs/stage2` under `$LFSTUDIO_HOME`, `~/sol-h3` by default). Steps 40 and 50 would build into it again. Rename the
+  marker: `mv ~/sol-h3/envs/stage1/.sol-h3-studio-done ~/sol-h3/envs/stage1/.lf-studio-done`, and the same for
+  `stage2`.
 - A Sana checkout last patched by 0.4, whose copy of the applied patch has only its 0.4 name. Rename the copy and its
   `.base` (if there is one), then run `install/10-sana.sh`:
 
 ```bash
-d=$(git -C ~/sol-h3/Sana rev-parse --absolute-git-dir)
+d=$(git -C ~/sol-h3/Sana rev-parse --absolute-git-dir)     # your $LFSTUDIO_SANA
 mv "$d/sol-h3-studio-applied.patch" "$d/lf-studio-applied.patch"
 mv "$d/sol-h3-studio-applied.patch.base" "$d/lf-studio-applied.patch.base"
 ```
