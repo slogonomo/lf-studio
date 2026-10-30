@@ -39,7 +39,7 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   `"<size>/<seconds>"` at another length, `"1080p/10"` so far; one line per route, so a route that fails its GPU run
   goes out with its line; `PIN_SIZES` holds the sizes). The rest shows the page's "not run on the GPU" note.
   `OFFER_ETA_S` has the measured times where a run is and the others fitted to them, the memory model (`peak_gib`,
-  `overhead_gib`, `need_gib`) is fitted to the runs (each one's lowest MemAvailable within 0.5 GiB,
+  `overhead_gib`, `need_gib`) is fitted to the runs (each 2026-10-30 run's lowest MemAvailable within 0.5 GiB,
   `tests/test_upscale.py`), and the docs say which lengths ran and which follow the model
   ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips), the README): change them, and the pin's seconds in the
   page's `UP_PIN_S`, when a run lands.
