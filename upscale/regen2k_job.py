@@ -612,13 +612,15 @@ def probe_command(mp4, ffprobe="ffprobe"):
 
 def clip_read_command(mp4, size, kept, pad, ffmpeg="ffmpeg"):
     """How encode_clip reads the clip's MP4 at `size` (w, h): NVIDIA's encode_video command (pipeline.py:57-61; for
-    121 frames and 3 copies the same list) with -frames:v `kept`. With pad 0 (a clip of every frame made) without its
-    tpad, which holds the last frame of a source that is too short: so a short MP4 reads short and fails the length
-    check."""
+    121 frames and 3 copies the same list) with -frames:v `kept`. Any other count is read without its tpad, which
+    holds the last frame of a source that is too short (up to 6 s of it): so a short MP4, also one cut off after its
+    header (which still gives its count of frames), reads short and fails the length check. encode_clip adds the
+    copies of the last frame (`pad`) itself, so a whole clip reads the same either way."""
     width, height = size
     scale = f"fps=24,scale={width}:{height}:force_original_aspect_ratio=increase:flags=bilinear,crop={width}:{height}"
+    nvidia = (kept, pad) == (NVIDIA_FRAMES, 3)
     return [str(ffmpeg), "-v", "error", "-i", str(mp4), "-vf",
-            scale + (",tpad=stop_mode=clone:stop_duration=6" if pad else ""), "-frames:v", str(kept), "-an", "-f",
+            scale + (",tpad=stop_mode=clone:stop_duration=6" if nvidia else ""), "-frames:v", str(kept), "-an", "-f",
             "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
 
 

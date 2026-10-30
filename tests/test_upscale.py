@@ -638,9 +638,35 @@ class FrameTests(unittest.TestCase):
             self.assertEqual(job_module.encoded_latent_frames(made), latents, made)
         self.assertEqual(short, {5: 0, 6: 5, 7: 5, 8: 5, 10: 0, 12: 5, 15: 0})
 
+    def test_a_clip_cut_off_reads_short(self):
+        """A 10 s MP4 cut off after its header (+faststart: its count of frames still in it) passes check_final, but
+        reads short at every count of frames but NVIDIA's own, the 3 copies of 241 too: the length check refuses it,
+        it is not filled with copies of its last frame. A whole clip reads its frames, the same as with tpad."""
+        tmp = Path(tempfile.mkdtemp(prefix="upscale-cut-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        whole, cut = tmp / "whole.mp4", tmp / "refined_1344x768_241f.mp4"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1344x768:r=24",
+                        "-frames:v", "241", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                        "-movflags", "+faststart", "-an", str(whole)], check=True)
+        data = whole.read_bytes()
+        cut.write_bytes(data[:len(data) * 6 // 10])
+        self.assertEqual(job_module.check_final(cut), ("landscape", 241))
+        frame = 1344 * 768 * 3
+
+        def read(mp4, *command):
+            return subprocess.run(job_module.clip_read_command(mp4, (1344, 768), *command), capture_output=True,
+                                  check=True).stdout
+        for kept, pad in ((241, 3), (243, 0)):
+            self.assertLess(len(read(cut, kept, pad)), 241 * frame, (kept, pad))
+        self.assertEqual(len(read(cut, 121, 3)), 121 * frame)                 # within the part that is there
+        tpad = job_module.clip_read_command(whole, (1344, 768), 121, 3)
+        tpad[tpad.index("-frames:v") + 1] = "241"
+        self.assertEqual(read(whole, 241, 3), subprocess.run(tpad, capture_output=True, check=True).stdout)
+
     def test_the_read_is_nvidias(self):
-        """121 frames with 3 copies: NVIDIA's encode_video command (pipeline.py:57-61), item for item; 124 with none:
-        the same without tpad, so a short MP4 reads short (and fails the length check) instead of being padded."""
+        """121 frames with 3 copies: NVIDIA's encode_video command (pipeline.py:57-61), item for item; every other
+        count (124, 241 with 3 copies, 362): the same without tpad, so a short MP4 reads short (and fails the length
+        check) instead of being padded."""
         nvidia = ["FFMPEG", "-v", "error", "-i", "/case/stage2/clip.mp4", "-vf",
                   "fps=24,scale=1344:768:force_original_aspect_ratio=increase:flags=bilinear,crop=1344:768,"
                   "tpad=stop_mode=clone:stop_duration=6", "-frames:v", "121", "-an", "-f", "rawvideo", "-pix_fmt",
@@ -651,9 +677,9 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(whole, nvidia[:6] + [nvidia[6].replace(",tpad=stop_mode=clone:stop_duration=6", ""),
                                               "-frames:v", "124"] + nvidia[9:])
         self.assertNotIn("tpad", " ".join(whole))
-        # a 10 s clip of 241 frames: NVIDIA's read with the frames named (and 3 copies added after it); 362: no tpad
+        # a 10 s clip of 241 frames: the read of 124 with its frames named (encode_clip adds the 3 copies); 362 too
         self.assertEqual(job_module.clip_read_command("/case/stage2/clip.mp4", (1344, 768), 241, 3, "FFMPEG"),
-                         nvidia[:8] + ["241"] + nvidia[9:])
+                         whole[:8] + ["241"] + whole[9:])
         self.assertEqual(job_module.clip_read_command("/case/stage2/clip.mp4", (1344, 768), 362, 0, "FFMPEG"),
                          whole[:8] + ["362"] + whole[9:])
         portrait = job_module.clip_read_command("/c.mp4", (768, 1344), 121, 3, "FFMPEG")
