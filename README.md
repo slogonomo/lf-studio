@@ -205,16 +205,16 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
 - **Longer clips have run too.** Through the studio on one DGX Spark (2026-10-30, one clip each, 2 steps, the fast
   load) a 6 s clip took 12.7 min to 1080p, a 10 s clip 23.7 min, a 15 s 9:16 clip 43.1 min, and the 10 s clip 53.1 min
-  to 2K, each with all its frames and its whole sound, a clean last second and its lip sync; by eye sharper than the
-  clip to the last frame, with the same faces. The other lengths offered (7, 8 and 12 s at 1080p; 6, 7 and 8 s at 2K)
-  have not run, but a longer clip at their size has, and the job's model of the runs held there (steps within 1.4 %,
-  peak memory within 0.1 GiB): their times follow it, and the popover gives no note. With 2 steps the popover
-  expects, closing the studio's models included: at 1080p about 13 min for 6 s, 15 min for 7 s, 17 min for 8 s,
-  24 min for 10 s, 32 min for 12 s and 44 min for 15 s; at 2K about 28 min for 6 s, 32 min for 7 s, 37 min for 8 s
-  and 54 min for 10 s ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips)). From 10 s at 1080p and 6 s at 2K the
-  job runs the memory-lean block forward of its 4K run (bit-identical to the stock forward on GB10), so no peak passes
-  what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept; 90.8 measured at 2K for 10 s). Every length
-  needs the 110 GiB free a 5 s clip needs to start; at 2K for 10 s the free memory came down to 16.7 GiB.
+  to 2K, each with all its frames and its whole sound, a clean last second and its lip sync; the 10 and 15 s ones at
+  1080p, by eye, sharper than the clip to the last frame, with the same faces. The other lengths offered (7, 8 and 12 s
+  at 1080p; 6, 7 and 8 s at 2K) have not run, but a longer clip at their size has, and the job's model of the runs held
+  there (steps within 1.4 %, peak memory within 0.1 GiB): their times follow it, and the popover gives no note. With
+  2 steps the popover expects, closing the studio's models included: at 1080p about 13 min for 6 s, 15 min for 7 s,
+  17 min for 8 s, 24 min for 10 s, 32 min for 12 s and 44 min for 15 s; at 2K about 28 min for 6 s, 32 min for 7 s,
+  37 min for 8 s and 54 min for 10 s ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips)). From 10 s at 1080p and
+  6 s at 2K the job runs the memory-lean block forward of its 4K run (bit-identical to the stock forward on GB10), so no
+  peak passes what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept; 90.8 measured at 2K for 10 s).
+  Every length needs the 110 GiB free a 5 s clip needs to start; at 2K for 10 s the free memory came down to 16.7 GiB.
 - **Keep my frames** (experimental). NVIDIA's refine redraws a Keyframes clip's first and last frames like any other,
   away from your pictures. With the popover's box (on by default; the request's `pin` `auto`), the job holds your
   keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already shows them: each end only if the clip's

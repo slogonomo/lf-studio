@@ -576,8 +576,9 @@ overhead before and after its refit to these runs (below):
   the end), and its lip sync (SyncNet LSE-C over the whole clip, at the face the clip syncs best, the offset kept):
   3.93 against the clip's 3.66 (6 s), 2.39 and 2.21 against 2.12 (10 s at 1080p and 2K), 2.56 against 2.24 (15 s) and
   3.03 against 3.09 (the LightX2V Turbo clip). The validation's lip sync gate was two-sided, so the 15 s upscale,
-  0.32 above its clip, counted against it there; syncing better than the clip is not a failure. By eye the 10 and 15 s
-  upscales' last seconds are sharper than the clip to the last frame, with the same faces, no drift or softening.
+  0.32 above its clip, counted against it there; syncing better than the clip is not a failure. By eye the last seconds
+  of the 10 and 15 s Sol-H3 clips' upscales at 1080p are sharper than the clip to the last frame, with the same faces,
+  no drift or softening.
 - **Times:** the steps came within 1.4 % of the step model (at their own rows), so it holds past 5 s, and the stages
   scale with the clip's frames: encoding the final clip 160 / 239 / 350 s at 6 / 10 / 15 s (245 s for the 243-frame
   clip), the VAE decode 135 / 210 / 314 s at 1080p (362 s at 2K for 10 s), the load 21.7-22.1 s. Each run less its two
