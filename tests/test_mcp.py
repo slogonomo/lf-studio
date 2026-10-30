@@ -894,6 +894,33 @@ class FakeStudio(McpTest):
         self.assertFalse(r["isError"], text(r))
         self.assertEqual(posts, [{"id": self.JID}])
 
+    def test_pin_for_a_stopped_studio(self):
+        """switchboard has the studio stopped, so /api/state can't say whether it takes pin without starting it: the
+        upscale goes with pin, and again without it when the studio answers that it does not know the key (an older
+        studio); another refusal is not sent again."""
+        unknown = 'unknown key "pin" (known: id, resolution, strength, audio, seed)'
+        for name, answers, bodies in (("takes it", [None], [{"pin": "auto"}]),
+                                      ("older", [unknown, None], [{"pin": "auto"}, {}]),
+                                      ("refused", ["no such clip"], [{"pin": "auto"}])):
+            with self.subTest(name):
+                posts = []
+
+                def answer(method, path, headers, body):
+                    if path == "/api/state":
+                        return switchboard_error("stopped", "LF Studio is not running")
+                    if path == "/api/upscale":
+                        posts.append(json.loads(body))
+                        if answers[len(posts) - 1]:
+                            return 400, JSON, {"error": answers[len(posts) - 1]}
+                        return 200, JSON, {"id": "f" * 32, "job": {"id": "f" * 32, "kind": "upscale",
+                                                                   "state": "queued"}}
+                    return 404, JSON, {"error": "not found"}
+                r = self.mcp(url=self.fake(answer).url).call("upscale", {"id": self.JID, "pin": "auto", "wait_s": 0})
+                self.assertEqual(r["isError"], name == "refused", text(r))
+                self.assertEqual(posts, [dict({"id": self.JID}, **b) for b in bodies])
+                if name == "refused":
+                    self.assertIn("no such clip", text(r))
+
     def test_a_model_on_a_stopped_studio(self):
         """switchboard has the studio stopped, so its models can't be read without starting it: the submit goes
         (and starts it), and an answer without the model (the studio has no model choice) is cancelled at once."""

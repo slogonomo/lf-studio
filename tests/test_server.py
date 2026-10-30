@@ -5116,25 +5116,27 @@ class TurboUpscale(TurboTest):
                                  dict({"ok": True, "clip_audio": True, "text": "generation", "frames": frames,
                                        "pin": ["first", "last"], "pin_routes": PIN_ROUTES},
                                       **({"video": video} if video != "clip" else {})))
-                job = self.done(self.upscale(parent["id"], resolution="1080p"))
-                self.assertEqual((job["video"], job["frames"]), (video, 124))
-                name = "refined_1344x768_124f.mp4"
-                self.assertEqual(self.input_mp4(job).name, name)
-                if video == "clip":
-                    self.assertEqual(inode(self.input_mp4(job)), inode(parent["output"]))
-                mp4 = probe(self.input_mp4(job))
-                self.assertEqual((mp4["video"]["width"], mp4["video"]["height"], mp4["video"]["nb_frames"]),
-                                 (1344, 768, "124"))
-                self.assertEqual(Path(job["output"]).name, "regen_1920x1080_124f.mp4")
-                out = probe(job["output"])
-                self.assertEqual(out["video"]["nb_frames"], "124")
-                for key in ("nb_frames", "duration"):                        # the clip's sound, whole, copied
-                    self.assertEqual(out["audio"][key], clip["audio"][key], key)
-                source = json.loads((self.view(job) / "source.json").read_text())
-                self.assertEqual((source["files"][f"stage2/{name}"]["how"], source["frames"], source["video"]),
-                                 ("link" if video == "clip" else video, {"clip": 124, "made": 124, "kept": 124}, video))
-                receipt = json.loads((self.regen(job) / "receipt.json").read_text())
-                self.assertEqual(receipt["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37})
+                for size, output in (("1080p", "regen_1920x1080_124f.mp4"), ("2k", "regen_2560x1440_124f.mp4")):
+                    job = self.done(self.upscale(parent["id"], resolution=size))
+                    self.assertEqual((job["video"], job["frames"]), (video, 124))
+                    name = "refined_1344x768_124f.mp4"
+                    self.assertEqual(self.input_mp4(job).name, name)
+                    if video == "clip":
+                        self.assertEqual(inode(self.input_mp4(job)), inode(parent["output"]))
+                    mp4 = probe(self.input_mp4(job))
+                    self.assertEqual((mp4["video"]["width"], mp4["video"]["height"], mp4["video"]["nb_frames"]),
+                                     (1344, 768, "124"))
+                    self.assertEqual(Path(job["output"]).name, output)
+                    out = probe(job["output"])
+                    self.assertEqual(out["video"]["nb_frames"], "124")
+                    for key in ("nb_frames", "duration"):                    # the clip's sound, whole, copied
+                        self.assertEqual(out["audio"][key], clip["audio"][key], key)
+                    source = json.loads((self.view(job) / "source.json").read_text())
+                    self.assertEqual((source["files"][f"stage2/{name}"]["how"], source["frames"], source["video"]),
+                                     ("link" if video == "clip" else video, {"clip": 124, "made": 124, "kept": 124},
+                                      video))
+                    receipt = json.loads((self.regen(job) / "receipt.json").read_text())
+                    self.assertEqual(receipt["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37})
                 # 4K: its first 121
                 cut = "trim" if video == "clip" else "stretch+trim"
                 job = self.done(self.upscale(parent["id"], resolution="4k"))
