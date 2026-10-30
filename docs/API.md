@@ -474,11 +474,17 @@ call) never cancels the clip.
 
 Only on a DGX Spark studio with `LFSTUDIO_UPSCALE=1` (off by default; `bin/env.example`). It upscales a finished
 clip, from its MP4, to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regenerate-2K, run as a job of its own
-(`upscale/regen2k_job.py`, in an environment of its own). For now it takes **every 5 s clip, 16:9 or 9:16**: Sol-H3's
-Text, Keyframes and Reference clips, and LightX2V Turbo's Text and Keyframes clips at either size. Other lengths (6 to
-15 s) are not yet: NVIDIA's pipeline is fixed at 5 s. NVIDIA's code is written for 16:9 (1344×768): the job
-takes a 9:16 clip (768×1344) through it with the shapes turned, without changing NVIDIA's files, and the result is
-upright (1080×1920, 1440×2560 or 2160×3840). 9:16 has run on the GPU at 1080p and 2K, as fast as 16:9, not yet at 4K,
+(`upscale/regen2k_job.py`, in an environment of its own). It takes **every finished clip, of every length, 16:9 or
+9:16**: Sol-H3's Text, Keyframes and Reference clips (5 to 15 s, and 3 s clips made up to 0.5.0), and LightX2V Turbo's
+Text and Keyframes clips at either size (5 to 15 s), whole, in one pass of NVIDIA's refine. **1080p** takes every
+length, **2K** clips up to 10 s, **4K** 5 s clips; another size is refused with the reason (`2K for 12 s clips comes
+later: 1080p takes them`: those need the clip in pieces, later). Only 5 s clips have run on the GPU: the times and
+memory of the other lengths are estimates from the 5 s runs until they run, and the page says so. A clip of 4 s (made
+up to 0.5.0), or whose MP4 has other frames than its length's, is refused, never cut. NVIDIA's code is written for 5 s
+16:9 (1344×768, 121 frames): the job takes other lengths through it with the frames and audio of their own (the
+clip's frames, and 3 copies of the last one where it keeps fewer than H3 made, as NVIDIA's encode does at 5 s), and a
+9:16 clip (768×1344) with the shapes turned, without changing NVIDIA's files; the 9:16 result is upright (1080×1920,
+1440×2560 or 2160×3840). 9:16 has run on the GPU at 1080p and 2K, as fast as 16:9, not yet at 4K,
 and NVIDIA trained its refiner on 16:9 video. Through the studio on one DGX Spark (2026-10-29), a Sol-H3 Keyframes clip
 (9:16), a Sol-H3 Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with a last keyframe (then cut to 121
 frames) have been upscaled to 1080p, and the Keyframes clip to 2K, each in a Text clip's time plus its encode; later
@@ -501,7 +507,7 @@ its `source.json` says what came from where, how, and each file's sha256), which
 | Sol-H3 Reference (ref2va) | linked | its prompt with the references taken out, as t2va's three fields (each `<Subject N>` as its definition says it; `subject_definitions`, `retention_analysis` and the media labels go; dialogue as written), encoded first | Stage 1's |
 | LightX2V Turbo Text, 768p | linked | its own (`qwen/`) | its `turbo/audio.pt` (the PCM before AAC), linked |
 | LightX2V Turbo Text, 576p | stretched to 768p (LANCZOS, ~1 s; never cropped), its sound copied as it is | its own | its `audio.pt` |
-| LightX2V Turbo Keyframes | as its Text clips (stretched, never cropped, so a 576p clip stays on its keyframe's grid); one with a last keyframe (124 frames at 5 s, 5.17 s) whole at 1080p and 2K (its sound as it is), so the upscale ends on the frame anchored to the last keyframe; at 4K cut to its first 121 (no 124-frame 4K run yet), its sound cut with them | its prompt without the keyframe line, encoded with the clip (`qwen-text/`); for a clip without it, encoded first | its `audio.pt` |
+| LightX2V Turbo Keyframes | as its Text clips (stretched, never cropped, so a 576p clip stays on its keyframe's grid); one with a last keyframe (every frame made: 124 frames at 5 s, 5.17 s; 243 at 10 s) whole (its sound as it is), so the upscale ends on the frame anchored to the last keyframe; a 5 s one at 4K cut to its first 121 (no 124-frame 4K run yet), its sound cut with them | its prompt without the keyframe line, encoded with the clip (`qwen-text/`); for a clip without it, encoded first | its `audio.pt` |
 
 With Keep my frames (`pin`, below) the input folder also links the pictures of the ends it sends to the job,
 `keyframe/first.<ext>` and `keyframe/last.<ext>`, and `source.json` has their record (`keyframes`: from, how, the
@@ -519,7 +525,7 @@ encodes has LF line breaks (a prompt from the page has CRLF ones). Its log is `<
 Keyframes clip whose prompt is nothing but its keyframe line, or a Reference prompt that is nothing but references, has
 no text left to refine against: it can't be upscaled (400). The result always gets the clip's own sound (copied;
 whole, or for a clip cut to 121 frames at 4K, cut with it), and has the frames kept:
-`regen_<W>x<H>_<frames>f.mp4`.
+`regen_<W>x<H>_<frames>f.mp4` (`regen_1920x1080_241f.mp4` for a 10 s clip at 1080p).
 
 **Keep my frames** (`pin`; experimental). NVIDIA's refine is text to video: it redraws a Keyframes clip's first and last
 frames like any other. With `pin` `auto` (the default) the job holds the clip's keyframes in the refine as MiniMax-H3
@@ -533,11 +539,14 @@ clip offers (`upscalable` `pin`):
 | The clip | First frame | Last frame |
 |---|---|---|
 | LightX2V Turbo Keyframes | when it has one | when it has one (the clip ends on it) |
-| Sol-H3 Keyframes | when Stage 2 held it: made since 0.5.2 with `SOL_H3_STAGE2_KEYFRAME=pin` (the default) | never: the clip stops 3 frames before it |
+| Sol-H3 Keyframes | when Stage 2 held it: made since 0.5.2 with `SOL_H3_STAGE2_KEYFRAME=pin` (the default) | never: the clip stops a few frames before it (3 at 5 s, 7 at 8 s) |
 | Text, Reference | – | – |
 
 It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet: `faithful` held a
-first frame only about 1 dB closer in a test); at 2K the page says "only partly" until that is reviewed (research runs
+first frame only about 1 dB closer in a test), at the sizes the clip's length has (1080p alone at 12 and 15 s); on a
+clip longer than 5 s it has not run on the GPU (the page says so), and where the job's forward is lean (1080p from
+10 s, 2K from 6 s) it runs with the lean blocks, which no pinned run has used yet; at 2K the page says "only partly"
+until that is reviewed (research runs
 with one end at 2K: frame 0 about 1 dB closer to the picture, the face 3-5 dB; the studio's run with both ends at
 2K: +5.0 and +4.7 dB, below). An end the clip offers but the request does not send has its reason in the record's
 `pin.why` (`not at 4K yet`, `with strength balanced only, for now`); an end sent but not held has the job's in
@@ -564,7 +573,7 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 | Key | Value |
 |---|---|
 | `id` | the finished clip (required) |
-| `resolution` | `1080p`, `2k` (default) or `4k` (the slowest: ~66 min in its one run so far, a 16:9 clip; not yet run with a 9:16 one): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's) |
+| `resolution` | `1080p` (every length), `2k` (default; clips up to 10 s) or `4k` (5 s clips; the slowest: ~66 min in its one run so far, a 16:9 clip; not yet run with a 9:16 one): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's). A 12 or 15 s clip needs `1080p` |
 | `strength` | how much it may redraw: `faithful` (start noise 0.5, 2 steps), `balanced` (0.7, 2 steps) or `full` (NVIDIA's release setting, 3 steps from 0.909: sharpest, but it redraws faces). Default `LFSTUDIO_UPSCALE_STRENGTH` (`balanced`). Provisional, until measured |
 | `audio` | what the picture is refined against: `clip` (the clip's own Stage-1 audio) or `silence` (NVIDIA's). Default `LFSTUDIO_UPSCALE_AUDIO` (`clip`). The result gets the clip's sound either way, copied |
 | `seed` | the refine's seed; default (or `null`) the clip's |
@@ -574,7 +583,9 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   `orientation`, `seconds`, `prompt` and `seed` are the clip's; `load` is how its job loads the weights, `fast` or
   `standard`, from `LFSTUDIO_UPSCALE_LOAD`; `parent_model` the clip's model and `parent_opts` its options, when it
   has them; `video` what is done to its MP4 at its size (`clip`: nothing, else `stretch`, `trim` (to 121 frames, at
-  4K) or `stretch+trim`); `frames` the frames it keeps (121, or 124); for a clip with keyframes `pin`: `{"asked":
+  4K) or `stretch+trim`); `frames` the frames it keeps (its MP4's: 121 at 5 s, 241 at 10 s, 361 at 15 s; 124, 243 or
+  362 for a LightX2V Turbo clip with a last keyframe; 121 of a 5 s clip's 124 at 4K); for a clip with keyframes `pin`:
+  `{"asked":
   "auto" | "off", "ends": [the ends sent to the job], "why": {end: why not sent}}` and, once done, `"result": {end:
   {"used", "agreement_db", "why"}}` (the job's check: held or not, and why); `text` the text it is refined
   against: `{"source": "clip"}` (its own), `{"source": "generation", "prompt", "dropped"}` (a LightX2V Turbo
@@ -586,8 +597,11 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   again; with `LFSTUDIO_PRELOAD=1` (the default) the studio warms up the last clip's settings again as soon as the
   upscale is done and nothing is queued.
 - 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `pin must be auto or off`, `unknown key "steps"
-  (...)`, ...), `an upscale can't be upscaled again`, `Upscale takes 5 s clips for now: other lengths not yet (NVIDIA's
-  pipeline is fixed at 5 s)`, `nothing is left of the prompt without its keyframe line: the Upscale needs text` (or
+  (...)`, ...), a size the clip's length does not have (`2K for 12 s clips comes later: 1080p takes them`, `4K for 10 s
+  clips comes later: 1080p and 2K take them`, `4K takes 5 s clips only: 1080p and 2K take this one` for a 3 s clip),
+  `an upscale can't be upscaled again`, `Upscale takes clips of the lengths the studio makes, 5 to 15 s (and Sol-H3's
+  3 s ones), not 4 s`, `Upscale can't take this clip: its MP4 has 145 frames, not the frames of a 6 s clip`,
+  `nothing is left of the prompt without its keyframe line: the Upscale needs text` (or
   `... without its references ...` for a Reference clip), `the prompt is too long as text alone: with its subjects
   written out it has more than 32768 characters` (a Reference prompt whose subject definitions, written out where they
   are used, pass the prompt encode's limit). Any key not in the table is unknown, `source` too: test builds of the
@@ -608,30 +622,54 @@ spark-switchboard the POST starts a stopped studio, as a submit does; send `X-Sw
 
 Cancel, Delete, Undo, `/api/jobs/<id>[?wait=]`, `/video/<id>` and `/poster/<id>` work on an upscale as on a clip;
 Cancel stops its job within about 20 s (SIGTERM, then SIGKILL if the GPU call under way has not returned). It
-downloads as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`, and its
+downloads as `lf-studio_<task>_<seconds>s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`, and its
 `LFSTUDIO_PUBLISH_DIR` copy is named as the clip's with `_<resolution>` after it (`-2`, ... for a second one). Its
 files are in a directory of their own (its input folder too, whose links keep the clip's files it read), so Delete
 moves only them; a clip can't be deleted while an upscale of it is
-queued or running (409). It fails, without a retry, below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` of free memory once the
-models are closed (default 110; 5 GiB more at 4K), or when the memory guard kills it (`LFSTUDIO_UPSCALE_GUARD_GIB`,
-5 GiB for 3 s); `error` says why (the job's own error line when it has one). A finished upscale also has `phases_s`,
-`peak_gib` and `low_mem_gib` from its job.
+queued or running (409). It fails, without a retry, below its floor of free memory once the models are closed:
+`LFSTUDIO_UPSCALE_MIN_FREE_GIB` for a 5 s clip (default 110; 5 GiB more at 4K), and for a longer clip what its length,
+size and Keep my frames need where that is more (an estimate until it runs: 111 GiB at 2K 10 s with a pin; `not
+enough free memory for an upscale: ... 111 GiB needed (what a 2K 10 s upscale needs, more than
+LFSTUDIO_UPSCALE_MIN_FREE_GIB=110)`). Its job gets that floor (job.json `min_free_gib`) and checks it again as it
+starts. It also fails when the memory guard kills it (`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s); `error` says why
+(the job's own error line when it has one). A finished upscale also has `phases_s`, `peak_gib` and `low_mem_gib` from
+its job.
 
 With the Upscale on, `/api/state` has `"upscale": true`, `"upscale_defaults"`, what a request without those keys
 gets (`{"resolution": "2k", "strength": <LFSTUDIO_UPSCALE_STRENGTH>, "audio": <LFSTUDIO_UPSCALE_AUDIO>}`; `null`
 with the Upscale off), `"upscale_load"`, how its jobs load their weights (`fast` or
 `standard`, `LFSTUDIO_UPSCALE_LOAD`; the page's popover shows its times with it; `null` with the Upscale off),
-`"upscale_pin": true` (the studio takes `pin`; `null` with the Upscale off), and every finished job in `/api/state`,
-`/api/jobs` and the API record has `upscalable`: `{"ok": true, "clip_audio": <has its audio>}` or `{"ok": false,
+`"upscale_pin": true` (the studio takes `pin`; `null` with the Upscale off), `"upscale_offers"`, what it offers per
+length and size (`null` with the Upscale off):
+
+```json
+{"5":  {"1080p": {"eta_s": [315, 150], "ran": true}, "2k": {"eta_s": [405, 380], "ran": true},
+        "4k": {"eta_s": [625, 1685], "ran": true}},
+ "10": {"1080p": {"eta_s": [535, 454], "ran": false}, "2k": {"eta_s": [708, 1277], "ran": false},
+        "4k": {"why": "4K for 10 s clips comes later: 1080p and 2K take them"}},
+ "12": {"1080p": {"eta_s": [632, 638], "ran": false},
+        "2k": {"why": "2K for 12 s clips comes later: 1080p takes them"}, "4k": {"why": "..."}}, ...}
+```
+
+for every length a model's Upscale takes (`"3"`, `"5"` to `"15"`): `eta_s` is the seconds before the refine (closing
+the models, the job's start, reading the clip, the fast load, the decode and the MP4) and per refine step (an upscale
+takes `base + steps × step`, ~8 min more with the standard load, ~15 s more for a text encoded first), `ran` whether
+that length and size has been upscaled on the GPU through the studio (else its times are estimates), `why` the reason a
+size is not offered for that length (a request for it gets 400 with it). The page's popover takes its times, its
+greyed sizes and its notes from it, and an upscale's expected time by its clip's length. And every finished job in
+`/api/state`, `/api/jobs` and the API record has `upscalable`: `{"ok": true, "clip_audio": <has its audio>}` or
+`{"ok": false,
 "why": "<the 400 or 409 text above>"}`. An `ok` one has more keys where they say something (a Sol-H3 Text clip's is as
 before): `"text"`, where its text alone comes from when it is not the clip's own conditioning (`generation`: the one a
 LightX2V Turbo Keyframes clip made with itself; `encode`: encoded first, about 15 s more); `"video"`, what is done to
-its MP4 at 1080p and 2K when it is not taken as it is (`stretch` from 576p); `"frames"`, for a clip of more than 121
-frames, the frames kept per size (`{"1080p": 124, "2k": 124, "4k": 121}`); `"pin"`, the ends it can keep (`["first"]`,
-`["last"]` or `["first", "last"]`), with `"pin_routes"`, where: `{resolution: {"strengths", "partly" (it holds the
-picture only partly there), "ran" (on the GPU through the studio)}}` for each size it is offered at (`1080p` and `2k`
-for now); and `"pin_why"`, `{end: why not}` for an end it has but can't keep (`Sol-H3 clips stop 3 frames before your
-last picture, so the Upscale can't hold it`, `the clip was made before 0.5.2, which did not hold your first frame`,
+its MP4 at 1080p and 2K when it is not taken as it is (`stretch` from 576p); `"frames"`, the frames kept per size
+where they differ between the sizes (a 5 s clip with a last keyframe: `{"1080p": 124, "2k": 124, "4k": 121}`; no key
+for a longer one, which keeps them all, nor for Sol-H3's); `"pin"`, the ends it can keep (`["first"]`, `["last"]` or
+`["first", "last"]`), with `"pin_routes"`, where: `{resolution: {"strengths", "partly" (it holds the picture only
+partly there), "ran" (on the GPU through the studio, at the clip's length)}}` for each size it is offered at (`1080p`
+and `2k` for now, those the clip's length has); and `"pin_why"`, `{end: why not}` for an end it has but can't keep
+(`Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it`, a few frames by its length: 7 at
+8 s; `the clip was made before 0.5.2, which did not hold your first frame`,
 `the clip was made with SOL_H3_STAGE2_KEYFRAME=off, ...`, `your picture is no longer on disk`, `your picture changed
 since the clip was made`, `the clip has no record of how it used your picture`, ...). The pictures are not read for
 `/api/state`: a picture changed in place shows as changed once a request (which hashes it) has seen it; the job
@@ -696,7 +734,7 @@ times and memory floors are estimates.
 **Files and names:** a LightX2V Turbo clip downloads as
 `lf-studio_lightx2v-turbo-<resolution>_<task>_<seconds>s_seed<seed>_<id6>.mp4`, and its `LFSTUDIO_PUBLISH_DIR` copy
 is `<time>_<task>_<orientation>_<seconds>s_lightx2v-turbo-<resolution>_seed<seed>_<id6>.mp4`. Sol-H3 clips keep their
-names. A 5 s LightX2V Turbo clip can be upscaled ([Upscale](#upscale-experimental-post-apiupscale)), also with the
+names. A LightX2V Turbo clip can be upscaled ([Upscale](#upscale-experimental-post-apiupscale)), also with the
 model turned off since: everything the Upscale needs is in the clip's own files. The same seed makes a different clip
 in another model or at another size.
 
@@ -742,7 +780,7 @@ From a program: `lf-cli generate --model lightx2v-turbo --resolution 768p ...` a
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "upscale", "upscale_defaults", "upscale_load", "upscale_pin", "session", "jobs", "done", "more", "deleted"}`, and with the model choice on also `"models"` ([Models](#models-experimental-lightx2v-turbo)). `upscale` is true when the experimental Upscale is on (`LFSTUDIO_UPSCALE=1`); then finished jobs have `upscalable`, `upscale_defaults` holds the choices the page's Upscale starts with, `upscale_load` its load, `fast` or `standard`, and `upscale_pin` is true: it takes Keep my frames (`pin`) (else all three `null`). `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
+| `GET /api/state` | What the page shows: `{"now", "tasks_ready", "trash_days", "warmable", "reshape", "backend", "api", "upscale", "upscale_defaults", "upscale_load", "upscale_pin", "upscale_offers", "session", "jobs", "done", "more", "deleted"}`, and with the model choice on also `"models"` ([Models](#models-experimental-lightx2v-turbo)). `upscale` is true when the experimental Upscale is on (`LFSTUDIO_UPSCALE=1`); then finished jobs have `upscalable`, `upscale_defaults` holds the choices the page's Upscale starts with, `upscale_load` its load, `fast` or `standard`, `upscale_pin` is true: it takes Keep my frames (`pin`), and `upscale_offers` has its sizes and times per length (else all four `null`). `api` is false when the API for programs is off (`LFSTUDIO_API=0`, [Turning the API off](#turning-the-api-off)). `backend` is the machine, `spark` (the default) or `rtx5090` (`LFSTUDIO_BACKEND`); the page names the machine and picks its clip-time estimates by it. `reshape` is true when another length or orientation of the loaded task keeps the models loaded (`LFSTUDIO_RESHAPE=1` and a patch that can). `session.state` reads `reshaping` while a load request changes the loaded session's shape (the page: "changing to ..."). `jobs` holds every queued or running clip and the newest 24 finished ones, newest first, as stored (without the API record's keys). switchboard's busy probe reads it. |
 | `GET /api/jobs?before=<created>&limit=<n>` | Older clips, newest first: `{"jobs": [...], "more": true/false}`. `before` is a `created` time (default: now), `limit` 1-100 (default 24). Records as stored. |
 | `GET /api/inputs/<id>` | A clip's input files, for Remix: `{"task", "inputs": {"<zone>": [{"name", "index", "url"}]}, "missing": [...]}` |
 | `GET /input/<id>/<zone>/<index>` | One input file (reference videos as converted). 404 `no such input`. |
@@ -863,21 +901,24 @@ page) without waiting; a clip still running is exit 4. **`status`** prints one l
 running ones, oldest first, then the newest 5 finished ones; `status ID` one clip. **`cancel ID`** cancels it (a
 LightX2V Turbo clip's job stops within about 20 s).
 
-**`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished 5 s clip, 16:9 or
-9:16, of any mode or model ([Upscale](#upscale-experimental-post-apiupscale)), and works as `generate` from there:
-without `--wait`, `--out` or `--poster` it prints the upscale's own id; with them it waits and saves the MP4, by default
-as `lf-studio_<task>_5s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only the choices given, so the
-studio's defaults hold for the rest (2K, `LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`, the clip's seed), and
-holds at switchboard as `generate` does (`--hold`). An upscale takes about 10 min to 1.6 h in all (4K over an hour),
-with a ~22 s load (measured in the studio's job; ~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the
-fallback), so `--timeout` and a later `wait` are the usual way. `--pin auto|off` is Keep my frames
+**`upscale ID`** (experimental, on a studio with `LFSTUDIO_UPSCALE=1`) queues an upscale of a finished clip, 16:9 or
+9:16, of any mode, model or length, whole ([Upscale](#upscale-experimental-post-apiupscale)), and works as `generate`
+from there: without `--wait`, `--out` or `--poster` it prints the upscale's own id; with them it waits and saves the
+MP4, by default as `lf-studio_<task>_<seconds>s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only
+the choices given, so the studio's defaults hold for the rest (2K, `LFSTUDIO_UPSCALE_STRENGTH`,
+`LFSTUDIO_UPSCALE_AUDIO`, the clip's seed), and holds at switchboard as `generate` does (`--hold`); a 12 or 15 s clip
+needs `--resolution 1080p` (2K and 4K are refused for it, with the reason). An upscale takes about 10 min to 1.6 h in
+all (4K over an hour; 1080p 10 min and 2K 19 min for a 5 s clip), with a ~22 s load (measured in the studio's job;
+~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback); longer clips take longer (estimates:
+1080p 24 min at 10 s and 44 min at 15 s, 2K 54 min at 10 s), so `--timeout` and a later `wait` are the usual way.
+`--pin auto|off` is Keep my frames
 ([Upscale](#upscale-experimental-post-apiupscale)): it goes only to a studio whose `/api/state` has `"upscale_pin":
 true` (an older studio never keeps them, so the request goes without it); when spark-switchboard has the studio
 stopped, `/api/state` can't be read without starting it, so the request goes with `pin`, and again without it if the
 studio answers `unknown key "pin"`. `status` shows it as `2k upscale of <clip id8>, balanced, ...` (`2k upscale of
 <clip id8> (lightx2v-turbo 576p), ...` for a clip of another model; `..., first frame kept` or `..., last frame not
-kept (25.4 dB)` once done with the pin), `cancel` stops it within about 20 s, and the studio's refusals (`Upscale takes
-5 s clips for now ...`, the Upscale off) are exit 2.
+kept (25.4 dB)` once done with the pin), `cancel` stops it within about 20 s, and the studio's refusals (`2K for 12 s
+clips comes later: 1080p takes them`, the Upscale off, ...) are exit 2, with its words.
 
 **Waiting** is a loop of `GET /api/jobs/<id>/video?wait=15`, so the MP4 comes on the connection that saw the clip
 finish. It shows one progress line per change on stderr (`queued 5cfd57b0 (fl2va, landscape, 5 s, seed 1234),
@@ -955,7 +996,7 @@ host registered with `sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; 
 | `status` | `id` | one clip's record; without an id, the clips this session submitted, then the queue and the newest clips. Never waits, downloads or starts a stopped studio. |
 | `cancel` | `id` (required) | cancels a queued or running clip |
 | `fetch` | `id` (required), `out`, `poster`, `wake` (default false) | saves a finished clip (also one made in the page); refuses on a studio switchboard has stopped unless `wake` is true |
-| `upscale` | `id` (required), `resolution`, `strength`, `audio`, `seed`, `pin` (`auto` or `off`), `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished 5 s clip, 16:9 or 9:16, of any mode or model ([Upscale](#upscale-experimental-post-apiupscale)), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. `pin` (Keep my frames) goes only to a studio that takes it, as `lf-cli upscale --pin`. Each call queues another upscale |
+| `upscale` | `id` (required), `resolution`, `strength`, `audio`, `seed`, `pin` (`auto` or `off`), `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished clip, 16:9 or 9:16, of any mode, model or length ([Upscale](#upscale-experimental-post-apiupscale): a 12 or 15 s clip needs `resolution` `1080p`), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. `pin` (Keep my frames) goes only to a studio that takes it, as `lf-cli upscale --pin`. Each call queues another upscale |
 | `models` | none | the studio's models ([Models](#models-experimental-lightx2v-turbo)): what each makes now, its options, what not yet and why, its time per clip; `structuredContent` is `{"model_choice", "models"}` as `lf-cli models --json`. Read-only, and never starts a stopped studio |
 | `prompt_guide` | none | the [prompt guide](#prompt-guide) |
 
