@@ -333,9 +333,9 @@ popover says too.
 
 **The card says "first frame not kept" or "last frame not kept".** Keep my frames (the popover's box, `pin`) holds an
 end only where the clip already shows your picture, and says why not on the card:
-- `(25.4 dB from your picture)`: the clip's own frame (its first, or its last) is further from your picture than the
-  28 dB the job needs (luma, at 672×384). The clip itself drifted from the picture there, and the Upscale does not pull
-  it back; the rest of the upscale is NVIDIA's refine, as without the box.
+- `(25.4 dB from your picture)`: the clip's own frame (its first, or its last) matches your picture at less than the
+  28 dB the job needs (luma PSNR, at 672×384). The clip itself drifted from the picture there, and the Upscale does
+  not pull it back: that end is refined as without the box.
 - `your picture is no longer on disk` or `your picture changed since the clip was made`: the picture in the clip's
   input files is gone (a Delete of the clip moves it to the trash) or is another file now. The studio and the job
   compare it with the sha256 the clip was made from (the LightX2V Turbo receipt's, or Sol-H3's capture). The popover
