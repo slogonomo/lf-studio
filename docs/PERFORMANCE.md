@@ -313,7 +313,8 @@ at 4K has not run**; there the upscaler goes through the 2K grid (turned), as fo
 
 **Every 5 s clip: Keyframes, Reference and LightX2V Turbo clips.** The studio now gives the job every 5 s clip
 through an input folder of its own (docs/API.md, Upscale): the clip's MP4 (a LightX2V Turbo clip at 576p stretched to
-768p; one with a last keyframe was cut to 121 frames in the runs below, and since #85 keeps all 124 at 1080p and 2K),
+768p; one with a last keyframe was cut to 121 frames in the first runs below, and since #85 keeps all 124 at 1080p and
+2K),
 its audio, and a prompt conditioning of text alone (for Sol-H3 Keyframes and Reference clips encoded first). The job's
 work is a Text clip's work: the same latent frames (37 for 121 or 124 frames), sizes and steps.
 
@@ -347,22 +348,20 @@ The other stages, at 1080p (2K): encoding the final clip 128.3-128.6 s (128.3 s)
 - **The sound:** each upscale has the clip's own: every AAC packet of a linked or stretched clip (5.04 s), and for the
   clip cut to 121 frames 5.02 s of its 5.17 s, cut with the picture. That cut was that day's route: it left out the
   clip's last 3 frames, the last of them the one anchored to the last keyframe. Since #85 such a clip keeps all 124 at
-  1080p and 2K, with its 5.17 s of sound (not run on the GPU yet: the same 37 latent frames, so a Text clip's time is
-  expected), and is cut to 121 only at 4K.
+  1080p and 2K, with its 5.17 s of sound (measured the next day, below), and is cut to 121 only at 4K.
 - **Cancel** about 2 s into the encode (an upscale of the Reference clip) stopped it in 5.4 s, with no encode or job
   process, Qwen container or GPU memory left, and no job started.
-- **Not run through the studio:** LightX2V Turbo's 768p Text clips (linked as they are), its Keyframes clips at 576p
-  (stretched; the research runs below) or at 768p without a last keyframe (linked), a clip with a last keyframe kept
-  whole (124 frames), one whose text is encoded at upscale time (a Keyframes clip without `qwen-text/`), and 4K of any
-  clip but a 16:9 Text clip (no 9:16 clip has run at 4K). Expected: a Text clip's times, plus the encode where there is
-  one.
+- **Not run through the studio:** LightX2V Turbo's 768p Text clips (linked as they are), its Keyframes clips at 768p
+  without a last keyframe (linked, as those with one, which have run: below), one whose text is encoded at upscale time
+  (a Keyframes clip without `qwen-text/`), and 4K of any clip but a 16:9 Text clip (no 9:16 clip and no 124-frame clip
+  has run at 4K). Expected: a Text clip's times, plus the encode where there is one.
 
-**Keep my frames** (`pin`). The job's pinned refine has not run on the GPU yet, so its times and memory here are
-estimates. The pinned refine adds one block of condition rows per end held, as MiniMax-H3 holds a keyframe: +2,040
-rows at 1080p and +3,600 at 2K per end (+2.7 %; 78,130 and 137,410 rows with one end, 80,170 and 141,010 with both),
-and encodes each picture on the VAE the clip's encode already loaded. Research runs held a first frame the same way
-(the job run by a research wrapper that adds the block; LightX2V Turbo 576p clips, 2026-10-28, one clip at 1080p and
-two at 2K, the same machine, with CPU work alongside), against the same clips unpinned:
+**Keep my frames** (`pin`). The pinned refine adds one block of condition rows per end held, as MiniMax-H3 holds a
+keyframe: +2,040 rows at 1080p and +3,600 at 2K per end (+2.7 %; 78,130 and 137,410 rows with one end, 80,170 and
+141,010 with both, for a prompt of that length), and encodes each picture on the VAE the clip's encode already loaded.
+Before the job had it, research runs held a first frame the same way (the job run by a research wrapper that adds the
+block; LightX2V Turbo 576p clips, 2026-10-28, one clip at 1080p and two at 2K, the same machine, with CPU work
+alongside), against the same clips unpinned:
 
 | Clip | Steps pinned | Steps unpinned | Per step | Peak allocated |
 |---|---|---|---|---|
@@ -372,12 +371,57 @@ two at 2K, the same machine, with CPU work alongside), against the same clips un
 
 The second 2K clip's first step ran with more CPU work alongside (its lowest MemAvailable 11.7 GiB, 16.7 GiB in its
 second step), but its second step was still 20 s longer. Their picture encode took 8.7 s (1080p) and 10.5-10.6 s (2K),
-but that included a VAE load and two diagnostic encodes, so the job's encode on the loaded VAE is expected below that.
-No run has held a last frame yet; its block has as many rows as the first's. Estimated, from the slower 2K clip: about
-+10 s at 1080p and +60 s at 2K for one end, +30 s and +120 s for both (the page's progress bar adds these seconds);
-about 82.0 and 92.4 GiB peak with both, and at 2K a lowest MemAvailable about 1 GiB lower than unpinned. Measured on
-the CPU (2026-10-29, three LightX2V Turbo clips): the check before anything loads (the pictures' sha256, one frame of
-the clip per end) took 0.18 s for one end and 0.27-0.29 s for both.
+with a VAE load and two diagnostic encodes. Measured on the CPU (2026-10-29, three LightX2V Turbo clips): the job's
+check before anything loads (the pictures' sha256, one frame of the clip per end) took 0.18 s for one end and
+0.27-0.29 s for both.
+
+**124 frames and Keep my frames through the studio** (a staging studio of this version on the same DGX Spark, the
+night of 2026-10-29 to 30, driven by `lf-cli`; clips made in the staging studios of 2026-10-28 and 29; nothing else
+loaded, and MemAvailable 110 GiB or more with the page cache dropped at each job's start; the fast load, `balanced`,
+the clip's audio; each LightX2V Turbo clip with `pin` `off` and `auto` at the same seed; the time from the job's
+start to the MP4 with the clip's sound, the encode included):
+
+| The clip | To | `pin` | From the job's start to the MP4 | Refine, per step | Peak allocated | Lowest MemAvailable |
+|---|---|---|---|---|---|---|
+| LightX2V Turbo Keyframes, 768p 16:9, first and last keyframes (124 frames, linked) | 1080p | off | **560.1 s (9:20)** | 144.9 s, 142.2 s | 81.27 GiB | 29.1 GiB |
+| The same | 1080p | both ends held | **590.4 s (9:50)** | 155.9 s, 155.4 s | 81.98 GiB | 28.2 GiB |
+| The same | 2K | off | **1118.9 s (18:39)** | 378.0 s, 377.0 s | 91.06 GiB | 16.0 GiB |
+| The same | 2K | both ends held | **1202.1 s (20:02)** | 414.7 s, 413.5 s | 92.32 GiB | 14.1 GiB |
+| LightX2V Turbo Keyframes, 768p 16:9, a dialogue, the same picture first and last (124 frames) | 1080p | off | **558.2 s (9:18)** | 143.4 s, 142.5 s | 81.30 GiB | 29.0 GiB |
+| The same | 1080p | both ends held | **592.6 s (9:53)** | 156.5 s, 157.2 s | 82.02 GiB | 28.2 GiB |
+| LightX2V Turbo Keyframes, 768p 9:16, first and last keyframes (124 frames) | 1080p (1080×1920) | off | **558.5 s (9:18)** | 143.5 s, 143.0 s | 81.29 GiB | 29.0 GiB |
+| The same | 1080p | both ends held | **591.0 s (9:51)** | 156.1 s, 155.6 s | 82.00 GiB | 27.3 GiB |
+| LightX2V Turbo Keyframes, 576p 16:9, a last keyframe alone (124 frames, stretched) | 1080p | off | **557.8 s (9:18)** | 142.9 s, 142.0 s | 81.27 GiB | 27.5 GiB |
+| The same | 1080p | its last frame held | **573.8 s (9:34)** | 149.4 s, 148.8 s | 81.64 GiB | 27.8 GiB |
+| LightX2V Turbo Keyframes, 576p 9:16, a first frame (121 frames, stretched) | 1080p (1080×1920) | off | **558.8 s (9:19)** | 143.4 s, 142.6 s | 81.29 GiB | 28.8 GiB |
+| The same | 1080p | its first frame held | **575.4 s (9:35)** | 149.9 s, 149.2 s | 81.66 GiB | 27.7 GiB |
+| The Sol-H3 Keyframes clip of the table above (9:16, a first frame; its text encoded first, 15.6 s) | 1080p | its first frame held | **590.0 s (9:50)** | 150.2 s, 149.6 s | 81.66 GiB | 28.0 GiB |
+
+- **124 frames:** every upscale of a clip with a last keyframe had all 124 frames and the clip's whole sound (5.167 s,
+  every AAC packet), in a Text clip's time (557.8-560.1 s at 1080p against 574.2 s, 1118.9 s at 2K against 1122.6 s:
+  the same 37 latent frames). Against the 768p clip's upscale cut to 121 frames on 2026-10-29 (553.6 s, the same seed
+  and text), frames 0-119 were a mean 40.3 dB apart, and the last frame, the one anchored to the last keyframe, was
+  25.9 dB from that picture, where the cut's last (frame 120) was 23.2 dB.
+- **Keep my frames, the picture:** every end sent was held (the job's check: 31.2-37.9 dB at 384p). Against the same
+  clip upscaled with `pin` `off`, the frame held came 3.2-5.3 dB closer to the picture (luma PSNR at the output size;
+  2.5-5.5 dB on a face), at either end and at 1080p and 2K (+5.0 and +4.7 dB at 2K), with no flash at that frame and
+  the motion near it kept (the run's checks). The Sol-H3 clip is compared with its upscale of 2026-10-29 (the table
+  above): +4.7 dB, +4.2 dB on the face. The dialogue clip gained less, +2.3 and +2.4 dB at its ends (+3.0 and +3.1 dB
+  on the face): it is a static medium shot, and its plain upscale was already closer to the picture (30.0 dB at either
+  end, against 24.1-27.0 dB for the others). Its lip sync held (SyncNet LSE-C 8.94, 8.82 unpinned, offset 0). At 2K
+  the page still says "only partly" (the research runs with a first frame at 2K: frame 0 about 1 dB closer, the face
+  3-5 dB).
+- **Keep my frames, the cost:** +16.0 and +16.6 s with one end, +30.3 to +34.4 s with both at 1080p, +83.2 s with both
+  at 2K: the pictures' encode (3.0-3.1 s per end at 1080p, 10.5 s for both at 2K) and longer steps (149-150 s with one
+  end and 155-157 s with both, against 142-145 s; at 2K 414 s against 377 s). Peak allocated +0.4 GiB with one end and
+  +0.7 GiB with both at 1080p, +1.3 GiB at 2K; lowest MemAvailable 27.3 GiB or more at 1080p, 14.1 GiB at 2K with both
+  ends against 16.0 GiB unpinned. One end at 2K has not run (nor Sol-H3's first frame at 2K): the page estimates it
+  at +60 s.
+- **The job alone** (the same night, on input folders built for it, not through the studio): with a first frame its
+  pinned refine gave the research wrapper's refined latent bit for bit (the same clip, picture and seed); a 16:9 clip's
+  first frame came 4.2 dB closer (6.4 dB on the face) for +14 s; with `faithful` a first frame came only 1.2 dB closer,
+  so Keep my frames stays with `balanced`. On the dialogue clip with its first frame alone, frame 0 came out 0.05 dB
+  from the run with both ends: the last end's block does not weaken the first.
 
 Measured apart:
 
@@ -389,7 +433,8 @@ Measured apart:
 
 So the page shows the Text clip's times for every 5 s clip, plus 15 s in its progress bar for an upscale whose text is
 encoded first, and its popover says of the kinds not run through the studio yet (above) that this kind of clip has not
-been upscaled on the GPU through the studio yet.
+been upscaled on the GPU through the studio yet. With Keep my frames the progress bar adds 16 s per end at 1080p and
+83 s for both ends at 2K (measured), and 60 s for one end at 2K (an estimate: not run), where the popover says so.
 
 **The job itself, standard load** (2026-10-28, before the fast load's runs, the same staging studio and 16:9 clip, an
 earlier version of the job too; 2K, `balanced`, audio `clip`):
