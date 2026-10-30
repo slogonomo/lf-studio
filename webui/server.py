@@ -219,10 +219,6 @@ Environment:
   and runs; default jobs/h3turbo_job.py), LFSTUDIO_H3TURBO_ENCODE_SCRIPT (its prompt encode, run with this server's
   Python in the package; default bench/h3turbo_encode.py) and LFSTUDIO_TEST_MEMINFO (a file read for MemAvailable
   instead of /proc/meminfo; with the Upscale or LightX2V Turbo on, the start log warns when it is set).
-Until 0.6 these settings may also have their names up to 0.4 (SOLH3_HOST for LFSTUDIO_HOST, and so on; not
-LFSTUDIO_LAUNCHER_PID, LFSTUDIO_MODELS or the LFSTUDIO_UPSCALE and LFSTUDIO_H3TURBO ones, which are new): an old name
-counts where the new one is not set, with one warning. The default state directory is
-~/.local/state/sol-h3-studio while that has jobs.db and ~/.local/state/lf-studio does not.
 
 SOL_H3_STAGE2_AUDIO (frozen or joint), SOL_H3_PROMPT_TOKENS (minimax or plain), SOL_H3_STATIC_SHAPES (1 or 0),
 SOL_H3_DYNAMIC_TEXT_LENGTH (1 or 0; 1, the default since 0.4, compiles Stage 1's body blocks once per session for any
@@ -275,32 +271,6 @@ def fail(message):
     print(f"lf-studio: {message}", file=sys.stderr, flush=True)
     sys.exit(2)
 
-
-# Until 0.6: the settings' names up to 0.4, SOLH3_X for LFSTUDIO_X (the docstring)
-OLD_SETTINGS = ("BACKEND", "HOME", "PATHS", "STATE_DIR", "PUBLISH_DIR", "HOST", "PORT", "ALLOWED_HOSTS", "PRELOAD",
-                "RESHAPE", "TRASH_DAYS", "MAX_QUEUED")
-
-
-def old_settings():
-    """Until 0.6: an old name counts where its new name is not set (the new one wins), with one warning on stderr
-    that lists the old names used."""
-    used = []
-    for name in OLD_SETTINGS:
-        old, new = "SOLH3_" + name, "LFSTUDIO_" + name
-        if old not in os.environ:
-            continue
-        value = os.environ.pop(old)
-        if new in os.environ:
-            used.append(f"{old} ({new} wins)")
-        else:
-            os.environ[new] = value
-            used.append(old)
-    if used:
-        print(f"lf-studio: settings under their 0.4 names, which work until 0.6: {', '.join(used)}. Rename them "
-              "LFSTUDIO_*", file=sys.stderr, flush=True)
-
-
-old_settings()
 
 # infer.py defaults (see the docstring); the studio sets length and format per job
 IGNORED_ENV = {name: os.environ.pop(name) for name in ("SOL_H3_SECONDS", "SOL_H3_ORIENTATION") if name in os.environ}
@@ -359,12 +329,6 @@ if "{task}" not in PATHS_TEMPLATE:
     fail(f"LFSTUDIO_PATHS must contain {{task}}, e.g. {HOME}/paths-{{task}}.json (got {PATHS_TEMPLATE})")
 PATHS = {t: Path(PATHS_TEMPLATE.format(task=t)).expanduser() for t in TASKS}
 STATE_DIR = Path(os.environ.get("LFSTUDIO_STATE_DIR") or Path.home() / ".local/state/lf-studio").expanduser()
-OLD_STATE_DIR = Path.home() / ".local/state/sol-h3-studio"   # until 0.6: 0.4's default, while it has the clip history
-if (not os.environ.get("LFSTUDIO_STATE_DIR") and not (STATE_DIR / "jobs.db").exists()
-        and (OLD_STATE_DIR / "jobs.db").exists()):
-    print(f"lf-studio: using {OLD_STATE_DIR}: {STATE_DIR} has no jobs.db (the old place works until 0.6)",
-          file=sys.stderr, flush=True)
-    STATE_DIR = OLD_STATE_DIR
 DB_FILE = STATE_DIR / "jobs.db"
 OLD_STATE_FILE = STATE_DIR / "jobs.json"         # before 0.2: the newest 200 jobs; imported once
 LOAD_TIMES = STATE_DIR / "load-times.json"

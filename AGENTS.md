@@ -59,11 +59,13 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
 - `bin/lf-studio` (launcher), `bin/env.example` (every setting, with comments), `install/` (00-90),
   `patches/lf-studio.patch` against NVlabs/Sana at `patches/BASE_COMMIT` ([docs/PATCH.md](docs/PATCH.md)),
   `integrations/`, `bench/`, `docs/`.
-- The project was called Sol-H3 Studio up to 0.4. Until 0.6 its old names keep a 0.4 install working
-  ([docs/INSTALL.md](docs/INSTALL.md#from-04-to-05)): `bin/sol-h3-studio` and `bin/sol-h3` are shims, every setting
-  is also read as `SOLH3_*`, and the old places of the settings file, the state, the compile cache and the clips are
-  used while the new ones hold nothing yet (decided by content: the state by its `jobs.db`). That code is marked
-  "until 0.6".
+- The project was called Sol-H3 Studio up to 0.4. 0.6 no longer reads its old names. Where 0.5 still read one, a
+  stop names each one in use with its new name and exits before anything starts
+  ([docs/INSTALL.md](docs/INSTALL.md#from-05-to-06)): `install/old-names.sh` for the launcher (every mode) and
+  `install/env.sh` (the install steps and `bench/*.sh`; also the venvs' 0.4 done marker and the checkout's 0.4 copy of
+  the applied patch), and `old_names` in `bin/lf-cli` (its settings, its old name `sol-h3`, the MCP server's
+  `./sol-h3-clips`). Nothing else may read an old name; the stop goes in a later release. The patches' compile cache
+  still falls back to `~/.cache/sol-h3-studio` when the runtime root is unset (changing that is a patch change).
 - The RTX 5090 backend (`LFSTUDIO_BACKEND=rtx5090`, [docs/RTX5090.md](docs/RTX5090.md)):
   `patches/lf-studio-rtx5090.patch` against `patches/BASE_COMMIT_RTX5090` for NVIDIA's Sol-H3-RTX5090 package,
   `install/05-python.sh` (uv and its Pythons), and per-backend branches in the launcher, `install/env.sh` and the
@@ -205,10 +207,17 @@ with a fake uv, or one of your own; a failed step stops it) and `install/h3turbo
 pinned files, kept, resumed by Range or downloaded and checked, from a fake Hugging Face that redirects to another
 host name, with no token ever sent). None of them downloads anything.
 
-`tests/test_old_names.py` covers the names up to 0.4 that work until 0.6: the old setting names in the environment
-and the settings file (and that the four `OLD_SETTINGS` lists agree), the old places, the shims, the launcher's check
-for a running copy, a launcher run with the 0.4 spark-switchboard service file's settings, the deprecated integration
-files, the install steps and the page's old localStorage keys. It goes with them in 0.6.
+`tests/test_old_names.py` covers the stop for the names up to 0.4: the launcher in every mode (start, `--check`,
+`--kill`, the client commands) with an old setting in the environment and in the settings file (file and line named,
+as a key and in a value, also one that nothing sets: no parse error, the old places still in the same message), the
+file that `SOLH3_ENV` names, the old settings and state folders (and when they don't count: a setting, a new folder
+with content, a link left at the old place), a settings file named in the old folder after its move, a run through a
+link named `sol-h3-studio`; the install steps, `bench/replay.sh` and
+`bench/first-clip.sh` (`SOLH3_DRY_RUN=1` alone does not run a step, the venvs' 0.4 done markers, a checkout with only
+the 0.4 copy of the applied patch and the rename it asks for); `lf-cli` and `lf-cli mcp` (exit 2, nothing on stdout,
+no connection, the `sol-h3` name, `./sol-h3-clips`); names that only look alike (`SOL_H3_*`, `COMFY_SOLH3_*`, NVIDIA's
+own `SOLH3_*`) pass; the upgrade section's table has every old setting; the files of the old names are gone and no
+other code names an old name. It goes with the stop.
 
 `tests/test_replay.py` covers the Stage-2 replay bench (`bench/replay.sh`, `bench/replay/`) on the CPU: the draft
 store, every arm, the `--dry` plan, the GPU run object with stand-ins for torch, a `run` with a stand-in Stage-2
@@ -285,7 +294,7 @@ shares the other studio's clip history and files.
 
 - The server stays standard-library only, the page a single file.
 - A new setting goes into `bin/env.example` with a comment, and into the server's docstring. It gets no 0.4 name: the
-  `OLD_SETTINGS` lists (launcher, `install/env.sh`, server, client) stay as they are until they go in 0.6.
+  `OLD_SETTINGS` lists of the stop (`install/old-names.sh`, `bin/lf-cli`) stay as they are.
 - A change to an endpoint, or to what `bin/lf-cli` does, goes into `docs/API.md`. The prompt guide lives twice, in
   `docs/API.md` (between its `prompt-guide` markers) and as `GUIDE` in `bin/lf-cli`; `tests/test_cli.py` checks
   that they are the same.

@@ -16,10 +16,10 @@
 # the extensions are rebuilt against the new one). CFLAGS/CXXFLAGS=-w: glibc 2.44's _POSIX_C_SOURCE clashes with Python's
 # pyconfig.h under the extension's -Werror (warnings only). No offline-context target (the prompt cache comes from a
 # DGX Spark). ~10 min measured on a workstation with one RTX 5090, the ltx-kernels build ~3 min of it; ~6 GB.
-# Idempotent: skipped when $ENVS/stage2/.lf-studio-done (until 0.6 also .sol-h3-studio-done, its name up to 0.4) exists
-# (FORCE=1 rebuilds into the same venv). On the RTX 5090 a venv without that marker whose pip freeze is
-# install/freeze/stage2-rtx5090-freeze.txt (one built by hand to the same recipe) is adopted: nothing is installed or
-# rebuilt, and the marker is written once the import check (which loads the compiled all2all_cpp) passes.
+# Idempotent: skipped when $ENVS/stage2/.lf-studio-done exists (FORCE=1 rebuilds into the same venv). On the RTX 5090
+# a venv without that marker whose pip freeze is install/freeze/stage2-rtx5090-freeze.txt (one built by hand to the
+# same recipe) is adopted: nothing is installed or rebuilt, and the marker is written once the import check (which
+# loads the compiled all2all_cpp) passes.
 # Every run but --torchaudio-fix-only also brings pip to 26.2.2 and certifi to >= 2026.10.19 (pip_update in common.sh;
 # a new venv gets them before anything else is installed), then Pillow to 13.0.0 (pillow_update, #69).
 # --torchaudio-fix-only: only relax the torchaudio check in an existing $ENVS/stage2 venv (for example one you
@@ -67,7 +67,7 @@ if [[ "$FIX_ONLY" == 1 ]]; then
     [[ -x "$V/bin/python" || "$DRY_RUN" == 1 ]] ||
         die "no venv at $V (--torchaudio-fix-only needs an existing Stage2 venv)"
     say "--torchaudio-fix-only: leaving the rest of $V as it is"
-elif [[ (-f "$DONE" || -f "$V/.sol-h3-studio-done") && "$FORCE" != 1 ]]; then  # (the 0.4 marker: until 0.6)
+elif [[ -f "$DONE" && "$FORCE" != 1 ]]; then
     say "Stage2 env already built ($V); FORCE=1 to rebuild"
 elif [[ "$LFSTUDIO_BACKEND" == rtx5090 && "$FORCE" != 1 ]] &&
         freeze_matches "$V/bin/python" "$INSTALL_DIR/freeze/stage2-rtx5090-freeze.txt"; then
@@ -175,7 +175,7 @@ old = "        if ta_version != t_version:\n"
 relaxed = "        if ta_version.split('.')[0] != t_version.split('.')[0]:\n"
 new = ("        # lf-studio: only a CUDA major mismatch is fatal (cu130 torchaudio next to cu132 torch;\n"
        "        # no aarch64 cu132 torchaudio wheel exists)\n" + relaxed)
-if relaxed in text:     # also under the comment of an earlier version (sol-h3-studio up to 0.4)
+if relaxed in text:     # under any comment (earlier versions wrote another)
     print(f"already relaxed: {path}")
 elif text.count(old) == 1:
     print(f"relaxing {path} (backup {path.name}.orig)")

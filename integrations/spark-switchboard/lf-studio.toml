@@ -1,6 +1,6 @@
 # LF Studio (called Sol-H3 Studio up to 0.4) as a spark-switchboard service (spark-switchboard,
 # https://github.com/slogonomo/spark-switchboard: the companion on-demand app manager for one DGX Spark). Copy this
-# file into your switchboard config's services/ directory. It replaces sol-h3-studio.toml.
+# file into your switchboard config's services/ directory.
 # Paths assume this repo is checked out at ~/src/lf-studio; change the two "~/src/lf-studio" paths in command and
 # kill_command if not.
 # Everything else (checkout, Python, runtime root, image) comes from ~/.config/lf-studio/env.

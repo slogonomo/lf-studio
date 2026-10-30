@@ -8,11 +8,7 @@ set -uo pipefail
 
 INSTALL_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd -- "$INSTALL_DIR/.." && pwd)
-if [[ -n "${LFSTUDIO_DRY_RUN+set}" ]]; then   # set, even empty, the new name wins (as in env.sh)
-    DRY_RUN=${LFSTUDIO_DRY_RUN:-0}
-else
-    DRY_RUN=${SOLH3_DRY_RUN:-0}                 # SOLH3_DRY_RUN: its name up to 0.4, until 0.6
-fi
+DRY_RUN=${LFSTUDIO_DRY_RUN:-0}
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;

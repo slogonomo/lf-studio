@@ -2,19 +2,19 @@
 
 Logs:
 
-- Launcher: `~/.local/state/lf-studio/launcher.log` (`$LFSTUDIO_STATE_DIR`; an install made with 0.4 keeps
-  `~/.local/state/sol-h3-studio` until 0.6, while the new directory has no clip history).
+- Launcher: `~/.local/state/lf-studio/launcher.log` (`$LFSTUDIO_STATE_DIR`).
 - Web server: `~/.local/state/lf-studio/server.log`.
 - Pipeline workers: `$SOL_H3_SPARK_RUNTIME_ROOT/outputs/webui/<session>/{stage1,stage2,qwen,warmup-qwen}-worker*/worker.log`.
   A failed clip's card shows the error; "Worker exited with code N; see .../worker.log" points at the right file.
 
 ## The server won't start
 
-**`lf-studio: settings under their 0.4 names, which work until 0.6: SOLH3_PORT, ...`** and **`lf-studio: using
-~/.config/sol-h3-studio/env: ~/.config/lf-studio/env does not exist`.** Not errors: an install made with 0.4 (or a
-spark-switchboard service file of 0.4, or an agent's config) uses the names the studio had up to 0.4, and they still
-work. "(LFSTUDIO_X wins)" after a name means both names are set and the old one is ignored. Rename them before 0.6
-([INSTALL.md](INSTALL.md#from-04-to-05)). `bin/sol-h3-studio` and `bin/sol-h3` say "renamed" the same way.
+**`REFUSED - LF Studio 0.6 no longer reads the names it had up to 0.4. Rename each, then try again`**, followed by
+lines such as `SOLH3_PORT (environment) -> LFSTUDIO_PORT`. The install, a spark-switchboard service file, a script or
+an agent's config still uses a name the studio had up to 0.4, which 0.5 still read. Nothing was started. Change each
+line's old name to its new one ([INSTALL.md](INSTALL.md#from-05-to-06)), then start again. `bin/lf-cli` says the same
+after `lf-cli:` and exits with 2. A service that still runs `bin/sol-h3-studio` or `bin/sol-h3` fails with "No such file
+or directory" instead: these are gone, use `bin/lf-studio` and `bin/lf-cli`.
 
 **`REFUSED - LF Studio needs ~110 GiB free memory, only N GiB available`.** Another app holds the memory.
 The launcher lists the biggest users (GPU processes, top RSS, containers). Stop them and start again.

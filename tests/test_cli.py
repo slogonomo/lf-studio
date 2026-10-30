@@ -71,7 +71,7 @@ def load_cli():
 
 
 def client_env(url=None, **extra):
-    """This process's environment without LFSTUDIO_* settings (or their old names), plus the given ones."""
+    """This process's environment without LFSTUDIO_* settings (and SOLH3_*, which stop it), plus the given ones."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("LFSTUDIO_", "SOLH3_"))}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if url:

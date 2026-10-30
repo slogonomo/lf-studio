@@ -250,8 +250,9 @@ they were measured. "First clip" = launch to the first finished MP4 of a new ses
 - **Files.** `runtime/config.py` (`compile_cache_root`), `runtime/pipeline.py`, `runtime/stage2.py`,
   `tests/test_pipeline.py`.
 - **Switch.** `SOL_H3_COMPILE_CACHE`: a directory, or `session` for upstream's behaviour. Default
-  `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile`, or `~/.cache/lf-studio/compile` if the runtime root is unset (until
-  0.6 `~/.cache/sol-h3-studio/compile`, under the studio's 0.4 name, while `~/.cache/lf-studio` is missing or empty).
+  `$SOL_H3_SPARK_RUNTIME_ROOT/cache/compile`, or `~/.cache/lf-studio/compile` if the runtime root is unset
+  (`~/.cache/sol-h3-studio/compile`, under the studio's 0.4 name, while `~/.cache/lf-studio` is missing or empty; the
+  launcher always sets the runtime root, so only a run of the package without it uses this).
   Stage1 uses `<root>/stage1/{inductor,triton}`, Stage2 `<root>/stage2/{inductor,triton}`.
 - **Measured.** Startup 304 → 227 s (this was in place before the 282 s baseline). Triton autotune results
   on disk: 127 → 124 s.

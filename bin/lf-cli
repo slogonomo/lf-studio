@@ -40,8 +40,8 @@ its id is on stdout); 130 interrupted (the clip still runs).
 MCP settings (the MCP process's environment): LFSTUDIO_URL; LFSTUDIO_OUT_DIR, where MP4s go (default ./lf-clips);
 LFSTUDIO_MCP_WAIT_S, how long generate and wait wait by default (50); LFSTUDIO_MCP_MAX_WAIT_S, the cap on any wait_s
 (1800); LFSTUDIO_MCP_OUT_ANYWHERE=1 lets "out" point outside LFSTUDIO_OUT_DIR and the working directory.
-Until 0.6 the settings may also have their names up to 0.4 (SOLH3_URL for LFSTUDIO_URL, and so on), and this file
-its name up to 0.4, sol-h3 (bin/sol-h3 runs it).
+The names up to 0.4 (SOLH3_URL for LFSTUDIO_URL and so on, sol-h3 for this file, ./sol-h3-clips for ./lf-clips) stop
+it with exit 2 before anything is sent (docs/INSTALL.md, "From 0.5 to 0.6").
 Docs: docs/API.md in https://github.com/slogonomo/lf-studio
 """
 import argparse
@@ -2059,13 +2059,7 @@ class McpServer:
         self.studio = Studio(studio_url(url), AGENT + " (mcp)")
         self.wait_s = env_seconds("LFSTUDIO_MCP_WAIT_S", 50.0)
         self.max_wait_s = env_seconds("LFSTUDIO_MCP_MAX_WAIT_S", 1800.0)
-        explicit = os.environ.get("LFSTUDIO_OUT_DIR")
-        out = explicit or "lf-clips"
-        # until 0.6: 0.4's default while it exists and the new one is missing or empty (a setting always wins)
-        if not explicit and os.path.isdir("sol-h3-clips") and not (os.path.isdir(out) and os.listdir(out)):
-            out = "sol-h3-clips"
-            self.log(f"using {os.path.abspath(out)}: {os.path.abspath('lf-clips')} is missing or empty (the old "
-                     "default works until 0.6; LFSTUDIO_OUT_DIR sets another)")
+        out = os.environ.get("LFSTUDIO_OUT_DIR") or "lf-clips"
         self.out_dir = Path(os.path.abspath(Path(out).expanduser()))
         self.anywhere = os.environ.get("LFSTUDIO_MCP_OUT_ANYWHERE", "") == "1"
         self.stdout = sys.stdout.buffer
@@ -2657,32 +2651,33 @@ COMMANDS = {"generate": cmd_generate, "wait": cmd_wait, "status": cmd_status, "c
             "fetch": cmd_fetch, "upscale": cmd_upscale, "models": cmd_models, "guide": cmd_guide}
 
 
-# Until 0.6 the settings may have their names up to 0.4, SOLH3_X for LFSTUDIO_X.
+# The stop for the names up to 0.4, when LF Studio was called Sol-H3 Studio, which 0.6 no longer reads (as
+# install/old-names.sh for the launcher; docs/INSTALL.md, "From 0.5 to 0.6"). It goes in a later release.
+# OLD_SETTINGS: the settings LFSTUDIO_X this client reads whose name up to 0.4 was SOLH3_X.
 OLD_SETTINGS = ("URL", "HOST", "PORT", "OUT_DIR", "MCP_WAIT_S", "MCP_MAX_WAIT_S", "MCP_OUT_ANYWHERE")
+OLD_NAMES = ('LF Studio 0.6 no longer reads the names it had up to 0.4. Rename each, then try again (docs/INSTALL.md, '
+             '"From 0.5 to 0.6"):')
 
 
-def old_settings():
-    """Until 0.6: an old name counts where its new name is not set (the new one wins), with one warning on stderr
-    that lists the old names used."""
-    used = []
-    for name in OLD_SETTINGS:
-        old, new = "SOLH3_" + name, "LFSTUDIO_" + name
-        if old not in os.environ:
-            continue
-        value = os.environ.pop(old)
-        if new in os.environ:
-            used.append(f"{old} ({new} wins)")
-        else:
-            os.environ[new] = value
-            used.append(old)
-    if used:
-        print(f"lf-cli: settings under their 0.4 names, which work until 0.6: {', '.join(used)}. Rename them "
-              "LFSTUDIO_*", file=sys.stderr, flush=True)
+def old_names(command):
+    """The names up to 0.4 still in use that 0.5 read, each as "old -> new": a setting SOLH3_X in the environment,
+    this file's old name sol-h3, and for mcp the old clips folder ./sol-h3-clips while ./lf-clips is missing or empty
+    and no setting names another."""
+    found = [f"SOLH3_{x} (environment) -> LFSTUDIO_{x}" for x in OLD_SETTINGS if "SOLH3_" + x in os.environ]
+    if os.path.basename(sys.argv[0]) == "sol-h3":
+        found.append("sol-h3 -> lf-cli (the client)")
+    if (command == "mcp" and not os.environ.get("LFSTUDIO_OUT_DIR") and "SOLH3_OUT_DIR" not in os.environ
+            and os.path.isdir("sol-h3-clips") and not (os.path.isdir("lf-clips") and os.listdir("lf-clips"))):
+        found.append(f"{os.path.abspath('sol-h3-clips')} -> {os.path.abspath('lf-clips')} (the MCP server's clips)")
+    return found
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    old_settings()
+    old = old_names(args.command)
+    if old:                                       # before anything is sent, or read from stdin
+        print("\n".join([f"lf-cli: {OLD_NAMES}"] + ["    " + line for line in old]), file=sys.stderr)
+        return 2
     output = Output(args)
     if args.command == "mcp":
         try:

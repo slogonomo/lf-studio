@@ -3730,11 +3730,12 @@ class LauncherUpscale(LauncherSettingsCheck):
                      **settings)
 
     def test_the_fast_load_needs_its_loader(self):
-        """A checkout without upscale/fastload.py (here a copy of the launcher, the server, the job and the prompt
-        encode) is refused with the fast load, the default, and passes with the standard load, which does without
-        it."""
+        """A checkout without upscale/fastload.py (here a copy of the launcher and the stop it sources, the server,
+        the job and the prompt encode) is refused with the fast load, the default, and passes with the standard load,
+        which does without it."""
         repo = self.d / "repo"
-        for rel in ("bin/lf-studio", "webui/server.py", "upscale/regen2k_job.py", "bench/h3turbo_encode.py"):
+        for rel in ("bin/lf-studio", "install/old-names.sh", "webui/server.py", "upscale/regen2k_job.py",
+                    "bench/h3turbo_encode.py"):
             (repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(Path(__file__).resolve().parents[1] / rel, repo / rel)
         settings = self.regen2k()
@@ -3767,8 +3768,8 @@ class LauncherUpscale(LauncherSettingsCheck):
         self.assertIn(note.format("open_h3/pipeline.py changed, open_h3/upscaler.py missing, "
                                   "open_h3/upscaler_node.py missing"), out)
         repo = self.d / "repo"
-        for rel in ("bin/lf-studio", "webui/server.py", "upscale/regen2k_job.py", "upscale/fastload.py",
-                    "bench/h3turbo_encode.py"):
+        for rel in ("bin/lf-studio", "install/old-names.sh", "webui/server.py", "upscale/regen2k_job.py",
+                    "upscale/fastload.py", "bench/h3turbo_encode.py"):
             (repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(Path(__file__).resolve().parents[1] / rel, repo / rel)
         job = (repo / "upscale/regen2k_job.py").read_text()
