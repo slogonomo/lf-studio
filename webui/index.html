@@ -433,10 +433,11 @@ const UPSCALE={"1080p":{name:'1080p',base:315,step:150,size:[1920,1080]},"2k":{n
 const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==='portrait'?[s[1],s[0]]:s).join('×');};
 // +15 s for an upscale whose text is encoded first (the clip's prompt without its pictures: ~9-18 s with its Qwen
 // worker's start, measured with LightX2V Turbo's prompt encode; 9.1-9.2 s in the studio's upscales). Keep my frames:
-// UP_PIN_S, the seconds one end and both ends add at 1080p and 2K, estimates until it has run on the GPU through the
-// studio (each picture's encode on the VAE already loaded, and 2.7 % more rows per end: research runs with a first
-// frame had their steps within the noise at 1080p and 7 and 25 s longer at 2K, two clips; docs/PERFORMANCE.md)
-const UP_PIN_S={"1080p":[10,30],"2k":[60,120]};
+// UP_PIN_S, the seconds one end and both ends add at 1080p and 2K, measured through the studio against the same clips
+// unpinned (2026-10-30: +16-17 s with one end and +30-34 s with both at 1080p, +83 s with both at 2K: each picture's
+// encode, ~3 s at 1080p, and steps ~6 s longer per end at 1080p, ~37 s with both at 2K); one end at 2K has not run,
+// so its 60 s is an estimate (docs/PERFORMANCE.md)
+const UP_PIN_S={"1080p":[16,32],"2k":[60,83]};
 const upPinS=j=>{const n=j.pin&&Array.isArray(j.pin.ends)?j.pin.ends.length:0;return n?(UP_PIN_S[j.resolution]||[0,0])[n-1]||0:0;};
 const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
   return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0)+upPinS(j);};
