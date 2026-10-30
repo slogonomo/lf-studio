@@ -848,10 +848,19 @@ class UpscaleTimes(unittest.TestCase):
         usage = " ".join(cli.__doc__.split())
         self.assertIn("about 10 min (1080p, 5 s) to 1.6 h (4K, full) in all, 4K over an hour, with a ~22 s load", usage)
         self.assertIn("~8 min more with LFSTUDIO_UPSCALE_LOAD=standard", usage)
-        self.assertIn("which takes about 10 min to 1.6 h or more", cli.INSTRUCTIONS)
-        self.assertIn("An upscale takes about 10 min to 1.6 h in all", api)
+        self.assertIn("which takes about 10 min (a 5 s clip at 1080p) to 1.6 h or more", cli.INSTRUCTIONS)
+        self.assertIn("An upscale takes about 10 min (1080p, 5 s) to 1.6 h (4K, full) in all", api)
         self.assertIn("~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`", api)
-        self.assertIn("An upscale takes about 10 min to 1.6 h, far longer than any `wait_s`", api)
+        self.assertIn("An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h, far longer than any `wait_s`", api)
+        # every length offered: Sol-H3's old 3 s clips take less than 10 min (an estimate), so each text names its 5 s
+        everything = [(eta(seconds, res, 2), seconds, res) for seconds, sized in regen.OFFER_ETA_S.items()
+                      for res in sized]
+        self.assertEqual(min(everything)[1:], (3, "1080p"))
+        self.assertEqual((round(min(everything)[0] / 60), round(max(eta(*row[1:], 3) for row in everything) / 3600, 1)),
+                         (6, 1.6))
+        self.assertIn("1080p 6 min at 3 s", api)
+        for text in (usage, cli.INSTRUCTIONS, api):
+            self.assertNotRegex(text, r"about 10 min to")
         tool = next(t for t in cli.TOOLS if t["name"] == "upscale")["description"]
         self.assertIn("about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps for a 5 s clip", tool)
         self.assertEqual([round(eta(5, res, 2) / 60) for res in ("1080p", "2k")], [10, 19])     # 615 s, 1165 s
