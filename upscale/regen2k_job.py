@@ -135,7 +135,8 @@ and "why" (check_pin's) and, when held, "latent_shape" and "latent_sha256"; "gri
 encode), "layout" (check_pin_layout's facts), "timesteps" per step, "condition_sha256" and "refined_sha256"). Progress
 on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n, decoding and saving, in that order, and
 "[lf-studio] error <text>" last on failure.
-Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loaded), 143 stopped by SIGTERM.
+Exit status: 0 done, 1 failed, 2 the job or its inputs were refused, or there was less memory than job.json's
+min_free_gib at its start (nothing loaded), 143 stopped by SIGTERM.
 --check validates job.json and the inputs (the pin's check too: it needs Pillow and numpy), prints the plan and exits
 (0 or 2) without torch and without writing.
 --parent PID (the server passes its own): the job is killed when that process ends (PR_SET_PDEATHSIG), so it never
@@ -148,9 +149,11 @@ with load "standard"), "vae_batch": INT (26), "paths": {"package": DIR, "weights
 "image": FILE, "sha256": HEX (the picture's, as the clip was made from it), "fit": "as is"|"stretch"|"cover-crop" (how
 the clip's model put it on its canvas), "canvas": [W, H] (the clip's)}, ...] (one or both ends, first before last),
 "check": {"grid": "384p", "min_db": 28}, "noise_aug": 0.999, "encode_seed": 42, "noise_seed": 42} (optional; the values
-shown are the defaults)}. Paths are absolute. Any other field is refused, "source" too: the job has no draft source any
-more (the clip's Stage-1 latent, which redrew the video too much), it always reads the clip's MP4. The orientation is
-not a field either: the clip's MP4 has it (16:9 or 9:16), and the output is that way round (2k: 2560x1440 or 1440x2560).
+shown are the defaults), "min_free_gib": GiB (optional; the floor the server checked, min_free_for: the job refuses to
+start with less MemAvailable than that, less START_SLACK_GIB; absent or 0, no check)}. Paths are absolute. Any other
+field is refused, "source" too: the job has no draft source any more (the clip's Stage-1 latent, which redrew the video
+too much), it always reads the clip's MP4. The orientation is not a field either: the clip's MP4 has it (16:9 or 9:16),
+and the output is that way round (2k: 2560x1440 or 1440x2560).
 
 Everything outside run() and the torch helpers is standard library only, so the server (its settings, the command
 line, the progress lines, the mux), bin/lf-studio --check (studio_settings, check_weights, nvidia_files) and
@@ -254,6 +257,7 @@ ROW_BYTES = {"stock": 181_800, "lean": 92_300}
 OVERHEAD_GIB = ((80_000, 7.0), (140_000, 9.5), (None, 11.0))      # by the clip's own rows: up to 80,000, 140,000, more
 FLOOR_MARGIN_GIB = 3
 TEXT_ROWS = 200                  # a prompt's rows, for the model (169 to 387 in the studio's runs)
+START_SLACK_GIB = 0.5            # what the job's own start takes after the server's check (job.json min_free_gib)
 
 # what this wrapper was written against (checked against the package's own names at run time)
 NVIDIA_COMMIT = "6e4a44002149418a547434b91d7280a8bbdcace3"
@@ -338,7 +342,7 @@ KEYFRAME_KEYS = ("anchor", "image", "sha256", "fit", "canvas")
 OUTPUT_VIDEO = "video_noaudio.mp4"
 RECEIPT = "receipt.json"
 JOB_KEYS = {"version", "case", "resolution", "steps", "start_sigma", "seed", "audio", "load", "preread", "vae_batch",
-            "paths", "meta", "pin"}
+            "paths", "meta", "pin", "min_free_gib"}
 REQUIRED = ("case", "resolution", "steps", "start_sigma", "seed", "audio", "paths")
 PATH_KEYS = ("package", "weights", "base_model", "output")
 EXIT_FAILED, EXIT_REFUSED, EXIT_CANCELLED = 1, 2, 128 + signal.SIGTERM
@@ -430,8 +434,12 @@ def parse_job(data, job_dir):
     if not isinstance(meta, dict):
         raise JobError("meta: a JSON object")
     pin = parse_pin(data["pin"]) if "pin" in data else None
+    min_free = data.get("min_free_gib")
+    if min_free is not None and (isinstance(min_free, bool) or not isinstance(min_free, (int, float))
+                                 or not math.isfinite(min_free) or min_free < 0):
+        raise JobError(f"min_free_gib: a number of GiB, 0 or more, got {min_free!r}")
     job.update(steps=steps, start_sigma=sigma, seed=seed, load=load, preread=preread, vae_batch=vae_batch, meta=meta,
-               pin=pin)
+               pin=pin, min_free_gib=None if min_free is None else float(min_free))
     return job
 
 
@@ -1921,6 +1929,24 @@ def prepare(job_path, receipt):
     return job, files
 
 
+def check_start_memory(job, path="/proc/meminfo"):
+    """job.json's min_free_gib (the floor the server checked before it started this job; absent or 0: no check)
+    against MemAvailable now, less START_SLACK_GIB for what the job's own start has taken since: a JobError below it,
+    before anything loads. Where MemAvailable can't be read the job starts, as the server does. Returns MemAvailable
+    in GiB, or None where it was not checked."""
+    floor = job.get("min_free_gib")
+    if not floor:
+        return None
+    try:
+        available = meminfo(path).get("MemAvailable")
+    except (OSError, ValueError, IndexError):
+        return None
+    if available is not None and available < floor - START_SLACK_GIB:
+        raise JobError(f"not enough free memory to start: {available:.1f} GiB available, {floor:g} GiB needed for a "
+                       f"{SIZE_NAMES[job['resolution']]} {job['frames']['seconds']} s upscale")
+    return available
+
+
 def check(job_path):
     """--check: validate, print the plan (sigmas from the package's own open_h3.sigmas), write nothing."""
     try:
@@ -1996,6 +2022,7 @@ def main(argv=None):
     try:
         job, files = prepare(job_path, receipt)
         out = job["output"]
+        check_start_memory(job)
         receipt["inputs"] = {name: str(path) for name, path in files.items()}
         receipt["inputs_sha256"] = {name: sha256(path) for name, path in files.items()}
         write_json(out / RECEIPT, receipt)

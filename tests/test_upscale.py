@@ -1,12 +1,12 @@
-"""upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json (its pin too), the clip's and the
-weights' files (MP4s made by ffmpeg, 16:9 and 9:16, of every count of frames the studio's lengths keep,
+"""upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json (its pin and memory floor too), the
+clip's and the weights' files (MP4s made by ffmpeg, 16:9 and 9:16, of every count of frames the studio's lengths keep,
 and the counts, sizes and rates it refuses), the frame cases against the patches' geometry and LightX2V Turbo's job at
 every length (the 3 copies, the audio of A x 800 samples), what is offered per length and size with its times, its
 block forward by rows and its memory floor, the pin's fit against the LightX2V Turbo receipts' records and its grids,
 the shape table, the portrait entries for NVIDIA's dicts, the upscale route and the column crop, check_package, the text
 check on a stand-in, the command lines (NVIDIA's read of the clip among them) and the environment, the progress lines,
-the memory trace, the script's --check and its refusals, main's receipt when the GPU part finishes, fails or gets
-SIGTERM (a stand-in run()), the last release's job refusing what this one takes now, and run()
+the memory trace, the script's --check and its refusals, main's receipt when the GPU part finishes, fails, gets SIGTERM
+(a stand-in run()) or starts with too little memory, the last release's job refusing what this one takes now, and run()
 itself with a stand-in torch and a stand-in of NVIDIA's open_h3 that records its calls: for 16:9 the same calls as
 before the job took 9:16 clips, for 9:16 the portrait route, with both loads (fast and standard; stand-ins for
 safetensors, diffusers and upscale/fastload.py record every load), a clip of 124 frames and clips of other lengths
@@ -240,10 +240,21 @@ class JobTests(Fixture):
                              ("load", "Fast"), ("load", None), ("load", True), ("vae_batch", 0),
                              ("vae_batch", 257), ("vae_batch", "26"), ("version", 2), ("version", True),
                              ("meta", []), ("case", "relative/dir"), ("case", ""), ("case", 7), ("paths", []),
-                             ("paths", None)):
+                             ("paths", None), ("min_free_gib", -1), ("min_free_gib", "110"), ("min_free_gib", True),
+                             ("min_free_gib", nan), ("min_free_gib", float("inf"))):
             with self.subTest(field=field, value=value):
                 with self.assertRaisesRegex(JobError, field):
                     job_module.parse_job(self.job(**{field: value}), "/")
+
+    def test_the_memory_floor(self):
+        """min_free_gib, the floor the server checked (min_free_for): absent or null is no check, as 0 is."""
+        for value, want in ((DROP, None), (None, None), (0, 0.0), (111, 111.0), (110.5, 110.5)):
+            with self.subTest(value=value):
+                floor = job_module.parse_job(self.job(min_free_gib=value), "/")["min_free_gib"]
+                self.assertEqual(floor, want)
+                self.assertEqual(type(floor), type(want))
+        self.assertIn("min_free_gib", job_module.JOB_KEYS)
+        self.assertNotIn("min_free_gib", job_module.REQUIRED)
 
     def test_no_source(self):
         """job.json has no "source" any more (the draft, from the clip's Stage-1 latent, is gone): any value of it is
@@ -1740,7 +1751,7 @@ class ScriptTests(Fixture):
 
 
 class MainTests(Fixture):
-    """main() around a stand-in run(): the receipt for done, failed and SIGTERM."""
+    """main() around a stand-in run(): the receipt for done, failed, SIGTERM and too little memory to start."""
 
     def main(self, run, **changes):
         handler = signal.getsignal(signal.SIGTERM)
@@ -1789,6 +1800,41 @@ class MainTests(Fixture):
             raise JobError("the conditioning has 254 non-text rows (fl2va/ref2va): it needs a text-only encode")
         status, receipt = self.main(run)
         self.assertEqual((status, receipt["state"]), (2, "failed"))
+
+    def test_too_little_memory_to_start(self):
+        """job.json's min_free_gib, the floor the server checked: with less MemAvailable than that at the job's
+        start, less 0.5 GiB for what its own start takes, it is refused (exit 2) before run(), with a receipt; at that
+        or more it runs. Absent or 0: no check, MemAvailable not read; where it can't be read, the job starts."""
+        ran = []
+
+        def run(job, files, receipt, trace):
+            ran.append(job["min_free_gib"])
+        for available, floor, refused in ((109.4, 110, True), (109.5, 110, False), (115.0, 110, False),
+                                          (110.4, 111, True), (114.5, 115, False)):
+            with self.subTest(available=available, floor=floor), \
+                    mock.patch.object(job_module, "meminfo", return_value={"MemAvailable": available}):
+                ran.clear()
+                status, receipt = self.main(run, min_free_gib=floor)
+                self.assertEqual((status, ran), (2, []) if refused else (0, [float(floor)]))
+                self.assertEqual(receipt["job"]["min_free_gib"], float(floor))
+                if refused:
+                    self.assertEqual((receipt["state"], receipt["error"]), (
+                        "failed", f"not enough free memory to start: {available:.1f} GiB available, {floor} GiB "
+                                  "needed for a 2K 5 s upscale"))
+                    self.assertEqual(receipt["frames"], case_of(121))           # the clip checked first
+                    self.assertNotIn("inputs_sha256", receipt)
+        for changes in ({}, {"min_free_gib": 0}, {"min_free_gib": None}):
+            with self.subTest(**{k: str(v) for k, v in changes.items()}), \
+                    mock.patch.object(job_module, "meminfo", return_value={"MemAvailable": 1.0}):
+                ran.clear()
+                self.assertEqual(self.main(run, **changes)[0], 0)              # 1 GiB available: not checked
+                self.assertEqual(ran, [None if changes.get("min_free_gib") is None else 0.0])
+        for broken in ({"side_effect": OSError("no /proc")}, {"return_value": {}}):
+            with mock.patch.object(job_module, "meminfo", **broken):
+                ran.clear()
+                self.assertEqual(self.main(run, min_free_gib=110)[0], 0)
+                self.assertEqual(ran, [110.0])
+        self.assertEqual(job_module.check_start_memory({"min_free_gib": None}), None)
 
     def test_sigterm_is_a_cancel(self):
         def run(job, files, receipt, trace):
@@ -1894,8 +1940,8 @@ class LengthTests(Fixture):
 @unittest.skipUnless(shutil.which("git"), "needs git")
 class OlderJobTests(Fixture):
     """The job of the last release (v0.5.2's, from git; skipped where this copy's history has not got it) given what
-    this one takes now: a 10 s clip. It refuses it (exit 2) before anything loads, with a receipt, and cuts nothing:
-    so job.json stays version 1."""
+    this one takes now: a 10 s clip and job.json's min_free_gib. It refuses both (exit 2) before anything loads, with
+    a receipt, and cuts nothing: so job.json stays version 1."""
 
     def setUp(self):
         super().setUp()
@@ -1927,6 +1973,12 @@ class OlderJobTests(Fixture):
         (self.out / "receipt.json").unlink()
         planned = json.loads(self.script("--job", str(path), "--check", check=True).stdout)     # this job takes it
         self.assertEqual(planned["frames"], case_of(241))
+
+    def test_the_memory_floor_is_refused(self):
+        result = self.older_job("--job", str(self.write_job(min_free_gib=110)))
+        self.assertEqual((result.returncode, result.stdout.splitlines()[-1]),
+                         (2, "[lf-studio] error unknown field(s): min_free_gib"))
+        self.assertEqual(json.loads((self.out / "receipt.json").read_text())["state"], "failed")
 
 
 NARROWED = []                           # each StandInTensor.narrow: (shape, dim, start, length)
