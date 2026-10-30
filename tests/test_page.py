@@ -2287,7 +2287,9 @@ class ModelUpscale(ModelPage):
     at each size (its text made with the clip, stretched to 768p; at 4K cut to its first 121 frames) and has Keep my
     first and last frames, checked, off with the reason at 4K and at another strength than Balanced, "only partly" at
     2K; the request says pin auto or off; the upscale's card names the model and size of its clip and the frames kept.
-    A Sol-H3 clip with both keyframes keeps its first frame only, and the popover says why not its last."""
+    One with a last keyframe alone has Keep my last frame, and at a size where its route has run on the GPU through
+    the studio (pin_routes "ran") no note that it has not. A Sol-H3 clip with both keyframes keeps its first frame
+    only, and the popover says why not its last."""
 
     def notes(self):
         return self.page.inner_text("#upinput")
@@ -2360,6 +2362,30 @@ class ModelUpscale(ModelPage):
         for other in ups[1:]:                                                # off, or none sent: nothing said
             self.page.wait_for_selector(f"{self.card(other['id'])} video", timeout=60000)
             self.assertNotIn("kept", self.page.inner_text(f"{self.card(other['id'])} .when"))
+
+    def test_a_last_keyframe_alone(self):
+        prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 5.00-second "
+                  "mark.\nA dancer turns slowly.")
+        jid = self.studio.turbo(task="fl2va", prompt=prompt, seed=83, files={"last_frame": [("b.png", png())]})[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        self.page.wait_for_selector(f"{self.card(jid)} video")
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        self.page.click(f"{self.card(jid)} .act.up")
+        self.page.wait_for_selector("#uppop", state="visible")
+        common = "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first"
+        kept = "Kept where the clip already shows your picture"
+        self.assertEqual(self.pin(), ["Keep my last frame", f"{kept} · at 2K only partly", True, False])
+        self.assertEqual(self.notes(), f"{common}. {UP_UNRUN}. {UP_PIN_UNRUN}")
+        self.page.click('#uppop label[for="up-1080p"]')
+        self.assertEqual(self.pin(), ["Keep my last frame", kept, True, False])
+        # the same clip once its route has run at 2K (the server's PIN_ROUTES "ran"): no UP_PIN_UNRUN there, still at
+        # 1080p
+        seen = self.page.evaluate("""() => {const j = known.get(up.id), u = JSON.parse(JSON.stringify(j.upscalable));
+            u.pin_routes['2k'].ran = true;
+            return ['2k', '1080p'].map(res => {document.getElementById('up-' + res).checked = true;
+              upRefresh({...j, upscalable: u}); return document.getElementById('upinput').textContent;});}""")
+        self.assertEqual(seen, [f"{common}. {UP_UNRUN}", f"{common}. {UP_UNRUN}. {UP_PIN_UNRUN}"])
+        self.page.keyboard.press("Escape")
 
     def test_a_sol_h3_clip_with_both_keyframes(self):
         both = {"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}
