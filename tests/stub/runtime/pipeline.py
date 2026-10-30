@@ -3,7 +3,8 @@
 Loading and generating are `sleep` processes in their own sessions, like the real workers, so the server can stop
 them (a stopped warm-up, a cancelled clip). A pipeline whose worker was stopped by a signal is broken like a real one
 whose workers died: it fails until it is closed and a new one is started. Each clip is a small ffmpeg test pattern
-with a tone, with the requested format and length (seconds x 24 + 1 frames, as the real clips), next to stand-ins
+with a tone, with the requested format and length (the frames the real clips keep: frames_for_seconds, the
+patch's rule, 121 at 5 s, 153 at 6 s, 241 at 10 s), next to stand-ins
 for the real clip's working files the Upscale reads (qwen/conditioning.pt and stage1/stage1_direct_tensors.pt) and
 stage2/stage2_result.json with what the Upscale's Keep my frames reads of it: "stage2_keyframe" (the patch's rule:
 SOL_H3_STAGE2_KEYFRAME for an fl2va clip with a first frame, else "off"), "stage2_keyframe_setting" and the capture's
@@ -40,6 +41,15 @@ from . import config
 SIZE = {"landscape": (336, 192), "portrait": (192, 336)}
 
 
+def frames_for_seconds(seconds):
+    """The frames a real clip of `seconds` keeps: the patch's runtime/geometry.py, draft_frames_for_seconds (24 fps
+    snapped up to H3's 17n+5) then output_frames_for (the largest 8m+1 of them): 73 at 3 s, 121 at 5 s, 153 at 6 s,
+    185 at 8 s, 241 at 10 s, 361 at 15 s."""
+    n = max(5, round(float(seconds) * 24))
+    draft = n + (5 - n % 17) % 17
+    return (draft - 1) // 8 * 8 + 1
+
+
 class Pipeline:
     def __init__(self, paths, output_root, *, task="t2va", orientation=None, seconds=None, **_):
         self.task = task
@@ -73,7 +83,7 @@ class Pipeline:
             (request / name).parent.mkdir(parents=True, exist_ok=True)       # a real clip's working files (the
             (request / name).write_bytes(b"stub " + name.encode())          # Upscale reads them), as stand-ins
         w, h = self.size
-        frames = self.seconds * 24 + 1                   # as the real clips: 121 frames at 5 s
+        frames = frames_for_seconds(self.seconds)       # as the real clips: 121 frames at 5 s, 153 at 6 s
         out = request / "stage2" / f"refined_{w}x{h}_{frames}f.mp4"
         out.parent.mkdir(parents=True, exist_ok=True)
         # (by the pattern's length, half a frame short of the next frame: no -frames:v, which a test's ffmpeg on PATH

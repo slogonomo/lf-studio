@@ -7,18 +7,21 @@ The server runs it as it runs the real job (LFSTUDIO_UPSCALE_SCRIPT; tests/stub/
 process group, with its output in worker.log. It reads job.json, prints the real job's progress lines
 ("[lf-studio] phase encoding", "loading", "refine 1/N" ... "refine N/N", "decoding", "saving"; N = the job's steps)
 spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (a small ffmpeg testsrc2 pattern with
-the clip's frames, 121 or 124, at 24 fps, no audio, as the real job's MP4 has none; upright when the clip's MP4,
+the clip's frames, at 24 fps, no audio, as the real job's MP4 has none; upright when the clip's MP4,
 <case>/stage2/refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json, with the real job's
-"frames" (frame_case) and, for a job.json with a "pin", its "pin": per keyframe its picture checked by its sha256 as
+"frames" (frame_case), "rows" (case_rows), "forward" and "lean_chunks" (lean_chunks_for) and, for a job.json with a
+"pin", its "pin": per keyframe its picture checked by its sha256 as
 the real job checks it (PIN_WHY: gone, changed; a last end of a clip that keeps fewer frames than made: past_end),
 else held at 33.0 dB (STUB_UPSCALE_PIN_DB sets others: "last=25.4", below the 28 needed, is not held: far). SIGTERM
 (Cancel) ends it at once, like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status
 143. With --parent, as the real job, it is killed when that process (the server) ends. Before anything else it checks
 job.json's "case" as the real job does (the real job's own case_inputs, from upscale/regen2k_job.py: one
 stage2/refined_*.mp4, the conditioning, the audio for audio clip), that its MP4 has the frames at 24 fps the real job
-takes (check_final's FRAME_CASES: 121 or 124; the stub clips' size is their own), that a conditioning.json beside the
-conditioning is t2va's (check_text) and its "pin" (the real job's parse_pin); else, as the real job, a "refused" error
-line and exit status 2.
+takes (check_final's FRAME_CASES: a length the studio makes; the stub clips' size is their own), that the real job
+offers its size for the clip's length (offer), that a conditioning.json beside the conditioning is t2va's (check_text)
+and its "pin" (the real job's parse_pin), and job.json's "min_free_gib" against MemAvailable as the real job does
+(check_start_memory; read from LFSTUDIO_TEST_MEMINFO, the stub studio's file, and not at all without it); else, as the
+real job, a "refused" error line and exit status 2.
   STUB_UPSCALE_S          seconds the job takes (default 2)
   STUB_UPSCALE_FAIL       1: fail after loading, as a job that ran out of memory ("[lf-studio] error ...", exit 1)
   STUB_UPSCALE_LOG        a file each run appends a JSON line to ({"pid", "job", "argv"}), so a test can find a
@@ -92,10 +95,22 @@ def check_case(job):
     except (ValueError, KeyError, IndexError):
         found = None
     if found is None or found[0] not in {str(frames) for frames in regen.FRAME_CASES} or found[1] != regen.FPS:
-        return f"{files['final'].name} is {found}: not 121 or 124 frames at 24 fps", None
+        counts = sorted(regen.FRAME_CASES)
+        return (f"{files['final'].name} is {found}: not a clip the Upscale takes (at 24 fps, with the frames of a "
+                f"length the studio makes: {', '.join(map(str, counts[:-1]))} or {counts[-1]}); it never cuts a clip"), \
+            None
+    offered = regen.offer(int(found[0]), job["resolution"])
+    if "why" in offered:
+        return offered["why"], None
     receipt = files["conditioning"].with_suffix(".json")
     if receipt.is_file() and json.loads(receipt.read_text()).get("task") not in (None, "t2va"):
         return f"the conditioning is {json.loads(receipt.read_text())['task']}'s: it needs a text-only encode", None
+    if os.environ.get("LFSTUDIO_TEST_MEMINFO"):          # never the machine's own memory
+        try:
+            regen.check_start_memory({"min_free_gib": job.get("min_free_gib"), "resolution": job["resolution"],
+                                      "frames": regen.frame_case(int(found[0]))}, os.environ["LFSTUDIO_TEST_MEMINFO"])
+        except regen.JobError as error:
+            return str(error), None
     return None, int(found[0])
 
 
@@ -174,7 +189,11 @@ def main(argv):
         write_json(out / "receipt.json", receipt)
         say("error", refused)
         return 2
-    receipt["frames"] = frames = real_job().frame_case(kept)
+    regen = real_job()
+    receipt["frames"] = frames = regen.frame_case(kept)
+    lean = regen.lean_chunks_for(frames, job["resolution"])
+    receipt.update(rows=regen.case_rows(frames, job["resolution"], len((job.get("pin") or {}).get("keyframes", ()))),
+                   forward="lean" if lean else "stock", lean_chunks=lean)
     if "pin" in job:
         receipt["pin"] = check_pin(job["pin"], frames)
     started, status = time.time(), 0

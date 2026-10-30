@@ -1518,7 +1518,8 @@ class Reshape(StudioTest):
             self.assertNotIn("includes_model_load", job)
             self.assertEqual(job["reshaped_from"], ["t2va", *before])
             w, h = (336, 192) if orientation == "landscape" else (192, 336)
-            self.assertEqual(Path(job["output"]).name, f"refined_{w}x{h}_{seconds * 24 + 1}f.mp4")   # its own shape
+            frames = {5: 121, 6: 153, 10: 241}[seconds]                    # the patch's frames: 153 at 6 s
+            self.assertEqual(Path(job["output"]).name, f"refined_{w}x{h}_{frames}f.mp4")   # its own shape
         [session] = self.sessions()                                          # one pipeline for all four
         self.assertEqual([r["to"]["seconds"] for r in self.reshapes(session)], [10, 5, 6])
         st = self.studio.state()["session"]
