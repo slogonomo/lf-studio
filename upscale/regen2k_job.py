@@ -76,7 +76,9 @@ What this wrapper changes, and why:
   its frames. A 124-frame clip came out with all 124 through the studio at 1080p and 2K (2026-10-29/30); the other
   lengths have not run on the GPU yet (their times and memory are estimates: OFFER_ETA_S, MODEL_GIB). A 121-frame
   clip runs NVIDIA's own encode_video and decode, as before, and at 5 s the refine has NVIDIA's silence or the clip's
-  audio as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run. What is offered per length
+  audio as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run, and for a clip of another
+  length its upscaler.py and upscaler_node.py too: their upscale keeps the latent's T (NVIDIA's target has 37, which a
+  5 s clip would not show), and run() checks the upscaled latent's shape before the refine. What is offered per length
   and size (OFFER_ETA_S: 1080p every length, 2K up to 10 s, 4K at 5 s; offer, offers_table) is the server's too:
   prepare refuses the rest with the reason, and a clip of any other count of frames is refused, never cut.
 - Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p,
@@ -203,7 +205,8 @@ PORTRAIT_ENTRIES = {"INPUT_SIZES": {"768p-portrait": (768, 1344)}, "NATIVE_SHAPE
 UPSCALED_SHAPE = (24, 37, 90, 160)           # NVIDIA's pipeline.UPSCALED_SHAPE: the 2K grid 4K is upscaled through
 # NVIDIA's files the portrait route builds on (it adds to pipeline.py's dicts, stands in for its Pipeline.upscale and
 # crops after its decode, and calls upscaler.upscale, whose node, upscaler_node.py, sizes the portrait grid and aligns
-# it to 32 px): their sha256 at NVIDIA_COMMIT, checked for a 9:16 clip (check_package) and by bin/lf-studio at start
+# it to 32 px): their sha256 at NVIDIA_COMMIT, checked for a 9:16 clip and a clip of another length than 5 s, whose T
+# the upscaler must keep (check_package), and by bin/lf-studio at start
 NVIDIA_FILES = {"open_h3/pipeline.py": "361729e81b9d15c8af4b1336e4bcbc36a4f20ddfe0e911e65e1d5c434a0f04ab",
                 "open_h3/upscaler.py": "e54959b609c5732711fd8e87b5e6cbe4e80977379d988df175afa1c7745f4521",
                 "open_h3/upscaler_node.py": "f5945b500ddb38afee23c377034bf15394ba64748511a7e9608953040c4be437"}
@@ -859,7 +862,8 @@ def sha256(path):
 
 def nvidia_files(package):
     """NVIDIA_FILES as they are in NVIDIA's package dir `package`: {path: sha256, or None for a file that is not
-    there}. check_package compares them with the pins for a 9:16 clip, bin/lf-studio at start."""
+    there}. check_package compares them with the pins for a 9:16 clip and a clip of another length than 5 s,
+    bin/lf-studio at start."""
     package = Path(package)
     return {rel: sha256(package / rel) if (package / rel).is_file() else None for rel in NVIDIA_FILES}
 
@@ -1597,24 +1601,27 @@ def refine_pinned(pipe, low, text, seed, keyframes, made, noise_aug=PIN_NOISE_AU
     return unpatchify_video_rows(state, geometry)[0], facts
 
 
-def check_package(adapters, pipeline, resolution, orientation="landscape", own=False):
+def check_package(adapters, pipeline, resolution, orientation="landscape", own=False, latents=NATIVE_SHAPE[1]):
     """NVIDIA's package is the one this wrapper was written against: its file names and shapes. For a 9:16 clip also
     the files the portrait route builds on (NVIDIA_FILES, by sha256), the landscape entries its portrait ones are
     made from, and no portrait key of NVIDIA's own in the dicts it adds to. With `own` (the run uses encode_clip or
-    decode_released, copies of NVIDIA's code) also its pipeline.py, by sha256."""
+    decode_released, copies of NVIDIA's code) also its pipeline.py, by sha256. For a clip of `latents` other than
+    5 s's 37 (its T) every file of NVIDIA_FILES: its upscaler.py and upscaler_node.py keep the latent's T, where
+    NVIDIA's target has 37."""
     found = {"LORA_FILE": adapters.LORA_FILE, "CURVE_FILE": adapters.CURVE_FILE, "CURVE_TABLE": adapters.CURVE_TABLE,
              "UPSCALER_FILE": pipeline.UPSCALER_FILE, "NATIVE_SHAPE": tuple(pipeline.NATIVE_SHAPE)}
     wanted = {"LORA_FILE": LORA_FILE, "CURVE_FILE": CURVE_FILE, "CURVE_TABLE": CURVE_TABLE,
               "UPSCALER_FILE": UPSCALER_FILE, "NATIVE_SHAPE": NATIVE_SHAPE}
     height, width, keep = pipeline.RESOLUTIONS[resolution]
     found["size"], wanted["size"] = (width, keep), SIZES[resolution]
-    if own and orientation != "portrait":
+    if orientation == "portrait" or latents != NATIVE_SHAPE[1]:
+        found.update(nvidia_files(Path(pipeline.__file__).resolve().parent.parent))
+        wanted.update(NVIDIA_FILES)
+    elif own:
         rel = "open_h3/pipeline.py"
         found[rel] = nvidia_files(Path(pipeline.__file__).resolve().parent.parent)[rel]
         wanted[rel] = NVIDIA_FILES[rel]
     if orientation == "portrait":
-        found.update(nvidia_files(Path(pipeline.__file__).resolve().parent.parent))
-        wanted.update(NVIDIA_FILES)
         found["UPSCALED_SHAPE"], wanted["UPSCALED_SHAPE"] = tuple(pipeline.UPSCALED_SHAPE), UPSCALED_SHAPE
         for name, entries in NVIDIA_ENTRIES.items():
             table = getattr(pipeline, name)
@@ -1732,7 +1739,7 @@ def run(job, files, receipt, trace):
     pin = receipt.get("pin")                          # with an end the check kept: the keyframes' rows in the refine
     used = [anchor for anchor in ANCHORS if pin and pin.get(anchor, {}).get("used")]
     own = kept != NVIDIA_FRAMES or bool(used)         # encode_clip (and decode_released), NVIDIA's with the frames
-    check_package(adapters, pipeline, job["resolution"], job["orientation"], own=own)
+    check_package(adapters, pipeline, job["resolution"], job["orientation"], own=own, latents=case["T"])
     if portrait:
         from open_h3 import upscaler
         add_portrait_entries(pipeline)
@@ -1848,6 +1855,9 @@ def run(job, files, receipt, trace):
         low = timed("upscale", lambda: run_route(upscaler, pipe.node, native.to(pipe.device), route, pipe.device))
     else:
         low = timed("upscale", lambda: pipe.upscale(native.to(pipe.device)))
+    if tuple(low.shape) != (native.shape[0], case["T"]) + tuple(pipe.target_shape[2:]):    # its T kept, its grid
+        raise RuntimeError(f"the upscaled latent is {tuple(low.shape)}, not "
+                           f"{(native.shape[0], case['T']) + tuple(pipe.target_shape[2:])}")
     timed("merge_refine", lambda: pipe.set_stage("refine"))  # the merge is done; this turns the Sharp curves on
     receipt["sigmas"] = [float(s) for s in pipe.sigmas]
     receipt["steps"] = steps = len(pipe.sigmas) - 1

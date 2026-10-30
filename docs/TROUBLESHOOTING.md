@@ -436,14 +436,17 @@ loads them again, and with `LFSTUDIO_PRELOAD=1` the studio warms them up again o
 (6e4a440): {'open_h3/pipeline.py': ...}`** (a 16:9 clip of 124 frames, of another length than 5 s, or one that keeps
 your frames, too). The job takes a 9:16 clip through NVIDIA's code with the shapes turned, and does so only with the
 NVIDIA files it was written against (`open_h3/pipeline.py`, `open_h3/upscaler.py` and `open_h3/upscaler_node.py`, by
-SHA-256, `None` for a file that is not there; also the 16:9 sizes in them, and no 9:16 entry of NVIDIA's own). A 16:9
-clip of 124 frames (a LightX2V Turbo clip with a last keyframe), of any other length than 5 s, or with an end held,
-goes through the job's copies of NVIDIA's encode and decode, which need `open_h3/pipeline.py` as it was written
-against too. The studio's start log says so as well, as a note (`NVIDIA's package (LFSTUDIO_UPSCALE_PKG) has other
-files than the Upscale's 9:16 route was written for (open_h3/pipeline.py changed, ...)`). `LFSTUDIO_UPSCALE_PKG` names
-another version of NVIDIA's package, or its files were changed: point it at the extract of the pinned commit that
-`install/65-regen2k.sh` makes (`$LFSTUDIO_HOME/sources/sana-6e4a440/models/Open-H3-Regenerate-2K`, its default link).
-A 16:9 clip of 121 frames with no end held is not checked against these files.
+SHA-256, `None` for a file that is not there; also the 16:9 sizes in them, and no 9:16 entry of NVIDIA's own). A clip
+of any other length than 5 s needs all three as well: NVIDIA's upscaler keeps its latent frames, where NVIDIA's target
+has a 5 s clip's. A 16:9 clip of 124 frames (a LightX2V Turbo clip with a last keyframe) or with an end held goes
+through the job's copies of NVIDIA's encode and decode, which need `open_h3/pipeline.py` as it was written against.
+The studio's start log says so as well, as a note that names the clips refused (`NVIDIA's package
+(LFSTUDIO_UPSCALE_PKG) has other files than the Upscale's 9:16 route was written for (open_h3/pipeline.py changed,
+...)`). `LFSTUDIO_UPSCALE_PKG` names another version of NVIDIA's package, or its files were changed: point it at the
+extract of the pinned commit that `install/65-regen2k.sh` makes
+(`$LFSTUDIO_HOME/sources/sana-6e4a440/models/Open-H3-Regenerate-2K`, its default link). A 16:9 clip of 121 frames with
+no end held is not checked against these files. A clip of another length whose upscaled latent comes out with other
+latent frames fails before the refine (`the upscaled latent is ..., not ...`), never cut.
 
 **Cancel of an upscale shows "Cancelling" for up to ~20 s.** The job stops once the GPU call under way returns; if
 that takes longer than 20 s, the studio kills it. Either way the next job starts only after it is gone.

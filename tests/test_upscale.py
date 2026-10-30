@@ -1148,6 +1148,29 @@ class PackageTests(unittest.TestCase):
         self.assertIn("'open_h3/upscaler_node.py': None", self.refused())
         job_module.check_package(self.adapters, self.pipeline, "2k", "landscape")        # 16:9 does not check them
 
+    def test_another_length_reads_the_pinned_files(self):
+        """A clip of another length than 5 s (its T not 37), either orientation, is refused with any pinned file other:
+        NVIDIA's upscaler.py and upscaler_node.py must keep its T, where NVIDIA's target has 37. A 16:9 clip of 5 s
+        through the job's copies (`own`) needs NVIDIA's pipeline.py alone."""
+        (self.tmp / "open_h3" / "upscaler.py").write_text("# another version\n")
+        for latents in (22, 47, 72, 107):
+            for orientation in job_module.SHAPES:
+                with self.subTest(latents=latents, orientation=orientation):
+                    self.assertIn("'open_h3/upscaler.py'", self.refused_case("1080p", orientation, latents))
+        job_module.check_package(self.adapters, self.pipeline, "2k", "landscape", own=True)
+        job_module.check_package(self.adapters, self.pipeline, "2k", "landscape", own=True, latents=37)
+        (self.tmp / "open_h3" / "upscaler.py").write_text("# open_h3/upscaler.py\n")
+        job_module.check_package(self.adapters, self.pipeline, "2k", "landscape", own=True, latents=72)
+        (self.tmp / "open_h3" / "upscaler_node.py").unlink()
+        self.assertIn("'open_h3/upscaler_node.py': None", self.refused_case("2k", "landscape", 72))
+        (self.tmp / "open_h3" / "pipeline.py").write_text("# another version\n")
+        self.assertIn("'open_h3/pipeline.py'", self.refused_case("2k", "landscape", 37))
+
+    def refused_case(self, resolution, orientation, latents):
+        with self.assertRaisesRegex(JobError, "not the one this wrapper was written for") as caught:
+            job_module.check_package(self.adapters, self.pipeline, resolution, orientation, own=True, latents=latents)
+        return str(caught.exception)
+
     def test_add_portrait_entries(self):
         job_module.add_portrait_entries(self.pipeline)
         self.assertEqual(self.pipeline.INPUT_SIZES, {"768p": (1344, 768), "576p": (1024, 576),
@@ -2723,6 +2746,33 @@ class RunTests(Fixture):
         status, receipt, calls, _, _ = self.run_job(seams=self.own_seams(), audio_latents=207, resolution="1080p")
         self.assertEqual((status, receipt["error"]),
                          (1, "RuntimeError: the audio latent is (2, 32, 207), not (2, 32, 405) for 243 frames made"))
+        self.assertNotIn("refine", [c[0] for c in calls])
+
+    def test_a_long_clip_needs_nvidias_upscaler_pinned(self):
+        """A clip of another length goes through NVIDIA's upscaler, which must keep its T: with another
+        upscaler_node.py it is refused before anything loads; a 124-frame clip (5 s, T 37) is not."""
+        self.pin_stand_ins()
+        (self.package / "open_h3" / "upscaler_node.py").write_text("# another version\n")
+        self.whole_clip(pin=False)
+        status, receipt, _, _, _ = self.run_job(seams=self.own_seams(), resolution="1080p")
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.long_clip(241, pin=False)
+        status, receipt, calls, phases, _ = self.run_job(seams=self.own_seams(), resolution="1080p")
+        self.assertEqual((status, receipt["state"]), (2, "failed"), receipt.get("traceback"))
+        self.assertRegex(receipt["error"], r"^NVIDIA's package is not the one this wrapper was written for "
+                                           r"\(6e4a440\): \{'open_h3/upscaler_node\.py': '[0-9a-f]{64}'\}$")
+        self.assertEqual((calls, phases, self.loads, self.encoded), ([], [], [], []))
+
+    def test_an_upscale_that_loses_the_clips_t_fails(self):
+        """NVIDIA's upscaler keeps the latent's T. One that gave its target's 37 instead (here a stand-in) would cut a
+        10 s clip: the job fails after the upscale, before the refine."""
+        (self.package / "open_h3" / "upscaler.py").write_text(STAND_IN_UPSCALER.replace(
+            "torch.Tensor(*native.shape[:2], *target_shape[2:])", "torch.Tensor(native.shape[0], *target_shape[1:])"))
+        self.long_clip(241)
+        status, receipt, calls, _, _ = self.run_job(seams=self.own_seams(), resolution="1080p")
+        self.assertEqual((status, receipt["error"]),
+                         (1, "RuntimeError: the upscaled latent is (24, 37, 68, 120), not (24, 72, 68, 120)"))
+        self.assertIn(("upscaler.upscale", (24, 72, 48, 84), (24, 37, 68, 120)), calls)
         self.assertNotIn("refine", [c[0] for c in calls])
 
     def pin_seams(self, ends, changed=()):

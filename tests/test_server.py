@@ -3737,8 +3737,10 @@ class LauncherUpscale(LauncherSettingsCheck):
 
     def test_a_note_for_other_nvidia_files(self):
         """NVIDIA's files the job's 9:16 route is pinned to (NVIDIA_FILES, by sha256): other or missing ones get a note
-        at start, not a refusal (the job refuses only a 9:16 clip with them); the pinned ones none. Here a copy of the
-        launcher, the server and the job with the stand-in files pinned."""
+        at start, not a refusal, which names the clips the job refuses with them (check_package: 9:16 clips and clips
+        of another length than 5 s with any of them, 124-frame clips and clips that keep your frames with another
+        pipeline.py); the pinned ones none. Here a copy of the launcher, the server and the job with the stand-in
+        files pinned."""
         settings = self.regen2k()
         package = Path(settings["LFSTUDIO_UPSCALE_PKG"])
         upscale_on = ("the experimental Upscale is on (LFSTUDIO_UPSCALE=1): its environment, package and weights are "
@@ -3747,6 +3749,9 @@ class LauncherUpscale(LauncherSettingsCheck):
                 "written for ({}; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips, of clips of any length but 5 s, of "
                 "124-frame clips and of clips that keep your frames will be refused (other 16:9 clips are not checked against "
                 "these files)")
+        upscaler_note = ("note: NVIDIA's package (LFSTUDIO_UPSCALE_PKG) has other files than the Upscale's 9:16 route "
+                         "was written for ({}; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips and of clips of any "
+                         "length but 5 s will be refused (other 16:9 clips are not checked against these files)")
         code, out = self.check(**settings)
         self.assertEqual(code, 0, out)
         self.assertIn(upscale_on, out)
@@ -3771,7 +3776,12 @@ class LauncherUpscale(LauncherSettingsCheck):
         (package / "open_h3" / "upscaler_node.py").write_text("# another version\n")
         code, out = self.check(repo / "bin/lf-studio", **settings)
         self.assertEqual(code, 0, out)
-        self.assertIn(note.format("open_h3/upscaler_node.py changed"), out)
+        self.assertIn(upscaler_note.format("open_h3/upscaler_node.py changed"), out)
+        self.assertNotIn("124-frame", out)
+        (package / "open_h3" / "pipeline.py").write_text("# another version\n")
+        code, out = self.check(repo / "bin/lf-studio", **settings)
+        self.assertEqual(code, 0, out)
+        self.assertIn(note.format("open_h3/pipeline.py changed, open_h3/upscaler_node.py changed"), out)
 
     def test_defaults(self):
         """The defaults under LFSTUDIO_HOME and LFSTUDIO_CHECKPOINTS, as in bin/env.example."""
