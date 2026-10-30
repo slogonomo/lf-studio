@@ -410,8 +410,9 @@ upscale that starts with just the floor's 110 GiB free comes down below 5 GiB;
 [PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). At 4K, ~111 GiB or more free at the start
 avoids it. At 2K it comes down to about 16 GiB, and to 14.1 GiB with Keep my frames holding both ends (measured through
 the studio). A clip longer than 5 s has not run on the GPU: the memory model expects 14.7 GiB or more at the lowest
-(2K at 10 s; 18 GiB or more at 1080p), from a start at ~116.5 GiB free, an estimate. `worker.log` shows how far it
-got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
+(2K at 10 s, 14.1 GiB with Keep my frames holding both ends; 18.2 GiB or more at 1080p, 17.9 GiB with both ends), from
+a start at ~116.5 GiB free, an estimate. `worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the
+floor; 0 turns it off.
 
 **It sits at "Upscaling · loading its models" for minutes.** With the fast load (`LFSTUDIO_UPSCALE_LOAD=fast`, the
 default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (21.5-21.9 s in the studio's job, its

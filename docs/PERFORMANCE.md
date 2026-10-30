@@ -591,9 +591,11 @@ clip keeps the floor it had, whatever the setting.
 140,000, the job runs every block with the lean forward (16 chunks), as at 4K: at 1080p from 10 s, at 2K from 6 s.
 Every 5 s clip keeps the forward it ran with on the GPU: stock at 1080p and 2K (also with both ends kept, about
 141,000 rows at 2K), lean at 4K (`tests/test_upscale.py` checks it). The receipt has the refine's `rows` and its
-`forward`. The table gives the model's figures, the 5 s rows too (their runs: above):
+`forward`. The table gives the model's figures without Keep my frames, the 5 s rows too (their runs: above). With
+both ends kept the model's peak is up to 1.2 GiB higher and its lowest MemAvailable as much lower: 14.1 GiB at 2K for
+10 s, 17.9 GiB at 1080p for 15 s (the lowest of each size).
 
-| Size and length | Forward | Peak allocated | Lowest MemAvailable | Floor to start |
+| Size and length | Forward | Peak allocated | Lowest MemAvailable (no ends kept) | Floor to start |
 |---|---|---|---|---|
 | 1080p 3 s | stock | 76.1 GiB | 33.4 GiB | 110 GiB |
 | 1080p 5 s (ran) | stock | 81.3 GiB | 28.2 GiB | 110 GiB |
