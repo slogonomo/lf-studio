@@ -10,8 +10,9 @@
 # checkout carries an earlier patch and nothing else, it reverses that patch, checks out the new
 # patches/BASE_COMMIT if it changed, and applies the new patch. The earlier patch is found as that copy, else as
 # $LFSTUDIO_HOME/applied.patch (where versions up to 0.2 kept it), else among the earlier versions of
-# patches/lf-studio.patch in this repo's history. Any other local change in the checkout stops it with a message,
-# before anything is changed. A checkout with only 0.4's copy (sol-h3-studio-applied.patch) stops it in
+# patches/lf-studio.patch in this repo's history (since 0.5: a checkout patched by hand with a patch up to 0.4 is not
+# found, docs/INSTALL.md, "From 0.5 to 0.6"). Any other local change in the checkout stops it with a message, before
+# anything is changed. A checkout with only 0.4's copy (sol-h3-studio-applied.patch) stops it in
 # install/env.sh (docs/INSTALL.md, "From 0.5 to 0.6").
 # LFSTUDIO_SANA_COMMIT overrides the commit (the patch also applies to sol-engine 670482d, checked 2026-10-09).
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
@@ -202,8 +203,9 @@ Move them away (or commit them elsewhere), or start from a fresh clone: move $LF
             die "the patch does not apply to $LFSTUDIO_SANA (local changes, or a different commit).
 git apply --check says:
 $(sana apply --check "$PATCH" 2>&1 | head -5)
-If the checkout carries a patch that is neither this one nor an earlier version from this repo, reverse it with
-that patch file (git -C $LFSTUDIO_SANA apply -R <that patch>), or move $LFSTUDIO_SANA away and run this again."
+If the checkout carries a patch that is neither this one nor an earlier version from this repo since 0.5, reverse it
+with that patch file (git -C $LFSTUDIO_SANA apply -R <that patch>; one up to 0.4: docs/INSTALL.md, From 0.5 to 0.6),
+or move $LFSTUDIO_SANA away and run this again."
         fi
     fi
 fi

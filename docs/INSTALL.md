@@ -392,9 +392,10 @@ checkout's path in `command` and `kill_command` (the file assumes `~/src/lf-stud
 and restart switchboard. A config made from switchboard's own example (in its `examples/services/`) needs the same
 `passive_paths` while the example lists only `"/health"`.
 
-A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a released version of the patch is
-found the same way. Any other patch: reverse it with the file you applied (`git -C "$LFSTUDIO_SANA" apply -R <that
-patch>`), or re-clone as above.
+A checkout you patched by hand ([PATCH.md](PATCH.md#apply-test-revert)) with a version of the patch released since
+0.5 is found the same way; one patched by hand with the patch of 0.4 or earlier is not
+([From 0.5 to 0.6](#from-05-to-06)). Any other patch: reverse it with the file you applied (`git -C "$LFSTUDIO_SANA"
+apply -R <that patch>`), or re-clone as above.
 
 The compile cache is keyed on code and versions, so it stays valid; delete `$SOL_H3_SPARK_RUNTIME_ROOT/cache` to
 start clean.
@@ -509,6 +510,15 @@ mv "$d/sol-h3-studio-applied.patch.base" "$d/lf-studio-applied.patch.base"
 ```
 
 A checkout that 0.5 updated has both copies. 0.6 reads only the new one and no longer writes the 0.4 copy, which can go.
+
+A Sana checkout you patched by hand with the patch of 0.4 or earlier (`patches/sol-h3-studio.patch`) has no copy of
+the applied patch, and `install/10-sana.sh` no longer looks for that file in this repo's history: it stops with "the
+patch does not apply" and changes nothing. Reverse it with the patch of the release you applied (here 0.4), in your
+checkout of this repo, then run `install/10-sana.sh`:
+
+```bash
+git show v0.4.0:patches/sol-h3-studio.patch | git -C ~/sol-h3/Sana apply -R     # your $LFSTUDIO_SANA
+```
 
 Not 0.4 names, and unchanged: the data home `~/sol-h3`, the pipeline's `SOL_H3_*` switches, the Qwen image and its
 containers, the model `sol-h3`, and names you chose yourself, such as a service or a checkout folder.
