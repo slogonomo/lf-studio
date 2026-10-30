@@ -616,14 +616,15 @@ the decode) + S × 181,800 bytes with the stock block forward, or S × 92,300 by
 runs (81.3 / 91.1 / 94.4 GiB at 1080p / 2K / 4K), within 0.1 GiB of every long clip's run. MemAvailable falls further
 than that (the allocator's reserve and the process) by a straight line in the clip's own rows (video and audio), per
 forward: stock 3.5 GiB + 5.0 GiB per 100,000 rows, lean 2.1 GiB + 2.8 GiB per 100,000. Fitted to the runs' start less
-their peak and lowest: stock 5.3 GiB at 45,124 rows (a 73-frame clip, an old 3 s one, run the same day), 7.1-7.8 at
-75,894 (5 s at 1080p), 8.3 at 96,406 (6 s), 9.9 at 133,614 (5 s at 2K); lean 6.0-6.4 at 147,690 (10 s at 1080p, with
-both ends kept too), 8.5 at 219,486 (15 s), 9.0 at 260,010 (10 s at 2K), 10.8 at 302,334 (5 s at 4K). From each run's
-own start of 2026-10-30 the model's lowest MemAvailable is within 0.5 GiB of the measured one
-(`tests/test_upscale.py`); before the refit it had a step at 80,000 and 140,000 rows (7, 9.5 and 11 GiB), too high for
-the lean forward by up to 4.9 GiB. The floor to start (`min_free_for`) is allocated + that overhead + the guard's
-5 GiB + 3 GiB of margin, and never below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` (110 GiB; 115 at 4K). Every 5 s clip keeps
-the floor it had, whatever the setting.
+their peak and lowest: stock 5.3 GiB at 45,124 rows (a 73-frame clip, an old 3 s one, run the same day), 6.2-8.1 at
+75,894 (5 s at 1080p, with the runs through the studio of 2026-10-29 and that night above), 8.3 at 96,406 (6 s),
+8.7-10.1 at 133,614 (5 s at 2K, the same); lean 6.0-6.4 at 147,690 (10 s at 1080p, with both ends kept too), 8.5 at
+219,486 (15 s), 9.0 at 260,010 (10 s at 2K), 10.8 at 302,334 (5 s at 4K). From each run's own start of 2026-10-30 the
+model's lowest MemAvailable is within 0.5 GiB of the measured one (`tests/test_upscale.py`), and from the earlier 5 s
+runs' up to 0.8 GiB higher and up to 1.4 GiB lower. Before the refit it had a step at 80,000 and 140,000 rows (7, 9.5
+and 11 GiB), too high for the lean forward by up to 4.9 GiB. The floor to start (`min_free_for`) is allocated + that
+overhead + the guard's 5 GiB + 3 GiB of margin, and never below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` (110 GiB; 115 at 4K).
+Every 5 s clip keeps the floor it had, whatever the setting.
 
 **The forward, by rows.** Where the clip's own rows (video and audio: not the prompt's or Keep my frames') pass
 140,000, the job runs every block with the lean forward (16 chunks), as at 4K: at 1080p from 10 s, at 2K from 6 s.

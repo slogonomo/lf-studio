@@ -260,13 +260,15 @@ GUARD_GIB = 5
 # allocator's reserve and the process), a straight line in the clip's own rows (video and audio) per forward. The peak
 # model was fitted to the job's 5 s runs (81.29 / 91.08 GiB allocated at 1080p / 2K, stock, 76,094 / 133,814 rows
 # with a prompt of TEXT_ROWS; 94.46 at 4K, lean, 302,534 rows) and held within 0.1 GiB on the long clips' runs
-# (2026-10-30: 6 s at 1080p stock, 10 and 15 s at 1080p and 10 s at 2K lean). The overhead was fitted to all of them
-# (start - peak - lowest MemAvailable): stock 5.3 GiB at 45,124 own rows (a 73-frame clip), 7.1-7.8 at 75,894 (5 s at
-# 1080p), 8.3 at 96,406 (6 s), 9.9 at 133,614 (5 s at 2K); lean 6.0-6.4 at 147,690 (10 s at 1080p, with both ends kept
-# too), 8.5 at 219,486 (15 s), 9.0 at 260,010 (10 s at 2K), 10.8 at 302,334 (5 s at 4K). From each 2026-10-30 run's
-# own start the model's lowest MemAvailable is within 0.5 GiB of the measured one (tests/test_upscale.py has them). A
-# clip of another length needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start (need_gib; min_free_for) where that is
-# more than the floor: none does at the default 110 GiB (the most, 2K at 10 s, 109 with Keep my frames or without).
+# (2026-10-30: 6 s at 1080p stock, 10 and 15 s at 1080p and 10 s at 2K lean). The overhead was fitted to all of them and
+# to the 5 s runs through the studio of 2026-10-29 and that night (start - peak - lowest MemAvailable): stock 5.3 GiB at
+# 45,124 own rows (a 73-frame clip), 6.2-8.1 at 75,894 (5 s at 1080p), 8.3 at 96,406 (6 s), 8.7-10.1 at 133,614 (5 s at
+# 2K); lean 6.0-6.4 at 147,690 (10 s at 1080p, with both ends kept too), 8.5 at 219,486 (15 s), 9.0 at 260,010 (10 s at
+# 2K), 10.8 at 302,334 (5 s at 4K). From each 2026-10-30 run's own start the model's lowest MemAvailable is within
+# 0.5 GiB of the measured one (tests/test_upscale.py has them); from the earlier 5 s runs' it is up to 0.8 GiB higher
+# and up to 1.4 GiB lower. A clip of another length needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start (need_gib;
+# min_free_for) where that is more than the floor: none does at the default 110 GiB (the most, 2K at 10 s, 109 with Keep
+# my frames or without).
 MODEL_GIB = 68.4
 ROW_BYTES = {"stock": 181_800, "lean": 92_300}
 OVERHEAD_GIB = {"stock": (3.5, 5.0), "lean": (2.1, 2.8)}     # GiB, plus GiB per 100,000 of the clip's own rows
