@@ -533,7 +533,7 @@ refine is NVIDIA's. Which ends a clip offers (`upscalable` `pin`):
 | Sol-H3 Keyframes | when Stage 2 held it: made since 0.5.2 with `SOL_H3_STAGE2_KEYFRAME=pin` (the default) | never: the clip stops 3 frames before it |
 | Text, Reference | – | – |
 
-It is offered at 1080p and 2K with `balanced` only (not at 4K yet; `faithful` and `full` later); at 2K a research run
+It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet); at 2K a research run
 held a first frame only partly (the face 3-5 dB closer to the picture, frame 0 about 1 dB), so the page says "only
 partly" there. Its cost is an estimate until it has run through the studio: about +10 s at 1080p and +40 s at 2K for
 one end, +30 s and +70 s for both (each picture's encode on the VAE already loaded, and 2.7 % more rows per end).
