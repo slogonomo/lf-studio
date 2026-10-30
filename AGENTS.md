@@ -186,9 +186,11 @@ pinned files, kept, resumed by Range or downloaded and checked, from a fake Hugg
 host name, with no token ever sent). None of them downloads anything.
 
 `tests/test_old_names.py` covers the stop for the names up to 0.4: the launcher in every mode (start, `--check`,
-`--kill`, the client commands) with an old setting in the environment and in the settings file (file and line named),
-the old settings and state folders (and when they don't count: a setting, a new folder with content, a link left at
-the old place), a run through a link named `sol-h3-studio`; the install steps, `bench/replay.sh` and
+`--kill`, the client commands) with an old setting in the environment and in the settings file (file and line named,
+as a key and in a value, also one that nothing sets: no parse error, the old places still in the same message), the
+file that `SOLH3_ENV` names, the old settings and state folders (and when they don't count: a setting, a new folder
+with content, a link left at the old place), a settings file named in the old folder after its move, a run through a
+link named `sol-h3-studio`; the install steps, `bench/replay.sh` and
 `bench/first-clip.sh` (`SOLH3_DRY_RUN=1` alone does not run a step, the venvs' 0.4 done markers, a checkout with only
 the 0.4 copy of the applied patch and the rename it asks for); `lf-cli` and `lf-cli mcp` (exit 2, nothing on stdout,
 no connection, the `sol-h3` name, `./sol-h3-clips`); names that only look alike (`SOL_H3_*`, `COMFY_SOLH3_*`, NVIDIA's

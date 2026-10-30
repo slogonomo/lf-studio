@@ -62,10 +62,11 @@ load_env_file() {
         fi
     done < "$file"
 }
-source "$REPO/install/old-names.sh" || exit 2   # the stop for the names up to 0.4, before the file is read
+source "$REPO/install/old-names.sh" || exit 2   # the stop for the names up to 0.4
 ENV_FILE=${LFSTUDIO_ENV:-$HOME/.config/lf-studio/env}
+old_names_scan "$ENV_FILE"
 load_env_file "$ENV_FILE"
-old_names_stop "$ENV_FILE"
+old_names_stop
 # the client: it finds the studio from LFSTUDIO_URL, or LFSTUDIO_HOST and LFSTUDIO_PORT (the public port under
 # switchboard)
 if [[ "$MODE" == client ]]; then exec python3 "$REPO/bin/lf-cli" "$@"; fi

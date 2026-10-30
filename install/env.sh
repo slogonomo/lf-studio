@@ -26,10 +26,11 @@ load_env_file() {
     done < "$file"
 }
 # shellcheck source=./old-names.sh
-source "$LFSTUDIO_REPO/install/old-names.sh" || exit 2   # the stop for the names up to 0.4, before the file is read
+source "$LFSTUDIO_REPO/install/old-names.sh" || exit 2   # the stop for the names up to 0.4
 ENV_FILE=${LFSTUDIO_ENV:-$HOME/.config/lf-studio/env}
+old_names_scan "$ENV_FILE"
 load_env_file "$ENV_FILE"
-old_names_stop "$ENV_FILE" install
+old_names_stop install
 
 export LFSTUDIO_HOME=${LFSTUDIO_HOME:-$HOME/sol-h3}
 export LFSTUDIO_SANA=${LFSTUDIO_SANA:-$LFSTUDIO_HOME/Sana}

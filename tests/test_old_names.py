@@ -113,13 +113,89 @@ class Launcher(LauncherTest):
         self.assert_stop(self.run_launcher("--check", LFSTUDIO_ENV=str(env_file)),
                          [f"SOLH3_HOME ({env_file} line 2) -> LFSTUDIO_HOME",
                           f"SOLH3_SANA ({env_file} line 4) -> LFSTUDIO_SANA",
+                          f"$SOLH3_HOME ({env_file} line 4) -> $LFSTUDIO_HOME",
                           f"SOLH3_HOME ({env_file} line 5) -> LFSTUDIO_HOME"])
         # the environment and the file together, in one message
         self.assert_stop(self.run_launcher("--check", LFSTUDIO_ENV=str(env_file), SOLH3_HOME="/data"),
                          ["SOLH3_HOME (environment) -> LFSTUDIO_HOME",
                           f"SOLH3_HOME ({env_file} line 2) -> LFSTUDIO_HOME",
                           f"SOLH3_SANA ({env_file} line 4) -> LFSTUDIO_SANA",
+                          f"$SOLH3_HOME ({env_file} line 4) -> $LFSTUDIO_HOME",
                           f"SOLH3_HOME ({env_file} line 5) -> LFSTUDIO_HOME"])
+
+    def test_old_name_in_a_value(self):
+        """0.5 read $SOLH3_X in a value as $LFSTUDIO_X, and 0.4's env.example wrote values that way. Each one is named,
+        also where the line's key has its new name and nothing sets the old name (0.6 would read it as unset: a parse
+        error under set -u, or the default of ${SOLH3_X:-...}), and in the same message as the old places, which are
+        checked once the file is read. Not in a comment, and not NVIDIA's own SOLH3_ names."""
+        home, data = self.d / "home", self.d / "data"
+        env_file = home / ".config/lf-studio/env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text(f'LFSTUDIO_HOME="{data}"\n# LFSTUDIO_SANA="$SOLH3_HOME/Sana"\n'
+                            'LFSTUDIO_CHECKPOINTS="$SOLH3_HOME/checkpoints"\nLFSTUDIO_PYTHON="$SOLH3_HOME/python"\n'
+                            'SOL_H3_SPARK_RUNTIME_ROOT="${SOLH3_HOME:-/elsewhere}/runtime"\n'
+                            'SOL_H3_SPARK_COMFY_ROOT="$SOLH3_FP8_COMPILE/x:${SOLH3_CHECKPOINTS}/y:$SOLH3_HOME/z"\n'
+                            'LFSTUDIO_MIN_FREE_GIB=0\n')
+        old_state = home / ".local/state/sol-h3-studio"
+        old_state.mkdir(parents=True)
+        (old_state / "jobs.db").write_bytes(b"")
+
+        def run():
+            return self.run_launcher("--check", HOME=str(home), SOLH3_FP8_COMPILE="1", unset=(
+                "LFSTUDIO_ENV", "LFSTUDIO_STATE_DIR", "LFSTUDIO_PYTHON", "SOL_H3_SPARK_RUNTIME_ROOT"))
+
+        code, out, err = run()
+        self.assertNotIn("cannot parse", err)
+        self.assert_stop((code, out, err),
+                         [f"$SOLH3_HOME ({env_file} line 3) -> $LFSTUDIO_HOME",
+                          f"$SOLH3_HOME ({env_file} line 4) -> $LFSTUDIO_HOME",
+                          f"$SOLH3_HOME ({env_file} line 5) -> $LFSTUDIO_HOME",
+                          f"$SOLH3_CHECKPOINTS ({env_file} line 6) -> $LFSTUDIO_CHECKPOINTS",
+                          f"$SOLH3_HOME ({env_file} line 6) -> $LFSTUDIO_HOME",
+                          f"{old_state} -> {home}/.local/state/lf-studio (the state folder: the clip history)"])
+        # renamed and moved as the message says: the file is read, with the values 0.5 gave
+        env_file.write_text(env_file.read_text().replace("SOLH3_HOME", "LFSTUDIO_HOME")
+                            .replace("SOLH3_CHECKPOINTS", "LFSTUDIO_CHECKPOINTS"))
+        old_state.rename(home / ".local/state/lf-studio")
+        data.mkdir()
+        os.symlink(sys.executable, data / "python")
+        code, out, err = run()
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn(HEADER, out + err)
+        self.assertTrue((data / "runtime").is_dir())
+        self.assertFalse(Path("/elsewhere/runtime").exists())
+
+    def test_settings_file_named_by_its_old_name(self):
+        """SOLH3_ENV picked the settings file in 0.5: that file's old names are in the same message."""
+        env_file = self.d / "env.test"
+        env_file.write_text("SOLH3_PORT=1\nSOLH3_HOME=/x\n")
+        self.assert_stop(self.run_launcher("--check", unset=("LFSTUDIO_ENV",), HOME=str(self.d / "home"),
+                                           SOLH3_ENV=str(env_file), LFSTUDIO_MIN_FREE_GIB="0"),
+                         ["SOLH3_ENV (environment) -> LFSTUDIO_ENV",
+                          f"SOLH3_PORT ({env_file} line 1) -> LFSTUDIO_PORT",
+                          f"SOLH3_HOME ({env_file} line 2) -> LFSTUDIO_HOME"])
+
+    def test_settings_file_in_the_moved_folder(self):
+        """A second studio's settings file named in the old settings folder, after that folder was moved: it would
+        start on the defaults (the other studio's install and clip history), so it stops, naming the new place and
+        that file's old names. With a link left at the old place it reads the file there."""
+        home = self.d / "home"
+        old_config, new_config = home / ".config/sol-h3-studio", home / ".config/lf-studio"
+        new_config.mkdir(parents=True)
+        (new_config / "env").write_text("LFSTUDIO_MIN_FREE_GIB=0\n")
+        (new_config / "env.test").write_text("LFSTUDIO_MIN_FREE_GIB=992\nSOLH3_PORT=8191\n")
+        named = f"{old_config}/env.test"
+        moved = [f"{named} -> {new_config}/env.test (the settings file: its folder was moved)",
+                 f"SOLH3_PORT ({new_config}/env.test line 2) -> LFSTUDIO_PORT"]
+        self.assert_stop(self.run_launcher("--check", HOME=str(home), LFSTUDIO_ENV=named), moved)
+        self.assert_stop(self.run_launcher("--check", unset=("LFSTUDIO_ENV",), HOME=str(home), SOLH3_ENV=named),
+                         ["SOLH3_ENV (environment) -> LFSTUDIO_ENV"] + moved)
+        (new_config / "env.test").write_text("LFSTUDIO_MIN_FREE_GIB=992\n")
+        old_config.symlink_to(new_config)
+        code, out, err = self.run_launcher("--check", HOME=str(home), LFSTUDIO_ENV=named)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("needs ~992 GiB", out)
+        self.assertNotIn(HEADER, out + err)
 
     def test_names_that_only_look_alike(self):
         """Not the studio's 0.4 settings: NVIDIA's own SOLH3_ names, a test hook, a name that merely contains
@@ -254,6 +330,16 @@ class Install(unittest.TestCase):
         env_file.write_text("SOLH3_SANA=/somewhere\n")
         self.assert_stop(self.run_script("install/10-sana.sh", "--dry-run", LFSTUDIO_ENV=str(env_file)),
                          [f"SOLH3_SANA ({env_file} line 1) -> LFSTUDIO_SANA"])
+        # an old name in a value that nothing sets: no parse error, and the checks after the file still run
+        venv = self.data / "envs" / "stage1"
+        venv.mkdir(parents=True)
+        (venv / ".sol-h3-studio-done").touch()
+        env_file.write_text('LFSTUDIO_PYTHON="$SOLH3_HOME/envs/stage1/bin/python"\n')
+        code, out, err = self.run_script("install/40-stage1.sh", "--dry-run", LFSTUDIO_ENV=str(env_file))
+        self.assertNotIn("cannot parse", err)
+        self.assert_stop((code, out, err),
+                         [f"$SOLH3_HOME ({env_file} line 1) -> $LFSTUDIO_HOME",
+                          f"{venv}/.sol-h3-studio-done -> {venv}/.lf-studio-done (the venv's done marker)"])
 
     def test_dry_run_by_its_old_name(self):
         """SOLH3_DRY_RUN=1 alone: the step stops, it does not run for real."""
