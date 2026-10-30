@@ -695,13 +695,15 @@ class Upscale(CliTest):
         self.assertNotIn("untested", usage)                                  # 4K has run (16:9, docs/PERFORMANCE.md)
 
     def test_refusals(self):
-        """The studio's refusals are exit 2 with its words; argparse checks the choices."""
-        ten = self.clip(seconds=10)
-        p = self.sol("upscale", ten, "--json")
+        """The studio's refusals are exit 2 with its words (a size the Upscale does not offer for the clip's length:
+        its reason, which names the sizes that take it; 2K is the studio's default); argparse checks the choices."""
+        ten, twelve = self.clip(seconds=10), self.clip(seconds=12, seed=2)
+        p = self.sol("upscale", ten, "--resolution", "4k", "--json")
         self.assertEqual(p.returncode, 2, p.stderr)
-        self.assertEqual(json.loads(p.stdout), {"error": "Upscale takes 5 s clips for now: other lengths not yet "
-                                                         "(NVIDIA's pipeline is fixed at 5 s)",
+        self.assertEqual(json.loads(p.stdout), {"error": "4K for 10 s clips comes later: 1080p and 2K take them",
                                                 "http_status": 400, "id": ten})
+        p = self.sol("upscale", twelve)
+        self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: 2K for 12 s clips comes later: 1080p takes them\n"))
         p = self.sol("upscale", "f" * 32)
         self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: no such clip\n"))
         for args in (["upscale", ten, "--resolution", "8k"], ["upscale", ten, "--strength", "nvidia"],
@@ -710,7 +712,7 @@ class Upscale(CliTest):
                      ["upscale", ten, "--pin", "on"]):
             p = self.sol(*args)
             self.assertEqual(p.returncode, 2, (args, p.stderr))
-        self.assertEqual([j.get("kind") for j in self.studio.state()["jobs"]], [None])     # nothing was queued
+        self.assertEqual([j.get("kind") for j in self.studio.state()["jobs"]], [None, None])     # nothing was queued
         if os.geteuid() != 0:
             ro = self.work / "ro"
             ro.mkdir()

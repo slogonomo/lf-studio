@@ -433,8 +433,8 @@ differ = ["%s %s" % (rel, "missing" if found[rel] is None else "changed") for re
           if found[rel] != job.NVIDIA_FILES[rel]]
 if differ:
     print("NVIDIA\x27s package (LFSTUDIO_UPSCALE_PKG) has other files than the Upscale\x27s 9:16 route was written "
-          "for (%s; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips, of 124-frame clips and of clips that keep "
-          "your frames will be refused (other 16:9 clips are not checked against these files)" % ", ".join(differ))
+          "for (%s; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips, of clips of any length but 5 s, of "
+          "124-frame clips and of clips that keep your frames will be refused (other 16:9 clips are not checked against these files)" % ", ".join(differ))
     sys.exit(5)' "$REPO/upscale/regen2k_job.py" "${LFSTUDIO_H3TURBO_ENCODE_SCRIPT:-$REPO/bench/h3turbo_encode.py}" 2>&1)
         rc=$?
         f=$(grep . <<<"$f" | tail -n 1)

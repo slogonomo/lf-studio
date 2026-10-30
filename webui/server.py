@@ -19,11 +19,14 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   or the first frame of a reference video, as a JPEG at most 640 px wide (made on the first request, kept with the
   clip's input files; an image ffmpeg can't read goes out as it is). 404 for t2va.
 - Experimental, with LFSTUDIO_UPSCALE=1: POST /api/upscale {"id", "resolution", "strength", "audio", "seed", "pin"}
-  upscales a finished 5 s clip ("id") of a task and model the models' "upscale" tables have (MODELS: Sol-H3's t2va,
-  fl2va and ref2va clips, LightX2V Turbo's t2va and fl2va clips at 576p or 768p), 16:9 or 9:16, from its MP4, to 1080p,
-  2k (2560x1440, or 1440x2560 for 9:16; the default) or 4k with NVIDIA's Open-H3-Regenerate-2K
+  upscales a finished clip ("id") of a task, model and length the models' "upscale" tables have (MODELS: Sol-H3's
+  t2va, fl2va and ref2va clips, LightX2V Turbo's t2va and fl2va clips at 576p or 768p; every length the studio makes,
+  5 to 15 s, and Sol-H3's 3 s clips made up to 0.5.0), 16:9 or 9:16, from its MP4, whole, in one pass of NVIDIA's
+  refine, to 1080p, 2k (2560x1440, or 1440x2560 for 9:16; the default) or 4k with NVIDIA's Open-H3-Regenerate-2K
   (upscale/regen2k_job.py, run in its own environment; it upscales a 9:16 clip through NVIDIA's code with the shapes
-  turned, see its docstring). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS; default
+  turned, see its docstring), at the sizes the job offers for the clip's length (its offer_row: 1080p every length,
+  2K up to 10 s, 4K 5 s clips; /api/state "upscale_offers"; times and memory past 5 s are estimates until those
+  lengths run on the GPU). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS; default
   LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
   LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). pin: auto (the default) or off, Keep my frames
   (experimental; PIN_ROUTES "ran": where it has run on the GPU): with auto, the clip's keyframes are held in the refine
@@ -32,17 +35,21 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   check, before anything loads: 28 dB at 384p, the sha256 the clip was made from); off, or no end held: NVIDIA's
   refine. The upscale is a job of its own (kind "upscale", parent = the clip; task, format, length, prompt and seed
   copied from it; "load" = LFSTUDIO_UPSCALE_LOAD; "parent_model" and "parent_opts", the clip's model and options;
-  "video", what is done to its MP4 (upscale_sources); "frames", the frames it keeps; for a clip with keyframes "pin":
+  "video", what is done to its MP4 (upscale_sources); "frames", the frames it keeps (its MP4's: 121 at 5 s, 241 at
+  10 s; 121 of a 5 s clip's 124 at 4K); for a clip with keyframes "pin":
   {"asked": auto or off, "ends" (held if the job's check passes), "why" ({end: why not sent}) and, once done, "result"
   ({end: {"used", "agreement_db", "why"}}, the job's receipt)};
   "text", what it is refined against: {"source": "clip"}, the clip's own conditioning, or {"source": "generation" (a
   LightX2V Turbo Keyframes clip's qwen-text/, made with it) | "encode", "prompt", "dropped", "notes"}, the clip's prompt
   without its pictures (upscale_text), with "rows" and "encode_s" once encoded) in the same queue, where it waits while
   any clip is queued. It frees the memory first (status "freeing memory": the session is closed), refuses to start
-  below LFSTUDIO_UPSCALE_MIN_FREE_GIB of MemAvailable, then, in one pipeline_call so that Cancel stops each step:
+  below its floor of MemAvailable (the job's min_free_for: LFSTUDIO_UPSCALE_MIN_FREE_GIB for a 5 s clip, 5 GiB more at
+  4K; a longer clip what its case needs where that is more, 111 GiB at 2K 10 s with a pin; job.json "min_free_gib",
+  which the job checks again as it starts), then, in one pipeline_call so that Cancel stops each step:
   builds its input folder (build_input: <case>/input/, the clip's MP4, audio and text alone, linked; a LightX2V Turbo
-  clip at 576p stretched to 768p; one with a last keyframe, 124 frames, whole at 1080p and 2K and cut to its first 121
-  at 4K; the pictures of the ends sent, linked into keyframe/; source.json), for a clip without a conditioning of text
+  clip at 576p stretched to 768p, every frame; one with a last keyframe (every frame made: 124 at 5 s) whole, a 5 s
+  one cut to its first 121 at 4K; the pictures of the ends sent, linked into keyframe/; source.json), for a clip
+  without a conditioning of text
   alone encodes one (status "encoding the prompt", upscale_phase "prompt": the prompt encode,
   LFSTUDIO_H3TURBO_ENCODE_SCRIPT --upscale, a transient Qwen worker, as a process group of its own; the memory floor
   again after it) and runs the job on that folder in a process group of its own (status "upscaling",
@@ -53,19 +60,24 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   so Delete and Undo move only them; a clip can't be deleted while an upscale of it is queued or running. No retry
   after a failure.
   Answers: 200 {"id", "job"}, 400 for a bad field (any other key too, "source" among them: there is no draft source any
-  more) or a clip it does not take (another length than 5 s, not yet; a Keyframes or Reference clip with nothing left
-  of its prompt without its pictures), 404 for an unknown clip (and for everything with the Upscale off), 409 for a clip
+  more), a clip it does not take (a length no model's table has, UPSCALE_LENGTH; an MP4 whose frames are not its
+  length's, UPSCALE_FRAMES; a Keyframes or Reference clip with nothing left of its prompt without its pictures) or a
+  size the job does not offer for its length (its reason, which names the sizes that take it: "2K for 12 s clips comes
+  later: 1080p takes them"), 404 for an unknown clip (and for everything with the Upscale off), 409 for a clip
   that is not done, being moved, or without the files needed (its session directory; for audio clip its audio: Sol-H3's
   Stage-1 audio, LightX2V Turbo's turbo/audio.pt), 429 when the queue is full. /api/state has "upscale" (on or off),
   "upscale_defaults" (null with it off, else what a request without those keys gets: {"resolution", "strength",
   "audio"}, for the page's choices) and "upscale_load" (null with it off, else LFSTUDIO_UPSCALE_LOAD, for the page's
-  expected times) and "upscale_pin" (null with it off, else true: the studio takes "pin"); with it on, every finished
-  job in /api/state, /api/jobs and the API record has "upscalable": {"ok": true, "clip_audio": bool} (with "text":
-  "generation" or "encode" when it is not refined against the clip's own conditioning; "video": "stretch" when its MP4
-  is not taken as it is at 1080p and 2K; "frames": {resolution: frames kept} for a clip of more than 121; "pin": the
-  ends it can hold [first, last or both], with "pin_routes": {resolution: {"strengths", "partly" (the page says it
-  holds the picture only partly there), "ran" (on the GPU through the studio)}}; "pin_why": {end: why not} for an end
-  it has but can't hold) or {"ok": false, "why": "..."}.
+  expected times), "upscale_pin" (null with it off, else true: the studio takes "pin") and "upscale_offers" (null with
+  it off, else UPSCALE_OFFERS: per length, {"<seconds>": {resolution: {"eta_s": [seconds before the refine, per refine
+  step], "ran" (that length and size upscaled on the GPU through the studio; else the times are estimates)} or
+  {"why": why not offered}}}); with it on, every finished job in /api/state, /api/jobs and the API record has
+  "upscalable": {"ok": true, "clip_audio": bool} (with "text": "generation" or "encode" when it is not refined against
+  the clip's own conditioning; "video": "stretch" when its MP4 is not taken as it is at 1080p and 2K; "frames":
+  {resolution: frames kept} where they differ between sizes (124, and 121 at 4K); "pin": the ends it can hold [first,
+  last or both], with "pin_routes": {resolution: {"strengths", "partly" (the page says it holds the picture only
+  partly there), "ran" (on the GPU through the studio, at the clip's length)}} at the sizes offered for its length;
+  "pin_why": {end: why not} for an end it has but can't hold) or {"ok": false, "why": "..."}.
 - The model of a clip ("model" in POST /api/generate, the form and JSON): sol-h3 (Sol-H3, NVIDIA's two-stage
   pipeline above; the default: a request without a model and a record without one mean sol-h3) or, experimental and on
   the DGX Spark only with LFSTUDIO_MODELS=sol-h3,lightx2v-turbo, lightx2v-turbo (LightX2V Turbo: the full MiniMax-H3 in
@@ -95,7 +107,7 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   start after one). Its record has "model", "model_opts" (the options, the size, the LoRA, the Qwen canvas and its image
   tokens) and the job's times and memory; its files go into
   <session>-lightx2v-turbo-<resolution>-<task>-<format>-<seconds>s/<case_id>/ (qwen/, qwen-text/, turbo/), its name has
-  the model and the options: lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. A 5 s one can be
+  the model and the options: lf-studio_lightx2v-turbo-576p_<task>_<seconds>s_seed<seed>_<id6>.mp4. It can be
   upscaled (above), also with the model turned off since. With LFSTUDIO_MODELS unset (sol-h3 only) everything is as
   before: no "models", no new keys in the records or the session, the page as it is; "model": "sol-h3" is taken,
   another model is refused.
@@ -179,8 +191,9 @@ Environment:
                              file through mmap (the start log warns).
   LFSTUDIO_UPSCALE_PREREAD   0 (default): off. 1: the job reads its weights into the page cache in parallel before
                              it loads them (not shown to shorten the load yet). Needs LFSTUDIO_UPSCALE_LOAD=standard.
-  LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale needs once the session is closed (default 110; 5 more at 4K:
-                             regen2k_job.min_free_for; 0 = no check)
+  LFSTUDIO_UPSCALE_MIN_FREE_GIB  MemAvailable an upscale of a 5 s clip needs once the session is closed (default 110;
+                             5 more at 4K); a longer clip needs more where its case does (regen2k_job.min_free_for;
+                             0 = no check)
   LFSTUDIO_UPSCALE_GUARD_GIB stop an upscale when MemAvailable stays below this for 3 s (default 5; 0 = no guard)
   LFSTUDIO_MODELS            sol-h3 (default): the models a clip may have, a comma list with sol-h3 in it.
                              sol-h3,lightx2v-turbo: also the experimental LightX2V Turbo above, on the DGX Spark only.
@@ -256,6 +269,7 @@ TASKS = ("t2va", "fl2va", "ref2va")
 # seconds; 5 = NVIDIA's frozen route, others = lf-studio extension. 3 and 4 s went after 0.5.0 (3 s clips never came
 # out right; the patch still takes 3-15 s, for infer.py and the bench).
 DURATIONS = (5, 6, 7, 8, 10, 12, 15)
+UPSCALE_OLD_SECONDS = (3,)       # Sol-H3's 3 s clips, made up to 0.5.0, upscale too (the experimental Upscale, MODELS)
 
 
 def fail(message):
@@ -443,7 +457,8 @@ if UPSCALE:
 # its options' choices yet. Offering more is a change of this data, after a GPU validation; the page and the clients
 # follow it. A model that "runs" a "job" is a GPU job of its own per clip (run_model_job); "setting" names its
 # settings, LFSTUDIO_<setting>_*. "upscale": the finished clips of the model the experimental Upscale takes, by task and
-# length (upscalable; every format the job has a shape for): every 5 s clip each model makes, so far.
+# length (upscalable; every format the job has a shape for): every clip each model makes, of every length, and Sol-H3's
+# 3 s ones; which sizes a length gets is the job's table (upscale/regen2k_job.py offer_row, /api/state upscale_offers).
 SOL_H3, TURBO = "sol-h3", "lightx2v-turbo"
 DEFAULT_MODEL = SOL_H3           # a request without a model, and every record without one (all clips before 0.6)
 FRAME_SETS = ("first", "last", "first+last")      # an fl2va clip's keyframes
@@ -452,7 +467,8 @@ MODELS = {
     SOL_H3: {
         "name": "Sol-H3", "about": "NVIDIA's Sol two-stage pipeline: a MiniMax-H3 draft at 384p refined by LTX-2.5",
         "runs": "session", "experimental": False, "backends": tuple(BACKENDS), "options": (),
-        "offers": (dict(END_STATE),), "not_yet": (), "upscale": {"tasks": TASKS, "seconds": (5,)}},
+        "offers": (dict(END_STATE),), "not_yet": (),
+        "upscale": {"tasks": TASKS, "seconds": UPSCALE_OLD_SECONDS + DURATIONS}},
     TURBO: {
         "name": "LightX2V Turbo", "setting": "H3TURBO",
         "about": "the full MiniMax-H3 in one stage with LightX2V's turbo LoRA: keeps the look of your keyframe",
@@ -482,9 +498,10 @@ MODELS = {
         "estimates_s": {"576p/4/5": 200, "576p/4/6": 250, "576p/4/7": 280, "576p/4/8": 310, "576p/4/10": 400,
                         "576p/4/12": 500, "576p/4/15": 660, "768p/4/5": 350, "768p/4/6": 470, "768p/4/7": 530,
                         "768p/4/8": 600, "768p/4/10": 820, "768p/4/12": 1070, "768p/4/15": 1440},
-        # both sizes: a 576p clip is stretched to 768p for the Upscale's job, and one with a last keyframe (124
-        # frames at 5 s) taken whole at 1080p and 2K, cut to its first 121 at 4K (upscale_sources, build_input)
-        "upscale": {"tasks": ("t2va", "fl2va"), "seconds": (5,)}},
+        # both sizes: a 576p clip is stretched to 768p for the Upscale's job (every frame), and one with a last
+        # keyframe (every frame made: 124 at 5 s, 243 at 10 s) taken whole; a 5 s one is cut to its first 121 at 4K
+        # (upscale_sources, build_input)
+        "upscale": {"tasks": ("t2va", "fl2va"), "seconds": DURATIONS}},
 }
 
 
@@ -513,7 +530,7 @@ def registry_problems():
     form and JSON carry strings and integers: json_form, check_model, lf-cli), with a value or default not of its
     type or a default not among its choices, or of another type than an option of the same name of another model; a
     row without a dimension of the model or with a value it can't have, or a value not offered without a reason; an
-    Upscale entry with a task or a length the studio does not have."""
+    Upscale entry with a task or a length the studio does not have (or Sol-H3's old 3 s, UPSCALE_OLD_SECONDS)."""
     found, kinds = [], {}
     for mid, m in MODELS.items():
         for o in m["options"]:
@@ -545,8 +562,8 @@ def registry_problems():
                                  "reason not yet")
         up = m.get("upscale", {"tasks": (), "seconds": ()})
         found += [f"{mid}: the Upscale's task {t} is not one of {TASKS}" for t in up["tasks"] if t not in TASKS]
-        found += [f"{mid}: the Upscale's length {v} is not one of {DURATIONS}" for v in up["seconds"]
-                  if v not in DURATIONS]
+        found += [f"{mid}: the Upscale's length {v} is not one of {UPSCALE_OLD_SECONDS + DURATIONS}"
+                  for v in up["seconds"] if v not in UPSCALE_OLD_SECONDS + DURATIONS]
     return found
 
 
@@ -1549,20 +1566,35 @@ UPSCALE_REQUEST = ("id", "resolution", "strength", "audio", "seed", "pin")    # 
 FREE_WAIT_S = 5                  # how long a memory floor waits for a closed session's memory to come back
 GPU_JOB_STOP_S = 20              # Cancel and shutdown: SIGKILL a GPU job's process this long after its SIGTERM
 UPSCALE_FREE_WAIT_S, UPSCALE_STOP_S = FREE_WAIT_S, GPU_JOB_STOP_S      # their names up to 0.5.1
-UPSCALE_LENGTH = "Upscale takes 5 s clips for now: other lengths not yet (NVIDIA's pipeline is fixed at 5 s)"
+UPSCALE_LENGTH = "Upscale takes clips of the lengths the studio makes, 5 to 15 s (and Sol-H3's 3 s ones), not {} s"
+# a clip whose MP4 (its name: _<W>x<H>_<frames>f.mp4) has frames the job has no case for (its FRAME_CASES), or those
+# of another length than its record's: refused, never cut
+UPSCALE_FRAMES = "Upscale can't take this clip: its MP4 has {} frames, not the frames of a {} s clip"
 # a guard: every orientation the studio makes (runtime.geometry's ORIENTATIONS) is one of the job's SHAPES
 # (tests/test_upscale.py checks it), so only an orientation added later gets this
 UPSCALE_SHAPE = "Upscale needs a 16:9 or 9:16 clip (1344x768 or 768x1344)"
 # A 5 s clip that keeps every frame its model made (LightX2V Turbo's with a last keyframe: 124, ending on the frame
 # that keyframe is anchored to) is upscaled whole at these sizes; at 4K it is cut to its first 121 (NVIDIA's length)
-# until a 124-frame 4K run (upscale_frames)
+# until a 124-frame 4K run (upscale_frames). Every other clip is taken whole, at the sizes the job offers for its
+# length (upscale/regen2k_job.py offer_row: 4K takes 5 s clips only), or refused.
 UPSCALE_KEEP_ALL = ("1080p", "2k")
 UPSCALE_NAMES = {"1080p": "1080p", "2k": "2K", "4k": "4K"}
+# /api/state "upscale_offers" (null with the Upscale off): what the job offers per length and size, its times and
+# whether that length and size has run on the GPU through the studio (upscale/regen2k_job.py offers_table: {"<seconds>":
+# {size: {"eta_s": [base, step], "ran"} | {"why"}}}), for the lengths the models' "upscale" tables take. The page reads
+# its popover's sizes, times and notes and an upscale's expected time there, by the clip's length; the times past 5 s
+# are estimates until those lengths run (the job's OFFER_ETA_S). A request for a size not offered is refused with why.
+UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
+                   if int(seconds) in {v for m in MODELS.values() for v in m.get("upscale", {}).get("seconds", ())}}
+                  if UPSCALE else None)
 # Keep my frames (POST /api/upscale "pin", the docstring): the clip's keyframes held in the refine where the clip
 # shows them already (the job's check_pin). PIN_ROUTES says where it is offered, by the clip's model and the ends it
-# can hold (clip_keyframes): the sizes, the strengths, and the sizes it has run at on the GPU through the studio
-# ("ran", 2026-10-29/30; the page notes the others). One line per route, so a route that fails its GPU run goes with its
-# line. Not at 4K (not run with the job's lean blocks); Balanced only (Faithful held a first frame only ~1 dB closer).
+# can hold (clip_keyframes): the sizes (of those the job offers for the clip's length), the strengths, and where it has
+# run on the GPU through the studio ("ran", 2026-10-29/30; the page notes the others): a size alone is a 5 s clip at
+# that size, "<size>/<seconds>" a clip of that length ("1080p/10"; none yet). One line per route, so a route that fails
+# its GPU run goes with its line. Not at 4K (never run there); Balanced only (Faithful held a first frame only ~1 dB
+# closer). On a long clip the pin runs with the job's lean blocks where its forward is lean (1080p from 10 s, 2K from
+# 6 s: regen.lean_chunks_for), which no pinned run has used on the GPU yet: the length's note says so.
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
 PIN_PARTLY = ("2k",)             # sizes where it holds the picture only partly (a research run at 2K): the page says so
@@ -1574,7 +1606,7 @@ PIN_ROUTES = {
 }
 # why an end of a Keyframes clip is not held, besides the job's own reasons (regen.PIN_WHY: the picture gone or
 # changed, the clip stopping short of the last one)
-PIN_SOL_LAST = "Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it"
+PIN_SOL_LAST = "Sol-H3 clips stop {} before your last picture, so the Upscale can't hold it"   # sol_last: 3 frames at 5 s
 PIN_BEFORE = "the clip was made before 0.5.2, which did not hold your first frame"
 PIN_SETTING = "the clip was made with SOL_H3_STAGE2_KEYFRAME={}, which did not hold your first frame"
 PIN_NO_RECORD = "the clip has no record of how it used your picture"
@@ -1616,18 +1648,24 @@ MP4_SIZE = re.compile(r"_(\d+)x(\d+)_(\d+)f\.mp4$")     # a clip's <name>_<W>x<H
 
 def upscale_frames(clip, resolution=None):
     """The frames an upscale keeps of a clip's `clip` frames at `resolution` (None: at UPSCALE_KEEP_ALL's sizes): all
-    of them where the job takes them (its FRAME_CASES: 121, or the 124 H3 makes) and the size keeps them, else
-    NVIDIA's 121."""
-    whole = clip in regen.FRAME_CASES and (resolution is None or resolution in UPSCALE_KEEP_ALL)
-    return clip if whole else regen.NVIDIA_FRAMES
+    of them where the job takes them (its FRAME_CASES: a length the studio makes), but NVIDIA's 121 of a 5 s clip
+    that keeps every frame made (124) at a size outside UPSCALE_KEEP_ALL (4K); None for a count the job has no case
+    for (never cut)."""
+    case = regen.FRAME_CASES.get(clip)
+    if case is None:
+        return None
+    if case["seconds"] == 5 and case["pad"] == 0 and resolution is not None and resolution not in UPSCALE_KEEP_ALL:
+        return regen.NVIDIA_FRAMES
+    return clip
 
 
 def upscale_sources(job, resolution=None, hash_now=False):
     """What an upscale of a finished clip at `resolution` (None: at 1080p and 2K) reads, from its record and its files
     (build_input puts them into the upscale's input folder): {"case", "final" (its MP4), "frames" ({"clip" (its MP4's,
-    by its name), "made" (by H3), "kept" (upscale_frames)}), "video" (what build_input does to the MP4: "clip", taken
-    as it is, or for a LightX2V Turbo clip "stretch" from 576p to 768p, "trim" to its first 121 frames (at 4K, a clip
-    with a last keyframe, which has 124), or "stretch+trim"), "pcm" (its audio for audio clip, which may be missing:
+    by its name; None for a name without them), "made" (by H3), "kept" (upscale_frames; None off the job's cases)}),
+    "video" (what build_input does to the MP4: "clip", taken as it is, or for a LightX2V Turbo clip "stretch" from 576p
+    to 768p, every frame, "trim" to its first 121 frames (at 4K, a 5 s clip with a last keyframe, which has 124), or
+    "stretch+trim"), "pcm" (its audio for audio clip, which may be missing:
     Sol-H3's Stage-1 audio or LightX2V Turbo's turbo/audio.pt), "text" (where its conditioning of text alone comes
     from: "clip", its own (t2va); "generation", the one a LightX2V Turbo Keyframes clip made with itself, qwen-text/;
     "encode", one made for the upscale), "conditioning" (that file, None for "encode"), "keyframes" and "pin_why"
@@ -1642,18 +1680,18 @@ def upscale_sources(job, resolution=None, hash_now=False):
         return None
     turbo = job_model(job) == TURBO
     m = MP4_SIZE.search(final.name)
-    size, frames = ((int(m.group(1)), int(m.group(2))), int(m.group(3))) if m else (None, regen.NVIDIA_FRAMES)
+    size, frames = ((int(m.group(1)), int(m.group(2))), int(m.group(3))) if m else (None, None)
     kept, video = upscale_frames(frames, resolution), []
     if turbo:                              # Sol-H3's MP4 is the job's input as it is (the job checks it)
         if size != regen.SHAPES[job["orientation"]]["input"]:
             video.append("stretch")
-        if kept != frames:
+        if kept is not None and kept != frames:
             video.append("trim")
     else:
-        kept = frames
+        kept = frames if kept else None    # whole: Sol-H3's counts are never cut
     keyframes, why = clip_keyframes(job, final, hash_now)
     sources = {"case": case, "final": final, "video": "+".join(video) or "clip",
-               "frames": {"clip": frames, "made": regen.made_frames(frames), "kept": kept},
+               "frames": {"clip": frames, "made": regen.made_frames(frames) if frames else None, "kept": kept},
                "keyframes": keyframes, "pin_why": why,
                "pcm": case / ("turbo/audio.pt" if turbo else "stage1/stage1_direct_tensors.pt")}
     if job.get("task") == "t2va":
@@ -1703,8 +1741,9 @@ def keyframe_record(model, orientation, path, mtime_ns, ends):
     picture it was made from), "fit" (how its model put it on its canvas: the job's FITS), "canvas", "size" (the
     picture's, turned by its EXIF, or None)}}, {end: why not}].
     Sol-H3: its first frame where Stage 2 held it (stage2_keyframe "pin", 0.5.2's default), stretched onto the canvas,
-    the sha256 from its capture; never its last, which the clip stops 3 frames before (Stage 2 keeps 8n+1 of the 124
-    frames H3 makes, and H3 anchors the last keyframe to the last of them).
+    the sha256 from its capture; never its last, which the clip stops a few frames before (3 at 5 s: Stage 2 keeps the
+    largest 8n+1 of the frames H3 makes, 121 of 124, and H3 anchors the last keyframe to the last of them): PIN_SOL_LAST,
+    which clip_keyframes words by the clip's frames (sol_last).
     LightX2V Turbo: its receipt's geometry, the fit of each picture (jobs/h3turbo_job.py keyframe_fit: a cover-crop must
     be the one the job's cover_crop computes for its size and canvas) and their sha256; a last keyframe only where the
     clip kept every frame made, so that it ends on that frame (it does since the model came).
@@ -1783,12 +1822,23 @@ def image_state(path, want, hash_now=False):
     return None if digest in (None, want) else regen.PIN_WHY["changed"]
 
 
+def sol_last(final):
+    """Why a Sol-H3 clip's last frame is not held (PIN_SOL_LAST), by the frames its MP4 (`final`) stops before the last
+    H3 made, where its last keyframe is: 3 at 5 s, 7 at 8 s ("a few" for an MP4 whose name has no count); none at 3 s,
+    whose clip keeps every frame made (73): not yet, then (no route holds a Sol-H3 clip's last frame)."""
+    m = MP4_SIZE.search(Path(final).name)
+    n = regen.made_frames(int(m.group(3))) - int(m.group(3)) if m and int(m.group(3)) > 0 else None
+    if n == 0:
+        return PIN_NOT_YET
+    return PIN_SOL_LAST.format("a few frames" if n is None else f"{n} frame{'s' * (n != 1)}")
+
+
 def clip_keyframes(job, final, hash_now=False):
     """The ends of a finished Keyframes clip (its MP4: `final`) the Upscale can hold, Keep my frames: ({end: {"from"
     (the picture it was made from, the record's first_frame or last_frame), "sha256", "fit", "canvas", "size"}},
     {end: why not}), first before last; ({}, {}) for a Text or Reference clip. Its own record decides
     (keyframe_record), then the picture: still on disk and still the one it was made from (image_state; hashed only
-    with hash_now)."""
+    with hash_now). A Sol-H3 clip's last frame: why not by its length (sol_last)."""
     ends = tuple(end for end in regen.ANCHORS if job.get(f"{end}_frame"))
     model = job_model(job)
     if job.get("task") != "fl2va" or not ends or model not in (SOL_H3, TURBO):
@@ -1800,6 +1850,8 @@ def clip_keyframes(job, final, hash_now=False):
     except OSError:
         mtime_ns = None
     found, why = json.loads(keyframe_record(model, job.get("orientation"), str(path), mtime_ns, ends))
+    if why.get("last") == PIN_SOL_LAST:
+        why["last"] = sol_last(final)
     for end in list(found):
         problem = image_state(job[f"{end}_frame"], found[end]["sha256"], hash_now)
         if problem:
@@ -1819,6 +1871,12 @@ def pin_offer(job, sources):
         why.update(dict.fromkeys(ends, PIN_NOT_YET))
         ends = []
     return ends, route, {end: why[end] for end in regen.ANCHORS if end in why}
+
+
+def pin_ran(route, size, seconds):
+    """Whether a Keep my frames route has run on the GPU through the studio at this size for a clip of this length
+    (PIN_ROUTES "ran": a size alone at 5 s, "<size>/<seconds>" at another length)."""
+    return (size if seconds == 5 else f"{size}/{seconds}") in route["ran"]
 
 
 def pin_plan(parent, sources, resolution, strength, asked):
@@ -1893,14 +1951,18 @@ def upscalable(job):
     """Whether a job can be upscaled now: (200, {"clip_audio"[, "text"][, "video"][, "frames"][, "pin", "pin_routes"]
     [, "pin_why"]}) or (the HTTP status, why not). clip_audio: whether its audio is there for audio clip; text and
     video: upscale_sources' at 1080p and 2K, each only when it is not "clip" (so a Sol-H3 Text clip's answer is as
-    before the Upscale took every clip); frames: {resolution: the frames kept} for a clip of more than NVIDIA's 121;
-    pin: the ends it can hold (pin_offer) and pin_routes, where: {resolution: {"strengths", "partly", "ran"}}; pin_why:
-    {end: why not} for the others (the pictures are not hashed here: image_state). It takes every finished 5 s clip of
-    the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's Text and Keyframes clips
-    at either size), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes turned): not yet the
-    other lengths (NVIDIA's pipeline is fixed at 5 s), and not a Keyframes or Reference clip with nothing left of its
-    prompt without its pictures (or a text alone too long), nor one whose text must be encoded while the studio has no
-    t2va path manifest (the encode's). Looks at the clip's files: call it without `lock`, with a copy of the job."""
+    before the Upscale took every clip); frames: {resolution: the frames kept} where they differ between the sizes (a
+    5 s clip with a last keyframe: 124, but 121 at 4K); pin: the ends it can hold (pin_offer) and pin_routes, where:
+    {resolution: {"strengths", "partly", "ran" (at the clip's length)}} at the sizes its route and its length have;
+    pin_why: {end: why not} for the others (the pictures are not hashed here: image_state). Which sizes a clip's
+    length gets, with their times, is not here: /api/state "upscale_offers" (upscale/regen2k_job.py offers_table), by
+    length. It takes every finished clip of the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference
+    clips, LightX2V Turbo's Text and Keyframes clips at either size), of every length the studio makes (and Sol-H3's
+    3 s ones), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes turned), whole: not one whose
+    MP4 has frames the job has no case for, or not those of its length (UPSCALE_FRAMES), nor a Keyframes or Reference
+    clip with nothing left of its prompt without its pictures (or a text alone too long), nor one whose text must be
+    encoded while the studio has no t2va path manifest (the encode's). Looks at the clip's files: call it without
+    `lock`, with a copy of the job. Never raises for a record of another shape (with_upscalable)."""
     if is_upscale(job):
         return 400, "an upscale can't be upscaled again"
     model = job_model(job)
@@ -1911,8 +1973,9 @@ def upscalable(job):
     takes = spec["upscale"]
     if job.get("task") not in takes["tasks"]:
         return 400, f"Upscale does not take {name}'s {job.get('task')} clips"
-    if job.get("seconds", 5) not in takes["seconds"]:      # later: the other lengths, by the job's frames per length
-        return 400, UPSCALE_LENGTH
+    seconds = job.get("seconds", 5)
+    if seconds not in takes["seconds"]:
+        return 400, UPSCALE_LENGTH.format(seconds)
     if job.get("orientation") not in regen.SHAPES:
         return 400, UPSCALE_SHAPE
     text = upscale_text(job)
@@ -1926,17 +1989,23 @@ def upscalable(job):
     sources = upscale_sources(job)
     if sources is None or sources["conditioning"] is not None and not sources["conditioning"].is_file():
         return 409, "the clip's working files (its session directory) are gone, so it can't be upscaled"
+    clip = sources["frames"]["clip"]
+    if clip not in regen.FRAME_CASES or regen.FRAME_CASES[clip]["seconds"] != seconds:    # never cut: refused
+        return 400, UPSCALE_FRAMES.format("an unknown number of" if clip is None else clip, seconds)
     if sources["text"] == "encode" and "t2va" not in ready_tasks():     # the encode is a t2va one: its manifest
         return 409, UPSCALE_NO_T2VA
     answer = {"clip_audio": sources["pcm"].is_file()}
     answer.update({key: sources[key] for key in ("text", "video") if sources[key] != "clip"})     # what is new only
-    if sources["frames"]["clip"] > regen.NVIDIA_FRAMES and job_model(job) == TURBO:
-        answer["frames"] = {size: upscale_frames(sources["frames"]["clip"], size) for size in regen.SIZES}
+    kept = {size: upscale_frames(clip, size) for size in regen.SIZES}
+    if len(set(kept.values())) > 1:
+        answer["frames"] = kept
     ends, route, why = pin_offer(job, sources)
     if ends:
+        offered = [size for size in regen.SIZES if size in route["sizes"]
+                   and "why" not in regen.offer_row(seconds, size)]
         answer["pin"] = ends
         answer["pin_routes"] = {size: {"strengths": list(route["strengths"]), "partly": size in PIN_PARTLY,
-                                       "ran": size in route["ran"]} for size in regen.SIZES if size in route["sizes"]}
+                                       "ran": pin_ran(route, size, seconds)} for size in offered}
     if why:
         answer["pin_why"] = why
     return 200, answer
@@ -1995,6 +2064,17 @@ def upscale_request(raw):
     return (body["id"], *picked, seed, pin)
 
 
+def offer_refusal(offer, strength):
+    """Why the job's offer (upscale/regen2k_job.py offer: of a clip's frames kept at a size) does not take this
+    request: the size not offered for the clip's length (its reason, naming the sizes that are), or a strength it does
+    not have; None when it takes it."""
+    if "why" in offer:
+        return offer["why"]
+    if strength not in offer["strengths"]:
+        return f"strength {strength} is not offered for this clip at this size: {', '.join(offer['strengths'])}"
+    return None
+
+
 def submit_upscale(raw):
     """POST /api/upscale (the docstring): check the request and the clip, then queue the upscale as a job of its own.
     Returns the reply."""
@@ -2017,6 +2097,9 @@ def submit_upscale(raw):
     sources = upscale_sources(parent, resolution, hash_now=pin == "auto")     # at its size; its pictures hashed
     if sources is None:
         return 409, {"error": "the clip's working files (its session directory) are gone, so it can't be upscaled"}
+    why = offer_refusal(regen.offer(sources["frames"]["kept"], resolution), strength)    # its length at this size
+    if why:
+        return 400, {"error": why}
     sigma, steps = regen.STRENGTHS[strength]
     uid = uuid.uuid4().hex
     job = {"id": uid, "kind": "upscale", "parent": jid, "case_id": f"up_{time.strftime('%H%M%S')}_{uid[:6]}",
@@ -2112,8 +2195,9 @@ def prepare_video_command(src, dst, size, how, frames):
 def build_input(job, parent, sources, case):
     """The upscale's input folder, <case>/input/ (job.json "case"), in the shape of a Sol-H3 clip's own, so the job
     reads every clip as it reads a Sol-H3 Text clip (its case_inputs): stage2/refined_*.mp4 (the clip's MP4, linked,
-    all its frames; for a LightX2V Turbo clip at 576p, or at 4K with a last keyframe, prepare_video_command's 1344x768
-    or 768x1344 with the frames kept: 124, or 121 at 4K), stage1/stage1_direct_tensors.pt (its audio, linked: Sol-H3's
+    all its frames; for a LightX2V Turbo clip at 576p, or a 5 s one at 4K with a last keyframe,
+    prepare_video_command's 1344x768 or 768x1344 with the frames kept: all of them, or 121 of 124 at 4K),
+    stage1/stage1_direct_tensors.pt (its audio, linked: Sol-H3's
     Stage-1 audio, or LightX2V Turbo's audio.pt, the PCM of the frames it made), qwen/ (its conditioning of text alone,
     linked: the clip's own or its qwen-text/; none yet when the text is encoded for the upscale, encode_upscale_text)
     and keyframe/<end>.<ext> (the picture of each end job["pin"] sends to the job, linked; one gone meanwhile is not
@@ -2163,8 +2247,6 @@ def build_input(job, parent, sources, case):
         except OSError:                    # deleted since the run's check: not sent
             pin["ends"].remove(end)
             pin["why"][end] = regen.PIN_WHY["gone"]
-    # Later, not in this version (each needs the job's support and a GPU run first): the other lengths (NVIDIA's fixed
-    # 5 s; a clip of another length has other frame and audio counts).
     write_source(job, parent, view, files, sources)
     return view, mp4, files
 
@@ -2236,15 +2318,20 @@ def encode_upscale_text(job, parent, case, view):
 
 
 def upscale_floor(job, floor):
-    """Raise UpscaleFailed when MemAvailable stays below the upscale's floor (enough_memory: it waits up to
-    FREE_WAIT_S for closed workers' memory to come back)."""
+    """Raise UpscaleFailed when MemAvailable stays below the upscale's floor (regen.min_free_for: its case and size;
+    enough_memory: it waits up to FREE_WAIT_S for closed workers' memory to come back)."""
     available = enough_memory(floor)
     if available is None and floor > 0:
         log(f"upscale: cannot read MemAvailable from {MEMINFO}; starting without the memory check")
     if available is not None and available < floor:
-        extra = f" plus {regen.FLOOR_4K_EXTRA_GIB:g} GiB at 4K" if floor != UPSCALE_CONF["min_free_gib"] else ""
+        setting = UPSCALE_CONF["min_free_gib"]
+        what = ("LFSTUDIO_UPSCALE_MIN_FREE_GIB" if floor == setting
+                else f"LFSTUDIO_UPSCALE_MIN_FREE_GIB plus {regen.FLOOR_4K_EXTRA_GIB:g} GiB at 4K"
+                if floor == setting + regen.FLOOR_4K_EXTRA_GIB and job["resolution"] == "4k"
+                else f"what a {UPSCALE_NAMES[job['resolution']]} {job.get('seconds', 5)} s upscale needs, more than "
+                     f"LFSTUDIO_UPSCALE_MIN_FREE_GIB={setting:g}")
         raise UpscaleFailed(f"not enough free memory for an upscale: {available:.1f} GiB available with the models "
-                            f"closed, {floor:g} GiB needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB{extra}); close other apps")
+                            f"closed, {floor:g} GiB needed ({what}); close other apps")
 
 
 def run_upscale(job):
@@ -2254,8 +2341,10 @@ def run_upscale(job):
     alone the prompt encode (encode_upscale_text, status "encoding the prompt", then the memory check again: the Qwen
     worker's memory comes back), job.json ("case": the input folder; "pin" with the ends sent) and the job
     (upscale_process); then the poster, the record (with each end's result, from the job's receipt) and the publish
-    copy. The clip and its pictures are checked again first: an end whose picture is gone or changed since the
-    request is not sent, with its reason. Raises when it fails or is cancelled; no retry."""
+    copy. The clip, the job's offer of its size and its pictures are checked again first: an end whose picture is gone
+    or changed since the request is not sent, with its reason. The memory floor is the job's for the clip's case, size
+    and pin (regen.min_free_for), which job.json carries as "min_free_gib" (the job checks it again as it starts).
+    Raises when it fails or is cancelled; no retry."""
     if job.get("cancel_requested"):
         raise Cancelled("cancelled before it started")
     job["status"] = "freeing memory"
@@ -2275,6 +2364,9 @@ def run_upscale(job):
     if job["audio"] == "clip" and not info["clip_audio"]:
         raise UpscaleFailed(f"the clip's {AUDIO_FILE[job_model(parent)].split(' (')[0]} is gone")
     sources = upscale_sources(parent, job["resolution"], hash_now=bool((job.get("pin") or {}).get("ends")))
+    why = offer_refusal(regen.offer(sources["frames"]["kept"], job["resolution"]), job["strength"])
+    if why:
+        raise UpscaleFailed(f"the clip can't be upscaled now: {why}")
     if (job.get("text") or {}).get("source") != sources["text"]:      # e.g. its qwen-text/ went since the request
         job["text"] = text_record(parent, sources["text"])
     job["video"], job["frames"] = sources["video"], sources["frames"]["kept"]
@@ -2283,7 +2375,8 @@ def run_upscale(job):
             {"ends": [], "why": {}}
         job["pin"] = {"asked": job["pin"]["asked"], "ends": [e for e in plan["ends"] if e in job["pin"]["ends"]],
                       "why": plan["why"]}
-    floor = regen.min_free_for(job["resolution"], UPSCALE_CONF["min_free_gib"])
+    floor = regen.min_free_for(job["resolution"], UPSCALE_CONF["min_free_gib"], sources["frames"]["kept"],
+                               len((job.get("pin") or {}).get("ends", ())))      # by its case, size and pin
     upscale_floor(job, floor)              # before anything of its own: a start that can't make it starts nothing
     case = new_session_dir(f"upscale-{job['resolution']}") / job["case_id"]
     out = case / "regen"
@@ -2313,7 +2406,7 @@ def run_upscale(job):
         data = {"version": regen.JOB_VERSION, "case": str(view),
                 "resolution": job["resolution"], "steps": job["steps"], "start_sigma": job["start_sigma"],
                 "seed": job["refine_seed"], "audio": job["audio"], "load": job.get("load", UPSCALE_CONF["load"]),
-                "preread": UPSCALE_CONF["preread"],
+                "preread": UPSCALE_CONF["preread"], "min_free_gib": floor,      # the job checks it again itself
                 "paths": {"package": str(UPSCALE_CONF["package"]), "weights": str(UPSCALE_CONF["weights"]),
                           "base_model": str(UPSCALE_CONF["base_model"]), "output": str(out)},
                 "meta": {"studio_job": job["id"], "parent": job["parent"], "strength": job["strength"]}}
@@ -2354,8 +2447,9 @@ def upscale_process(job, out, job_path, sound):
     its progress as job["upscale_phase"], the guard LFSTUDIO_UPSCALE_GUARD_GIB). The job ends when this process does
     (--parent: PR_SET_PDEATHSIG), so a server killed hard does not leave it running unguarded. Then the clip's sound
     goes in, copied from `sound`, the input folder's MP4 (the clip's own, or its prepared copy, whose sound is the
-    clip's as it is, or cut to the 121 frames kept for a clip that is cut at 4K). The MP4 is named by its size and the
-    frames kept: regen_<W>x<H>_<frames>f.mp4. Returns it; raises with the job's own error line."""
+    clip's as it is, whole, or cut to the 121 frames kept for a 5 s clip that is cut at 4K). The MP4 is named by its
+    size and the frames kept: regen_<W>x<H>_<frames>f.mp4 (121 for a 5 s clip, 241 for a 10 s one). Returns it; raises
+    with the job's own error line."""
     log_path = out / "worker.log"
 
     def on_phase(name):
@@ -2372,7 +2466,7 @@ def upscale_process(job, out, job_path, sound):
     if not silent.is_file():
         raise UpscaleFailed(f"the upscale job wrote no {silent.name}; see {log_path}")
     width, height = regen.output_size(job.get("orientation", "landscape"), job["resolution"])
-    final = out / f"regen_{width}x{height}_{job.get('frames', regen.NVIDIA_FRAMES)}f.mp4"
+    final = out / f"regen_{width}x{height}_{job.get('frames') or regen.NVIDIA_FRAMES}f.mp4"
     partial = out / f".{final.stem}.part.mp4"
     job["upscale_phase"] = "adding the sound"
     try:
@@ -3562,7 +3656,7 @@ class H(BaseHTTPRequestHandler):
                          "reshape": RESHAPE, "backend": BACKEND, "api": API, "upscale": UPSCALE,
                          "upscale_defaults": upscale_defaults(),
                          "upscale_load": UPSCALE_CONF["load"] if UPSCALE else None,
-                         "upscale_pin": True if UPSCALE else None,
+                         "upscale_pin": True if UPSCALE else None, "upscale_offers": UPSCALE_OFFERS,
                          "session": {k: session.get(k) for k in ("key", "state", "since", "loading_key", "preloading",
                                                                  "takeover_until", "load_eta", "warm_s",
                                                                  "switching_to")},
