@@ -75,8 +75,8 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   "upscalable": {"ok": true, "clip_audio": bool} (with "text": "generation" or "encode" when it is not refined against
   the clip's own conditioning; "video": "stretch" when its MP4 is not taken as it is at 1080p and 2K; "frames":
   {resolution: frames kept} where they differ between sizes (124, and 121 at 4K); "pin": the ends it can hold [first,
-  last or both], with "pin_routes": {resolution: {"strengths", "partly" (the page says it holds the picture only
-  partly there), "ran" (on the GPU through the studio, at the clip's length)}} at the sizes offered for its length;
+  last or both], with "pin_routes": {resolution: {"strengths", "ran" (on the GPU through the studio, at the clip's
+  length)}} at the sizes offered for its length;
   "pin_why": {end: why not} for an end it has but can't hold) or {"ok": false, "why": "..."}.
 - The model of a clip ("model" in POST /api/generate, the form and JSON): sol-h3 (Sol-H3, NVIDIA's two-stage
   pipeline above; the default: a request without a model and a record without one mean sol-h3) or, experimental and on
@@ -1597,7 +1597,6 @@ UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
 # 6 s: regen.lean_chunks_for), which no pinned run has used on the GPU yet: the length's note says so.
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
-PIN_PARTLY = ("2k",)             # sizes where it holds the picture only partly (a research run at 2K): the page says so
 PIN_ROUTES = {
     (TURBO, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
     (TURBO, "last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
@@ -1954,7 +1953,7 @@ def upscalable(job):
     video: upscale_sources' at 1080p and 2K, each only when it is not "clip" (so a Sol-H3 Text clip's answer is as
     before the Upscale took every clip); frames: {resolution: the frames kept} where they differ between the sizes (a
     5 s clip with a last keyframe: 124, but 121 at 4K); pin: the ends it can hold (pin_offer) and pin_routes, where:
-    {resolution: {"strengths", "partly", "ran" (at the clip's length)}} at the sizes its route and its length have;
+    {resolution: {"strengths", "ran" (at the clip's length)}} at the sizes its route and its length have;
     pin_why: {end: why not} for the others (the pictures are not hashed here: image_state). Which sizes a clip's
     length gets, with their times, is not here: /api/state "upscale_offers" (upscale/regen2k_job.py offers_table), by
     length. It takes every finished clip of the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference
@@ -2005,8 +2004,8 @@ def upscalable(job):
         offered = [size for size in regen.SIZES if size in route["sizes"]
                    and "why" not in regen.offer_row(seconds, size)]
         answer["pin"] = ends
-        answer["pin_routes"] = {size: {"strengths": list(route["strengths"]), "partly": size in PIN_PARTLY,
-                                       "ran": pin_ran(route, size, seconds)} for size in offered}
+        answer["pin_routes"] = {size: {"strengths": list(route["strengths"]), "ran": pin_ran(route, size, seconds)}
+                                for size in offered}
     if why:
         answer["pin_why"] = why
     return 200, answer

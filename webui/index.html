@@ -478,8 +478,8 @@ const upNotes=(j,u,res)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='ge
   return n.join('. ');};
 // Keep my frames (/api/state "upscale_pin"; upscalable "pin", the ends the clip can hold, "pin_routes", where, and
 // "pin_why", why not for its other ends): a box, checked, named after the ends; off with the reason at a size or
-// strength its route does not have; at a size where it holds the picture only partly its note says so. Where it has
-// not run on the GPU through the studio, UP_PIN_UNRUN: its times (UP_PIN_S) are estimates
+// strength its route does not have. Where it has not run on the GPU through the studio, UP_PIN_UNRUN: its times
+// (UP_PIN_S) are estimates
 const UP_PIN_UNRUN='Keeping your frames has not been run on the GPU through the studio yet: its times are estimates';
 const pinLabel=ends=>ends.length>1?'Keep my first and last frames':`Keep my ${ends[0]} frame`;
 const END_NAME={first:'First',last:'Last'};
@@ -493,7 +493,7 @@ function upRefresh(j){const u=j.upscalable||{},res=upVal('up_res'),str=upVal('up
   if(ends.length){const r=(u.pin_routes||{})[res],name=(UPSCALE[res]||{name:res}).name;
     const off=!r?`Not at ${name} yet`:!r.strengths.includes(str)?`With ${r.strengths.map(s=>STRENGTH[s]||s).join(' or ')} only, for now`:'';
     setText($('uppinlabel'),pinLabel(ends));setDisabled(box,!!off);row.classList.toggle('off',!!off);setAttr(row,'title',off||null);
-    setText($('uppinnote'),off||'Kept where the clip already shows your picture'+(r.partly?` · at ${name} only partly`:''));
+    setText($('uppinnote'),off||'Kept where the clip already shows your picture');
     if(!off&&!r.ran)notes.push(UP_PIN_UNRUN);}
   const text=notes.filter(Boolean).join('. ');setText($('upinput'),text);setHidden($('upinput'),!text);}
 // an upscale's card: the text it used, when not the clip's own prompt
