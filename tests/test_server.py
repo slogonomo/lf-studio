@@ -3901,6 +3901,76 @@ class ServerParts(unittest.TestCase):
                              [{}, why])
         self.assertEqual([line.split(": ")[1] for line in logged], ["ZeroDivisionError", "ZeroDivisionError"])
 
+    def pin_parts(self, drop=None, ran=None, sizes=None):
+        """upscalable, pin_offer and pin_plan from the server's source with stand-ins for the clip's files, and its
+        PIN_ROUTES as one would change it by one line: without the route whose line names `drop`, with `ran` (a
+        route's line) given "ran": ("1080p",), or with PIN_SIZES `sizes`."""
+        spec = importlib.util.spec_from_file_location("regen2k_job_under_test", REPO_DIR / "upscale" / "regen2k_job.py")
+        regen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(regen)
+        source = (REPO_DIR / "webui" / "server.py").read_text()
+        node = next(n for n in ast.parse(source).body if isinstance(n, ast.Assign) and len(n.targets) == 1
+                    and getattr(n.targets[0], "id", None) == "PIN_ROUTES")
+        lines = ast.get_source_segment(source, node.value).splitlines()
+        for name in filter(None, (drop, ran)):
+            self.assertEqual(sum(name in line for line in lines), 1, name)                     # one line each
+        table = "\n".join(line.replace('"ran": ()', '"ran": ("1080p",)') if ran and ran in line else line
+                          for line in lines if not drop or drop not in line)
+        names = {name: server_value(name) for name in ("PIN_PARTLY", "PIN_NOT_YET", "PIN_SIZE", "PIN_STRENGTH",
+                                                        "UPSCALE_NAMES", "UPSCALE_KEEP_ALL")}
+        names.update(regen=regen, SOL_H3="sol-h3", TURBO=TURBO, PIN_SIZES=sizes or server_value("PIN_SIZES"),
+                     job_model=lambda job: job.get("model") or "sol-h3", is_upscale=lambda job: False,
+                     upscale_text=lambda job: {"prompt": "A dancer turns slowly."},
+                     MODELS={TURBO: {"name": "LightX2V Turbo", "upscale": {"tasks": ("t2va", "fl2va"),
+                                                                           "seconds": (5,)}}})
+        names["PIN_ROUTES"] = eval(table, dict(names))      # noqa: S307 - the repo's own source
+        for name in ("upscale_frames", "pin_offer", "pin_plan", "upscalable"):
+            names[name] = server_function(name, **names)
+        return names
+
+    def test_the_pin_routes_table(self):
+        """PIN_ROUTES changed by one line: a route taken out (one that fails its GPU run) is no longer offered, with
+        why, while the others still are; a route marked as run at 1080p loses the page's note there ("ran"); PIN_SIZES
+        ("1080p",) takes 2K out, with why."""
+        made = ("first", "last")
+
+        def clip(ends):
+            job = {"id": "x", "model": TURBO, "task": "fl2va", "seconds": 5, "orientation": "landscape",
+                   "status": "done", **{f"{end}_frame": f"{end}.png" for end in ends}}
+            sources = {"pcm": types.SimpleNamespace(is_file=lambda: True), "conditioning": None, "text": "generation",
+                       "video": "stretch", "frames": {"clip": 124, "made": 124, "kept": 124},
+                       "keyframes": {end: {"sha256": "1" * 64} for end in ends}, "pin_why": {}}
+            return job, sources
+
+        def offered(parts, ends):
+            job, sources = clip(ends)
+            parts["upscale_sources"] = lambda job: sources
+            code, answer = server_function("upscalable", **parts)(job)
+            self.assertEqual(code, 200)
+            return {k: v for k, v in answer.items() if k.startswith("pin")}
+
+        def plan(parts, ends, resolution):
+            return parts["pin_plan"](*clip(ends), resolution, "balanced", "auto")
+        unrun = {"strengths": ["balanced"], "partly": False, "ran": False}
+        routes = {"1080p": unrun, "2k": dict(unrun, partly=True)}
+        parts = self.pin_parts()
+        self.assertEqual([offered(parts, ends) for ends in (["last"], made)],
+                         [{"pin": ["last"], "pin_routes": routes}, {"pin": list(made), "pin_routes": routes}])
+        not_yet = "not for this clip's keyframes yet"
+        parts = self.pin_parts(drop='(TURBO, "last")')
+        self.assertEqual(offered(parts, ["last"]), {"pin_why": {"last": not_yet}})
+        self.assertEqual(plan(parts, ["last"], "1080p"), {"asked": "auto", "ends": [], "why": {"last": not_yet}})
+        self.assertEqual(offered(parts, made), {"pin": list(made), "pin_routes": routes})       # its own route
+        self.assertEqual(plan(parts, made, "1080p")["ends"], list(made))
+        parts = self.pin_parts(ran='(TURBO, "first+last")')
+        self.assertEqual(offered(parts, made)["pin_routes"], {"1080p": dict(unrun, ran=True), "2k": routes["2k"]})
+        self.assertEqual(offered(parts, ["last"])["pin_routes"], routes)                         # the others not
+        parts = self.pin_parts(sizes=("1080p",))
+        self.assertEqual(offered(parts, ["last"]), {"pin": ["last"], "pin_routes": {"1080p": unrun}})
+        self.assertEqual([plan(parts, ["last"], size) for size in ("1080p", "2k")],
+                         [{"asked": "auto", "ends": ["last"], "why": {}},
+                          {"asked": "auto", "ends": [], "why": {"last": "not at 2K yet"}}])
+
     def test_image_state(self):
         """image_state never hashes a picture without hash_now (/api/state): a file there and not empty is taken as
         the clip's until a request hashes it; with hash_now it hashes each path, size and mtime once and keeps the
