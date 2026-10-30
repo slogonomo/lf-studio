@@ -21,25 +21,28 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   the same, byte for byte). The server runs it as a job of its own (`POST /api/upscale`, `run_upscale`; off unless
   `LFSTUDIO_UPSCALE=1`), and reads the `LFSTUDIO_UPSCALE_*` settings with its `studio_settings`, as `bin/lf-studio
   --check` does. It takes every finished clip of the models' `"upscale"` tables in `MODELS` (every length the studio
-  makes, and Sol-H3's 3 s clips), whole, at the sizes the job offers for the clip's length (its `offer_row` and
-  `offers_table`, which `/api/state` `upscale_offers` carries to the page; a size not offered is refused with the
+  makes; not Sol-H3's old 3 and 4 s clips), whole, at the sizes the job offers for the clip's length (its `offer_row`
+  and `offers_table`, which `/api/state` `upscale_offers` carries to the page; a size not offered is refused with the
   reason) and with the job's memory floor for its case (`min_free_for`, job.json `min_free_gib`), through an input
-  folder the server builds per upscale (`upscale_sources`, `build_input`: the clip's MP4, audio and text alone,
-  linked, a LightX2V Turbo clip's MP4 stretched, or a 5 s one with a last keyframe cut to 121 frames at 4K
-  (`UPSCALE_KEEP_ALL`: it keeps its 124 at 1080p and 2K), the pictures of the ends Keep my frames sends
-  (`clip_keyframes`, `PIN_ROUTES`, job.json `"pin"`), `source.json`), job.json `"case"`; a Keyframes or Reference
-  clip's text alone is encoded first by `bench/h3turbo_encode.py --upscale` (`encode_upscale_text`), whose
-  `text_only_prompt` and `ref_text_only_prompt` write it (`upscale_text`). The page's Upscale button and popover,
-  `lf-cli upscale` and the MCP tool `upscale` use the endpoint; `install/65-regen2k.sh` (optional) builds its
-  environment from the hashed lock `install/freeze/regen2k-lock.txt` and fetches its weights
-  (`install/regen2k_weights.py`); `--env-only` builds the environment alone. What has run on the GPU through the
-  studio is listed three times: per length and size in the job's `UPSCALE_RAN` (`upscale_offers` `"ran"`; the times
-  of the others are the job's estimates in `OFFER_ETA_S`), per clip route (at 5 s) in the page's `UP_RAN`, per Keep
-  my frames route, size and length in `PIN_ROUTES`' `"ran"` (a size alone at 5 s, `"<size>/<seconds>"` at another
-  length; one line per route, so a route that fails its GPU run goes out with its line; `PIN_SIZES` and `PIN_PARTLY`
-  hold the sizes). The rest shows the page's "not run on the GPU" note, and the docs call its times estimates
-  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips-estimates), the README): change them, `OFFER_ETA_S` and the
-  memory model, and the pin's seconds in the page's `UP_PIN_S`, when a run lands.
+  folder the server builds per upscale (`upscale_sources`, `build_input`: the clip's MP4, audio and text alone, linked,
+  a LightX2V Turbo clip's MP4 stretched, or a 5 s one with a last keyframe cut to 121 frames at 4K (`UPSCALE_KEEP_ALL`:
+  it keeps its 124 at 1080p and 2K), the pictures of the ends Keep my frames sends (`clip_keyframes`, `PIN_ROUTES`,
+  job.json `"pin"`), `source.json`), job.json `"case"`; a Keyframes or Reference clip's text alone is encoded first by
+  `bench/h3turbo_encode.py --upscale` (`encode_upscale_text`), whose `text_only_prompt` and `ref_text_only_prompt` write
+  it (`upscale_text`). The page's Upscale button and popover, `lf-cli upscale` and the MCP tool `upscale` use the
+  endpoint; `install/65-regen2k.sh` (optional) builds its environment from the hashed lock
+  `install/freeze/regen2k-lock.txt` and fetches its weights (`install/regen2k_weights.py`); `--env-only` builds the
+  environment alone. What has run on the GPU through the studio is listed three times: per length and size in the job's
+  `UPSCALE_RAN` (`upscale_offers` `"ran"`; 6, 10 and 15 s at 1080p and 10 s at 2K ran, and the other lengths offered are
+  there by the offer rule, a longer clip at their size having run; one line each), per clip route (at 5 s) in the page's
+  `UP_RAN`, per Keep my frames route, size and length in `PIN_ROUTES`' `"ran"` (a size alone at 5 s,
+  `"<size>/<seconds>"` at another length, `"1080p/10"` so far; one line per route, so a route that fails its GPU run
+  goes out with its line; `PIN_SIZES` holds the sizes). The rest shows the page's "not run on the GPU" note.
+  `OFFER_ETA_S` has the measured times where a run is and the others fitted to them, the memory model (`peak_gib`,
+  `overhead_gib`, `need_gib`) is fitted to the runs (each one's lowest MemAvailable within 0.5 GiB,
+  `tests/test_upscale.py`), and the docs say which lengths ran and which follow the model
+  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips), the README): change them, and the pin's seconds in the
+  page's `UP_PIN_S`, when a run lands.
 - `install/66-h3turbo.sh` (optional) sets up the experimental LightX2V Turbo model: it checks the base model (refusing
   one without the VAE's weights), uses the Upscale's environment (or runs `65-regen2k.sh --env-only`; it never touches
   a venv itself), fetches LightX2V's turbo LoRA files at a pinned revision (`install/h3turbo_weights.py`, standard
@@ -109,39 +112,40 @@ audio) for it to find, and the server reads MemAvailable from a file the stub st
 cover the job type (queue and its limit, Cancel and its SIGKILL, Delete and Undo, a request during a Delete's move,
 restart, warm-up, memory, failure, the checks at run time, the settings, the launcher's checks and `--kill`; `Upscale`
 and `UpscaleRefusals` clips of every length, whole, at the sizes offered for it (`upscale_offers`, the output's frames
-and whole sound) and a size refused with the reason; `UpscaleOddRecords` Sol-H3's old 3 s clips, and records refused,
-never cut (a 4 s clip, an MP4 of frames the job has no case for, none in its name, or another length's); `UpscaleMemory`
-and `UpscaleMemoryLowSetting` the floor per case (job.json `min_free_gib`); `UpscaleEveryClip` and `UpscaleEncode` every
-Sol-H3 clip kind: Keyframes with each set of keyframes (also a prompt with the page's CRLF line breaks) and Reference
-with their text encoded first (also prompts whose subject definitions chain or are too long as text alone), the input
-folder and source.json, the statuses in order, the clip deleted afterwards (the upscale still plays), no t2va manifest,
-Cancel during the encode, a failed encode, the server's own checks of its receipt (`STUB_QWEN_FAIL` `no-conditioning`,
-`other-prompt`, `other-task`), the memory floor again after it; `BadUpscaleSettings` the start's refusals, the prompt
-encode and its rewrites too; `UpscaleEveryClip` also Keep my frames on Sol-H3's clips: the first frame where Stage 2
-held it, the reasons where not, never the last, its length's frames short of it; long clips of every kind),
-`TurboUpscale` LightX2V Turbo's clips (576p stretched, its sound as it is; 768p linked, a last keyframe's 124 frames
-whole at 1080p and 2K with the clip's whole sound and cut to 121 at 4K, every frame of a long one, qwen-text/ or an
-encode, the model turned off), `TurboPin` Keep my frames on its Keyframes clips (each set of ends, job.json `pin`, the
-links, source.json, the record's result, where no end is sent, a picture gone or changed before and after the request,
-the clip's receipt, also one of another shape), `ServerParts` also the receipts' records (`keyframe_record`, also of
-another shape: never an error), the picture hash cache (`image_state`: never a hash for `/api/state`), `PIN_ROUTES` as
-it is and changed by one line (a route out, a route's `"ran"` sizes and lengths, 2K out), the seam between the models'
-`"upscale"` tables and the job's frame cases and offers (every model, task, length and set of keyframes; the stub
-runtime's frames too), `upscale_frames`, `sol_last`, `offer_refusal` and the stand-in job's refusals,
-`tests/test_api.py` its API record, the `Upscale*` classes in `tests/test_cli.py` and `tests/test_mcp.py` the client (a
-size refused for a clip's length with the studio's reason; `UpscaleTimes` the texts' times against the job's
-`OFFER_ETA_S`; also `--pin` and the MCP `pin`; that pin goes only to a studio with `upscale_pin`, and again without it
-for a stopped studio that does not know it, against fake servers: `Switchboard` in `tests/test_cli.py`, `FakeStudio` in
-`tests/test_mcp.py`), and those in `tests/test_page.py` the button (disabled with the reason on clips it can't take;
-`UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a route has not run on the GPU through
-the studio (on the routes the page's `UP_RAN` leaves out), and the one that a length has not (its offer's `"ran"`), a
-long clip's times and the sizes its length does not have greyed with the reason (and the popover at 1080p for a 12 s
-clip; `UpscaleOldClipPage` a 3 s clip's, its 4K greyed as "not this clip"), the encode's phase and time, the text an
-upscale used and its clip's model; in cards too narrow for the names, Upscale and Delete show icons, so the buttons keep
-one row; `OneRowUpscaleOff` checks that row with the Upscale off), the popover (`ModelUpscale` its notes per size and
-Keep my frames: the box per ends, off with the reason at 4K and other strengths, "only partly" at 2K, its note only at a
-size where its route has not run, `pin` in the request, the card's result), the upscale's card and `tests/ui_test.py`
-with an upscale in the gallery (and the popover of a Keyframes clip, with its Keep my frames box).
+and whole sound) and a size refused with the reason; `UpscaleOddRecords` records refused, never cut (Sol-H3's old 3 and
+4 s clips, an MP4 of frames the job has no case for, none in its name, or another length's); `UpscaleMemory` and
+`UpscaleMemoryLowSetting` the floor per case (job.json `min_free_gib`; with Keep my frames too); `UpscaleEveryClip` and
+`UpscaleEncode` every Sol-H3 clip kind: Keyframes with each set of keyframes (also a prompt with the page's CRLF line
+breaks) and Reference with their text encoded first (also prompts whose subject definitions chain or are too long as
+text alone), the input folder and source.json, the statuses in order, the clip deleted afterwards (the upscale still
+plays), no t2va manifest, Cancel during the encode, a failed encode, the server's own checks of its receipt
+(`STUB_QWEN_FAIL` `no-conditioning`, `other-prompt`, `other-task`), the memory floor again after it;
+`BadUpscaleSettings` the start's refusals, the prompt encode and its rewrites too; `UpscaleEveryClip` also Keep my
+frames on Sol-H3's clips: the first frame where Stage 2 held it, the reasons where not, never the last, its length's
+frames short of it; long clips of every kind), `TurboUpscale` LightX2V Turbo's clips (576p stretched, its sound as it
+is; 768p linked, a last keyframe's 124 frames whole at 1080p and 2K with the clip's whole sound and cut to 121 at 4K,
+every frame of a long one, qwen-text/ or an encode, the model turned off), `TurboPin` Keep my frames on its Keyframes
+clips (each set of ends, job.json `pin`, the links, source.json, the record's result, where no end is sent, a picture
+gone or changed before and after the request, the clip's receipt, also one of another shape), `ServerParts` also the
+receipts' records (`keyframe_record`, also of another shape: never an error), the picture hash cache (`image_state`:
+never a hash for `/api/state`), `PIN_ROUTES` as it is and changed by one line (a route out, a route's `"ran"` sizes and
+lengths, 2K out), the seam between the models' `"upscale"` tables and the job's frame cases and offers (every model,
+task, length and set of keyframes; the stub runtime's frames too), `upscale_frames`, `sol_last`, `offer_refusal` and the
+stand-in job's refusals, `tests/test_api.py` its API record, the `Upscale*` classes in `tests/test_cli.py` and
+`tests/test_mcp.py` the client (a size refused for a clip's length with the studio's reason; `UpscaleTimes` the texts'
+times against the job's `OFFER_ETA_S`; also `--pin` and the MCP `pin`; that pin goes only to a studio with
+`upscale_pin`, and again without it for a stopped studio that does not know it, against fake servers: `Switchboard` in
+`tests/test_cli.py`, `FakeStudio` in `tests/test_mcp.py`), and those in `tests/test_page.py` the button (disabled with
+the reason on clips it can't take; `UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a
+route has not run on the GPU through the studio (on the routes the page's `UP_RAN` leaves out), and the one that a
+length has not (its offer's `"ran"`), a long clip's times and the sizes its length does not have greyed with the reason
+(and the popover at 1080p for a 12 s clip; `UpscaleOldClipPage` a 3 s clip's Upscale disabled with the reason), the
+encode's phase and time, the text an upscale used and its clip's model; in cards too narrow for the names, Upscale and
+Delete show icons, so the buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off), the popover
+(`ModelUpscale` its notes per size and Keep my frames: the box per ends, off with the reason at 4K and other strengths,
+at 2K as at 1080p, its note only at a size where its route has not run, `pin` in the request, the card's result), the
+upscale's card and `tests/ui_test.py` with an upscale in the gallery (and the popover of a Keyframes clip, with its Keep
+my frames box).
 
 The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as by
 default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo on.
@@ -215,35 +219,37 @@ process, stopping it under `bench/memguard-run.sh`, the report, the quality step
 MP4s made by ffmpeg of every count of frames the studio's lengths keep, and the counts, sizes and rates it refuses),
 the frames of each length (`FRAME_CASES`, derived from both patches' `runtime/geometry.py` and `jobs/h3turbo_job.py`
 at every length: the 3 copies of the last frame, the audio of A × 800 samples), what is offered per length and size
-(`OFFER_ETA_S`, `offers_table`, `offer`: 1080p every length, 2K up to 10 s, 4K at 5 s, the reasons), the block
-forward by rows (`lean_chunks_for`) and the memory model and floor (`case_rows`, `need_gib`, `min_free_for`), the
-shape table (with every orientation the patches make), the portrait entries for NVIDIA's dicts, the upscale route and
-`check_package` (every pinned file for a 9:16 clip and for a clip of another length), the text check on stand-in
-tensors, the command lines (NVIDIA's read of the clip, the others without its tpad: a clip cut off after its header
-reads short; the mux run with ffmpeg) and the environment, the progress lines, the memory trace, `--check` (of every
-count of frames, at every size: a size its length has not got refused with the reason), the receipt when a job is done,
-fails, is refused, starts with too little memory or gets SIGTERM, `--parent` (the job dies with the server), v0.5.2's
-job from git refusing a long clip and `min_free_gib` (`OlderJobTests`: so job.json stays version 1), and `run()` with a
-stand-in torch and a stand-in of NVIDIA's `open_h3`, with both loads (fast and standard: stand-ins for safetensors,
-diffusers and `fastload` record every load, which the fast load must have replaced before the first one): a 16:9 clip
-makes the same calls into NVIDIA's code as before the job took 9:16, a 9:16 one its portrait route (the same with either
-load), a clip of 124 frames and clips of other lengths the job's copies of NVIDIA's encode and decode (their audio and
-silence, the lean blocks by their rows, NVIDIA's upscaler.py and upscaler_node.py pinned, an upscaled latent of another
-T failing before the refine), every 5 s route the block forward it ran on the GPU, and a pin the pinned refine with the
-ends its check kept (a 10 s clip's too). The pin's fit (`cover_crop`, `fit_box`) against the LightX2V Turbo receipts'
-records, "as is" too, and the grids are standard library. With `LFSTUDIO_UPSCALE_PKG` naming NVIDIA's real package it
-also checks the files the job pins, the entries it was written against and its encode command (read, not imported). Its
-torch tests (the merger, the lean block forward against a stock-style block, the tensor checks, the column crop) run
-where torch is importable (CPU is enough) and are skipped otherwise. With Pillow and numpy (the Regen-2K environment)
-the pin's check runs on ffmpeg-made clips (each reason an end is not kept, the EXIF turn, the fit at the grid,
-`--check`); with diffusers and imageio-ffmpeg too and NVIDIA's package, the job's copies of NVIDIA's encode and decode
-against NVIDIA's own run on the CPU with a stand-in VAE (bit for bit at 121 frames; other lengths too), diffusers' VAE
-chunks and H3's frame rules (`DiffusersRuleTests`: every case's T and A), `encode_audio` with a small audio VAE of
-diffusers' against NVIDIA's silence, NVIDIA's t2va layout of every frame case, the pin's layout at 1080p and 2K (the
-last block 205 after the text at 5 s, and at every length) and the pinned refine with a stand-in transformer: without a
-keyframe NVIDIA's `Pipeline.refine` bit for bit, with a first frame the bench wrapper's K1 refine (copied into the test)
-bit for bit, and with both ends (at 5 s and 10 s) the first block unchanged, the condition rows never written and only
-the rows after them stepped. Run those with the Regen-2K Python, CUDA hidden (the command is in the file's docstring).
+(`OFFER_ETA_S`, `offers_table`, `offer`: 1080p every length, 2K up to 10 s, 4K at 5 s, the reasons; the measured times
+and the others fitted to them; `UPSCALE_RAN`, one line each), the block forward by rows (`lean_chunks_for`) and the
+memory model and floor (`case_rows`, `peak_gib`, `overhead_gib`, `need_gib`, `min_free_for`; against the job's runs of
+every length), the shape table (with every orientation the patches make), the portrait entries for NVIDIA's dicts, the
+upscale route and `check_package` (every pinned file for a 9:16 clip and for a clip of another length), the text check
+on stand-in tensors, the command lines (NVIDIA's read of the clip, the others without its tpad: a clip cut off after its
+header reads short; the mux run with ffmpeg) and the environment, the progress lines, the memory trace, `--check` (of
+every count of frames, at every size: a size its length has not got refused with the reason), the receipt when a job is
+done, fails, is refused, starts with too little memory or gets SIGTERM, `--parent` (the job dies with the server),
+v0.5.2's job from git refusing a long clip and `min_free_gib` (`OlderJobTests`: so job.json stays version 1), and
+`run()` with a stand-in torch and a stand-in of NVIDIA's `open_h3`, with both loads (fast and standard: stand-ins for
+safetensors, diffusers and `fastload` record every load, which the fast load must have replaced before the first one): a
+16:9 clip makes the same calls into NVIDIA's code as before the job took 9:16, a 9:16 one its portrait route (the same
+with either load), a clip of 124 frames and clips of other lengths the job's copies of NVIDIA's encode and decode (their
+audio and silence, the lean blocks by their rows, NVIDIA's upscaler.py and upscaler_node.py pinned, an upscaled latent
+of another T failing before the refine), every 5 s route the block forward it ran on the GPU, and a pin the pinned
+refine with the ends its check kept (a 10 s clip's too). The pin's fit (`cover_crop`, `fit_box`) against the LightX2V
+Turbo receipts' records, "as is" too, and the grids are standard library. With `LFSTUDIO_UPSCALE_PKG` naming NVIDIA's
+real package it also checks the files the job pins, the entries it was written against and its encode command (read, not
+imported). Its torch tests (the merger, the lean block forward against a stock-style block, the tensor checks, the
+column crop) run where torch is importable (CPU is enough) and are skipped otherwise. With Pillow and numpy (the
+Regen-2K environment) the pin's check runs on ffmpeg-made clips (each reason an end is not kept, the EXIF turn, the fit
+at the grid, `--check`); with diffusers and imageio-ffmpeg too and NVIDIA's package, the job's copies of NVIDIA's encode
+and decode against NVIDIA's own run on the CPU with a stand-in VAE (bit for bit at 121 frames; other lengths too),
+diffusers' VAE chunks and H3's frame rules (`DiffusersRuleTests`: every case's T and A), `encode_audio` with a small
+audio VAE of diffusers' against NVIDIA's silence, NVIDIA's t2va layout of every frame case, the pin's layout at 1080p
+and 2K (the last block 205 after the text at 5 s, and at every length) and the pinned refine with a stand-in
+transformer: without a keyframe NVIDIA's `Pipeline.refine` bit for bit, with a first frame the bench wrapper's K1 refine
+(copied into the test) bit for bit, and with both ends (at 5 s and 10 s) the first block unchanged, the condition rows
+never written and only the rows after them stepped. Run those with the Regen-2K Python, CUDA hidden (the command is in
+the file's docstring).
 
 `tests/test_h3turbo_job.py` covers `jobs/h3turbo_job.py` on the CPU: job.json and its refusals, the geometry (every
 length against the patch's `runtime/geometry.py`, the frames a clip with a last frame keeps, the layout rows against the

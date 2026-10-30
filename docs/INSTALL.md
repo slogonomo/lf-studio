@@ -410,11 +410,11 @@ Nothing needs to change for a working install. The patch is the same, so `instal
 so are the Upscale's environment and weights. What is new is off unless you turn it on:
 
 - **The Upscale** (`LFSTUDIO_UPSCALE=1`) now takes every finished clip: Keyframes and Reference clips too, LightX2V
-  Turbo's, and clips of every length (1080p every length, 2K up to 10 s, 4K 5 s clips; other lengths than 5 s have
-  not run on the GPU yet, and their times are estimates). A Keyframes or Reference clip's prompt is encoded first
-  without its pictures, which needs the t2va path manifest (`paths-t2va.json` from `install/70-manifests.sh`; the
-  default `LFSTUDIO_TASKS` has t2va). `bin/lf-studio --check` also checks that the prompt encode,
-  `bench/h3turbo_encode.py` in this repo, is there.
+  Turbo's, and clips of every length (1080p every length, 2K up to 10 s, 4K 5 s clips; 6, 10 and 15 s at 1080p and 10 s
+  at 2K have run on the GPU, the other lengths follow the job's model of those runs). A Keyframes or Reference clip's
+  prompt is encoded first without its pictures, which needs the t2va path manifest (`paths-t2va.json` from
+  `install/70-manifests.sh`; the default `LFSTUDIO_TASKS` has t2va). `bin/lf-studio --check` also checks that the prompt
+  encode, `bench/h3turbo_encode.py` in this repo, is there.
 - **LightX2V Turbo**, a second model, on the DGX Spark only: run `install/66-h3turbo.sh` and set
   `LFSTUDIO_MODELS=sol-h3,lightx2v-turbo` ([below](#experimental-lightx2v-turbo)). Without the setting the studio is as
   it was.
