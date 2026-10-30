@@ -357,7 +357,10 @@ longer on disk` or `your picture changed since the clip was made`: as above (the
 a picture changed in place shows there only once a request has hashed it, and that request leaves the end out). `the
 clip has no record of how it used your picture` or `the studio can't tell how your picture was fitted to the clip`:
 the clip's own record (a LightX2V Turbo clip's `turbo/receipt.json`, Sol-H3's `stage2/stage2_result.json`) does not
-say what the job needs.
+say what the job needs. Where Keep my frames has not run on the GPU through the studio at that size (one end at 2K: a
+LightX2V Turbo clip's first or last frame alone, a Sol-H3 clip's first frame), the popover says `Keeping your frames
+has not been run on the GPU through the studio yet: its times are estimates`: it is offered all the same, and the time
+it adds there (60 s) is an estimate.
 
 **`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
 `missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's
@@ -376,7 +379,8 @@ before the launcher's guard would have stopped the whole studio. Usually another
 job itself (in its one 4K run so far, a 16:9 clip, MemAvailable came down from 116.4 to 11.1 GiB, so ~105 GiB used: a 4K
 upscale that starts with just the floor's 110 GiB free comes down below 5 GiB;
 [PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). At 4K, ~111 GiB or more free at the start
-avoids it. `worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
+avoids it. At 2K it comes down to about 16 GiB, and to 14.1 GiB with Keep my frames holding both ends (measured through
+the studio). `worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the floor; 0 turns it off.
 
 **It sits at "Upscaling · loading its models" for minutes.** With the fast load (`LFSTUDIO_UPSCALE_LOAD=fast`, the
 default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (21.5-21.9 s in the studio's job, its
