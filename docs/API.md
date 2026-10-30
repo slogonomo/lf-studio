@@ -537,12 +537,13 @@ clip offers (`upscalable` `pin`):
 | Text, Reference | – | – |
 
 It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet: `faithful` held a
-first frame only about 1 dB closer in a test); at 2K research runs held a first frame only partly (the face 3-5 dB
-closer to the picture, frame 0 about 1 dB), so the page says "only partly" there. An end the clip offers but the request
-does not send has its reason in the record's `pin.why` (`not at 4K yet`, `with strength balanced only, for now`); an end
-sent but not held has the job's in `pin.result` (`the clip's frame 123 is 25.4 dB from your picture (28 needed)`, `your
-picture is no longer on disk`, `your picture changed since the clip was made`, `your picture does not open`, `the clip
-stops N frames before your last picture`).
+first frame only about 1 dB closer in a test); at 2K the page says "only partly" until that is reviewed (research runs
+with one end at 2K: frame 0 about 1 dB closer to the picture, the face 3-5 dB; the studio's run with both ends at
+2K: +5.0 and +4.7 dB, below). An end the clip offers but the request does not send has its reason in the record's
+`pin.why` (`not at 4K yet`, `with strength balanced only, for now`); an end sent but not held has the job's in
+`pin.result` (`the clip's frame 123 is 25.4 dB from your picture (28 needed)`, `your picture is no longer on disk`,
+`your picture changed since the clip was made`, `your picture does not open`, `the clip stops N frames before your last
+picture`).
 Through the studio on one DGX Spark (the night of 2026-10-29 to 30) it has run with a LightX2V Turbo clip's first frame,
 last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same clips upscaled
 with `pin` `off`, every end sent was held, and the frame held came 3.2-5.3 dB closer to the picture (luma PSNR at the

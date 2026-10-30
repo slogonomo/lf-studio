@@ -199,8 +199,9 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     `SOL_H3_STAGE2_KEYFRAME=pin`), and never their last: the clip stops 3 frames before it.
   - Text and Reference clips have no frame to keep.
   - Balanced at 1080p and 2K only for now (Faithful brought a first frame only about 1 dB closer in a test). At 2K
-    it holds the picture only partly (research runs with a first frame: the face 3-5 dB closer to your picture, frame
-    0 about 1 dB, but details the refine made up stay), so the popover says "only partly" there.
+    the popover says "only partly" until that is reviewed (research runs with one end at 2K: frame 0 about 1 dB closer
+    to your picture, the face 3-5 dB, but details the refine made up stay; the studio's run with both ends at 2K: +5.0
+    and +4.7 dB, below).
   - The popover says why an end is not offered; the upscale's card says which ends were kept, and why not.
   - It has run through the studio on one DGX Spark (the night of 2026-10-29 to 30) with a LightX2V Turbo clip's first
     frame, last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same
