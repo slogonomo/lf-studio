@@ -821,8 +821,8 @@ class OfferTests(unittest.TestCase):
                                       "2k": {"eta_s": [405, 380], "ran": True},
                                       "4k": {"eta_s": [625, 1685], "ran": True}})          # the page's times until now
         self.assertEqual((table["10"]["1080p"], table["10"]["2k"], table["15"]["1080p"]),
-                         ({"eta_s": [535, 454], "ran": True}, {"eta_s": [708, 1277], "ran": True},
-                          {"eta_s": [763, 932], "ran": True}))
+                         ({"eta_s": [543, 453], "ran": True}, {"eta_s": [691, 1261], "ran": True},
+                          {"eta_s": [753, 929], "ran": True}))
         for seconds, sizes in table.items():
             self.assertEqual(list(sizes), list(job_module.SIZES))
             for size, row in sizes.items():
@@ -849,11 +849,47 @@ class OfferTests(unittest.TestCase):
             self.assertEqual(source.count(f'    ({seconds}, "{size}"),'), 1, (seconds, size))
         without = tuple(row for row in job_module.UPSCALE_RAN if row != (10, "1080p"))
         with mock.patch.object(job_module, "UPSCALE_RAN", without):
-            self.assertEqual(job_module.offers_table()["10"]["1080p"], {"eta_s": [535, 454], "ran": False})
+            self.assertEqual(job_module.offers_table()["10"]["1080p"], {"eta_s": [543, 453], "ran": False})
             self.assertTrue(job_module.offers_table()["10"]["2k"]["ran"])
         for seconds in (3, 4):                                      # Sol-H3's old lengths
             self.assertEqual([job_module.offer_row(seconds, size) for size in job_module.SIZES],
                              [{"why": f"Upscale takes no {seconds} s clips"}] * 3)
+
+    def test_the_times(self):
+        """OFFER_ETA_S: the measured rows as their runs gave them (5 s at each size; 6, 10 and 15 s at 1080p and 10 s at
+        2K, 2026-10-30: each run's time from the job's start less its two steps and the encode of its text or
+        pictures, plus 40 s for closing the studio's models, and the mean of its steps, which came within 2 % of the
+        step model); the others fitted: the step by the step model at their case's rows with a prompt of TEXT_ROWS,
+        the base by a straight line in the frames H3 makes through the measured bases of that size (least squares)."""
+        measured = {(5, "1080p"): (315, 150), (5, "2k"): (405, 380), (5, "4k"): (625, 1685),
+                    (6, "1080p"): (375, 212), (10, "1080p"): (543, 453), (15, "1080p"): (753, 929),
+                    (10, "2k"): (691, 1261)}
+        runs = {(6, "1080p"): (759.7, (213.06, 211.75), 0), (10, "1080p"): (1423.0, (454.62, 450.45), 14.8),
+                (15, "1080p"): (2587.0, (926.84, 930.29), 16.9), (10, "2k"): (3188.1, (1261.15, 1260.82), 14.8)}
+
+        def model_step(seconds, size):
+            kept = next(k for k, (s, *_) in CASES.items() if s == seconds)
+            rows = job_module.case_rows(job_module.frame_case(kept), size)["sequence"]
+            return 6.457e-4 * rows + 1.638e-8 * rows ** 2
+        for key, (total, steps, encode) in runs.items():
+            self.assertEqual(measured[key], (round(total - sum(steps) - encode + 40), round(sum(steps) / 2)), key)
+            self.assertLess(abs(measured[key][1] / model_step(*key) - 1), 0.02, key)
+        made = {seconds: made for seconds, made, *_ in CASES.values()}
+        fitted = []
+        for size, sized in ((size, {s: row[size] for s, row in job_module.OFFER_ETA_S.items() if size in row})
+                            for size in job_module.SIZES):
+            points = [(made[s], base) for (s, z), (base, _) in measured.items() if z == size]
+            mx, my = (sum(v) / len(points) for v in zip(*points))
+            slope = (sum((x - mx) * (y - my) for x, y in points) / sum((x - mx) ** 2 for x, _ in points)
+                     if len(points) > 1 else 0)
+            for seconds, row in sized.items():
+                if (seconds, size) in measured:
+                    self.assertEqual(row, measured[(seconds, size)], (seconds, size))
+                else:
+                    fitted.append((seconds, size))
+                    self.assertEqual(row, (round(my + slope * (made[seconds] - mx)), round(model_step(seconds, size))),
+                                     (seconds, size))
+        self.assertEqual(fitted, [(7, "1080p"), (8, "1080p"), (12, "1080p"), (6, "2k"), (7, "2k"), (8, "2k")])
 
     def test_every_count_of_a_length_has_its_row(self):
         """offer() for each count of frames, size and pin: its length's row of offers_table, with the route, the
@@ -1398,7 +1434,7 @@ class InputTests(Fixture):
             self.assertEqual((planned["frames"], planned["lean_chunks"], planned["size"]), (case_of(kept), 16,
                                                                                            [1440, 2560]))
             self.assertEqual({k: planned["offer"][k] for k in ("seconds", "forward", "floor_gib", "eta_s", "ran")},
-                             {"seconds": 10, "forward": "lean", "floor_gib": floor, "eta_s": [708, 1277],
+                             {"seconds": 10, "forward": "lean", "floor_gib": floor, "eta_s": [691, 1261],
                               "ran": True}, (kept, ends))
             self.assertEqual(planned["offer"]["rows"], job_module.case_rows(job["frames"], "2k", len(ends)))
         with self.assertRaisesRegex(JobError, r"^2K for 15 s clips comes later: 1080p takes them$"):

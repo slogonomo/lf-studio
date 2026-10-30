@@ -911,8 +911,8 @@ the choices given, so the studio's defaults hold for the rest (2K, `LFSTUDIO_UPS
 needs `--resolution 1080p` (2K and 4K are refused for it, with the reason). An upscale takes about 10 min (1080p, 5 s)
 to 1.6 h (4K, full) in all (4K over an hour; 1080p 10 min and 2K 19 min for a 5 s clip), with a ~22 s load (measured
 in the studio's job; ~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback); longer clips take
-longer (estimates: 1080p 24 min at 10 s and 44 min at 15 s, 2K 54 min at 10 s), so `--timeout` and a later `wait` are
-the usual way.
+longer (1080p 24 min at 10 s and 44 min at 15 s, 2K 54 min at 10 s, from their runs), so `--timeout` and a later
+`wait` are the usual way.
 `--pin auto|off` is Keep my frames
 ([Upscale](#upscale-experimental-post-apiupscale)): it goes only to a studio whose `/api/state` has `"upscale_pin":
 true` (an older studio never keeps them, so the request goes without it); when spark-switchboard has the studio

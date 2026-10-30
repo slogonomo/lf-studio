@@ -303,20 +303,23 @@ FRAME_CASES = {
     361: {"seconds": 15, "pad": 3}, 362: {"seconds": 15, "pad": 0}}
 # What the Upscale offers, per length (seconds) and size: the whole clip in one pass of NVIDIA's refine, with its time:
 # seconds before the refine (the base: closing the studio's models ~40 s, the job's start, the encodes, the fast load,
-# the decode and the MP4) and per refine step. 5 s: from the job's runs with the fast load (a 16:9 clip to each size:
-# the base the run's time less its two steps, plus 40 s; the step their mean; docs/PERFORMANCE.md). Every other length
-# is an estimate from those runs until it runs on the GPU: a step's time by the rows of its sequence (6.457e-4 S +
-# 1.638e-8 S^2 s for S rows, within 5 % of the 5 s steps), the rest by the clip's frames and VAE chunks. A size without
-# times is not offered for that length (offer_row says why): 2K takes up to 10 s whole and 4K 5 s (longer ones are
-# past the memory measured here: in pieces, later).
+# the decode and the MP4) and per refine step. Measured, from the job's runs through a staging studio with the fast
+# load (the base the run's time less its two steps and any encode of its text or pictures, plus 40 s; the step their
+# mean): 5 s at each size (2026-10-28, a 16:9 clip, rounded to 5 s; docs/PERFORMANCE.md), and 6, 10 and 15 s at 1080p
+# and 10 s at 2K (2026-10-30). Fitted, the others: the step by the step model, 6.457e-4 S + 1.638e-8 S^2 s for the S
+# rows of its case with a prompt of TEXT_ROWS (the measured steps came within 1.4 % of it at their rows), and the base
+# by a straight line in the frames H3 makes, fitted per size to that size's measured bases (1080p: 86.1 + 1.851 a
+# frame, within 8 s of its four; 2K: 107.0 + 2.403 a frame, through its two). A size without times is not offered for
+# that length (offer_row says why): 2K takes up to 10 s whole and 4K 5 s (longer ones are past the memory measured
+# here: in pieces, later).
 OFFER_ETA_S = {
-    5: {"1080p": (315, 150), "2k": (405, 380), "4k": (625, 1685)},
-    6: {"1080p": (372, 215), "2k": (483, 583)},
-    7: {"1080p": (404, 256), "2k": (528, 700)},
-    8: {"1080p": (437, 300), "2k": (573, 828)},
-    10: {"1080p": (535, 454), "2k": (708, 1277)},
-    12: {"1080p": (632, 638)},
-    15: {"1080p": (763, 932)}}
+    5: {"1080p": (315, 150), "2k": (405, 380), "4k": (625, 1685)},          # measured
+    6: {"1080p": (375, 212), "2k": (487, 583)},                             # 1080p measured, 2K fitted
+    7: {"1080p": (410, 256), "2k": (528, 700)},                             # fitted
+    8: {"1080p": (441, 300), "2k": (568, 828)},                             # fitted
+    10: {"1080p": (543, 453), "2k": (691, 1261)},                           # measured
+    12: {"1080p": (630, 638)},                                              # fitted
+    15: {"1080p": (753, 929)}}                                              # measured
 # The lengths and sizes upscaled on the GPU through the studio, one line each (a run that lands adds its line, a run
 # that fails takes it out), or covered by the offer rule: a longer clip at the same size ran, and the step and peak
 # models held there. 6, 10 and 15 s at 1080p and 10 s at 2K ran (2026-10-30: steps within 1.4 % of the step model,

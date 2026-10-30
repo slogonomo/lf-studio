@@ -241,7 +241,7 @@ class Protocol(McpTest):
                       "1080p takes every length, 2K up to 10 s, 4K 5 s clips; another size is refused with the reason",
                       "Keyframes or Reference clip", "stretched to 768p", "keeps all its frames (a 5 s one at 4K its "
                       "first 121)", "pin (Keep my frames, experimental)", "at 1080p and 2K with balanced",
-                      "2K is 1440x2560", "redraws faces", "longer clips take longer (estimates: ",
+                      "2K is 1440x2560", "redraws faces", "longer clips take longer (1080p 24 min at 10 s",
                       "closes the studio's models", "4K has run once, with a 16:9 clip; not yet with a 9:16 one"):
             self.assertIn(words, upscale)
         self.assertNotIn("5 s clips, 16:9", upscale)

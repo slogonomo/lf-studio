@@ -821,9 +821,9 @@ class UpscaleOff(CliTest):
 
 class UpscaleTimes(unittest.TestCase):
     """The upscale times in lf-cli (its usage, the MCP instructions and the upscale tool) and docs/API.md agree with
-    the Upscale's own table (upscale/regen2k_job.py OFFER_ETA_S: measured at 5 s, docs/PERFORMANCE.md, estimates for
-    the other lengths), which /api/state upscale_offers carries and the page's upEta reads, with the page's ~8 min
-    more for the standard load; the page has no times of its own."""
+    the Upscale's own table (upscale/regen2k_job.py OFFER_ETA_S: measured at 5 s and at some longer lengths, fitted
+    for the others; docs/PERFORMANCE.md), which /api/state upscale_offers carries and the page's upEta reads, with the
+    page's ~8 min more for the standard load; the page has no times of its own."""
 
     def model(self):
         page = (REPO / "webui" / "index.html").read_text()
@@ -865,12 +865,13 @@ class UpscaleTimes(unittest.TestCase):
         self.assertIn("about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps for a 5 s clip", tool)
         self.assertEqual([round(eta(5, res, 2) / 60) for res in ("1080p", "2k")], [10, 19])     # 615 s, 1165 s
         self.assertEqual(round(eta(5, "4k", 2) / 3600, 1), 1.1)                                 # 3995 s
-        # longer clips, estimates (2 steps, the fast load): 1080p at 10 and 15 s, 2K at 10 s
+        # longer clips, measured (2 steps, the fast load): 1080p at 10 and 15 s, 2K at 10 s
         self.assertEqual([round(eta(s, res, 2) / 60) for s, res in ((10, "1080p"), (15, "1080p"), (10, "2k"))],
                          [24, 44, 54])
-        estimates = "1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s"
+        longer = "1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s"
         for text in (usage, tool):
-            self.assertIn(estimates, text)
+            self.assertIn(longer, text)
+            self.assertNotIn("estimate", text)
         self.assertEqual(sorted(regen.UPSCALE_RAN), sorted((s, res) for s, sized in regen.OFFER_ETA_S.items()
                                                            for res in sized))     # every length: run, or covered
         for text in (usage, cli.INSTRUCTIONS, tool, api):                   # 4K has run end to end (16:9)

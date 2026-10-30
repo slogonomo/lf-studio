@@ -1842,14 +1842,14 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.assertEqual([self.page.is_disabled(f"#up-{r}") for r in ("1080p", "2k", "4k")], [False, True, True])
         self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
                          ["1920×1080", LATER_2K.format(12), "4K for 12 s clips comes later: 1080p takes them"])
-        self.assertIn("1080p\n~32 min", self.page.inner_text("#uppop"))      # 632 + 2 x 638 s (an estimate)
+        self.assertIn("1080p\n~32 min", self.page.inner_text("#uppop"))      # 630 + 2 x 638 s (fitted)
         self.assertEqual(self.page.inner_text("#upinput"), LATER_2K.format(12))
         with self.page.expect_request("**/api/upscale") as request:
             self.page.click("#upgo")
         self.assertEqual(json.loads(request.value.post_data), {"id": jid, "resolution": "1080p", "strength": "balanced"})
         self.page.wait_for_selector("#uppop", state="hidden")
         job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
-        self.assertEqual(self.page.evaluate("id => upEta(known.get(id))", job["id"]), 1908)
+        self.assertEqual(self.page.evaluate("id => upEta(known.get(id))", job["id"]), 1906)
         self.studio.wait([job["id"]], timeout=60)
         self.page.wait_for_selector(f"{self.card(job['id'])} video", timeout=30000)
         self.assertEqual(self.page.eval_on_selector_all(f"{self.card(job['id'])} .tags .tag",

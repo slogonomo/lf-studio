@@ -2389,8 +2389,8 @@ class Upscale(UpscaleTest):
         self.assertEqual(sorted(offers, key=int), ["5", "6", "7", "8", "10", "12", "15"])
         self.assertEqual(offers["5"], {"1080p": {"eta_s": [315, 150], "ran": True}, "2k": {"eta_s": [405, 380],
                                        "ran": True}, "4k": {"eta_s": [625, 1685], "ran": True}})
-        self.assertEqual(offers["10"], {"1080p": {"eta_s": [535, 454], "ran": True},
-                                        "2k": {"eta_s": [708, 1277], "ran": True}, "4k": {"why": LATER_4K.format(10)}})
+        self.assertEqual(offers["10"], {"1080p": {"eta_s": [543, 453], "ran": True},
+                                        "2k": {"eta_s": [691, 1261], "ran": True}, "4k": {"why": LATER_4K.format(10)}})
         self.assertEqual(offers["15"]["2k"], {"why": LATER_2K.format(15)})
         ten, fifteen = self.clip(seconds=10, seed=3), self.clip(seconds=15, seed=4)
         for parent in (ten, fifteen):

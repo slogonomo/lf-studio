@@ -22,7 +22,7 @@ One file, standard library only, Python 3.9 or later: copy it to any machine tha
                                 Turbo), 16:9 or 9:16, whole, to 1080p (any length), 2K (up to 10 s) or 4K (5 s), on a
                                 studio with LFSTUDIO_UPSCALE=1 (about 10 min (1080p, 5 s) to 1.6 h (4K, full) in all,
                                 4K over an hour, with a ~22 s load; ~8 min more with LFSTUDIO_UPSCALE_LOAD=standard;
-                                longer clips estimated: 1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s)
+                                longer clips longer: 1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s)
   lf-cli guide                  the prompt guide for H3
   lf-cli mcp                    an MCP server on stdin/stdout (Claude Code, Hermes, Codex, ...)
   common options, before or after the command: --url URL  --json  --quiet
@@ -1898,7 +1898,7 @@ TOOLS = [
          "models while it runs (the next clip, or the studio's warm-up, loads them again) and takes long: on a DGX "
          "Spark about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps for a 5 s clip (4K has run once, with "
          "a 16:9 clip; not yet with a 9:16 one), reading the clip and the load included; longer clips take longer "
-         "(estimates: 1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s). strength: faithful (start noise 0.5, "
+         "(1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s). strength: faithful (start noise 0.5, "
          "2 steps) redraws the least, "
          "balanced (0.7, 2 steps) more, full (NVIDIA's setting, 3 steps) is the sharpest but redraws faces into a "
          "different-looking person; the default is the studio's. audio: what the picture is refined against, the "
