@@ -1,22 +1,26 @@
-"""upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json, the clip's and the weights'
-files (5 s MP4s made by ffmpeg, 16:9 and 9:16, 121 and 124 frames, and the lengths and sizes it refuses), the frames
-of a 5 s clip, the shape table, the portrait entries for NVIDIA's dicts, the upscale route and the column crop,
-check_package, the text check on a stand-in, the command lines (NVIDIA's read of the clip among them) and the
-environment, the progress lines, the memory trace, the script's --check and its refusals, main's receipt when the GPU
-part finishes, fails or gets SIGTERM (a stand-in run()), and run() itself with a stand-in torch and a stand-in of
-NVIDIA's open_h3 that records its calls: for 16:9 the same calls as before the job took 9:16 clips, for 9:16 the
-portrait route, with both loads (fast and standard; stand-ins for safetensors, diffusers and upscale/fastload.py
-record every load), and a clip of 124 frames through the job's copies of NVIDIA's encode and decode. No GPU, no
-weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters, pipeline and upscaler), the weights
-are small files. upscale/fastload.py is checked against the patch's runtime/fastload.py. With NVIDIA's real package
-where LFSTUDIO_UPSCALE_PKG (or its default) names it, its pinned files, its entries and its encode command are checked
-too (read, not imported); skipped without it.
+"""upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json (its pin too), the clip's and the
+weights' files (5 s MP4s made by ffmpeg, 16:9 and 9:16, 121 and 124 frames, and the lengths and sizes it refuses), the
+frames of a 5 s clip, the pin's fit against the LightX2V Turbo receipts' records and its grids, the shape table, the
+portrait entries for NVIDIA's dicts, the upscale route and the column crop, check_package, the text check on a
+stand-in, the command lines (NVIDIA's read of the clip among them) and the environment, the progress lines, the memory
+trace, the script's --check and its refusals, main's receipt when the GPU part finishes, fails or gets SIGTERM (a
+stand-in run()), and run() itself with a stand-in torch and a stand-in of NVIDIA's open_h3 that records its calls: for
+16:9 the same calls as before the job took 9:16 clips, for 9:16 the portrait route, with both loads (fast and standard;
+stand-ins for safetensors, diffusers and upscale/fastload.py record every load), a clip of 124 frames through the job's
+copies of NVIDIA's encode and decode, and the pin's ends through the pinned refine (stand-ins for its parts). No GPU,
+no weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters, pipeline and upscaler), the
+weights are small files. upscale/fastload.py is checked against the patch's runtime/fastload.py. With NVIDIA's real
+package where LFSTUDIO_UPSCALE_PKG (or its default) names it, its pinned files, its entries and its encode command are
+checked too (read, not imported); skipped without it.
 
 The parts that need torch (the merger, the lean block forward, the tensor checks, the column crop) run on the CPU when
 torch is importable and are skipped otherwise. python3 -m unittest tests.test_upscale -v   (needs ffmpeg)
-With numpy, diffusers and imageio-ffmpeg too (the Regen-2K environment), the job's copies of NVIDIA's encode_video and
-decode (encode_clip, decode_released) run on the CPU with a stand-in VAE, against NVIDIA's own (imported from its
-package, run on the CPU) where LFSTUDIO_UPSCALE_PKG names it. Run them with CUDA hidden (and LFSTUDIO_UPSCALE_PKG set):
+With Pillow and numpy (the Regen-2K environment) the pin's check runs on ffmpeg-made clips. With torch, numpy,
+diffusers and imageio-ffmpeg (the Regen-2K environment) and NVIDIA's package (imported, run on the CPU) where
+LFSTUDIO_UPSCALE_PKG names it: the job's copies of NVIDIA's encode_video and decode (encode_clip, decode_released) with
+a stand-in VAE against NVIDIA's own, the pin's layout, and the pinned refine with a stand-in transformer against
+NVIDIA's Pipeline.refine and the bench wrapper's K1 refine (copied here). Run them with CUDA hidden and
+LFSTUDIO_UPSCALE_PKG set:
     CUDA_VISIBLE_DEVICES= $LFSTUDIO_HOME/envs/regen2k/bin/python -I -m unittest discover -s tests -p test_upscale.py
 """
 import contextlib
@@ -292,6 +296,177 @@ class JobTests(Fixture):
             job_module.load_job(path)
         with self.assertRaisesRegex(JobError, "cannot read"):
             job_module.load_job(self.out / "missing.json")
+
+
+SHA = "0123456789abcdef" * 4
+
+
+def pin(*ends, **changes):
+    """job.json's "pin" for the ends named (first, last), with `changes`."""
+    data = {"keyframes": [{"anchor": end, "image": f"/up/input/keyframe/{end}.png", "sha256": SHA,
+                           "fit": "stretch" if index == 0 else "cover-crop", "canvas": [1024, 576]}
+                          for index, end in enumerate(ends or ("first",))]}
+    data.update(changes)
+    return {k: v for k, v in data.items() if v is not DROP}
+
+
+class PinJobTests(Fixture):
+    """job.json's "pin" (parse_pin): its keyframes, the check and the refine's values, and every refusal by name."""
+
+    def test_a_pin_and_its_defaults(self):
+        job = job_module.parse_job(self.job(pin=pin("first", "last")), "/")
+        self.assertEqual(job["pin"], {
+            "keyframes": [{"anchor": "first", "image": "/up/input/keyframe/first.png", "sha256": SHA, "fit": "stretch",
+                           "canvas": (1024, 576)},
+                          {"anchor": "last", "image": "/up/input/keyframe/last.png", "sha256": SHA,
+                           "fit": "cover-crop", "canvas": (1024, 576)}],
+            "check": {"grid": "384p", "min_db": 28}, "noise_aug": 0.999, "encode_seed": 42, "noise_seed": 42})
+        self.assertIsNone(job_module.parse_job(self.job(), "/")["pin"])
+        self.assertEqual(json.loads(json.dumps(job_module.job_record(job)))["pin"]["keyframes"][1]["canvas"],
+                         [1024, 576])
+        job = job_module.parse_job(self.job(pin=pin("last", check={"min_db": 30.5}, noise_aug=0.99, encode_seed=7,
+                                                    noise_seed=0)), "/")["pin"]
+        self.assertEqual((job["keyframes"][0]["anchor"], job["check"], job["noise_aug"], job["encode_seed"],
+                          job["noise_seed"]), ("last", {"grid": "384p", "min_db": 30.5}, 0.99, 7, 0))
+        for fit in job_module.FITS:
+            data = pin("first")
+            data["keyframes"][0]["fit"] = fit
+            self.assertEqual(job_module.parse_pin(data)["keyframes"][0]["fit"], fit)
+        self.assertEqual(job_module.FITS, ("as is", "stretch", "cover-crop"))
+        self.assertIn("pin", job_module.JOB_KEYS)
+        self.assertEqual(job_module.JOB_VERSION, 1)             # an older job refuses the key: no new version
+
+    def test_refusals_by_name(self):
+        def keyframe(index=0, **changes):
+            data = pin("first", "last")
+            data["keyframes"][index].update(changes)
+            data["keyframes"][index] = {k: v for k, v in data["keyframes"][index].items() if v is not DROP}
+            return data
+        nan = float("nan")
+        for value, message in (
+                ([], r"^pin: a JSON object"), ({}, r"^pin\.keyframes: a list of 1 or 2"),
+                (pin("first", colour="red"), r"^pin: unknown field\(s\): colour$"),
+                (pin("first", keyframes=[]), r"^pin\.keyframes: a list of 1 or 2"),
+                (pin("first", keyframes="first"), r"^pin\.keyframes: a list"),
+                (pin("first", "last", "first"), r"^pin\.keyframes: a list of 1 or 2"),
+                (pin("last", "first"), r"^pin\.keyframes: one per end, first before last, got last, first$"),
+                (pin("first", "first"), r"^pin\.keyframes: one per end"),
+                (pin("first", keyframes=["first"]), r"^pin\.keyframes\[0\]: a JSON object"),
+                (keyframe(anchor="middle"), r"^pin\.keyframes\[0\]\.anchor: one of first, last"),
+                (keyframe(1, anchor=None), r"^pin\.keyframes\[1\]\.anchor"),
+                (keyframe(image="input/keyframe/first.png"), r"^pin\.keyframes\[0\]\.image: an absolute path"),
+                (keyframe(image=""), r"^pin\.keyframes\[0\]\.image"),
+                (keyframe(sha256=SHA.upper()), r"^pin\.keyframes\[0\]\.sha256: 64 lowercase hex"),
+                (keyframe(sha256=SHA[:63]), r"^pin\.keyframes\[0\]\.sha256"),
+                (keyframe(sha256=None), r"^pin\.keyframes\[0\]\.sha256"),
+                (keyframe(1, fit="cover"), r"^pin\.keyframes\[1\]\.fit: one of as is, stretch, cover-crop, got "
+                                           r"'cover'$"),
+                (keyframe(fit="Stretch"), r"^pin\.keyframes\[0\]\.fit"),
+                (keyframe(canvas=[1024]), r"^pin\.keyframes\[0\]\.canvas: \[width, height\]"),
+                (keyframe(canvas=[1024, 0]), r"^pin\.keyframes\[0\]\.canvas"),
+                (keyframe(canvas=[1024.0, 576]), r"^pin\.keyframes\[0\]\.canvas"),
+                (keyframe(canvas=[True, 576]), r"^pin\.keyframes\[0\]\.canvas"),
+                (keyframe(canvas="1024x576"), r"^pin\.keyframes\[0\]\.canvas"),
+                (keyframe(canvas=DROP), r"^pin\.keyframes\[0\]: missing field\(s\): canvas$"),
+                (keyframe(1, frame=123), r"^pin\.keyframes\[1\]: unknown field\(s\): frame$"),
+                (pin("first", check={"grid": "768p"}), r"^pin\.check\.grid: one of 384p, got '768p'$"),
+                (pin("first", check={"min_db": -1}), r"^pin\.check\.min_db: a number of dB from 0 to 99"),
+                (pin("first", check={"min_db": 100}), r"^pin\.check\.min_db"),
+                (pin("first", check={"min_db": nan}), r"^pin\.check\.min_db"),
+                (pin("first", check={"min_db": "28"}), r"^pin\.check\.min_db"),
+                (pin("first", check={"min_db": True}), r"^pin\.check\.min_db"),
+                (pin("first", check={"grid": "384p", "frames": 1}), r"^pin\.check: a JSON object with grid and "
+                                                                    r"min_db"),
+                (pin("first", check=[]), r"^pin\.check: a JSON object"),
+                (pin("first", noise_aug=1), r"^pin\.noise_aug: a number between 0 and 1"),
+                (pin("first", noise_aug=0), r"^pin\.noise_aug"), (pin("first", noise_aug=True), r"^pin\.noise_aug"),
+                (pin("first", noise_aug="0.999"), r"^pin\.noise_aug"),
+                (pin("first", encode_seed=-1), r"^pin\.encode_seed: a whole number from 0 to 2\*\*63-1"),
+                (pin("first", noise_seed=2 ** 63), r"^pin\.noise_seed"),
+                (pin("first", noise_seed=1.0), r"^pin\.noise_seed"), (pin("first", encode_seed=None),
+                                                                       r"^pin\.encode_seed")):
+            with self.subTest(value=value), self.assertRaisesRegex(JobError, message):
+                job_module.parse_job(self.job(pin=value), "/")
+
+
+def fit_record(size, canvas, first):
+    """The fit jobs/h3turbo_job.py's keyframe_fit records (diffusers 0.40's rule) for a picture of `size`."""
+    spec = importlib.util.spec_from_file_location("h3turbo_job", REPO / "jobs" / "h3turbo_job.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.keyframe_fit(size, canvas, first)
+
+
+# The keyframes of LightX2V Turbo Keyframes clips as their receipts recorded them (turbo/receipt.json "images" and
+# "geometry"; from GPU runs of 2026-10-29: the 576p 16:9 clips with first and last, last alone and a first frame alone,
+# a 576p 9:16 clip, and a 768p 16:9 clip with first and last)
+TURBO_RECEIPTS = {
+    "576p first and last": ((1024, 576), {
+        "first": {"size": [1344, 768], "fit": "stretch", "stretch": 1.01587},
+        "last": {"size": [1344, 768], "fit": "cover-crop", "resized": [1024, 585], "crop": [0, 4, 1024, 580],
+                 "kept": 0.9846}}),
+    "576p last alone": ((1024, 576), {"last": {"size": [1344, 768], "fit": "stretch", "stretch": 1.01587}}),
+    "576p 10 s first": ((1024, 576), {"first": {"size": [1456, 816], "fit": "stretch", "stretch": 0.99634}}),
+    "576p 9:16 first": ((576, 1024), {"first": {"size": [1648, 2944], "fit": "stretch", "stretch": 1.00485}}),
+    "768p first and last": ((1344, 768), {"first": {"size": [1344, 768], "fit": "as is"},
+                                          "last": {"size": [1344, 768], "fit": "as is"}})}
+
+
+class PinFitTests(unittest.TestCase):
+    """How the pin puts a picture on the refine's grid: H3's fit at the clip's canvas (cover_crop, fit_box) against
+    the LightX2V Turbo job's records, and the computed grids. Standard library."""
+
+    def test_the_turbo_receipts(self):
+        """Every keyframe a Turbo receipt recorded: H3's rule gives its fit, and for a cover-crop its resized size and
+        crop; the box is None for "as is" and "stretch" (the whole picture) and the crop mapped into the picture for
+        "cover-crop"."""
+        for name, (canvas, images) in TURBO_RECEIPTS.items():
+            for index, (anchor, record) in enumerate(images.items()):
+                with self.subTest(clip=name, anchor=anchor):
+                    size = tuple(record["size"])
+                    self.assertEqual(fit_record(size, canvas, first=index == 0),
+                                     {k: v for k, v in record.items() if k != "size"})
+                    box = job_module.fit_box(size, canvas, record["fit"])
+                    if record["fit"] != "cover-crop":
+                        self.assertIsNone(box)
+                        continue
+                    resized, crop = job_module.cover_crop(size, canvas)
+                    self.assertEqual((list(resized), list(crop)), (record["resized"], record["crop"]))
+                    (rw, rh), (left, top, right, bottom) = record["resized"], record["crop"]
+                    self.assertEqual(box, (left * size[0] / rw, top * size[1] / rh, right * size[0] / rw,
+                                           bottom * size[1] / rh))
+        box = job_module.fit_box((1344, 768), (1024, 576), "cover-crop")
+        self.assertEqual([round(v, 2) for v in box], [0.0, 5.25, 1344.0, 761.44])
+
+    def test_cover_crop_is_the_turbo_jobs(self):
+        """cover_crop is keyframe_fit's cover-crop (diffusers' rounding: round, centred at (size - canvas) // 2) for
+        pictures of many shapes on both orientations' canvases."""
+        for canvas in ((1024, 576), (1344, 768), (576, 1024), (768, 1344)):
+            for size in ((1344, 768), (1344, 800), (800, 1344), (4032, 3024), (3024, 4032), (1000, 1000), (1023, 577),
+                         (640, 360), (5000, 1200), (1080, 1920), (1920, 1080), (1025, 576)):
+                if size == canvas:
+                    continue
+                with self.subTest(canvas=canvas, size=size):
+                    record = fit_record(size, canvas, first=False)
+                    resized, crop = job_module.cover_crop(size, canvas)
+                    self.assertEqual((list(resized), list(crop)), (record["resized"], record["crop"]))
+                    self.assertEqual((crop[2] - crop[0], crop[3] - crop[1]), canvas)
+                    left, top, right, bottom = job_module.fit_box(size, canvas, "cover-crop")
+                    self.assertTrue(0 <= left < right <= size[0] and 0 <= top < bottom <= size[1])
+        with self.assertRaisesRegex(ValueError, "unknown fit 'cover'"):
+            job_module.fit_box((1344, 768), (1024, 576), "cover")
+
+    def test_the_computed_grids(self):
+        """The pictures go on the grid the refine computes at: NVIDIA's RESOLUTIONS (1088 / 2176 rows for 1080p and
+        4K), turned for 9:16; the check's grid is 672x384 either way round."""
+        for orientation, grids in (("landscape", {"1080p": (1920, 1088), "2k": (2560, 1440), "4k": (3840, 2176)}),
+                                   ("portrait", {"1080p": (1088, 1920), "2k": (1440, 2560), "4k": (2176, 3840)})):
+            for resolution, grid in grids.items():
+                self.assertEqual(job_module.computed_grid(orientation, resolution), grid, (orientation, resolution))
+                target = (LANDSCAPE_TARGETS if orientation == "landscape" else PORTRAIT_TARGETS)[resolution]
+                self.assertEqual((grid[1] // 16, grid[0] // 16), target[2:])      # the refine's latent grid
+        self.assertEqual(job_module.PIN_CHECK_GRIDS, {"384p": {"landscape": (672, 384), "portrait": (384, 672)}})
+        self.assertEqual((job_module.PIN_MIN_DB, job_module.PIN_NOISE_AUG, job_module.PIN_SEED), (28, 0.999, 42))
 
 
 def nvidia_read_command(source, path, width, height, ffmpeg):
@@ -836,6 +1011,178 @@ class InputTests(Fixture):
                                  orientation="landscape", frames=five), {2: [0.7, 0.4, 0]}, grid)
 
 
+PIL_NUMPY = importlib.util.find_spec("PIL") is not None and importlib.util.find_spec("numpy") is not None
+
+
+def picture(width, height, seed):
+    """A smooth picture of its own per seed (sums of sines in each channel): (height, width, 3) uint8."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:height, 0:width] / max(width, height)
+    channels = [sum(np.sin(2 * np.pi * (fx * x + fy * y) + phase) for fx, fy, phase in
+                    rng.uniform((1, 1, 0), (5, 5, 6.28), (3, 3))) for _ in range(3)]
+    return np.clip(np.stack(channels, -1) * 35 + 128, 0, 255).astype(np.uint8)
+
+
+def on_canvas(array, canvas, fit):
+    """A picture as the clip's model put it on its canvas (diffusers 0.40: as is, stretched, or cover-cropped with
+    H3's rounding), then on the 768p case view the job reads (the server's LANCZOS stretch): a PIL image."""
+    from PIL import Image
+    image = Image.fromarray(array)
+    if fit == "stretch":
+        image = image.resize(canvas, Image.Resampling.LANCZOS)
+    elif fit == "cover-crop":
+        resized, crop = job_module.cover_crop(image.size, canvas)
+        image = image.resize(resized, Image.Resampling.LANCZOS).crop(crop)
+    size = (1344, 768) if canvas[0] > canvas[1] else (768, 1344)
+    return image.resize(size, Image.Resampling.LANCZOS) if image.size != size else image
+
+
+def frames_mp4(path, frames):
+    """An MP4 (H.264, CRF 12, 24 fps) of `frames`, PIL images of one size, in order."""
+    width, height = frames[0].size
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s",
+                    f"{width}x{height}", "-r", "24", "-i", "pipe:0", "-c:v", "libx264", "-preset", "ultrafast", "-crf",
+                    "12", "-pix_fmt", "yuv420p", str(path)], input=b"".join(f.tobytes() for f in frames), check=True)
+    return path
+
+
+@unittest.skipUnless(PIL_NUMPY, "needs Pillow and numpy (the Regen-2K environment has both)")
+class PinCheckTests(Fixture):
+    """check_pin on ffmpeg-made clips whose first and last frames show pictures as a LightX2V Turbo clip's do (fitted
+    to its 1024x576 canvas, stretched to the 768p case view): the ends it keeps, the ones it does not and why, the
+    EXIF turn, the fit at the grid, and --check."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from PIL import Image
+        cls.first, cls.last, cls.other = picture(1344, 768, 1), picture(1344, 800, 2), picture(1344, 768, 3)
+        canvas = (1024, 576)
+        start, end = on_canvas(cls.first, canvas, "stretch"), on_canvas(cls.last, canvas, "cover-crop")
+        middle = Image.fromarray(picture(1344, 768, 4))
+        cls.whole = frames_mp4(cls.media / "keyframes124.mp4", [start] + [middle] * 122 + [end])
+        cls.cut = frames_mp4(cls.media / "keyframes121.mp4", [start] + [middle] * 119 + [end])
+
+    def setUp(self):
+        super().setUp()
+        from PIL import Image
+        self.pictures = self.tmp / "input" / "keyframe"
+        self.pictures.mkdir(parents=True)
+        for name, array in (("first", self.first), ("last", self.last), ("other", self.other)):
+            Image.fromarray(array).save(self.pictures / f"{name}.png")
+
+    def keyframe(self, anchor, name=None, fit=None, canvas=(1024, 576)):
+        path = self.pictures / f"{name or anchor}.png"
+        digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else SHA
+        return {"anchor": anchor, "image": str(path), "sha256": digest,
+                "fit": fit or ("stretch" if anchor == "first" else "cover-crop"), "canvas": list(canvas)}
+
+    def check(self, *keyframes, clip=None, kept=124, orientation="landscape", **changes):
+        job = {"pin": job_module.parse_pin({"keyframes": list(keyframes), **changes}),
+               "frames": job_module.frame_case(kept), "orientation": orientation}
+        return job_module.check_pin(job, clip or (self.whole if kept == 124 else self.cut))
+
+    def test_both_ends_kept(self):
+        """A clip that starts and ends on its pictures: both ends used, well over 28 dB at 672x384, frames 0 and 123;
+        the last end's box is the cover-crop's in the picture, the first's None (stretched)."""
+        results = self.check(self.keyframe("first"), self.keyframe("last"))
+        self.assertEqual(list(results), ["first", "last"])
+        first, last = results["first"], results["last"]
+        self.assertEqual((first["used"], first["frame"], first["fit"], first["box"], first["size"], first["why"]),
+                         (True, 0, "stretch", None, [1344, 768], None))
+        self.assertEqual((last["used"], last["frame"], last["fit"], last["size"], last["why"]),
+                         (True, 123, "cover-crop", [1344, 800], None))
+        self.assertEqual(last["box"], [round(v, 2) for v in job_module.fit_box((1344, 800), (1024, 576),
+                                                                               "cover-crop")])
+        for end in (first, last):
+            self.assertGreater(end["agreement_db"], 35)
+
+    def test_ends_it_does_not_keep(self):
+        """Each reason an end is not used (the check never refuses): the clip's frame far from the picture (another
+        picture, or the min_db above it), the picture gone, changed or not a picture, a last end the clip stops 3
+        frames short of (121 kept of 124 made: a Sol-H3 clip, or a Turbo clip cut to 121)."""
+        from PIL import Image
+        far = self.check(self.keyframe("first", "other"))["first"]
+        self.assertFalse(far["used"])
+        self.assertLess(far["agreement_db"], 28)
+        self.assertEqual(far["why"],
+                         f"the clip's frame 0 is {far['agreement_db']:.1f} dB from your picture (28 needed)")
+        high = self.check(self.keyframe("first"), self.keyframe("last"), check={"min_db": 60})
+        self.assertEqual([end["used"] for end in high.values()], [False, False])
+        self.assertRegex(high["last"]["why"], r"^the clip's frame 123 is \d+\.\d dB from your picture \(60 needed\)$")
+        gone = self.keyframe("first")
+        (self.pictures / "first.png").unlink()
+        self.assertEqual(self.check(gone)["first"], {"used": False, "agreement_db": None, "frame": 0,
+                                                     "fit": "stretch", "box": None, "size": None,
+                                                     "why": "your picture is no longer on disk"})
+        changed = self.keyframe("last")
+        (self.pictures / "last.png").write_bytes((self.pictures / "other.png").read_bytes())
+        self.assertEqual(self.check(changed)["last"]["why"], "your picture changed since the clip was made")
+        (self.pictures / "first.png").write_bytes(b"not a picture")
+        self.assertEqual(self.check(self.keyframe("first"))["first"]["why"], "your picture does not open")
+        Image.fromarray(self.last).save(self.pictures / "last.png")
+        cut = self.check(self.keyframe("first", "other"), self.keyframe("last"), kept=121)
+        self.assertEqual((cut["last"]["used"], cut["last"]["frame"], cut["last"]["why"]),
+                         (False, 120, "the clip stops 3 frames before your last picture"))
+        self.assertIsNotNone(cut["last"]["agreement_db"])               # frame 120 against it, for the record
+        self.assertFalse(cut["first"]["used"])
+
+    def test_the_exif_turn(self):
+        """A picture stored turned with an EXIF orientation (6 and 8, as phones write them) is checked upright: the
+        same answer as the upright file, its size the turned one, the box in the turned picture."""
+        from PIL import Image
+        upright = self.check(self.keyframe("first"), self.keyframe("last"))
+        for orientation, stored in ((6, Image.Transpose.ROTATE_90), (8, Image.Transpose.ROTATE_270)):
+            with self.subTest(orientation=orientation):
+                for name, array in (("first", self.first), ("last", self.last)):
+                    image = Image.fromarray(array).transpose(stored)
+                    exif = Image.Exif()
+                    exif[0x0112] = orientation
+                    image.save(self.pictures / f"{name}.png", exif=exif)
+                    self.assertEqual(job_module.open_keyframe((self.pictures / f"{name}.png").read_bytes()).size,
+                                     (array.shape[1], array.shape[0]))
+                turned = self.check(self.keyframe("first"), self.keyframe("last"))
+                self.assertEqual(turned, upright)
+
+    def test_the_picture_on_the_grid(self):
+        """keyframe_image: with no box the whole picture stretched (LANCZOS) as the bench wrapper's encode_keyframe;
+        one of the grid's size as it is; with a cover-crop one LANCZOS step from the box in the picture (the Turbo
+        receipt's crop mapped back), not the canvas's crop upscaled."""
+        from PIL import Image
+        image = Image.fromarray(self.first)
+        for grid in ((1920, 1088), (2560, 1440), (672, 384)):
+            for fit in ("stretch", "as is"):
+                self.assertEqual(job_module.keyframe_image(image, grid, fit, (1024, 576)).tobytes(),
+                                 image.resize(grid, Image.Resampling.LANCZOS).tobytes())
+        self.assertIs(job_module.keyframe_image(image, (1344, 768), "as is", (1344, 768)), image)
+        # the 576p receipt's last keyframe: resized to 1024x585, cut at (0, 4, 1024, 580)
+        box = (0, 4 * 768 / 585, 1344, 580 * 768 / 585)
+        got = job_module.keyframe_image(image, (1920, 1088), "cover-crop", (1024, 576))
+        self.assertEqual(got.tobytes(), image.resize((1920, 1088), Image.Resampling.LANCZOS, box=box).tobytes())
+        two_steps = image.resize((1024, 585), Image.Resampling.LANCZOS).crop((0, 4, 1024, 580)).resize(
+            (1920, 1088), Image.Resampling.LANCZOS)
+        self.assertNotEqual(got.tobytes(), two_steps.tobytes())
+        import numpy as np
+        self.assertGreater(job_module.luma_psnr(np.asarray(got), np.asarray(two_steps)), 35)   # the same part of it
+        self.assertEqual(job_module.luma_psnr(self.first, self.first), 99.0)
+
+    def test_check_prints_each_end_and_writes_nothing(self):
+        """--check with a pin (in the Regen-2K environment): each end's answer in the plan, nothing written."""
+        for mp4 in (self.case / "stage2").glob("refined_*.mp4"):
+            mp4.unlink()
+        shutil.copy(self.whole, self.case / "stage2" / "refined_1344x768_124f.mp4")
+        keyframes = [self.keyframe("first"), self.keyframe("last", "other")]
+        result = self.script("--job", str(self.write_job(pin={"keyframes": keyframes})), "--check")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        planned = json.loads(result.stdout)
+        self.assertEqual((planned["pin"]["first"]["used"], planned["pin"]["first"]["frame"],
+                          planned["pin"]["last"]["used"], planned["pin"]["last"]["frame"]), (True, 0, False, 123))
+        self.assertRegex(planned["pin"]["last"]["why"], r"^the clip's frame 123 is \d+\.\d dB from your picture")
+        self.assertEqual(planned["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37})
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])
+
+
 class LineAndCommandTests(unittest.TestCase):
     def test_progress_lines(self):
         for name in ("encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"):
@@ -981,6 +1328,16 @@ class ScriptTests(Fixture):
         self.assertEqual((planned["orientation"], planned["size"], planned["frames"]),
                          ("landscape", [1920, 1080], {"kept": 124, "made": 124, "pad": 0, "T": 37}))
 
+    def test_a_pin_without_pillow_is_refused(self):
+        """The pin's check needs Pillow and numpy, which the Regen-2K environment has: elsewhere a job with a pin is
+        refused (exit 2), before anything loads, with a receipt."""
+        if PIL_NUMPY:
+            self.skipTest("Pillow and numpy are here (PinCheckTests checks the pin)")
+        result = self.script("--job", str(self.write_job(pin=pin("first"))), "--check")
+        self.assertEqual((result.returncode, result.stdout.splitlines()[-1]),
+                         (2, "[lf-studio] error the pin's check needs Pillow and numpy (the Upscale's environment has "
+                             "both)"))
+
     def test_check_refuses(self):
         make_mp4(self.case / "stage2" / "refined_768x1344_241f.mp4", width=768, height=1344, frames=241)
         (self.case / "stage2" / "refined_1344x768_121f.mp4").unlink()
@@ -1059,6 +1416,8 @@ class MainTests(Fixture):
             (job["output"] / "video_noaudio.mp4").write_bytes(b"video")
         status, receipt = self.main(run)
         self.assertEqual((status, receipt["state"], receipt["exit_status"]), (0, "done", 0))
+        self.assertEqual(receipt["frames"], {"kept": 121, "made": 124, "pad": 3, "T": 37})     # always, from the MP4
+        self.assertNotIn("pin", receipt)                                                        # only with one
         self.assertEqual(receipt["peak_allocated_gib"], 91.2)
         self.assertIn("refine 1/2", receipt["lowest_mem_available_gib"])
         self.assertIn("all", receipt["lowest_mem_available_gib"])
@@ -1702,6 +2061,153 @@ class RunTests(Fixture):
                     self.assertIn("encode_video", receipt["times_s"])
                     self.assertEqual(encode_audio.call_args.args[1].shape, (2, 161333))
 
+    def pin_seams(self, ends, changed=()):
+        """The pin's parts as stand-ins on top of own_seams: check_pin answering `ends` ({anchor: (used, dB)}),
+        pin_pixels the pictures of the ends used (those in `changed` turned off, as a picture changed since the
+        check), refine_pinned recording its calls (self.pinned) and stepping as NVIDIA's refine does, tensor_sha256
+        the tensor's tag."""
+        seams, self.pinned, self.grids = self.own_seams(), [], []
+
+        def check_pin(job, final, ffmpeg=None):
+            return {anchor: {"used": used, "agreement_db": db, "frame": 0 if anchor == "first" else
+                             job["frames"]["kept"] - 1, "fit": "stretch", "box": None, "size": [1344, 768],
+                             "why": None if used else "the clip's frame is far from your picture"}
+                    for anchor, (used, db) in ends.items()}
+
+        def pin_pixels(job, grid):
+            self.grids.append(grid)
+            pixels = []
+            for keyframe in job["pin"]["keyframes"]:
+                record = job["pin_check"][keyframe["anchor"]]
+                if record["used"] and keyframe["anchor"] in changed:
+                    record.update(used=False, why=job_module.PIN_WHY["changed"])
+                elif record["used"]:
+                    pixels.append((keyframe["anchor"], f"pixels of {keyframe['anchor']}"))
+            return pixels
+
+        def refine_pinned(pipe, low, text, seed, keyframes, made, noise_aug, noise_seed):
+            self.pinned.append((low.shape, seed, [(anchor, latent.tag) for anchor, latent in keyframes], made,
+                                noise_aug, noise_seed))
+            for index in range(len(pipe.sigmas) - 1):
+                pipe.on_step("refine", index)
+            return StandInTensor(*low.shape, tag="refined"), {
+                "anchors": [anchor for anchor, _ in keyframes], "sequence_rows": 80170, "condition_rows": 4080,
+                "timesteps": [[0.3, 0.999, 1.0], [0.505882, 0.999, 1.0]], "condition_sha256": "c" * 64,
+                "noise_aug": noise_aug, "noise_seed": noise_seed}
+        seams.update(check_pin=check_pin, pin_pixels=pin_pixels, refine_pinned=refine_pinned,
+                     tensor_sha256=lambda tensor: f"sha of {tensor.tag}")
+        return seams
+
+    def test_a_pinned_run(self):
+        """The ends check_pin keeps go through encode_clip (on the VAE that encodes the clip, at the refine's computed
+        grid) and refine_pinned, in packed order, with the frames H3 made; NVIDIA's refine is not called, the rest is
+        as without a pin. 121 frames: NVIDIA's read of the clip (121, 3 copies) and NVIDIA's decode; 124 frames: every
+        frame, decode_released. The receipt's pin has each end, the encode's time and the sha256 of the latents."""
+        self.pin_stand_ins()
+        for kept, ends, resolution in ((121, ("first",), "1080p"), (124, ("first", "last"), "1080p"),
+                                       (124, ("last",), "2k")):
+            with self.subTest(kept=kept, ends=ends):
+                if kept == 124:
+                    self.whole_clip()
+                status, receipt, calls, phases, _ = self.run_job(
+                    seams=self.pin_seams({end: (True, 33.5) for end in ends}), resolution=resolution,
+                    pin=pin(*ends))
+                self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                 receipt.get("error"))
+                grid = job_module.computed_grid("landscape", resolution)
+                self.assertEqual(self.grids, [grid])
+                self.assertEqual(self.encoded, [(f"refined_1344x768_{kept}f.mp4", (1344, 768), kept,
+                                                 job_module.FRAME_CASES[kept]["pad"], 42,
+                                                 list(ends), 42)])
+                low = LANDSCAPE_TARGETS[resolution]
+                self.assertEqual(self.pinned, [(low, 1234, [(end, end) for end in ends], 124, 0.999, 42)])
+                names = [c[0] for c in calls]
+                self.assertNotIn("encode_video", names)          # NVIDIA's own encode: not with a pin held
+                self.assertNotIn("refine", names)
+                self.assertEqual(names.count("decode"), 1 if kept == 121 else 0)
+                self.assertEqual(self.decoded, [] if kept == 121 else [(low, 124, "cuda")])
+                self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
+                self.assertEqual(self.loads, self.expected_loads(fast=True))     # one video VAE load for both
+                record = receipt["pin"]
+                self.assertEqual((record["asked"], record["grid"], record["check_grid"], record["min_db"],
+                                  record["noise_aug"], record["encode_seed"], record["noise_seed"]),
+                                 (list(ends), list(grid), [672, 384], 28, 0.999, 42, 42))
+                for end in ends:
+                    self.assertEqual((record[end]["used"], record[end]["agreement_db"], record[end]["why"],
+                                      record[end]["latent_sha256"], record[end]["latent_shape"]),
+                                     (True, 33.5, None, f"sha of {end}", [1, 24, 1, 1, 1]))
+                self.assertEqual((record["encode_s"], record["native_sha256"], record["refined_sha256"],
+                                  record["condition_sha256"]), (1.5, "sha of final", "sha of refined", "c" * 64))
+                self.assertEqual(record["timesteps"], [[0.3, 0.999, 1.0], [0.505882, 0.999, 1.0]])
+                self.assertEqual(record["layout"], {"anchors": list(ends), "sequence_rows": 80170,
+                                                    "condition_rows": 4080})
+                self.assertEqual((receipt["frames"]["kept"], receipt["output"]["frames"]), (kept, kept))
+                self.assertRegex(self.stdout, rf"(?m)^\[lf-studio\] \d\d:\d\d:\d\d pin {ends[0]}: frame \d+ 33\.5 dB "
+                                              r"from the picture, held in the refine$")
+
+    def test_ends_the_check_does_not_keep(self):
+        """An end check_pin did not keep is not held: none kept, a 121-frame clip runs NVIDIA's encode, refine and
+        decode, as without a pin (its receipt says why); one of two kept, only that one; a picture changed since the
+        check is not held either (pin_pixels), and the refine is NVIDIA's when none is left."""
+        status, receipt, calls, _, _ = self.run_job(seams=self.pin_seams({"first": (False, 21.8)}), pin=pin("first"))
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual([c[0] for c in calls], ["encode_video", "Pipeline", "load_model", "upscale",
+                                                 "upscaler.upscale", "set_stage", "refine", "on_step", "on_step",
+                                                 "decode", "encode_mp4"])     # NVIDIA's, as before the pin
+        self.assertEqual((self.encoded, self.pinned, self.grids), ([], [], []))
+        self.assertEqual((receipt["pin"]["first"]["used"], receipt["pin"]["first"]["why"],
+                          receipt["pin"]["native_sha256"]),
+                         (False, "the clip's frame is far from your picture", "sha of final"))
+        for key in ("encode_s", "layout", "timesteps", "condition_sha256", "refined_sha256"):
+            self.assertNotIn(key, receipt["pin"])
+        self.assertRegex(self.stdout, r"(?m)^\[lf-studio\] \d\d:\d\d:\d\d pin first: frame 0 21\.8 dB from the "
+                                      r"picture, not held: the clip's frame is far from your picture$")
+        self.pin_stand_ins()
+        self.whole_clip()
+        status, receipt, calls, _, _ = self.run_job(seams=self.pin_seams({"first": (True, 34.0),
+                                                                          "last": (False, 25.4)}),
+                                                    pin=pin("first", "last"))
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual(self.pinned[0][2], [("first", "first")])
+        self.assertEqual((self.encoded[0][5], receipt["pin"]["last"]["used"]), (["first"], False))
+        status, receipt, calls, _, _ = self.run_job(seams=self.pin_seams({"first": (True, 34.0), "last": (True, 32.0)},
+                                                                         changed=("last",)), pin=pin("first", "last"))
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual((self.pinned[0][2], self.encoded[0][5]), ([("first", "first")], ["first"]))
+        self.assertEqual((receipt["pin"]["last"]["used"], receipt["pin"]["last"]["why"]),
+                         (False, "your picture changed since the clip was made"))
+        status, receipt, calls, _, _ = self.run_job(seams=self.pin_seams({"first": (True, 34.0)}, changed=("first",)),
+                                                    pin=pin("first"))
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual((self.pinned, self.encoded[0][5:], [c[0] for c in calls].count("refine")),
+                         ([], ([], None), 1))                 # the clip read whole, NVIDIA's refine
+
+    def test_a_pinned_9x16_clip(self):
+        """9:16 with 124 frames and both ends: the pictures on the portrait grid, the portrait route, decode_released
+        and the centre columns."""
+        self.whole_clip("portrait")
+        status, receipt, calls, _, _ = self.run_job(seams=self.pin_seams({"first": (True, 35.4), "last": (True, 31.9)}),
+                                                    resolution="1080p", pin=pin("first", "last"))
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual((self.grids, receipt["pin"]["grid"], receipt["pin"]["check_grid"]),
+                         ([(1088, 1920)], [1088, 1920], [384, 672]))
+        self.assertEqual(self.pinned, [((24, 37, 120, 68), 1234, [("first", "first"), ("last", "last")], 124, 0.999,
+                                        42)])
+        self.assertEqual([c for c in calls if c[0] == "upscaler.upscale"], [("upscaler.upscale", (24, 37, 84, 48),
+                                                                               (24, 37, 120, 68))])
+        self.assertEqual(NARROWED, [((124, 1920, 1088, 3), 1, 0, 1920), ((124, 1920, 1088, 3), 2, 4, 1080)])
+        self.assertEqual(receipt["output"]["size"], [1080, 1920])
+
+    def test_a_held_end_needs_nvidias_pipeline_pinned(self):
+        """A pin held on a 121-frame clip reads it through encode_clip, NVIDIA's code copied: NVIDIA's pipeline.py
+        must be the pinned one, else it is refused before anything loads."""
+        status, receipt, calls, phases, _ = self.run_job(seams=self.pin_seams({"first": (True, 33.0)}),
+                                                         pin=pin("first"))
+        self.assertEqual((status, receipt["state"]), (2, "failed"), receipt.get("traceback"))
+        self.assertRegex(receipt["error"], r"'open_h3/pipeline\.py': '[0-9a-f]{64}'\}$")
+        self.assertEqual((calls, phases, self.loads, self.encoded), ([], [], [], []))
+        self.assertEqual(receipt["pin"]["first"]["used"], True)              # the check's answer, kept
+
     def test_121_frames_never_reach_the_copies(self):
         """A 121-frame clip runs NVIDIA's encode_video and decode, never encode_clip or decode_released, and does not
         need NVIDIA's pipeline.py pinned (16:9)."""
@@ -2073,6 +2579,7 @@ def nvidia_modules():
             import diffusers.models.attention_dispatch  # noqa: F401 - imported here, not inside a test
             import diffusers.modular_pipelines.minimax_h3.encoders  # noqa: F401
             import open_h3.geometry  # noqa: F401
+            import open_h3.parallel  # noqa: F401
             import open_h3.pipeline  # noqa: F401
             import open_h3.sigmas  # noqa: F401
         finally:
@@ -2309,6 +2816,275 @@ class OwnCopyTests(unittest.TestCase):
         full = job_module.decode_released(pipe.vae, latents, 124, torch, "cpu")
         self.assertTrue(torch.equal(got, full[:, 4:28]))                   # the centre 24 of 32 rows
         self.assertFalse(torch.equal(got[123], got[120]))
+
+
+class StandInTransformer:
+    """H3's DiT as a fixed function of everything it is given: each video row's velocity from its own latent, its
+    timestep and its rotary position, the mean of every video row (as attention mixes them, so the keyframe rows
+    reach the generated ones), the audio, the prompt and the text's tags. `poison` leading video rows get NaN (rows
+    that must never be stepped). Each call's inputs and output in `calls`."""
+
+    def __init__(self, poison=0):
+        self.transformer_blocks = [types.SimpleNamespace(attn=types.SimpleNamespace(
+            processor=types.SimpleNamespace(valid_rows=None))) for _ in range(2)]
+        self.poison, self.calls = poison, []
+
+    def __call__(self, *, hidden_states, audio_hidden_states, encoder_hidden_states, timestep, timestep_indices,
+                 token_tags, position_ids, video_indices, audio_indices, text_indices, attention_kwargs, return_dict):
+        x = hidden_states.float()
+        t = timestep[timestep_indices][video_indices].float().view(1, -1, 1)
+        where = position_ids[video_indices].float()[None]
+        context = (audio_hidden_states.float().mean() + encoder_hidden_states.float().mean()
+                   + 0.1 * token_tags[text_indices].float().mean() + 0.001 * position_ids[audio_indices].float().mean())
+        velocity = torch.tanh(0.5 * x + 0.3 * t + 0.01 * where[..., :1] + 0.05 * (where[..., 1:2] - where[..., 2:3])
+                              + 0.2 * x.mean(1, keepdim=True) + 0.1 * context)
+        if self.poison:
+            velocity[:, :self.poison] = float("nan")
+        velocity = velocity.to(torch.bfloat16)
+        self.calls.append({"hidden": hidden_states.clone(), "times": timestep[timestep_indices][video_indices].clone(),
+                           "velocity": velocity.clone(), "valid_rows": self.transformer_blocks[0].attn.processor
+                           .valid_rows})
+        return velocity, None
+
+
+def bench_k1(pipe, low, text, seed, keyframe, noise_aug=0.999, noise_seed=42):
+    """The bench wrapper's K1 refine, as the research runs held a first frame with it: its refine_keyframe with mode
+    "prefix" and the layout its keyframe_layout builds for it, copied here (the bench is not part of this repo)."""
+    from diffusers.modular_pipelines.minimax_h3.before_denoise import (MiniMaxH3PrepareLayoutStep,
+                                                                       patchify_video_latents)
+    from open_h3.geometry import (H3_AUDIO_TAG, H3_VIDEO_TAG, MiniMaxH3Geometry, MiniMaxH3PackedLayout,
+                                  build_row_timestep_plan, pack_audio_latents, unpatchify_video_rows)
+    device = pipe.device
+    geometry = MiniMaxH3Geometry(num_latent_frames=low.shape[1], latent_height=low.shape[2],
+                                 latent_width=low.shape[3], num_audio_latents=pipe.audio.shape[-1])
+    rows = geometry.rows_per_video_frame
+    tags = torch.as_tensor(text["text_token_tags"], dtype=torch.long).flatten().cpu()
+    layout = MiniMaxH3PackedLayout(*MiniMaxH3PrepareLayoutStep.build_packed_sequence(
+        text_token_tags=tags, num_latent_frames=geometry.num_latent_frames, latent_height=geometry.latent_height,
+        latent_width=geometry.latent_width, num_audio_latents=geometry.num_audio_latents,
+        patch_size=geometry.patch_size, audio_channels=geometry.audio_channels, audio_tag=H3_AUDIO_TAG,
+        video_tag=H3_VIDEO_TAG, keyframe_anchors=("first",)))
+    clean = keyframe.detach().float().cpu()
+    eps = torch.randn(clean.shape, generator=torch.Generator().manual_seed(noise_seed), dtype=torch.float32)
+    t = torch.tensor(noise_aug, dtype=torch.float32)
+    noised = t * clean + (1.0 - t) * eps
+    condition = patchify_video_latents(noised, geometry.patch_size).reshape(1, rows, -1).to(device)
+    layout = layout.to(device)
+    audio = pack_audio_latents(pipe.audio[None]).to(device)
+    prompt = text["prompt_embeds"][None].to(device)
+    low = patchify_video_latents(low[None], geometry.patch_size).reshape(
+        1, geometry.num_video_rows, geometry.video_row_dim).to(device, torch.float32)
+    for block in pipe.model.transformer_blocks:
+        block.attn.processor.valid_rows = layout.token_tags.numel()
+    with torch.inference_mode():
+        noise = torch.randn(low.shape, device=device, dtype=torch.float32,
+                            generator=torch.Generator(device=device).manual_seed(seed))
+        sigmas = pipe.sigmas
+        state = (1 - sigmas[0]) * low + sigmas[0] * noise
+        for index, (sigma, following) in enumerate(zip(sigmas[:-1], sigmas[1:])):
+            pipe.on_step("refine", index)
+            times, indices = build_row_timestep_plan(layout, video_sigma=sigma, audio_sigma=0.,
+                                                     keyframe_noise_aug=noise_aug)
+            video = torch.cat([condition, state], 1)
+            velocity, _ = pipe.model(
+                hidden_states=video.to(torch.bfloat16), audio_hidden_states=audio, encoder_hidden_states=prompt,
+                timestep=times, timestep_indices=indices, token_tags=layout.token_tags,
+                position_ids=layout.position_ids, video_indices=layout.video_indices,
+                audio_indices=layout.audio_indices, text_indices=layout.text_indices, attention_kwargs={},
+                return_dict=False)
+            state = state + (sigma - following) * velocity[:, rows:].float()
+    return unpatchify_video_rows(state, geometry)[0]
+
+
+def h3_geometry(frames, height, width, audio=207):
+    from open_h3.geometry import MiniMaxH3Geometry
+    return MiniMaxH3Geometry(num_latent_frames=frames, latent_height=height, latent_width=width,
+                             num_audio_latents=audio)
+
+
+@unittest.skipUnless(torch is not None and has_modules("numpy", "diffusers"),
+                     "needs torch, numpy and diffusers (the Regen-2K environment; CPU is enough)")
+class PinLayoutTests(unittest.TestCase):
+    """pin_layout and check_pin_layout with diffusers' build_packed_sequence and NVIDIA's t2va layout (where
+    LFSTUDIO_UPSCALE_PKG names NVIDIA's package): the rows and the keyframe blocks' positions at the real sizes."""
+
+    def setUp(self):
+        if not nvidia_modules():
+            self.skipTest("NVIDIA's Open-H3-Regenerate-2K is not installed (LFSTUDIO_UPSCALE_PKG)")
+        stack = contextlib.ExitStack()
+        stack.enter_context(nvidia_open_h3())
+        self.addCleanup(stack.close)
+        self.tags = torch.ones(196, dtype=torch.long)                 # a prompt of 196 text rows (L)
+
+    def layout(self, anchors, geometry, made=124):
+        layout, t2va = job_module.pin_layout(self.tags, geometry, anchors)
+        return layout, t2va, job_module.check_pin_layout(layout, t2va, geometry, anchors, made)
+
+    def test_the_rows_at_1080p_and_2k(self):
+        """1080p (R 2,040 rows a frame) and 2K (R 3,600): t2va's rows, + R per end, and the condition rows R per
+        end; the first block at frame 0's time (L), the last at L + 205 (frame 123 of the 124 made), the same grid as
+        frame 0 and the video tag; every generated, audio and text row where t2va has it."""
+        for (height, width), rows, sequences in (((68, 120), 2040, (76090, 78130, 80170)),
+                                                 ((90, 160), 3600, (133810, 137410, 141010))):
+            geometry = h3_geometry(37, height, width)
+            for anchors in ((), ("first",), ("last",), ("first", "last")):
+                with self.subTest(grid=(height, width), anchors=anchors):
+                    layout, t2va, facts = self.layout(anchors, geometry)
+                    self.assertEqual((t2va.sequence_length, layout.sequence_length, layout.num_condition_video_rows),
+                                     (sequences[0], sequences[len(anchors)], rows * len(anchors)))
+                    self.assertEqual((facts["rows_per_frame"], facts["sequence_rows"], facts["condition_rows"]),
+                                     (rows, sequences[len(anchors)], rows * len(anchors)))
+                    times = {"first": 0.0, "last": 205.0}
+                    self.assertEqual(facts["blocks"], [{"anchor": a, "time": times[a]} for a in anchors])
+                    n = rows * len(anchors)
+                    positions, video = layout.position_ids, layout.video_indices
+                    self.assertTrue(torch.equal(positions[video[n:]], t2va.position_ids[t2va.video_indices]))
+                    self.assertTrue(torch.equal(positions[layout.audio_indices], t2va.position_ids[t2va.audio_indices]))
+                    self.assertTrue(torch.equal(positions[layout.text_indices], t2va.position_ids[t2va.text_indices]))
+                    for index, anchor in enumerate(anchors):
+                        block = positions[video[index * rows:(index + 1) * rows]]
+                        self.assertEqual(float(block[0, 0]), {"first": 196.0, "last": 400.99999999999994}[anchor])
+                        self.assertTrue(torch.equal(block[:, 1:], positions[video[n:n + rows], 1:]))
+                        self.assertTrue(bool((layout.token_tags[video[index * rows:(index + 1) * rows]] == 0).all()))
+                    checks = {k: v for k, v in facts.items() if isinstance(v, bool)}
+                    self.assertEqual(set(checks), {"r_per_anchor", "video_as_t2va", "audio_as_t2va", "text_as_t2va"} |
+                                     {f"{a}_{c}" for a in anchors for c in ("at_frame0_grid", "tag_video", "time")})
+                    self.assertTrue(all(checks.values()), checks)
+        layout, t2va = job_module.pin_layout(self.tags, h3_geometry(37, 68, 120), ())
+        self.assertIs(layout, t2va)
+
+    def test_the_last_block_at_other_lengths(self):
+        """The last block at (5/3)(made - 1) after the text for the other lengths H3 makes (158, 243, 362 frames;
+        diffusers sums the spans with numpy, as the reference does: these are its values)."""
+        for made, frames, time in ((124, 37, 400.99999999999994), (158, 47, 457.66666666666663),
+                                   (243, 72, 599.3333333333334), (362, 107, 797.6666666666665)):
+            with self.subTest(made=made):
+                layout, t2va, facts = self.layout(("first", "last"), h3_geometry(frames, 4, 6), made)
+                self.assertEqual(float(layout.position_ids[layout.video_indices[6], 0]), time)
+                self.assertLess(abs(time - 196 - 5 / 3 * (made - 1)), 1e-9)
+                self.assertEqual(facts["blocks"][1], {"anchor": "last", "time": round(5 / 3 * (made - 1), 4)})
+                self.assertEqual(facts["made"], made)
+
+    def test_a_wrong_layout_is_refused(self):
+        geometry = h3_geometry(37, 4, 6)
+        layout, t2va = job_module.pin_layout(self.tags, geometry, ("first", "last"))
+        with self.assertRaisesRegex(RuntimeError, "158 frames made are not 37 latent frames"):
+            job_module.check_pin_layout(layout, t2va, geometry, ("first", "last"), 158)
+        with self.assertRaisesRegex(RuntimeError, r"pin layout check failed: .*'last_time': False"):
+            job_module.check_pin_layout(layout, t2va, geometry, ("last", "first"), 124)
+        with self.assertRaisesRegex(RuntimeError, r"'r_per_anchor': False"):
+            job_module.check_pin_layout(layout, t2va, geometry, ("first",), 124)
+
+
+@unittest.skipUnless(torch is not None and has_modules("numpy", "diffusers"),
+                     "needs torch, numpy and diffusers (the Regen-2K environment; CPU is enough)")
+class PinRefineTests(unittest.TestCase):
+    """refine_pinned on the CPU with a stand-in transformer (a fixed function of its inputs) and NVIDIA's own code
+    where LFSTUDIO_UPSCALE_PKG names its package: no keyframe is NVIDIA's Pipeline.refine bit for bit, a first frame
+    the bench wrapper's K1 bit for bit, and with both ends the first block unchanged, the condition rows never
+    written, only the rows after them stepped, the timesteps H3's."""
+
+    def setUp(self):
+        if not nvidia_modules():
+            self.skipTest("NVIDIA's Open-H3-Regenerate-2K is not installed (LFSTUDIO_UPSCALE_PKG)")
+        stack = contextlib.ExitStack()
+        self.pipeline = stack.enter_context(nvidia_open_h3())
+        self.addCleanup(stack.close)
+        draw = torch.Generator().manual_seed(11)
+        self.low = torch.randn(24, 37, 4, 6, generator=draw)               # R = 2 x 3 = 6 rows a frame
+        self.text = {"prompt_embeds": torch.randn(5, 16, generator=draw).to(torch.bfloat16),
+                     "text_token_tags": torch.ones(5, dtype=torch.long)}
+        self.audio = torch.randn(2, 32, 207, generator=draw).to(torch.bfloat16)
+        self.first, self.last = (torch.randn(1, 24, 1, 4, 6, generator=draw) for _ in range(2))
+        self.sigmas = sys.modules["open_h3.sigmas"].shifted_grid(0.7, 2)  # balanced: 2 steps from 0.7
+
+    def pipe(self, poison=0):
+        """NVIDIA's Pipeline without its __init__ (no weights): on the CPU, the stand-in transformer."""
+        pipe = object.__new__(self.pipeline.Pipeline)
+        pipe.device, pipe.sigmas, pipe.audio = torch.device("cpu"), list(self.sigmas), self.audio
+        pipe.model, pipe.fwd = StandInTransformer(poison), types.SimpleNamespace(plan=None, graphs=None)
+        return pipe
+
+    def same_calls(self, a, b):
+        self.assertEqual(len(a.model.calls), len(b.model.calls))
+        for one, other in zip(a.model.calls, b.model.calls):
+            for key in ("hidden", "times", "velocity"):
+                self.assertTrue(torch.equal(one[key], other[key]), key)
+            self.assertEqual(one["valid_rows"], other["valid_rows"])
+
+    def test_no_keyframe_is_nvidias_refine(self):
+        nvidia, mine = self.pipe(), self.pipe()
+        want = self.pipeline.Pipeline.refine(nvidia, self.low, self.text, 1234)
+        got, facts = job_module.refine_pinned(mine, self.low, self.text, 1234, [], 124)
+        self.assertTrue(torch.equal(got, want))
+        self.same_calls(nvidia, mine)
+        self.assertEqual((facts["anchors"], facts["condition_rows"], facts["blocks"]), ([], 0, []))
+        self.assertEqual([[round(t, 3) for t in step] for step in facts["timesteps"]], [[0.3, 1.0], [0.506, 1.0]])
+        self.assertNotIn("condition_sha256", facts)
+
+    def test_a_first_frame_is_the_bench_k1(self):
+        bench, mine = self.pipe(), self.pipe()
+        want = bench_k1(bench, self.low, self.text, 1234, self.first)
+        got, facts = job_module.refine_pinned(mine, self.low, self.text, 1234, [("first", self.first)], 124)
+        self.assertTrue(torch.equal(got, want))
+        self.same_calls(bench, mine)
+        self.assertEqual((facts["anchors"], facts["sequence_rows"], facts["t2va_rows"], facts["condition_rows"],
+                          facts["blocks"]), (["first"], 5 + 414 + 37 * 6 + 6, 5 + 414 + 37 * 6, 6,
+                                             [{"anchor": "first", "time": 0.0}]))
+        self.assertEqual((facts["noise_aug"], facts["noise_seed"]), (0.999, 42))
+        self.assertRegex(facts["condition_sha256"], "^[0-9a-f]{64}$")
+        # NVIDIA's refine differs: the keyframe's rows change what the model gives the generated ones
+        self.assertFalse(torch.equal(got, self.pipeline.Pipeline.refine(self.pipe(), self.low, self.text, 1234)))
+
+    def test_both_ends(self):
+        """First and last: the first block is the same draw as with the first alone (eps from one CPU generator,
+        first then last), the last block the generator's second draw on the last latent; the condition rows are
+        the same in every step and never written, and only the rows after them are stepped (poisoned condition
+        velocities change nothing); the timesteps hold them at 0.999."""
+        rows = 6
+        alone, both, poisoned = self.pipe(), self.pipe(), self.pipe(poison=2 * rows)
+        job_module.refine_pinned(alone, self.low, self.text, 1234, [("first", self.first)], 124)
+        got, facts = job_module.refine_pinned(both, self.low, self.text, 1234, [("first", self.first),
+                                                                                ("last", self.last)], 124)
+        again, _ = job_module.refine_pinned(poisoned, self.low, self.text, 1234, [("first", self.first),
+                                                                                  ("last", self.last)], 124)
+        self.assertTrue(torch.equal(got, again))
+        self.assertTrue(bool(torch.isfinite(again).all()))
+        first = alone.model.calls[0]["hidden"][:, :rows]
+        self.assertTrue(torch.equal(both.model.calls[0]["hidden"][:, :rows], first))
+        from diffusers.modular_pipelines.minimax_h3.before_denoise import patchify_video_latents
+        draw = torch.Generator().manual_seed(42)
+        t = torch.tensor(0.999, dtype=torch.float32)
+        blocks = []
+        for latent in (self.first, self.last):
+            eps = torch.randn(latent.shape, generator=draw, dtype=torch.float32)
+            blocks.append(patchify_video_latents(t * latent + (1.0 - t) * eps, (1, 2, 2)).reshape(1, rows, -1))
+        condition = torch.cat(blocks, 1).to(torch.bfloat16)
+        for call in both.model.calls:                                # never written: the same rows every step
+            self.assertTrue(torch.equal(call["hidden"][:, :2 * rows], condition))
+            self.assertTrue(bool((call["times"][:2 * rows] == torch.tensor(0.999)).all()))
+        # the step: NVIDIA's start, then only the rows after the 2 R condition rows move, by their own velocity
+        low = patchify_video_latents(self.low[None], (1, 2, 2)).reshape(1, 37 * rows, -1)
+        noise = torch.randn(low.shape, dtype=torch.float32, generator=torch.Generator().manual_seed(1234))
+        state = (1 - self.sigmas[0]) * low + self.sigmas[0] * noise
+        self.assertTrue(torch.equal(both.model.calls[0]["hidden"][:, 2 * rows:], state.to(torch.bfloat16)))
+        state = state + (self.sigmas[0] - self.sigmas[1]) * both.model.calls[0]["velocity"][:, 2 * rows:].float()
+        self.assertTrue(torch.equal(both.model.calls[1]["hidden"][:, 2 * rows:], state.to(torch.bfloat16)))
+        self.assertTrue(bool((both.model.calls[0]["times"][2 * rows:] == torch.tensor(1 - self.sigmas[0])).all()))
+        self.assertEqual([[round(t, 3) for t in step] for step in facts["timesteps"]],
+                         [[0.3, 0.999, 1.0], [0.506, 0.999, 1.0]])
+        self.assertEqual((facts["blocks"], facts["condition_rows"]),
+                         ([{"anchor": "first", "time": 0.0}, {"anchor": "last", "time": 205.0}], 2 * rows))
+        self.assertEqual(both.model.calls[0]["valid_rows"], 5 + 414 + 37 * rows + 2 * rows)
+        last, _ = job_module.refine_pinned(self.pipe(), self.low, self.text, 1234, [("last", self.last)], 124)
+        self.assertFalse(torch.equal(last, got))
+
+    def test_a_latent_of_another_grid_is_refused(self):
+        with self.assertRaisesRegex(ValueError, r"the last keyframe's latent is \(1, 24, 1, 8, 6\), the refine's "
+                                                r"\(1, 24, 1, 4, 6\)"):
+            job_module.refine_pinned(self.pipe(), self.low, self.text, 1234, [("first", self.first),
+                                                                              ("last", torch.zeros(1, 24, 1, 8, 6))],
+                                     124)
 
 
 if __name__ == "__main__":

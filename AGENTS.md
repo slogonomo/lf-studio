@@ -174,17 +174,28 @@ process, stopping it under `bench/memguard-run.sh`, the report, the quality step
 `runtime/geometry.py` from the patch itself.
 
 `tests/test_upscale.py` covers `upscale/regen2k_job.py` on the CPU (and that `upscale/fastload.py` is the patch's
-`runtime/fastload.py`): job.json, the clip's and the weights' files (5 s 16:9 and 9:16 MP4s made by ffmpeg), the shape
-table (with every orientation the patches make), the portrait entries for NVIDIA's dicts, the upscale route and
-`check_package`, the text check on stand-in tensors, the command lines (the mux run with ffmpeg) and the environment,
-the progress lines, the memory trace, `--check`, the receipt when a job is done, fails, is refused or gets SIGTERM,
+`runtime/fastload.py`): job.json (its `pin` too), the clip's and the weights' files (5 s 16:9 and 9:16 MP4s of 121 and
+124 frames made by ffmpeg), the frames of a 5 s clip (`FRAME_CASES`), the shape table (with every orientation the
+patches make), the portrait entries for NVIDIA's dicts, the upscale route and `check_package`, the text check on
+stand-in tensors, the command lines (NVIDIA's read of the clip; the mux run with ffmpeg) and the environment, the
+progress lines, the memory trace, `--check`, the receipt when a job is done, fails, is refused or gets SIGTERM,
 `--parent` (the job dies with the server), and `run()` with a stand-in torch and a stand-in of NVIDIA's `open_h3`, with
 both loads (fast and standard: stand-ins for safetensors, diffusers and `fastload` record every load, which the fast
 load must have replaced before the first one): a 16:9 clip makes the same calls into NVIDIA's code as before the job
-took 9:16, a 9:16 one its portrait route (the same with either load). With `LFSTUDIO_UPSCALE_PKG` naming NVIDIA's real
-package it also checks the files the job pins and the entries it was written against (read, not imported). Its torch
-tests (the merger, the lean block forward against a stock-style block, the tensor checks, the column crop) run where
-torch is importable (CPU is enough) and are skipped otherwise.
+took 9:16, a 9:16 one its portrait route (the same with either load), a clip of 124 frames the job's copies of
+NVIDIA's encode and decode, and a pin the pinned refine with the ends its check kept. The pin's fit (`cover_crop`,
+`fit_box`) against the LightX2V Turbo receipts' records, "as is" too, and the grids are standard library. With
+`LFSTUDIO_UPSCALE_PKG` naming NVIDIA's real package it also checks the files the job pins, the entries it was written
+against and its encode command (read, not imported). Its torch tests (the merger, the lean block forward against a
+stock-style block, the tensor checks, the column crop) run where torch is importable (CPU is enough) and are skipped
+otherwise. With Pillow and numpy (the Regen-2K environment) the pin's check runs on ffmpeg-made clips (each reason an
+end is not kept, the EXIF turn, the fit at the grid, `--check`); with diffusers and imageio-ffmpeg too and NVIDIA's
+package, the job's copies of NVIDIA's encode and decode against NVIDIA's own run on the CPU with a stand-in VAE (bit for
+bit at 121 frames), the pin's layout at 1080p and 2K (the last block 205 after the text) and the pinned refine with a
+stand-in transformer: without a keyframe NVIDIA's `Pipeline.refine` bit for bit, with a first frame the bench wrapper's
+K1 refine (copied into the test) bit for bit, and with both ends the first block unchanged, the condition rows never
+written and only the rows after them stepped. Run those with the Regen-2K Python, CUDA hidden (the command is in the
+file's docstring).
 
 `tests/test_h3turbo_job.py` covers `jobs/h3turbo_job.py` on the CPU: job.json and its refusals, the geometry (every
 length against the patch's `runtime/geometry.py`, the frames a clip with a last frame keeps, the layout rows against the
