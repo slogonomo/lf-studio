@@ -443,8 +443,9 @@ const upTime=s=>s<3600?`~${Math.round(s/60)} min`:`~${(s/3600).toFixed(1)} h`;
 // UP_PIN_S, the seconds one end and both ends add at 1080p and 2K, measured through the studio against the same clips
 // unpinned (2026-10-29/30: +16-17 s with one end and +30-34 s with both at 1080p, +83 s with both at 2K: each picture's
 // encode, ~3 s at 1080p, and steps ~6 s longer per end at 1080p, ~37 s with both at 2K); one end at 2K has not run,
-// so its 60 s is an estimate (docs/PERFORMANCE.md), as are they all on a clip longer than 5 s (a few seconds more per
-// end there, which they leave out; UP_PIN_UNRUN says so where the pin's route has not run at the clip's length)
+// so its 60 s is an estimate (docs/PERFORMANCE.md), as are they all on a clip longer than 5 s, where its longer
+// steps cost more per end, which they leave out: up to ~30 s per end at 2K for 10 s, about a minute with both ends
+// (docs/PERFORMANCE.md; UP_PIN_UNRUN says so where the pin's route has not run at the clip's length)
 const UP_PIN_S={"1080p":[16,32],"2k":[60,83]};
 const upPinS=j=>{const n=j.pin&&Array.isArray(j.pin.ends)?j.pin.ends.length:0;return n?(UP_PIN_S[j.resolution]||[0,0])[n-1]||0:0;};
 const upEta=j=>{const e=(upOffer(j,j.resolution)||{}).eta_s;if(!e)return 0;      // 0: no expected time
