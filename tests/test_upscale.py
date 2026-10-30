@@ -1,17 +1,23 @@
 """upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json, the clip's and the weights'
-files (5 s MP4s made by ffmpeg, 16:9 and 9:16, and the lengths and sizes it refuses), the shape table, the portrait
-entries for NVIDIA's dicts, the upscale route and the column crop, check_package, the text check on a stand-in, the
-command lines and the environment, the progress lines, the memory trace, the script's --check and its refusals,
-main's receipt when the GPU part finishes, fails or gets SIGTERM (a stand-in run()), and run() itself with a stand-in
-torch and a stand-in of NVIDIA's open_h3 that records its calls: for 16:9 the same calls as before the job took 9:16
-clips, for 9:16 the portrait route, with both loads (fast and standard; stand-ins for safetensors, diffusers and
-upscale/fastload.py record every load). No GPU, no weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for
-run() adapters, pipeline and upscaler), the weights are small files. upscale/fastload.py is checked against the
-patch's runtime/fastload.py. With NVIDIA's real package where LFSTUDIO_UPSCALE_PKG (or its default) names it, its
-pinned files and its entries are checked too (read, not imported); skipped without it.
+files (5 s MP4s made by ffmpeg, 16:9 and 9:16, 121 and 124 frames, and the lengths and sizes it refuses), the frames
+of a 5 s clip, the shape table, the portrait entries for NVIDIA's dicts, the upscale route and the column crop,
+check_package, the text check on a stand-in, the command lines (NVIDIA's read of the clip among them) and the
+environment, the progress lines, the memory trace, the script's --check and its refusals, main's receipt when the GPU
+part finishes, fails or gets SIGTERM (a stand-in run()), and run() itself with a stand-in torch and a stand-in of
+NVIDIA's open_h3 that records its calls: for 16:9 the same calls as before the job took 9:16 clips, for 9:16 the
+portrait route, with both loads (fast and standard; stand-ins for safetensors, diffusers and upscale/fastload.py
+record every load), and a clip of 124 frames through the job's copies of NVIDIA's encode and decode. No GPU, no
+weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters, pipeline and upscaler), the weights
+are small files. upscale/fastload.py is checked against the patch's runtime/fastload.py. With NVIDIA's real package
+where LFSTUDIO_UPSCALE_PKG (or its default) names it, its pinned files, its entries and its encode command are checked
+too (read, not imported); skipped without it.
 
 The parts that need torch (the merger, the lean block forward, the tensor checks, the column crop) run on the CPU when
 torch is importable and are skipped otherwise. python3 -m unittest tests.test_upscale -v   (needs ffmpeg)
+With numpy, diffusers and imageio-ffmpeg too (the Regen-2K environment), the job's copies of NVIDIA's encode_video and
+decode (encode_clip, decode_released) run on the CPU with a stand-in VAE, against NVIDIA's own (imported from its
+package, run on the CPU) where LFSTUDIO_UPSCALE_PKG names it. Run them with CUDA hidden (and LFSTUDIO_UPSCALE_PKG set):
+    CUDA_VISIBLE_DEVICES= $LFSTUDIO_HOME/envs/regen2k/bin/python -I -m unittest discover -s tests -p test_upscale.py
 """
 import contextlib
 import hashlib
@@ -106,6 +112,7 @@ class Fixture(unittest.TestCase):
         cls.media = Path(tempfile.mkdtemp(prefix="upscale-media-"))
         cls.final = make_mp4(cls.media / "final.mp4")
         cls.portrait = make_mp4(cls.media / "portrait.mp4", width=768, height=1344)
+        cls.final124 = make_mp4(cls.media / "final124.mp4", frames=124)
 
     @classmethod
     def tearDownClass(cls):
@@ -285,6 +292,79 @@ class JobTests(Fixture):
             job_module.load_job(path)
         with self.assertRaisesRegex(JobError, "cannot read"):
             job_module.load_job(self.out / "missing.json")
+
+
+def nvidia_read_command(source, path, width, height, ffmpeg):
+    """The ffmpeg command NVIDIA's encode_video builds (its subprocess.run list, from its source): `path` read at
+    width x height."""
+    import ast
+    function = next(node for node in ast.parse(source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "encode_video")
+    call = next(node for node in ast.walk(function) if isinstance(node, ast.Call)
+                and ast.unparse(node.func) == "subprocess.run")
+    names = {"imageio_ffmpeg": types.SimpleNamespace(get_ffmpeg_exe=lambda: ffmpeg), "str": str, "path": path,
+             "width": width, "height": height}
+    return eval(compile(ast.Expression(call.args[0]), "pipeline.py", "eval"), names)
+
+
+class FrameTests(unittest.TestCase):
+    """The frames of a 5 s clip (FRAME_CASES) and how the job reads its MP4 (clip_read_command), without torch."""
+
+    def test_the_cases(self):
+        self.assertEqual(job_module.FRAME_CASES, {121: {"pad": 3}, 124: {"pad": 0}})
+        self.assertEqual((job_module.NVIDIA_FRAMES, job_module.FPS), (121, "24/1"))
+        self.assertEqual(job_module.frame_case(121), {"kept": 121, "made": 124, "pad": 3, "T": 37})
+        self.assertEqual(job_module.frame_case(124), {"kept": 124, "made": 124, "pad": 0, "T": 37})
+        for kept in job_module.FRAME_CASES:                 # the shape NVIDIA's pipeline is written for, either way
+            case = job_module.frame_case(kept)
+            self.assertEqual((case["kept"] + case["pad"], case["T"]), (124, job_module.NATIVE_SHAPE[1]))
+        with self.assertRaises(KeyError):
+            job_module.frame_case(122)
+
+    def test_h3s_frames(self):
+        """H3 makes 17n+5 frames (diffusers' align_num_frames), 5n+2 latent frames (video_latent_num_frames)."""
+        for kept, made in ((121, 124), (124, 124), (122, 124), (125, 141), (73, 73), (241, 243), (361, 362),
+                           (153, 158)):
+            self.assertEqual(job_module.made_frames(kept), made, kept)
+        for frames, latents in ((124, 37), (73, 22), (158, 47), (243, 72), (362, 107), (5, 2)):
+            self.assertEqual(job_module.latent_frames(frames), latents, frames)
+        with self.assertRaisesRegex(ValueError, "121 frames are not 17n"):
+            job_module.latent_frames(121)
+
+    def test_the_read_is_nvidias(self):
+        """121 frames with 3 copies: NVIDIA's encode_video command (pipeline.py:57-61), item for item; 124 with none:
+        the same without tpad, so a short MP4 reads short (and fails the length check) instead of being padded."""
+        nvidia = ["FFMPEG", "-v", "error", "-i", "/case/stage2/clip.mp4", "-vf",
+                  "fps=24,scale=1344:768:force_original_aspect_ratio=increase:flags=bilinear,crop=1344:768,"
+                  "tpad=stop_mode=clone:stop_duration=6", "-frames:v", "121", "-an", "-f", "rawvideo", "-pix_fmt",
+                  "rgb24", "pipe:1"]
+        self.assertEqual(job_module.clip_read_command(Path("/case/stage2/clip.mp4"), (1344, 768), 121, 3, "FFMPEG"),
+                         nvidia)
+        whole = job_module.clip_read_command("/case/stage2/clip.mp4", (1344, 768), 124, 0, "FFMPEG")
+        self.assertEqual(whole, nvidia[:6] + [nvidia[6].replace(",tpad=stop_mode=clone:stop_duration=6", ""),
+                                              "-frames:v", "124"] + nvidia[9:])
+        self.assertNotIn("tpad", " ".join(whole))
+        portrait = job_module.clip_read_command("/c.mp4", (768, 1344), 121, 3, "FFMPEG")
+        self.assertIn("scale=768:1344:force_original_aspect_ratio=increase:flags=bilinear,crop=768:1344,", portrait[6])
+        package = nvidia_package()
+        if package is None:
+            self.skipTest("NVIDIA's Open-H3-Regenerate-2K is not installed (LFSTUDIO_UPSCALE_PKG)")
+        source = (package / "open_h3" / "pipeline.py").read_text()
+        for size in ((1344, 768), (768, 1344)):
+            self.assertEqual(job_module.clip_read_command("/case/clip.mp4", size, 121, 3, "FFMPEG"),
+                             nvidia_read_command(source, "/case/clip.mp4", *size, "FFMPEG"))
+        # the rest of its encode_video, which encode_clip copies with the frames as parameters
+        for line in ("if len(raw) != 121 * height * width * 3:",
+                     "pixels = torch.from_numpy(np.frombuffer(raw, np.uint8).reshape(121, height, width, 3).copy())",
+                     "pixels = pixels.permute(3, 0, 1, 2)[None].cuda().float() / 255.0",
+                     "pixels = torch.cat([pixels, pixels[:, :, -1:].expand(-1, -1, 3, -1, -1)], dim=2)",
+                     "latents = posterior.sample(generator=torch.Generator().manual_seed(seed))",
+                     "latents = ((latents - mean) / std)[0].float().cpu()",
+                     "frames = self.fast_vae.decode_frames(latents)[:121] if self.fast_vae is not None else "
+                     "self._decode_released(latents)",
+                     "return ((pixels * pixel_std + pixel_mean).clamp(0, 1)[0, :, :121].permute(1, 2, 3, 0) * 255)"
+                     ".round().byte()"):
+            self.assertIn(line, source)
 
 
 class StudioSettingsTests(unittest.TestCase):
@@ -652,20 +732,29 @@ class InputTests(Fixture):
             job_module.case_inputs(job_module.parse_job(self.job(case=str(self.tmp / "nope")), "/"))
 
     def test_5s_clips_of_either_orientation_pass(self):
-        """1344x768 (16:9) and 768x1344 (9:16), 121 frames at 24 fps; check_final says which. Any other size, length
-        or rate is refused with what it is."""
-        self.assertEqual(job_module.check_final(self.case / "stage2" / "refined_1344x768_121f.mp4"), "landscape")
-        self.assertEqual(job_module.check_final(self.portrait), "portrait")
+        """1344x768 (16:9) and 768x1344 (9:16), 121 frames at 24 fps (NVIDIA's length) or 124 (every frame H3 makes:
+        a LightX2V Turbo clip with a last keyframe); check_final says which. Any other size, length or rate is
+        refused with what it is."""
+        self.assertEqual(job_module.check_final(self.case / "stage2" / "refined_1344x768_121f.mp4"),
+                         ("landscape", 121))
+        self.assertEqual(job_module.check_final(self.portrait), ("portrait", 121))
+        self.assertEqual(job_module.check_final(self.final124), ("landscape", 124))
+        self.assertEqual(job_module.check_final(make_mp4(self.tmp / "whole9x16.mp4", width=768, height=1344,
+                                                         frames=124, audio=False)), ("portrait", 124))
         for name, kwargs, message in (("ten.mp4", {"frames": 241}, "1344x768, 241 frames"),
                                       ("ten9x16.mp4", {"frames": 241, "width": 768, "height": 1344},
                                        "768x1344, 241 frames"),
                                       ("three.mp4", {"frames": 73, "width": 768, "height": 1344}, "73 frames"),
+                                      ("122.mp4", {"frames": 122}, "122 frames"),
+                                      ("120.mp4", {"frames": 120}, "120 frames"),
                                       ("fps.mp4", {"fps": 25}, "25/1"),
+                                      ("fps124.mp4", {"fps": 25, "frames": 124}, "124 frames at 25/1"),
                                       ("576p.mp4", {"width": 1024, "height": 576}, "1024x576"),
+                                      ("576p124.mp4", {"width": 1024, "height": 576, "frames": 124}, "1024x576"),
                                       ("1080p9x16.mp4", {"width": 1080, "height": 1920}, "1080x1920")):
             with self.subTest(name=name), self.assertRaisesRegex(
-                    JobError, message + r".*: not a 5 s 16:9 or 9:16 clip \(1344x768 or 768x1344, 121 frames at 24 "
-                                        r"fps\)$"):
+                    JobError, message + r".*: not a 5 s 16:9 or 9:16 clip \(1344x768 or 768x1344, 121 or 124 frames "
+                                        r"at 24 fps\)$"):
                 job_module.check_final(make_mp4(self.tmp / name, audio=False, **kwargs))
         (self.tmp / "text.mp4").write_text("not a video")
         with self.assertRaisesRegex(JobError, "ffprobe cannot read"):
@@ -723,24 +812,28 @@ class InputTests(Fixture):
         namespace = {}
         exec(STAND_IN_SIGMAS, namespace)
         schedules, grid = namespace["SCHEDULES"], namespace["shifted_grid"]
-        job = dict(job_module.parse_job(self.job(steps=3, start_sigma=None), "/"), orientation="landscape")
+        five = job_module.frame_case(121)
+        job = dict(job_module.parse_job(self.job(steps=3, start_sigma=None), "/"), orientation="landscape",
+                   frames=five)
         self.assertEqual(job_module.plan(job, schedules, grid),
-                         {"orientation": "landscape", "size": [2560, 1440], "frames": 121, "steps": 3,
+                         {"orientation": "landscape", "size": [2560, 1440],
+                          "frames": {"kept": 121, "made": 124, "pad": 3, "T": 37}, "steps": 3,
                           "sigmas": [0.9, 0.8, 0.6, 0.0], "lean_chunks": None})
         job = dict(job_module.parse_job(self.job(resolution="4k", steps=2, start_sigma=0.5), "/"),
-                   orientation="landscape")
+                   orientation="landscape", frames=job_module.frame_case(124))
         planned = job_module.plan(job, schedules, grid)
-        self.assertEqual((planned["sigmas"], planned["size"], planned["lean_chunks"]),
-                         ([0.5, 0.25, 0.0], [3840, 2160], 16))
+        self.assertEqual((planned["sigmas"], planned["size"], planned["lean_chunks"], planned["frames"]),
+                         ([0.5, 0.25, 0.0], [3840, 2160], 16, {"kept": 124, "made": 124, "pad": 0, "T": 37}))
         for resolution, size, lean in (("1080p", [1080, 1920], None), ("2k", [1440, 2560], None),
                                        ("4k", [2160, 3840], 16)):         # 9:16: the same tokens, the same forward
-            job = dict(job_module.parse_job(self.job(resolution=resolution), "/"), orientation="portrait")
+            job = dict(job_module.parse_job(self.job(resolution=resolution), "/"), orientation="portrait",
+                       frames=five)
             planned = job_module.plan(job, schedules, grid)
             self.assertEqual((planned["orientation"], planned["size"], planned["lean_chunks"]),
                              ("portrait", size, lean))
         with self.assertRaisesRegex(JobError, "no 3-step schedule"):
             job_module.plan(dict(job_module.parse_job(self.job(steps=3, start_sigma=None), "/"),
-                                 orientation="landscape"), {2: [0.7, 0.4, 0]}, grid)
+                                 orientation="landscape", frames=five), {2: [0.7, 0.4, 0]}, grid)
 
 
 class LineAndCommandTests(unittest.TestCase):
@@ -874,10 +967,19 @@ class ScriptTests(Fixture):
         shutil.copy(self.portrait, self.case / "stage2" / "refined_768x1344_121f.mp4")
         planned = json.loads(self.script("--job", str(self.write_job()), "--check", check=True).stdout)
         self.assertEqual((planned["orientation"], planned["job"]["orientation"], planned["size"], planned["frames"]),
-                         ("portrait", "portrait", [1440, 2560], 121))
+                         ("portrait", "portrait", [1440, 2560], {"kept": 121, "made": 124, "pad": 3, "T": 37}))
         planned = json.loads(self.script("--job", str(self.write_job(resolution="1080p")), "--check",
                                           check=True).stdout)
         self.assertEqual(planned["size"], [1080, 1920])
+
+    def test_check_of_a_124_frame_clip(self):
+        """Every frame H3 makes (a LightX2V Turbo clip with a last keyframe): taken whole, no copies added."""
+        (self.case / "stage2" / "refined_1344x768_121f.mp4").unlink()
+        shutil.copy(self.final124, self.case / "stage2" / "refined_1344x768_124f.mp4")
+        planned = json.loads(self.script("--job", str(self.write_job(resolution="1080p")), "--check",
+                                          check=True).stdout)
+        self.assertEqual((planned["orientation"], planned["size"], planned["frames"]),
+                         ("landscape", [1920, 1080], {"kept": 124, "made": 124, "pad": 0, "T": 37}))
 
     def test_check_refuses(self):
         make_mp4(self.case / "stage2" / "refined_768x1344_241f.mp4", width=768, height=1344, frames=241)
@@ -1049,6 +1151,9 @@ class StandInTensor:
                              device=device or self.device)
 
     def __getitem__(self, index):
+        if isinstance(index, tuple):                 # frames[:, top:top + rows], NVIDIA's row crop: as narrow(1, ...)
+            assert index[0] == slice(None) and index[1].step is None and len(index) == 2
+            return self.narrow(1, index[1].start, index[1].stop - index[1].start)
         assert index == 0
         return self._copy(self.shape[1:])
 
@@ -1240,6 +1345,7 @@ class Pipeline:
         lora, self.curve = adapters.attach(self.model, weights_dir)
         self.merger = adapters.StageMerger(self.model, {{"refine": [(lora, 1.0)]}}, self.device, resident=False)
         self.node = Node()
+        self.fast_vae = None
         self.vae = AutoencoderKLMiniMaxH3.from_pretrained(base_model, subfolder="vae", torch_dtype=torch.float32,
                                                           local_files_only=True).cuda().eval()    # load_video_vae
 
@@ -1295,8 +1401,9 @@ class RunTests(Fixture):
                                 "text_token_tags": StandInTensor(41, values=[1] * 41)},
             "stage1_direct_tensors.pt": {"audio": StandInTensor(1, 2, 161333)}}
 
-    def run_job(self, fallback=(), **changes):
-        """main() on job.json with `changes`; the loads go into self.loads, the stand-in modules into self.modules."""
+    def run_job(self, fallback=(), seams=None, **changes):
+        """main() on job.json with `changes`; the loads go into self.loads, the stand-in modules into self.modules.
+        `seams`: {name: stand-in} for the job's own functions."""
         handler = signal.getsignal(signal.SIGTERM)
         self.addCleanup(signal.signal, signal.SIGTERM, handler)
         fake = stand_in_torch(self.loaded)
@@ -1310,13 +1417,19 @@ class RunTests(Fixture):
             self.modules["diffusers"].AutoencoderKLMiniMaxH3Audio.from_pretrained(
                 base, subfolder="audio_vae", torch_dtype=torch.float32, local_files_only=True).cuda().eval()
             return clip_audio
-        with mock.patch.dict(sys.modules, {"torch": fake, **self.modules}), \
-                mock.patch.object(sys, "path", list(sys.path)), \
-                mock.patch.object(job_module, "apply_environment"), \
-                mock.patch.object(job_module, "load_fastload", return_value=stand_in_fastload(self.loads, fallback)), \
-                mock.patch.object(job_module, "encode_audio", side_effect=encode_audio) as encode_audio, \
-                mock.patch.object(job_module, "install_lean_blocks", return_value=3) as lean, \
-                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+        with contextlib.ExitStack() as stack:
+            for name, value in (seams or {}).items():
+                stack.enter_context(mock.patch.object(job_module, name, value))
+            stack.enter_context(mock.patch.dict(sys.modules, {"torch": fake, **self.modules}))
+            stack.enter_context(mock.patch.object(sys, "path", list(sys.path)))
+            stack.enter_context(mock.patch.object(job_module, "apply_environment"))
+            stack.enter_context(mock.patch.object(job_module, "load_fastload",
+                                                  return_value=stand_in_fastload(self.loads, fallback)))
+            encode_audio = stack.enter_context(mock.patch.object(job_module, "encode_audio",
+                                                                 side_effect=encode_audio))
+            lean = stack.enter_context(mock.patch.object(job_module, "install_lean_blocks", return_value=3))
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             status = job_module.main(["--job", str(self.write_job(**changes))])
             calls = list(sys.modules["open_h3.pipeline"].CALLS) if "open_h3.pipeline" in sys.modules else []
             pipeline = sys.modules.get("open_h3.pipeline")       # NVIDIA's module dicts as the run left them
@@ -1457,11 +1570,44 @@ class RunTests(Fixture):
         (self.case / "stage2" / "refined_1344x768_121f.mp4").unlink()
         shutil.copy(self.portrait, self.case / "stage2" / "refined_768x1344_121f.mp4")
         if pin:
-            pins = {rel: hashlib.sha256((self.package / rel).read_bytes()).hexdigest()
-                    for rel in job_module.NVIDIA_FILES}
-            patcher = mock.patch.dict(job_module.NVIDIA_FILES, pins)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+            self.pin_stand_ins()
+
+    def pin_stand_ins(self):
+        """NVIDIA_FILES pinned to the stand-in package's files."""
+        pins = {rel: hashlib.sha256((self.package / rel).read_bytes()).hexdigest() for rel in job_module.NVIDIA_FILES}
+        patcher = mock.patch.dict(job_module.NVIDIA_FILES, pins)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def whole_clip(self, orientation="landscape", pin=True):
+        """The clip one of 124 frames, every frame H3 made; with `pin`, NVIDIA_FILES pinned to the stand-ins."""
+        for mp4 in (self.case / "stage2").glob("refined_*.mp4"):
+            mp4.unlink()
+        width, height = job_module.SHAPES[orientation]["input"]
+        shutil.copy(self.final124 if orientation == "landscape" else
+                    make_mp4(self.tmp / "portrait124.mp4", width=768, height=1344, frames=124),
+                    self.case / "stage2" / f"refined_{width}x{height}_124f.mp4")
+        if pin:
+            self.pin_stand_ins()
+
+    def own_seams(self):
+        """encode_clip and decode_released as stand-ins that record their calls (self.encoded, self.decoded): the
+        video VAE loaded as NVIDIA's encode_video loads it, the latent of the clip's shape; frames at the computed
+        grid."""
+        self.encoded, self.decoded = [], []
+
+        def encode_clip(base, mp4, size, kept, pad, seed, torch, keyframes=(), encode_seed=None, **kwargs):
+            self.modules["diffusers"].AutoencoderKLMiniMaxH3.from_pretrained(
+                base, subfolder="vae", torch_dtype=torch.float32, local_files_only=True).cuda().eval()
+            self.encoded.append((Path(mp4).name, size, kept, pad, seed, [a for a, _ in keyframes], encode_seed))
+            native = job_module.SHAPES["landscape" if size[0] > size[1] else "portrait"]["native"]
+            return torch.Tensor(*native, tag="final"), {a: torch.Tensor(1, 24, 1, 1, 1, tag=a) for a, _ in keyframes}, \
+                1.5
+
+        def decode_released(vae, latents, kept, torch, device="cuda"):
+            self.decoded.append((latents.shape, kept, device))
+            return torch.Tensor(kept, latents.shape[2] * 16, latents.shape[3] * 16, 3)
+        return {"encode_clip": encode_clip, "decode_released": decode_released}
 
     def test_portrait(self):
         """A 9:16 clip: NVIDIA's encode_video at 768x1344 and its Pipeline at the portrait grid (through the entries
@@ -1506,6 +1652,74 @@ class RunTests(Fixture):
                 self.assertEqual(receipt["output"], {"file": "video_noaudio.mp4", "size": [width, height],
                                                      "frames": 121, "bytes": 3})
                 self.assertEqual(encode_audio.call_args.args[1].shape, (2, 161333))    # the clip's audio, as 16:9
+
+    def test_a_clip_of_every_frame_made(self):
+        """124 frames (a LightX2V Turbo clip with a last keyframe): encode_clip reads them all at NVIDIA's input size
+        with no copies, decode_released keeps them all, then NVIDIA's centre rows (and for 9:16 the job's centre
+        columns); NVIDIA's encode_video and decode are not called, the rest is NVIDIA's as for 121 frames, and the
+        output has 124 frames."""
+        pipeline = {"fwd": "standard", "hyperflow": None, "vae_batch": 26, "steps": 2, "start_sigma": 0.7,
+                    "vae": "standard"}
+        cases = {("landscape", "1080p"): ([(24, 37, 68, 120)], [((124, 1088, 1920, 3), 1, 4, 1080)]),
+                 ("landscape", "2k"): ([(24, 37, 90, 160)], [((124, 1440, 2560, 3), 1, 0, 1440)]),
+                 ("landscape", "4k"): ([(24, 37, 90, 160), (24, 37, 136, 240)], [((124, 2176, 3840, 3), 1, 8, 2160)]),
+                 ("portrait", "1080p"): ([(24, 37, 120, 68)], [((124, 1920, 1088, 3), 1, 0, 1920),
+                                                               ((124, 1920, 1088, 3), 2, 4, 1080)]),
+                 ("portrait", "2k"): ([(24, 37, 160, 90)], [((124, 2560, 1440, 3), 1, 0, 2560),
+                                                            ((124, 2560, 1440, 3), 2, 0, 1440)])}
+        for orientation in job_module.SHAPES:
+            with self.subTest(orientation=orientation):
+                self.whole_clip(orientation)
+                shape = job_module.SHAPES[orientation]
+                for (which, resolution), (grids, narrowed) in cases.items():
+                    if which != orientation:
+                        continue
+                    status, receipt, calls, phases, encode_audio = self.run_job(seams=self.own_seams(),
+                                                                                resolution=resolution)
+                    self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                     receipt.get("error"))
+                    width, height = shape["sizes"][resolution]
+                    natives = [shape["native"]] + grids[:-1]
+                    self.assertEqual(calls, [
+                        ("Pipeline", dict(pipeline, resolution=shape["resolutions"][resolution])),
+                        ("load_model", "upscaler", "bf16")] +
+                        ([("upscale", shape["native"], "final")] if orientation == "landscape" else []) +
+                        [("upscaler.upscale", native, grid) for native, grid in zip(natives, grids)] + [
+                        ("set_stage", "refine"),
+                        ("refine", grids[-1], (41, 5120), 1234, "clip", 1.0),
+                        ("on_step", "refine", 0), ("on_step", "refine", 1),
+                        ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (124, height, width, 3))])
+                    self.assertEqual(self.encoded, [(f"refined_{shape['input'][0]}x{shape['input'][1]}_124f.mp4",
+                                                     shape["input"], 124, 0, 42, [], None)])
+                    self.assertEqual(self.decoded, [(grids[-1], 124, "cuda")])
+                    self.assertEqual(NARROWED, narrowed)
+                    self.assertEqual(self.loads, self.expected_loads(fast=True))
+                    self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding",
+                                              "saving"])
+                    self.assertEqual(receipt["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37})
+                    self.assertEqual(receipt["output"], {"file": "video_noaudio.mp4", "size": [width, height],
+                                                         "frames": 124, "bytes": 3})
+                    self.assertIn("encode_video", receipt["times_s"])
+                    self.assertEqual(encode_audio.call_args.args[1].shape, (2, 161333))
+
+    def test_121_frames_never_reach_the_copies(self):
+        """A 121-frame clip runs NVIDIA's encode_video and decode, never encode_clip or decode_released, and does not
+        need NVIDIA's pipeline.py pinned (16:9)."""
+        status, receipt, calls, _, _ = self.run_job(seams=self.own_seams(), resolution="1080p")
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual((self.encoded, self.decoded), ([], []))
+        self.assertEqual(([c[0] for c in calls][0], [c[0] for c in calls][-2]), ("encode_video", "decode"))
+        self.assertEqual(receipt["frames"], {"kept": 121, "made": 124, "pad": 3, "T": 37})
+
+    def test_the_copies_need_nvidias_pipeline_pinned(self):
+        """encode_clip and decode_released copy NVIDIA's pipeline.py: with another one (here the stand-in, not
+        pinned) a 124-frame clip is refused before anything loads."""
+        self.whole_clip(pin=False)
+        status, receipt, calls, phases, _ = self.run_job(seams=self.own_seams())
+        self.assertEqual((status, receipt["state"]), (2, "failed"), receipt.get("traceback"))
+        self.assertRegex(receipt["error"], r"^NVIDIA's package is not the one this wrapper was written for "
+                                           r"\(6e4a440\): \{'open_h3/pipeline\.py': '[0-9a-f]{64}'\}$")
+        self.assertEqual((calls, phases, self.loads, self.encoded), ([], [], [], []))
 
     def test_portrait_needs_the_pinned_nvidia_files(self):
         """A 9:16 clip with NVIDIA's package not at the pinned files (here the stand-ins) is refused before anything
@@ -1838,6 +2052,263 @@ class TorchTests(unittest.TestCase):
         self.assertTrue(torch.equal(kept, frames[:, :, 1:16]))
         if importlib.util.find_spec("numpy"):                      # as encode_mp4 hands them to ffmpeg
             self.assertEqual(kept.cpu().numpy().tobytes(), frames[:, :, 1:16].contiguous().numpy().tobytes())
+
+
+def has_modules(*names):
+    return all(importlib.util.find_spec(name) for name in names)
+
+
+_NVIDIA = {}
+
+
+def nvidia_modules():
+    """NVIDIA's real open_h3 (where LFSTUDIO_UPSCALE_PKG names it), imported once on the CPU and then kept out of
+    sys.modules (RunTests import stand-ins of it under the same name): {name: module}, empty without the package."""
+    if not _NVIDIA:
+        package = nvidia_package()
+        if package is None:
+            return {}
+        sys.path.insert(0, str(package))
+        try:
+            import diffusers.models.attention_dispatch  # noqa: F401 - imported here, not inside a test
+            import diffusers.modular_pipelines.minimax_h3.encoders  # noqa: F401
+            import open_h3.geometry  # noqa: F401
+            import open_h3.pipeline  # noqa: F401
+            import open_h3.sigmas  # noqa: F401
+        finally:
+            sys.path.remove(str(package))
+        _NVIDIA.update({name: sys.modules.pop(name) for name in list(sys.modules)
+                        if name == "open_h3" or name.startswith("open_h3.")})
+    return _NVIDIA
+
+
+@contextlib.contextmanager
+def nvidia_open_h3():
+    """NVIDIA's open_h3 in sys.modules for a test (its functions import from it at call time): its pipeline."""
+    modules = nvidia_modules()
+    sys.modules.update(modules)
+    try:
+        yield modules["open_h3.pipeline"]
+    finally:
+        for name in [name for name in sys.modules if name == "open_h3" or name.startswith("open_h3.")]:
+            del sys.modules[name]
+
+
+@contextlib.contextmanager
+def nvidia_on_the_cpu(vae_class):
+    """NVIDIA's encode_video and decode, written for CUDA, on the CPU: Tensor.cuda() is the tensor itself,
+    torch.tensor(device="cuda") is made on the CPU, and diffusers' AutoencoderKLMiniMaxH3 is `vae_class`."""
+    import diffusers
+    real = torch.tensor
+
+    def tensor(*args, **kwargs):
+        if kwargs.get("device") == "cuda":
+            kwargs["device"] = "cpu"
+        return real(*args, **kwargs)
+    with mock.patch.object(torch.Tensor, "cuda", lambda self, *args, **kwargs: self), \
+            mock.patch.object(torch, "tensor", tensor), \
+            mock.patch.object(diffusers, "AutoencoderKLMiniMaxH3", vae_class):
+        yield
+
+
+SPANS = (1, 4, 4, 4, 4)              # the pixel frames of each latent frame, as H3's video VAE groups them
+
+
+def frame_groups(frames):
+    """The pixel frames of each latent frame of `frames` (H3's 17 per 5 latent frames: 124 -> 37 groups)."""
+    groups, start = [], 0
+    while start < frames:
+        span = SPANS[len(groups) % len(SPANS)]
+        groups.append(list(range(start, min(start + span, frames))))
+        start += span
+    return groups
+
+
+def stand_in_vae(record):
+    """A class standing in for diffusers' AutoencoderKLMiniMaxH3, small and deterministic (its weights from a fixed
+    seed), so NVIDIA's code and the job's copies of it run on the CPU and can be compared. encode: each latent frame
+    the mean of its pixel frames (H3's grouping) over 16x16 blocks, its 3 channels mixed into 24; the posterior's
+    sample adds noise from the generator it is given. decode: each latent frame back over its pixel frames (each a
+    little different), 16x16 blocks, 24 channels mixed into 3. `record` gets ("load", kwargs), ("tiling", kwargs),
+    ("encode", its input) and ("decode", its input)."""
+    class Posterior:
+        def __init__(self, mean):
+            self.mean = mean
+
+        def sample(self, generator=None):
+            noise = torch.randn(self.mean.shape, generator=generator, dtype=self.mean.dtype)
+            return self.mean + 0.1 * noise.to(self.mean.device)
+
+    class VAE(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            weights = torch.Generator().manual_seed(7)
+            self.mix = torch.nn.Parameter(torch.randn(24, 3, generator=weights), requires_grad=False)
+            self.unmix = torch.nn.Parameter(torch.randn(3, 24, generator=weights) * 0.2, requires_grad=False)
+            self.config = types.SimpleNamespace(latents_mean=[0.01 * i for i in range(24)],
+                                                latents_std=[1 + 0.02 * i for i in range(24)])
+
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            record.append(("load", kwargs))
+            return cls().to(kwargs.get("torch_dtype", torch.float32))
+
+        def cuda(self):                      # NVIDIA's code moves it to the GPU: here it stays on the CPU
+            return self
+
+        def enable_tiling(self, **kwargs):
+            record.append(("tiling", kwargs))
+
+        def encode(self, x, return_dict=True):
+            record.append(("encode", x.detach().clone()))
+            frames = torch.stack([x[:, :, group].mean(2) for group in frame_groups(x.shape[2])], 2)
+            pooled = torch.nn.functional.avg_pool3d(frames.float(), (1, 16, 16))
+            return (Posterior(torch.einsum("oc,bcthw->bothw", self.mix.float(), pooled)),)
+
+        def decode(self, z, return_dict=True):
+            record.append(("decode", z.detach().clone()))
+            groups = frame_groups(17 * ((z.shape[2] - 2) // 5) + 5)
+            rgb = torch.einsum("co,bothw->bcthw", self.unmix.float(), z.float())
+            rgb = rgb.repeat_interleave(16, -1).repeat_interleave(16, -2)
+            frames = [rgb[:, :, k:k + 1] + 0.05 * torch.arange(len(group)).view(1, 1, -1, 1, 1)
+                      for k, group in enumerate(groups)]
+            return (torch.cat(frames, 2).to(z.dtype),)
+    return VAE
+
+
+def moving_mp4(path, frames, size="128x72"):
+    """A test pattern that changes every frame (ffmpeg's testsrc2), no audio."""
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s={size}:r=24",
+                    "-frames:v", str(frames), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    str(path)], check=True)
+    return path
+
+
+@unittest.skipUnless(torch is not None and has_modules("numpy", "diffusers", "imageio_ffmpeg"),
+                     "needs torch, numpy, diffusers and imageio-ffmpeg (the Regen-2K environment; CPU is enough)")
+class OwnCopyTests(unittest.TestCase):
+    """encode_clip and decode_released, the job's copies of NVIDIA's encode_video and _decode_released with the frames
+    as parameters, against NVIDIA's own run on the CPU with a stand-in VAE (where LFSTUDIO_UPSCALE_PKG names NVIDIA's
+    package): 121 frames give NVIDIA's latent and frames bit for bit, 124 read and keep the clip's own frames."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.media = Path(tempfile.mkdtemp(prefix="upscale-own-"))
+        cls.five = moving_mp4(cls.media / "five.mp4", 121)
+        cls.whole = moving_mp4(cls.media / "whole.mp4", 124)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.media, ignore_errors=True)
+
+    def setUp(self):
+        self.record = []
+        self.vae = stand_in_vae(self.record)
+
+    def encode(self, mp4, kept, pad, keyframes=()):
+        with nvidia_on_the_cpu(self.vae):
+            return job_module.encode_clip(Path("/base"), mp4, (64, 32), kept, pad, 42, torch, keyframes=keyframes,
+                                          encode_seed=42, device="cpu")
+
+    def read(self, mp4, frames):
+        """Every frame of `mp4` as ffmpeg gives it at 64x32 (the same scale and crop, no tpad): (frames, 32, 64, 3)."""
+        import imageio_ffmpeg
+        import numpy as np
+        raw = subprocess.run(job_module.clip_read_command(mp4, (64, 32), frames, 0, imageio_ffmpeg.get_ffmpeg_exe()),
+                             capture_output=True, check=True).stdout
+        return torch.from_numpy(np.frombuffer(raw, np.uint8).reshape(frames, 32, 64, 3).copy())
+
+    def test_121_frames_are_nvidias_encode(self):
+        """encode_clip(121, 3) gives NVIDIA's encode_video's latent bit for bit, from the same VAE input (frames 121-123
+        copies of frame 120), the same load and tiling."""
+        if not nvidia_modules():
+            self.skipTest("NVIDIA's Open-H3-Regenerate-2K is not installed (LFSTUDIO_UPSCALE_PKG)")
+        with nvidia_open_h3() as pipeline, nvidia_on_the_cpu(self.vae), \
+                mock.patch.dict(pipeline.INPUT_SIZES, {"test": (64, 32)}), \
+                mock.patch.dict(pipeline.NATIVE_SHAPES, {"test": (24, 37, 2, 4)}):
+            want = pipeline.encode_video(Path("/base"), self.five, "test", seed=42)
+            nvidia, self.record[:] = list(self.record), []
+            got, keyframes, _ = self.encode(self.five, 121, 3)
+        self.assertEqual((tuple(got.shape), got.dtype, keyframes), ((24, 37, 2, 4), torch.float32, {}))
+        self.assertTrue(torch.equal(got, want))
+        self.assertEqual([kind for kind, _ in self.record], ["load", "tiling", "encode"])
+        for (kind, mine), (_, theirs) in zip(self.record, nvidia):
+            if kind == "encode":
+                self.assertTrue(torch.equal(mine, theirs))
+            else:
+                self.assertEqual(mine, theirs, kind)
+        pixels = self.record[2][1]
+        self.assertEqual(tuple(pixels.shape), (1, 3, 124, 32, 64))
+        for copy in (121, 122, 123):
+            self.assertTrue(torch.equal(pixels[:, :, copy], pixels[:, :, 120]), copy)
+
+    def test_124_frames_are_the_clips_own(self):
+        """encode_clip(124, 0) reads the clip's 124 frames as they are (its last 3 its own, not copies of frame 120)
+        into the VAE's 124: the same 37 latent frames."""
+        got, _, _ = self.encode(self.whole, 124, 0)
+        self.assertEqual(tuple(got.shape), (24, 37, 2, 4))
+        pixels = self.record[-1][1]
+        self.assertEqual(tuple(pixels.shape), (1, 3, 124, 32, 64))
+        mean = torch.tensor(job_module.PIXEL_MEAN).view(1, 3, 1, 1, 1)
+        std = torch.tensor(job_module.PIXEL_STD).view(1, 3, 1, 1, 1)
+        read = self.read(self.whole, 124).permute(3, 0, 1, 2)[None].float() / 255.0
+        self.assertTrue(torch.equal(pixels, (read - mean) / std))
+        for frame in (121, 122, 123):
+            self.assertFalse(torch.equal(pixels[:, :, frame], pixels[:, :, 120]), frame)
+        # the same clip cut to 121 frames: NVIDIA's three copies of frame 120 instead, the same first 121 frames
+        self.encode(self.whole, 121, 3)
+        self.assertTrue(torch.equal(self.record[-1][1][:, :, :121], pixels[:, :, :121]))
+        self.assertTrue(torch.equal(self.record[-1][1][:, :, 123], pixels[:, :, 120]))
+
+    def test_a_short_clip_fails_the_length_check(self):
+        """Without tpad a 121-frame MP4 read for 124 frames reads short: refused, not padded."""
+        with self.assertRaisesRegex(ValueError, r"could not decode .*five\.mp4 into 124 frames at 64x32"):
+            self.encode(self.five, 124, 0)
+
+    def test_keyframes_on_the_same_vae(self):
+        """The pin's keyframes go through the VAE the clip's encode loaded (one load), after the clip, each as H3
+        encodes a keyframe (diffusers' encode_vae_condition)."""
+        import numpy as np
+        from diffusers.modular_pipelines.minimax_h3.encoders import encode_vae_condition
+        rng = np.random.default_rng(3)
+        first, last = (rng.integers(0, 256, (32, 64, 3), dtype=np.uint8) for _ in range(2))
+        native, keyframes, seconds = self.encode(self.whole, 124, 0, [("first", first), ("last", last)])
+        self.assertEqual([kind for kind, _ in self.record], ["load", "tiling", "encode", "encode", "encode"])
+        self.assertEqual(tuple(self.record[2][1].shape), (1, 3, 124, 32, 64))
+        self.assertEqual(list(keyframes), ["first", "last"])
+        self.assertGreaterEqual(seconds, 0)
+        for anchor, pixels in (("first", first), ("last", last)):
+            want = encode_vae_condition(self.vae(), torch.from_numpy(pixels).permute(2, 0, 1)[None, :, None],
+                                        job_module.PIXEL_MEAN, job_module.PIXEL_STD, encode_seed=42)
+            self.assertEqual(tuple(keyframes[anchor].shape), (1, 24, 1, 2, 4))
+            self.assertTrue(torch.equal(keyframes[anchor], want), anchor)
+        self.assertFalse(torch.equal(keyframes["first"], keyframes["last"]))
+
+    def test_the_decode(self):
+        """decode_released is NVIDIA's _decode_released bit for bit at 121 frames; with 124 it keeps all of them (the
+        first 121 NVIDIA's), and decode crops NVIDIA's centre rows. A 121-frame clip goes to NVIDIA's own decode."""
+        if not nvidia_modules():
+            self.skipTest("NVIDIA's Open-H3-Regenerate-2K is not installed (LFSTUDIO_UPSCALE_PKG)")
+        latents = torch.randn(24, 37, 2, 4, generator=torch.Generator().manual_seed(5))
+        with nvidia_open_h3() as pipeline, nvidia_on_the_cpu(self.vae):
+            pipe = object.__new__(pipeline.Pipeline)
+            pipe.vae, pipe.fast_vae, pipe.keep_rows = self.vae().to(torch.bfloat16), None, 24
+            want = pipeline.Pipeline.decode(pipe, latents)
+            released = pipe._decode_released(latents)
+            self.assertTrue(torch.equal(job_module.decode_released(pipe.vae, latents, 121, torch, "cpu"), released))
+            got = job_module.decode(pipe, latents, 124, torch, device="cpu")
+            with mock.patch.object(pipe, "decode", wraps=pipe.decode) as nvidia:
+                self.assertTrue(torch.equal(job_module.decode(pipe, latents, 121, torch, device="cpu"), want))
+            nvidia.assert_called_once_with(latents)
+            pipe.fast_vae = object()
+            with self.assertRaisesRegex(RuntimeError, "fast VAE"):
+                job_module.decode(pipe, latents, 124, torch, device="cpu")
+        self.assertEqual((tuple(want.shape), tuple(got.shape), got.dtype), ((121, 24, 64, 3), (124, 24, 64, 3),
+                                                                             torch.uint8))
+        self.assertTrue(torch.equal(got[:121], want))
+        full = job_module.decode_released(pipe.vae, latents, 124, torch, "cpu")
+        self.assertTrue(torch.equal(got, full[:, 4:28]))                   # the centre 24 of 32 rows
+        self.assertFalse(torch.equal(got[123], got[120]))
 
 
 if __name__ == "__main__":
