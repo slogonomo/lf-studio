@@ -1890,7 +1890,7 @@ TOOLS = [
          "last keyframe keeps all its 124 frames (at 4K its first 121). pin (Keep my frames, experimental, not run on "
          "the GPU through the studio yet): auto, the default, holds a Keyframes clip's own keyframes in the refine "
          "where the clip already shows them (a LightX2V Turbo clip's first and last frames, a Sol-H3 clip's first "
-         "frame), at 1080p and 2K with balanced, an estimated 10-70 s more; off never does; the result says which "
+         "frame), at 1080p and 2K with balanced, an estimated 10-120 s more; off never does; the result says which "
          "ends were kept. It runs after the clips queued, closes the studio's models "
          "while it runs (the next clip, or the studio's warm-up, loads them again) and takes long: on a DGX Spark "
          "about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps (4K has run once, with a 16:9 clip; not yet "

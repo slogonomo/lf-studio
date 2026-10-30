@@ -540,7 +540,7 @@ runs held a first frame only partly (the face 3-5 dB closer to the picture, fram
 (`the clip's frame 123 is 25.4 dB from your picture (28 needed)`, `your picture is no longer on disk`, `your picture
 changed since the clip was made`, `your picture does not open`, `the clip stops N frames before your last picture`).
 The job's pinned refine has not run on the GPU yet (research runs have held a first frame the same way; no run has
-held a last frame), so its cost is an estimate: about +10 s at 1080p and +40 s at 2K for one end, +30 s and +70 s for
+held a last frame), so its cost is an estimate: about +10 s at 1080p and +60 s at 2K for one end, +30 s and +120 s for
 both (each picture's encode on the VAE already loaded, and 2.7 % more rows per end;
 [PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
 

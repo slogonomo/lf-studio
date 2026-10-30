@@ -362,14 +362,22 @@ estimates. The pinned refine adds one block of condition rows per end held, as M
 rows at 1080p and +3,600 at 2K per end (+2.7 %; 78,130 and 137,410 rows with one end, 80,170 and 141,010 with both),
 and encodes each picture on the VAE the clip's encode already loaded. Research runs held a first frame the same way
 (the job run by a research wrapper that adds the block; LightX2V Turbo 576p clips, 2026-10-28, one clip at 1080p and
-two at 2K, the same machine, with CPU work alongside): steps of 149.9 and 149.4 s at 1080p (151.3 and 148.9 s
-unpinned: within the noise) and 395 s at 2K (387-390 s unpinned), peak allocated 81.66 and 91.74 GiB (+0.37 and +0.66
-GiB). Their picture encode took 8.7 s and 10.6 s, but that included a VAE load and two diagnostic encodes, so the job's
-encode on the loaded VAE is expected below that. No run has held a last frame yet; its block has as many rows as the
-first's. Estimated: about +10 s at 1080p and +40 s at 2K for one end, +30 s and +70 s for both (the page's progress
-bar adds these seconds); about 82.0 and 92.4 GiB peak with both, and at 2K a lowest MemAvailable about 1 GiB lower
-than unpinned. Measured on the CPU (2026-10-29, three LightX2V Turbo clips): the check before anything loads (the
-pictures' sha256, one frame of the clip per end) took 0.18 s for one end and 0.27-0.29 s for both.
+two at 2K, the same machine, with CPU work alongside), against the same clips unpinned:
+
+| Clip | Steps pinned | Steps unpinned | Per step | Peak allocated |
+|---|---|---|---|---|
+| 1080p | 149.9, 149.4 s | 151.3, 148.9 s | within the noise | 81.66 GiB (+0.37) |
+| 2K, the first clip | 395.2, 394.7 s | 386.6, 389.5 s | +7 s | 91.74 GiB (+0.65) |
+| 2K, the second clip | 406.3, 395.2 s | 376.2, 374.7 s | +25 s (+20 s in its second step) | 91.73 GiB (+0.65) |
+
+The second 2K clip's first step ran with more CPU work alongside (its lowest MemAvailable 11.7 GiB, 16.7 GiB in its
+second step), but its second step was still 20 s longer. Their picture encode took 8.7 s (1080p) and 10.5-10.6 s (2K),
+but that included a VAE load and two diagnostic encodes, so the job's encode on the loaded VAE is expected below that.
+No run has held a last frame yet; its block has as many rows as the first's. Estimated, from the slower 2K clip: about
++10 s at 1080p and +60 s at 2K for one end, +30 s and +120 s for both (the page's progress bar adds these seconds);
+about 82.0 and 92.4 GiB peak with both, and at 2K a lowest MemAvailable about 1 GiB lower than unpinned. Measured on
+the CPU (2026-10-29, three LightX2V Turbo clips): the check before anything loads (the pictures' sha256, one frame of
+the clip per end) took 0.18 s for one end and 0.27-0.29 s for both.
 
 Measured apart:
 

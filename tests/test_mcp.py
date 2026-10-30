@@ -239,7 +239,7 @@ class Protocol(McpTest):
         upscale = r["tools"][5]["description"]
         for words in ("Experimental", "5 s clips, 16:9 or 9:16", "of every mode and model",
                       "Keyframes or Reference clip", "stretched to 768p", "keeps all its 124 frames (at 4K its "
-                      "first 121)", "pin (Keep my frames, experimental", "an estimated 10-70 s more",
+                      "first 121)", "pin (Keep my frames, experimental", "an estimated 10-120 s more",
                       "2K is 1440x2560", "redraws faces",
                       "closes the studio's models", "4K has run once, with a 16:9 clip; not yet with a 9:16 one"):
             self.assertIn(words, upscale)

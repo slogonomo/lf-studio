@@ -201,8 +201,8 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     says "only partly" there.
   - The popover says why an end is not offered; the upscale's card says which ends were kept, and why not.
   - The job's pinned refine has not run on the GPU yet. A first frame held the same way has run in research runs at
-    1080p and 2K; a last frame has not run anywhere yet. So its cost is an estimate: about +10 s at 1080p and +40 s at
-    2K for one end, +30 s and +70 s for both, and up to about 1.3 GiB more GPU memory at the peak.
+    1080p and 2K; a last frame has not run anywhere yet. So its cost is an estimate: about +10 s at 1080p and +60 s at
+    2K for one end, +30 s and +120 s for both, and up to about 1.3 GiB more GPU memory at the peak.
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the

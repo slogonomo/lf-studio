@@ -1586,11 +1586,11 @@ class UpscalePage(UpscaleCards, PageTest):
         # it opens (one evaluate: no poll in between)
         self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
             upEta({resolution: r, steps: 2, load})))"""), [615, 1115, 1165, 1665, 3995, 4495])
-        # Keep my frames: +10 / +30 s at 1080p and +40 / +70 s at 2K for one end and both (estimates), nothing for an
+        # Keep my frames: +10 / +30 s at 1080p and +60 / +120 s at 2K for one end and both (estimates), nothing for an
         # upscale that sends none
         self.assertEqual(self.page.evaluate("""[['1080p', ['first']], ['1080p', ['first', 'last']], ['2k', ['last']],
             ['2k', ['first', 'last']], ['2k', []], ['4k', []]].map(([resolution, ends]) =>
-            upEta({resolution, steps: 2, pin: {asked: 'auto', ends}}))"""), [625, 645, 1205, 1235, 1165, 3995])
+            upEta({resolution, steps: 2, pin: {asked: 'auto', ends}}))"""), [625, 645, 1225, 1285, 1165, 3995])
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
         times = self.page.evaluate("""id => {
