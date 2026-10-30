@@ -434,7 +434,7 @@ const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==
 // +15 s for an upscale whose text is encoded first (the clip's prompt without its pictures: ~9-18 s with its Qwen
 // worker's start, measured with LightX2V Turbo's prompt encode; 9.1-9.2 s in the studio's upscales). Keep my frames:
 // UP_PIN_S, the seconds one end and both ends add at 1080p and 2K, measured through the studio against the same clips
-// unpinned (2026-10-30: +16-17 s with one end and +30-34 s with both at 1080p, +83 s with both at 2K: each picture's
+// unpinned (2026-10-29/30: +16-17 s with one end and +30-34 s with both at 1080p, +83 s with both at 2K: each picture's
 // encode, ~3 s at 1080p, and steps ~6 s longer per end at 1080p, ~37 s with both at 2K); one end at 2K has not run,
 // so its 60 s is an estimate (docs/PERFORMANCE.md)
 const UP_PIN_S={"1080p":[16,32],"2k":[60,83]};

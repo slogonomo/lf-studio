@@ -1561,7 +1561,7 @@ UPSCALE_NAMES = {"1080p": "1080p", "2k": "2K", "4k": "4K"}
 # Keep my frames (POST /api/upscale "pin", the docstring): the clip's keyframes held in the refine where the clip
 # shows them already (the job's check_pin). PIN_ROUTES says where it is offered, by the clip's model and the ends it
 # can hold (clip_keyframes): the sizes, the strengths, and the sizes it has run at on the GPU through the studio
-# ("ran", 2026-10-30; the page notes the others). One line per route, so a route that fails its GPU run goes with its
+# ("ran", 2026-10-29/30; the page notes the others). One line per route, so a route that fails its GPU run goes with its
 # line. Not at 4K (not run with the job's lean blocks); Balanced only (Faithful held a first frame only ~1 dB closer).
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out

@@ -66,11 +66,12 @@ What this wrapper changes, and why:
   VAE takes at 5 s (37 latent frames), and its decode keeps 121. H3 makes 124 frames at 5 s, and a LightX2V Turbo clip
   with a last keyframe keeps them all: it ends on the frame that keyframe is anchored to. Such a clip goes through
   encode_clip and decode_released instead, NVIDIA's code with the frames as parameters (FRAME_CASES: 124 read, no
-  copies; the same 37 latent frames, rows and refine), and comes out with all 124 (not run on the GPU yet). A
-  121-frame clip runs NVIDIA's own encode_video and decode, as before. check_package pins NVIDIA's pipeline.py
-  (sha256) when the copies run.
-- Keep my frames (job.json "pin"; experimental, not run on the GPU through the studio yet). NVIDIA's refine is text to
-  video: it redraws the clip's first and last frames like any other, away from the pictures they were made from.
+  copies; the same 37 latent frames, rows and refine), and comes out with all 124 (as it did through the studio at
+  1080p and 2K, 2026-10-29/30). A 121-frame clip runs NVIDIA's own encode_video and decode, as before. check_package
+  pins NVIDIA's pipeline.py (sha256) when the copies run.
+- Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p,
+  both at 2K). NVIDIA's refine is text to video: it redraws the clip's first and last frames like any other, away from
+  the pictures they were made from.
   With a pin, the clip's keyframes are held as H3 holds a keyframe, the bench wrapper's K1 refine for either end or
   both (refine_pinned): each picture fitted to the refine's grid as the clip's model fitted it to its canvas
   (keyframe_image: H3's cover-crop as a box in the picture, one LANCZOS step from it), encoded on encode_clip's VAE
@@ -107,8 +108,11 @@ and decode as above. A 9:16 clip with the fast load at 1080p: steps of 143+144 s
 same number of tokens); at 2K, cleanly, on 2026-10-29 (a Keyframes clip, through the studio): steps of 376+376 s,
 1117.4 s with a 9.1 s encode of its text, peak 91.09 GiB, lowest MemAvailable 16.8 GiB, as 16:9; at 4K not yet. That
 day the studio also took that clip, a Sol-H3 Reference clip, a LightX2V Turbo 576p Text clip (stretched) and a 768p
-one with a last keyframe (cut to 121 frames) through this job to 1080p: 553.6-566.8 s each, as a Text clip. The
-bench wrapper it is derived from: docs/PERFORMANCE.md.
+one with a last keyframe (cut to 121 frames) through this job to 1080p: 553.6-566.8 s each, as a Text clip. That
+night it took LightX2V Turbo clips with a last keyframe whole (124 frames) to 1080p in 557.8-560.1 s and to 2K in
+1118.9 s, as a Text clip; a pin added 16-17 s with one end and 30-34 s with both at 1080p, 83 s with both at 2K (the
+pictures' encode and longer steps; peak allocated +0.4 / +0.7 GiB at 1080p, +1.3 GiB at 2K, where the lowest
+MemAvailable was 14.1 GiB). The bench wrapper it is derived from: docs/PERFORMANCE.md.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
 cancelled; the clip's orientation and "frames" (from its MP4: kept, made by H3, pad and T; frame_case), times per
