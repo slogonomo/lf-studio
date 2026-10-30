@@ -1597,7 +1597,7 @@ class UpscalePage(UpscaleCards, PageTest):
                          ["1920×1080", "2560×1440", "3840×2160"])
         # the progress bar's expected seconds (docs/PERFORMANCE.md; /api/state upscale_offers by the record's length, 5 s
         # without one): the fast load, ~8 min more with the standard load (the record's "load"); a record of an older
-        # studio's upscale from the draft counts as any other; 10 s and 15 s are estimates; none for a size a length
+        # studio's upscale from the draft counts as any other; 10 s and 15 s from their runs; none for a size a length
         # does not have
         self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, load: 'fast'},
             {resolution: '2k', steps: 3}, {resolution: '1080p', steps: 2},
@@ -1605,7 +1605,7 @@ class UpscalePage(UpscaleCards, PageTest):
             {resolution: '1080p', steps: 2, source: 'draft'}, {resolution: '1080p', steps: 2, seconds: 10},
             {resolution: '2k', steps: 2, seconds: 10}, {resolution: '1080p', steps: 3, seconds: 15},
             {resolution: '2k', steps: 2, seconds: 15}].map(upEta)"""),
-                         [1165, 1545, 615, 1665, 3995, 615, 1443, 3262, 3559, 0])
+                         [1165, 1545, 615, 1665, 3995, 615, 1449, 3213, 3540, 0])
         # its times are upEta's for 2 steps with the studio's load (/api/state upscale_load), and follow it each time
         # it opens (one evaluate: no poll in between)
         self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
