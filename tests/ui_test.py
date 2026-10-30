@@ -257,13 +257,14 @@ with sync_playwright() as p:
           and all(not remix for s, kind, up, remix in ups if kind == "upscale"),
           f"Upscale only on finished clips with it on ({'on' if on else 'off'}), no Remix or Upscale on an upscale "
           f"({sum(kind == 'upscale' for _, kind, _, _ in ups)} upscales)")
-    # a disabled Upscale button says why (a clip it can't take yet, as one longer than 5 s); clips of another model
-    # than the studio's own name it in a tag of their own
+    # a disabled Upscale button says why (a clip it can't take, as one whose working files are gone); clips of another
+    # model than the studio's own name it in a tag of their own
     reasons = pg.evaluate("[...document.querySelectorAll('.job .act.up[aria-disabled=true]:not([hidden])')]"
                           ".map(b => b.title)")
     check(all(reasons), f"a disabled Upscale button says why ({len(reasons)} disabled)")
     # the Upscale popover of a Keyframes clip says which text the Upscale uses (its prompt without the keyframe line),
-    # and has Keep my frames, named after the ends it can hold, where the studio offers it; Escape closes it, nothing
+    # and has Keep my frames, named after the ends it can hold, where the studio offers it; each size has its time, or
+    # is greyed out with the reason as its title (a size the clip's length does not have); Escape closes it, nothing
     # is sent
     kf = pg.evaluate("(() => { const c = [...document.querySelectorAll('.job:not([data-kind])')].find(c => "
                      "c.dataset.status === 'done' && (known.get(c.dataset.id) || {}).task === 'fl2va' && "
@@ -279,6 +280,12 @@ with sync_playwright() as p:
         label = pg.inner_text("#uppinlabel") if pg.is_visible("#uppinrow") else ""
         want = ("" if not ends else "Keep my first and last frames" if len(ends) > 1 else f"Keep my {ends[0]} frame")
         check(label == want, f"Keep my frames in the popover of a Keyframes clip ({label or 'none'}, ends {ends})")
+        sizes = pg.evaluate("[...document.querySelectorAll('#uppop input[name=up_res]')].map(i => {"
+                            "const l = document.querySelector(`#uppop label[for='${i.id}']`);"
+                            " return [i.value, i.disabled, l.title, l.querySelector('small').textContent]; })")
+        check(sizes and all(title if off else re.fullmatch(r"~\d+(\.\d)? (min|h)", small)
+                            for _, off, title, small in sizes),
+              f"each size in the Upscale popover has its time or why not ({[(v, s) for v, _, _, s in sizes]})")
         pg.keyboard.press("Escape")
         pg.wait_for_selector("#uppop", state="hidden")
     else:

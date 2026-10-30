@@ -242,6 +242,8 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 #uppinrow{margin-top:8px}
 #uppinrow.off{cursor:default;color:var(--faint)}
 #uppinrow.off:hover{background:none}
+/* a size the Upscale does not offer for the clip's length: greyed, the reason as its title */
+.pop .seg input:disabled+label{opacity:.42;cursor:default;color:var(--mut)}
 .pop .note{font-size:12.5px;color:var(--warn);margin:12px 0 0}
 .pop .errtxt{margin-top:6px}
 .pop .row{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
@@ -356,11 +358,11 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 </div>
 <div class="pop" id="uppop" role="dialog" aria-labelledby="uptitle" hidden>
   <h3 id="uptitle">Upscale this clip <small>experimental</small></h3>
-  <div class="lbl" title="Each time in all, from runs on one DGX Spark: reading the clip ~2 min, loading the models (the fast load: ~22 s; ~7.5 min with LFSTUDIO_UPSCALE_LOAD=standard), the refine and the decode">Resolution <small data-standard="in all, with a ~7.5 min load">in all, with a ~22 s load</small></div>
+  <div class="lbl" title="Each time in all, from runs on one DGX Spark (estimates for clips longer than 5 s): reading the clip ~2 min at 5 s, longer for longer clips, loading the models (the fast load: ~22 s; ~7.5 min with LFSTUDIO_UPSCALE_LOAD=standard), the refine and the decode">Resolution <small data-standard="in all, with a ~7.5 min load">in all, with a ~22 s load</small></div>
   <div class="seg" role="radiogroup" aria-label="Resolution">
-    <input type="radio" name="up_res" id="up-1080p" value="1080p"><label for="up-1080p">1080p<small data-standard="~19 min">~10 min</small></label>
-    <input type="radio" name="up_res" id="up-2k" value="2k"><label for="up-2k">2K<small data-standard="~28 min">~19 min</small></label>
-    <input type="radio" name="up_res" id="up-4k" value="4k"><label for="up-4k">4K<small data-standard="~1.2 h">~1.1 h</small></label>
+    <input type="radio" name="up_res" id="up-1080p" value="1080p"><label for="up-1080p">1080p<small></small></label>
+    <input type="radio" name="up_res" id="up-2k" value="2k"><label for="up-2k">2K<small></small></label>
+    <input type="radio" name="up_res" id="up-4k" value="4k"><label for="up-4k">4K<small></small></label>
   </div>
   <div class="lbl">Strength</div>
   <div class="opts" role="radiogroup" aria-label="Strength">
@@ -418,42 +420,50 @@ function applyMachine(b){const m=MACHINES[b];if(!m||b===machine)return;machine=b
 applyMachine((document.querySelector('meta[name="lf-studio-backend"]')||{}).content||'spark');
 const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes',ref2va:'Reference'};
 // The experimental Upscale (LFSTUDIO_UPSCALE=1; /api/state "upscale"): an upscale is a job of its own (kind "upscale",
-// parent: the clip). Its expected time for the progress bar, from the job's start: `base` (closing the models ~40 s,
-// the job's start, encoding the final clip ~2 min, its fast load ~22 s, the decode and the MP4) plus `step` per refine
-// step, plus ~8 min with the standard load (j.load: its 2K run took 498 s more in all, 433 s of it the load and 56 s
-// the encode, which loads its VAE through mmap; neither depends on the resolution). From the job's own runs with the
-// fast load on one DGX Spark, a 16:9 clip to each resolution: `base` the run's time less its two steps, plus 40 s;
-// `step` their mean (docs/PERFORMANCE.md). The popover shows upEta for 2 steps with the studio's load (/api/state
-// "upscale_load"): the times in its markup are the fast load's, their data-standard the standard load's.
+// parent: the clip). What it offers a clip, by the clip's length, is the server's table (/api/state "upscale_offers",
+// upscale/regen2k_job.py offers_table; upOffer): per size {eta_s: [base, step], ran} or {why}, the reason it is not
+// offered. Its expected time for the progress bar, from the job's start (upEta): `base` (closing the models ~40 s,
+// the job's start, encoding the final clip ~2 min at 5 s, its fast load ~22 s, the decode and the MP4) plus `step` per
+// refine step, plus ~8 min with the standard load (j.load: its 2K run took 498 s more in all, 433 s of it the load and
+// 56 s the encode, which loads its VAE through mmap; neither depends on the resolution). At 5 s from the job's own runs
+// with the fast load on one DGX Spark, a 16:9 clip to each resolution; other lengths are estimates from them until
+// they run ("ran": false; docs/PERFORMANCE.md). An upscale's record has its clip's length, so its bar has its times.
+// The popover shows upEta for 2 steps with the studio's load (/api/state "upscale_load"), upTime, for each size the
+// clip's length has, and greys out the others with the reason.
 const isUp=j=>j.kind==='upscale';
 // size: the output (width, height) of a 16:9 clip; a 9:16 one's is turned (upscale/regen2k_job.py SHAPES), at the same
 // times (the same number of tokens)
-const UPSCALE={"1080p":{name:'1080p',base:315,step:150,size:[1920,1080]},"2k":{name:'2K',base:405,step:380,size:[2560,1440]},
-  "4k":{name:'4K',base:625,step:1685,size:[3840,2160]}};
+const UPSCALE={"1080p":{name:'1080p',size:[1920,1080]},"2k":{name:'2K',size:[2560,1440]},"4k":{name:'4K',size:[3840,2160]}};
 const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==='portrait'?[s[1],s[0]]:s).join('×');};
+const upOffer=(j,res)=>{const o=(state.upscale_offers||{})[String(j.seconds||5)];return o&&o[res]||null;};
+const upSizes=j=>Object.keys(UPSCALE).filter(res=>(upOffer(j,res)||{}).eta_s);      // the sizes offered for its length
+const upTime=s=>s<3600?`~${Math.round(s/60)} min`:`~${(s/3600).toFixed(1)} h`;
 // +15 s for an upscale whose text is encoded first (the clip's prompt without its pictures: ~9-18 s with its Qwen
 // worker's start, measured with LightX2V Turbo's prompt encode; 9.1-9.2 s in the studio's upscales). Keep my frames:
 // UP_PIN_S, the seconds one end and both ends add at 1080p and 2K, measured through the studio against the same clips
 // unpinned (2026-10-29/30: +16-17 s with one end and +30-34 s with both at 1080p, +83 s with both at 2K: each picture's
 // encode, ~3 s at 1080p, and steps ~6 s longer per end at 1080p, ~37 s with both at 2K); one end at 2K has not run,
-// so its 60 s is an estimate (docs/PERFORMANCE.md)
+// so its 60 s is an estimate (docs/PERFORMANCE.md), as are they all on a clip longer than 5 s (a few seconds more per
+// end there, which they leave out; UP_PIN_UNRUN says so where the pin's route has not run at the clip's length)
 const UP_PIN_S={"1080p":[16,32],"2k":[60,83]};
 const upPinS=j=>{const n=j.pin&&Array.isArray(j.pin.ends)?j.pin.ends.length:0;return n?(UP_PIN_S[j.resolution]||[0,0])[n-1]||0:0;};
-const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
-  return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0)+upPinS(j);};
+const upEta=j=>{const e=(upOffer(j,j.resolution)||{}).eta_s;if(!e)return 0;      // 0: no expected time
+  return e[0]+(j.steps||2)*e[1]+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0)+upPinS(j);};
 // What the Upscale does with a clip besides its MP4 at a size (/api/state upscalable: "text", where its text alone
-// comes from; "video", what is done to the MP4 at 1080p and 2K; "frames", the frames kept per size, for a clip that
-// keeps more than 121: one with a last keyframe, whole at 1080p and 2K, cut to its first 121 at 4K), for the popover;
-// nothing for a Sol-H3 Text clip, which it takes as it is.
-// UP_RAN: the routes (model, text, video) that have run on the GPU through the studio, each in a Text clip's time plus
-// its encode (docs/PERFORMANCE.md): Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's 576p Text clip
-// (stretched), its Keyframes clips with their own text alone, 768p as they are and 576p stretched (one with a last
-// keyframe whole, 124 frames, at 1080p and 2K), and its 768p clip with a last keyframe cut to 121 frames (run at 1080p
-// before such a clip kept all 124 there, its route at 4K now). Any other route has not: UP_UNRUN says so, and its
-// times are a Text clip's
+// comes from; "video", what is done to the MP4 at 1080p and 2K; "frames", the frames kept per size where they differ:
+// a 5 s clip with a last keyframe, whole at 1080p and 2K, cut to its first 121 at 4K), for the popover; nothing for a
+// Sol-H3 Text clip, which it takes as it is.
+// UP_RAN: the routes (model, text, video) that have run on the GPU through the studio, at 5 s, each in a Text clip's
+// time plus its encode (docs/PERFORMANCE.md): Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's 576p
+// Text clip (stretched), its Keyframes clips with their own text alone, 768p as they are and 576p stretched (one with a
+// last keyframe whole, 124 frames, at 1080p and 2K), and its 768p clip with a last keyframe cut to 121 frames (run at
+// 1080p before such a clip kept all 124 there, its route at 4K now). Any other route has not: UP_UNRUN says so, and
+// its times are a Text clip's. A clip of a length and size that has not run at all (its offer's "ran": false) gets
+// UP_LEN_UNRUN in its place: one note
 const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation clip',
   'lightx2v-turbo generation stretch','lightx2v-turbo generation trim'];
 const UP_UNRUN="This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's";
+const UP_LEN_UNRUN='Clips of this length have not been upscaled on the GPU through the studio yet: the times are estimates';
 // the video route at a size: cut to 121 frames where the clip keeps more and that size does not (4K)
 const upVideo=(u,res)=>{const v=u.video||'clip',f=u.frames||{},cut=f[res]!=null&&f[res]<Math.max(...Object.values(f));
   return cut?(v==='clip'?'trim':v+'+trim'):v;};
@@ -462,7 +472,8 @@ const upNotes=(j,u,res)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='ge
   if(u.text==='encode')n[n.length-1]+=', encoded first (~15 s)';
   if(/stretch/.test(video))n.push('From the 576p clip, stretched to 768p first');
   if(/trim/.test(video))n.push(`At ${(UPSCALE[res]||{name:res}).name} its first 121 frames: the last 3, up to your last keyframe, are left out`);
-  if(!UP_RAN.includes([jobModel(j),u.text||'clip',video].join(' ')))n.push(UP_UNRUN);
+  if((upOffer(j,res)||{}).ran===false)n.push(UP_LEN_UNRUN);
+  else if(!UP_RAN.includes([jobModel(j),u.text||'clip',video].join(' ')))n.push(UP_UNRUN);
   return n.join('. ');};
 // Keep my frames (/api/state "upscale_pin"; upscalable "pin", the ends the clip can hold, "pin_routes", where, and
 // "pin_why", why not for its other ends): a box, checked, named after the ends; off with the reason at a size or
@@ -471,8 +482,11 @@ const upNotes=(j,u,res)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='ge
 const UP_PIN_UNRUN='Keeping your frames has not been run on the GPU through the studio yet: its times are estimates';
 const pinLabel=ends=>ends.length>1?'Keep my first and last frames':`Keep my ${ends[0]} frame`;
 const END_NAME={first:'First',last:'Last'};
+// A size the clip's length does not have (upOffer's "why"): greyed in the popover, its reason as its title, and as
+// the popover's first note when it is the studio's default size (the popover picks the first size offered then)
 function upRefresh(j){const u=j.upscalable||{},res=upVal('up_res'),str=upVal('up_strength'),row=$('uppinrow'),box=$('uppin');
-  const ends=state.upscale_pin&&Array.isArray(u.pin)?u.pin:[],notes=[upNotes(j,u,res)];
+  const dflt=(state.upscale_defaults||{}).resolution,off=upOffer(j,dflt)||{};
+  const ends=state.upscale_pin&&Array.isArray(u.pin)?u.pin:[],notes=[off.why||'',upNotes(j,u,res)];
   for(const [end,why] of Object.entries(u.pin_why||{}))notes.push(`${END_NAME[end]||end} frame not kept: ${why}`);
   setHidden(row,!ends.length);
   if(ends.length){const r=(u.pin_routes||{})[res],name=(UPSCALE[res]||{name:res}).name;
@@ -975,7 +989,8 @@ function update(d,j,queue,s,t){
   const ub=d.querySelector('.act.up');
   if(ub){const u=j.upscalable,show=!!state.upscale&&j.status==='done'&&!!u;ub.hidden=!show;
     if(show){const off=!u.ok;if(ub.getAttribute('aria-disabled')!==String(off))ub.setAttribute('aria-disabled',String(off));
-      const tip=off?u.why:'Upscale to 1080p, 2K or 4K (experimental)';if(ub.title!==tip)ub.title=tip;}}
+      const n=upSizes(j).map(r=>UPSCALE[r].name),to=n.length>1?`${n.slice(0,-1).join(', ')} or ${n[n.length-1]}`:n[0];
+      const tip=off?u.why:to?`Upscale to ${to} (experimental)`:'Upscale (experimental)';if(ub.title!==tip)ub.title=tip;}}
   if(d.dataset.status!==j.status)d.dataset.status=j.status;
   const loading=/load|retry|starting/.test(j.status),stEl=d.querySelector('.st');
   const cls=j.status==='done'?'ok':j.status==='failed'?'bad':j.status==='cancelled'?'off':'wait';
@@ -1003,7 +1018,7 @@ function update(d,j,queue,s,t){
       setText(big,clock(el));
       setText(small,j.status==='upscaling'?`Upscaling · ${UP_PHASE[j.upscale_phase]||j.upscale_phase||'starting'}`:j.status==='freeing memory'?'Freeing memory · closing the models'
         :j.status==='encoding the prompt'?'Encoding the prompt · as text alone':'Starting');
-      const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
+      const w=(eta?Math.min(97,el/eta*100):0).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
     // a clip of a job model: its timer from its start; the bar against its model's time for its options and length,
     // plus the close of the studio's models while that runs, or the time the close took (seen as the prompt encode
     // started: phase_since)
@@ -1011,12 +1026,12 @@ function update(d,j,queue,s,t){
       if(j.status==='encoding the prompt'&&j.phase_since&&!d.dataset.close)d.dataset.close=Math.max(0,j.phase_since-st0).toFixed(1);
       const e=m&&modelEta(m,j.model_opts||{},j.seconds||5),eta=(e&&e.s||240)+(j.status==='freeing memory'?CLOSE_S:+(d.dataset.close||0));
       setText(big,clock(el));setText(small,jobWhere(j)[1]);
-      const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
+      const w=(eta?Math.min(97,el/eta*100):0).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
     else{bar.hidden=false;const t0=j.phase_since||j.started||j.created,el=t-t0,eta=loading?(j.load_eta||240):(ETA[j.seconds||5]||60);
       setText(big,clock(el));
       setText(small,loading?(j.status.startsWith('retry')?'Worker error - reloading the models':`Loading models, then your clip · last time ${fmtS(eta)}`)
                            :j.reshaped_from?`Generating · new format or length, a bit over ~${fmtS(eta)}`:`Generating · usually ~${fmtS(eta)}`);
-      const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}}
+      const w=(eta?Math.min(97,el/eta*100):0).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}}
 function render(){const s=state.session,k=s.key,t=now();
   // a clip of a job model (LightX2V Turbo) running: the status names it, its settings and where it is (the studio's
   // models are closed for it, or being closed: nothing to unload). With more than one model on, the studio's own
@@ -1084,16 +1099,20 @@ const upVal=n=>{const el=pop.querySelector(`input[name="${n}"]:checked`);return 
 function openUpscale(id,btn,keyboard){const j=known.get(id);if(!j)return;
   if(btn.getAttribute('aria-disabled')==='true'){toast(btn.title);return;}           // the reason, also on a phone
   if(up.id===id&&!pop.hidden){closeUpscale(true);return;}
-  const dflt=state.upscale_defaults||{resolution:'2k',strength:'balanced'};
-  upPick('up_res',dflt.resolution);upPick('up_strength',dflt.strength);
-  // each size's title: its output for this clip's orientation; a 9:16 clip says how it comes out, and that its 4K has
-  // not run yet (16:9 has, once: docs/PERFORMANCE.md)
-  pop.querySelectorAll('input[name="up_res"]').forEach(i=>{pop.querySelector(`label[for="${i.id}"]`).title=
-    upSize(i.value,j.orientation)+(i.value==='4k'&&j.orientation==='portrait'?
+  const dflt=state.upscale_defaults||{resolution:'2k',strength:'balanced'},sizes=upSizes(j);
+  upPick('up_res',sizes.includes(dflt.resolution)?dflt.resolution:sizes[0]||dflt.resolution);upPick('up_strength',dflt.strength);
+  const std=state.upscale_load==='standard';              // the times with the studio's load (LFSTUDIO_UPSCALE_LOAD)
+  // each size: its time in all for 2 steps (upEta), its title its output for this clip's orientation (a 9:16 clip says
+  // how it comes out, and that its 4K has not run yet: 16:9 has, once, docs/PERFORMANCE.md); a size the clip's length
+  // does not have greyed, with the reason ("later" where it comes later)
+  pop.querySelectorAll('input[name="up_res"]').forEach(i=>{const o=upOffer(j,i.value)||{},lbl=pop.querySelector(`label[for="${i.id}"]`);
+    const why=o.eta_s?'':o.why||'Not offered for this clip';i.disabled=!!why;
+    setText(lbl.querySelector('small'),why?(/comes later/.test(why)?'later':'not this clip')
+      :upTime(upEta({seconds:j.seconds,resolution:i.value,steps:2,load:state.upscale_load})));
+    lbl.title=why||upSize(i.value,j.orientation)+(i.value==='4k'&&j.orientation==='portrait'?
       " · the studio's 4K upscale has not been run with a 9:16 clip yet":'');});
   $('upportrait').hidden=j.orientation!=='portrait';
   $('uppin').checked=true;upRefresh(j);                  // Keep my frames and the notes, for the size and strength
-  const std=state.upscale_load==='standard';              // the times with the studio's load (LFSTUDIO_UPSCALE_LOAD)
   pop.querySelectorAll('small[data-standard]').forEach(e=>{if(e.dataset.fast==null)e.dataset.fast=e.textContent;
     setText(e,std?e.dataset.standard:e.dataset.fast);});
   setText($('uperr'),'');$('upgo').disabled=false;up.id=id;up.btn=btn;pop.hidden=false;placeUpscale();
