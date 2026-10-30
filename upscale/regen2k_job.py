@@ -242,7 +242,6 @@ NVIDIA_FRAMES = 121              # NVIDIA's 5 s: encode_video reads at most 121 
 # copies of frame 120. 124: every frame made, none added (a LightX2V Turbo clip with a last keyframe, which ends on the
 # frame that keyframe is anchored to).
 FRAME_CASES = {121: {"pad": 3}, 124: {"pad": 0}}
-FINAL = {"frames": NVIDIA_FRAMES, "fps": FPS}    # NVIDIA's 5 s clip, the length the server cuts a longer one to
 # Keep my frames (job.json "pin", the docstring): the clip's keyframes held in the refine as H3 holds them, each end
 # only where the clip shows its picture already (check_pin): luma PSNR of the clip's frame against the picture, fitted
 # as the clip's model fitted it, at the check's grid, at least min_db

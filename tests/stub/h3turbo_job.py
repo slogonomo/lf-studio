@@ -14,8 +14,10 @@ compares them with the real job's). Run: in its own process group, its output in
 lines ("[lf-studio] phase loading", "step 1/N" ... "step N/N", "decoding", "saving"; N = the job's steps) over
 STUB_H3TURBO_S seconds, then writes in paths.output clip_<W>x<H>_<frames>f.mp4 (an ffmpeg testsrc2 pattern with a tone,
 at the job's canvas, the frames the real job keeps for its length and keyframes, 24 fps, AAC), stand-ins for audio.pt
-and latents.safetensors, and receipt.json. SIGTERM (Cancel) ends it at once: a "cancelled" receipt, an error line, exit
-status 143. With --parent, as the real job, it is killed when that process (the server) ends.
+and latents.safetensors, and receipt.json, with the real job's keys the Upscale's Keep my frames reads: "geometry"
+(width, height, frames, keep_frames), "images" (per keyframe its size, read from a PNG's header, and its fit, a copy of
+the real job's keyframe_fit) and "inputs_sha256". SIGTERM (Cancel) ends it at once: a "cancelled" receipt, an error
+line, exit status 143. With --parent, as the real job, it is killed when that process (the server) ends.
   STUB_H3TURBO_S       seconds the job takes (default 2)
   STUB_H3TURBO_FAIL    1: fail at the first step, as a job that ran out of memory ("[lf-studio] error ...", exit 1)
   STUB_H3TURBO_ABORT   1: stop at the first step as the real job does when MemAvailable falls below its
@@ -27,10 +29,12 @@ status 143. With --parent, as the real job, it is killed when that process (the 
                        its command line
 Standard library only, so it runs under -I with any Python 3.10+.
 """
+import hashlib
 import json
 import math
 import os
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -94,6 +98,28 @@ def studio_frames(draft_frames):
 def kept_frames(frames, keyframes):
     """As the real job's: every frame made with a last keyframe, else the studio's length."""
     return int(frames) if "last" in keyframes else studio_frames(frames)
+
+
+def keyframe_fit(size, canvas, first):
+    """A copy of the real job's (tests/test_server.py TurboSeam checks it): how diffusers puts a keyframe of `size` on
+    `canvas`: as is, stretched (the first keyframe given) or cover-cropped (the one after it)."""
+    (w, h), (cw, ch) = size, canvas
+    if (w, h) == (cw, ch):
+        return {"fit": "as is"}
+    if first:
+        return {"fit": "stretch", "stretch": round((cw / ch) / (w / h), 5)}
+    scale = max(cw / w, ch / h)
+    rw, rh = max(cw, round(w * scale)), max(ch, round(h * scale))
+    left, top = max(0, (rw - cw) // 2), max(0, (rh - ch) // 2)
+    return {"fit": "cover-crop", "resized": [rw, rh], "crop": [left, top, left + cw, top + ch],
+            "kept": round(cw * ch / (rw * rh), 4)}
+
+
+def png_size(path):
+    """A PNG's (width, height) from its header, or None for another file."""
+    with open(path, "rb") as handle:
+        head = handle.read(24)
+    return struct.unpack(">II", head[16:24]) if head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR" else None
 
 
 def output_name(job):
@@ -278,6 +304,18 @@ def main(argv):
             if not job[name].is_file():
                 raise JobError(f"no {name} file {job[name]}")
         receipt["lora"] = {"file": job["lora"].name, "scale": 0.0625}
+        width, height = CANVAS[(job["resolution"], job["orientation"])]
+        made = frames_for_seconds(job["seconds"])
+        receipt["geometry"] = {"width": width, "height": height, "frames": made,
+                               "keep_frames": kept_frames(made, job["keyframes"])}
+        receipt["inputs_sha256"] = {f"{anchor}_frame": hashlib.sha256(job[f"{anchor}_frame"].read_bytes()).hexdigest()
+                                    for anchor in job["keyframes"]}
+        receipt["images"] = {}
+        for anchor in job["keyframes"]:
+            size = png_size(job[f"{anchor}_frame"])
+            receipt["images"][anchor] = ({"size": list(size), "exif_transposed": False,
+                                          **keyframe_fit(size, (width, height), first=not receipt["images"])}
+                                         if size else {"size": None, "fit": "stretch"})
         write_json(out / RECEIPT, receipt)
         phases = ["loading"] + [f"step {i}/{job['steps']}" for i in range(1, job["steps"] + 1)] + \
             ["decoding", "saving"]
