@@ -66,8 +66,9 @@ What this wrapper changes, and why:
   VAE takes at 5 s (37 latent frames), and its decode keeps 121. H3 makes 124 frames at 5 s, and a LightX2V Turbo clip
   with a last keyframe keeps them all: it ends on the frame that keyframe is anchored to. Such a clip goes through
   encode_clip and decode_released instead, NVIDIA's code with the frames as parameters (FRAME_CASES: 124 read, no
-  copies; the same 37 latent frames, rows and refine), and comes out with all 124. A 121-frame clip runs NVIDIA's own
-  encode_video and decode, as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run.
+  copies; the same 37 latent frames, rows and refine), and comes out with all 124 (not run on the GPU yet). A
+  121-frame clip runs NVIDIA's own encode_video and decode, as before. check_package pins NVIDIA's pipeline.py
+  (sha256) when the copies run.
 - Keep my frames (job.json "pin"; experimental, not run on the GPU through the studio yet). NVIDIA's refine is text to
   video: it redraws the clip's first and last frames like any other, away from the pictures they were made from.
   With a pin, the clip's keyframes are held as H3 holds a keyframe, the bench wrapper's K1 refine for either end or
@@ -86,13 +87,13 @@ through NVIDIA's encode_video at 768p: 1344x768, or 768x1344 for 9:16), qwen/con
 for audio clip, stage1/stage1_direct_tensors.pt ({"audio": (1, 2, samples)} PCM at 32 kHz). The studio's server builds
 it for every upscale (webui/server.py build_input: the upscale's input/ folder) from any finished 5 s clip: Sol-H3's
 Text, Keyframes and Reference clips and LightX2V Turbo's Text and Keyframes clips, 16:9 or 9:16. It links the clip's
-MP4 (a LightX2V Turbo clip at 576p stretched to 768p, one with a last keyframe cut to its first 121 frames), its audio
-(a LightX2V Turbo clip's turbo/audio.pt) and a conditioning of text alone: the clip's own for a Text clip, a LightX2V
-Turbo Keyframes clip's qwen-text/, or an encode of the prompt without its keyframe line or its references for the
-others (bench/h3turbo_encode.py --upscale). This job takes that folder as it took a Sol-H3 Text clip's own: 5 s (121
-frames at 24 fps, the length NVIDIA's pipeline is fixed at, or the 124 H3 makes: FRAME_CASES), 16:9 or 9:16, a t2va
-conditioning; its output has the clip's frames. The other lengths the studio offers (6 to 15 s) change NVIDIA's
-fixed length: a follow-up.
+MP4 (a LightX2V Turbo clip at 576p stretched to 768p; one with a last keyframe whole, all 124 frames, or at 4K cut
+to its first 121), its audio (a LightX2V Turbo clip's turbo/audio.pt) and a conditioning of text alone: the clip's
+own for a Text clip, a LightX2V Turbo Keyframes clip's qwen-text/, or an encode of the prompt without its keyframe
+line or its references for the others (bench/h3turbo_encode.py --upscale). This job takes that folder as it took a
+Sol-H3 Text clip's own: 5 s (121 frames at 24 fps, the length NVIDIA's pipeline is fixed at, or the 124 H3 makes:
+FRAME_CASES), 16:9 or 9:16, a t2va conditioning; its output has the clip's frames. The other lengths the studio offers
+(6 to 15 s) change NVIDIA's fixed length: a follow-up.
 
 Measured on a DGX Spark (GB10), 2026-10-28: this job run by a staging studio with nothing else loaded, 5 s clips,
 balanced (2 steps from 0.7), the clip's audio, standard forward and VAE, cuDNN attention, one run each. A 16:9 clip with
@@ -231,7 +232,7 @@ CURVE_FILE = "lora/sharp_curve_branches.safetensors"
 CURVE_TABLE = "lora/adaln_t_table.bin"
 UPSCALER_FILE = "latent_upsampler/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors"
 BASE_PARTS = ("transformer", "vae", "audio_vae")
-NATIVE_SHAPE = SHAPES["landscape"]["native"]     # 1344x768, 121 frames, normalized H3 latent (pipeline.NATIVE_SHAPE)
+NATIVE_SHAPE = SHAPES["landscape"]["native"]     # 1344x768, 5 s (37 latent frames), normalized (pipeline.NATIVE_SHAPE)
 AUDIO_SAMPLES = round(124 / 24 * 32000)          # encode_silence's length: 124 frames at 32 kHz
 TEXT_WIDTH = 5120
 FPS = "24/1"                                     # the clip's MP4 and the output
