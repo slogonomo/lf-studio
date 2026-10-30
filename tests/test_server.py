@@ -3553,8 +3553,8 @@ class LauncherUpscale(LauncherSettingsCheck):
         upscale_on = ("the experimental Upscale is on (LFSTUDIO_UPSCALE=1): its environment, package and weights are "
                       "there")
         note = ("note: NVIDIA's package (LFSTUDIO_UPSCALE_PKG) has other files than the Upscale's 9:16 route was "
-                "written for ({}; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips will be refused (16:9 clips "
-                "are not checked against these files)")
+                "written for ({}; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips, of 124-frame clips and of "
+                "clips that keep your frames will be refused (other 16:9 clips are not checked against these files)")
         code, out = self.check(**settings)
         self.assertEqual(code, 0, out)
         self.assertIn(upscale_on, out)
