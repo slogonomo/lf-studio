@@ -32,7 +32,8 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   environment alone. What has run on the GPU through the studio is listed twice: per clip route in the page's
   `UP_RAN`, per Keep my frames route and size in `PIN_ROUTES`' `"ran"` (one line per route, so a route that fails its
   GPU run goes out with its line; `PIN_SIZES` and `PIN_PARTLY` hold the sizes). The rest shows the page's "not run on
-  the GPU" note, and the docs call its times estimates: change both when a run lands.
+  the GPU" note, and the docs call its times estimates: change both, and the pin's seconds in the page's `UP_PIN_S`,
+  when a run lands.
 - `install/66-h3turbo.sh` (optional) sets up the experimental LightX2V Turbo model: it checks the base model (refusing
   one without the VAE's weights), uses the Upscale's environment (or runs `65-regen2k.sh --env-only`; it never touches
   a venv itself), fetches LightX2V's turbo LoRA files at a pinned revision (`install/h3turbo_weights.py`, standard
@@ -112,18 +113,18 @@ LightX2V Turbo's clips (576p stretched, its sound as it is; 768p linked, a last 
 frames on its Keyframes clips (each set of ends, job.json `pin`, the links, source.json, the record's result, where no
 end is sent, a picture gone or changed before and after the request, the clip's receipt, also one of another shape),
 `ServerParts` also the receipts' records (`keyframe_record`, also of another shape: never an error), the picture hash
-cache (`image_state`: never a hash for `/api/state`) and `PIN_ROUTES` changed by one line (a route out, one run, 2K
-out), `tests/test_api.py` its API record, the `Upscale*` classes in `tests/test_cli.py` and `tests/test_mcp.py` the
-client (also `--pin` and the MCP `pin`; that pin goes only to a studio with `upscale_pin`, and again without it for a
-stopped studio that does not know it, against fake servers: `Switchboard` in `tests/test_cli.py`, `FakeStudio` in
-`tests/test_mcp.py`), and those in `tests/test_page.py` the button (disabled with the reason on clips it can't take;
-`UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a route has not run on the GPU through
-the studio (on the routes the page's `UP_RAN` leaves out), the encode's phase and time, the text an upscale used and its
-clip's model; in cards too narrow for the names, Upscale and Delete show icons, so the buttons keep one row;
-`OneRowUpscaleOff` checks that row with the Upscale off), the popover (`ModelUpscale` its notes per size and Keep my
-frames: the box per ends, off with the reason at 4K and other strengths, "only partly" at 2K, no note where its route
-has run, `pin` in the request, the card's result), the upscale's card and `tests/ui_test.py` with an upscale in the
-gallery (and the popover of a Keyframes clip, with its Keep my frames box).
+cache (`image_state`: never a hash for `/api/state`) and `PIN_ROUTES` as it is and changed by one line (a route out, a
+route's `"ran"` sizes, 2K out), `tests/test_api.py` its API record, the `Upscale*` classes in `tests/test_cli.py` and
+`tests/test_mcp.py` the client (also `--pin` and the MCP `pin`; that pin goes only to a studio with `upscale_pin`, and
+again without it for a stopped studio that does not know it, against fake servers: `Switchboard` in `tests/test_cli.py`,
+`FakeStudio` in `tests/test_mcp.py`), and those in `tests/test_page.py` the button (disabled with the reason on clips it
+can't take; `UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a route has not run on the
+GPU through the studio (on the routes the page's `UP_RAN` leaves out), the encode's phase and time, the text an upscale
+used and its clip's model; in cards too narrow for the names, Upscale and Delete show icons, so the buttons keep one
+row; `OneRowUpscaleOff` checks that row with the Upscale off), the popover (`ModelUpscale` its notes per size and Keep
+my frames: the box per ends, off with the reason at 4K and other strengths, "only partly" at 2K, its note only at a size
+where its route has not run, `pin` in the request, the card's result), the upscale's card and `tests/ui_test.py` with an
+upscale in the gallery (and the popover of a Keyframes clip, with its Keep my frames box).
 
 The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as by
 default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo on.
