@@ -416,6 +416,8 @@ name and its new one, for example (the real message has full paths):
     SOLH3_PORT (environment) -> LFSTUDIO_PORT
     ~/.config/sol-h3-studio -> ~/.config/lf-studio (the settings folder)
     SOLH3_HOME (~/.config/sol-h3-studio/env line 3) -> LFSTUDIO_HOME
+    SOLH3_SANA (~/.config/sol-h3-studio/env line 4) -> LFSTUDIO_SANA
+    $SOLH3_HOME (~/.config/sol-h3-studio/env line 4) -> $LFSTUDIO_HOME
 ```
 
 The launcher and the install steps exit with 2. Under spark-switchboard the message shows on its status page. `lf-cli`
@@ -424,7 +426,9 @@ Change what it names, with the studio stopped, then start it again. An install t
 needs nothing.
 
 **Settings.** Each `SOLH3_X` is now `LFSTUDIO_X`, in the settings file and wherever else you set it: a
-spark-switchboard service file's `env`, a systemd unit, scripts, agent configs. For a file, check it, then rename:
+spark-switchboard service file's `env`, a systemd unit, scripts, agent configs. In the file that means the values too:
+0.4's `bin/env.example` wrote `SOLH3_SANA="$SOLH3_HOME/Sana"`, which becomes `LFSTUDIO_SANA="$LFSTUDIO_HOME/Sana"`.
+With `SOLH3_ENV` set, the message also names the old names in the file it names. For a file, check it, then rename:
 
 ```bash
 grep -n 'SOLH3_' ~/.config/lf-studio/env
@@ -463,6 +467,13 @@ mv -T ~/.config/sol-h3-studio ~/.config/lf-studio
 `mv -T` refuses when `~/.config/lf-studio` holds anything, and changes nothing; then move the files you need from the
 old folder into it. A link left at the old place by "From 0.4 to 0.5" can stay until nothing names it.
 
+Whatever names a file in the old folder must name the new place in the same step: a second studio's `LFSTUDIO_ENV`
+(or `SOLH3_ENV`) in its service file or unit, such as a test studio's `~/.config/sol-h3-studio/env.test`, and your
+scripts. Until then that studio stops, with the file and its new place
+(`~/.config/sol-h3-studio/env.test -> ~/.config/lf-studio/env.test (the settings file: its folder was moved)`), and
+does not start on the defaults. Or leave a link at the old place until nothing names it: `ln -s ~/.config/lf-studio
+~/.config/sol-h3-studio`.
+
 **The state folder.** `~/.local/state/sol-h3-studio` counts while it has the clip history (`jobs.db`),
 `~/.local/state/lf-studio` has none, and no `LFSTUDIO_STATE_DIR` is set. Move it, or keep it where it is with
 `LFSTUDIO_STATE_DIR="$HOME/.local/state/sol-h3-studio"` in the settings file:
@@ -471,7 +482,8 @@ old folder into it. A link left at the old place by "From 0.4 to 0.5" can stay u
 mv -T ~/.local/state/sol-h3-studio ~/.local/state/lf-studio
 ```
 
-If a service file names its pidfile in the old folder, change it together with the move.
+Whatever names a place in the old folder, such as a service file's pidfile or another studio's
+`LFSTUDIO_STATE_DIR`, changes together with the move.
 
 **The launcher and the client.** `bin/sol-h3-studio` and `bin/sol-h3` are gone. Whatever still runs them fails with
 "No such file or directory", not with the message above:

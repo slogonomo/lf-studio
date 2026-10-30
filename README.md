@@ -284,9 +284,11 @@ everything is the DGX Spark's, as above. Details and measurements: [docs/RTX5090
 [docs/INSTALL.md](docs/INSTALL.md#rtx-5090).
 
 To update: `git pull`, then `install/10-sana.sh`, then restart the studio ([details](docs/INSTALL.md#updating)).
-0.6 no longer reads the names the studio had up to 0.4 (the settings `SOLH3_*`, `bin/sol-h3-studio`, `bin/sol-h3`,
-`~/.config/sol-h3-studio`), which 0.5 still did: an install that uses one stops before it starts and names each with
-its new name ([From 0.5 to 0.6](docs/INSTALL.md#from-05-to-06)).
+0.6 no longer reads the names the studio had up to 0.4, which 0.5 still did
+([From 0.5 to 0.6](docs/INSTALL.md#from-05-to-06)): an install that still uses the settings `SOLH3_*` or the folder
+`~/.config/sol-h3-studio` stops before it starts and names each with its new name. `bin/sol-h3-studio` and
+`bin/sol-h3` are gone, so whatever still runs them fails with "No such file or directory"; run `bin/lf-studio` and
+`bin/lf-cli` instead.
 0.4 changes the patch: until `install/10-sana.sh` has applied it, the studio refuses to start with
 "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...".
 0.4 also answers only to known host names: if you open the studio by a name other than an IP address, `localhost`, a
