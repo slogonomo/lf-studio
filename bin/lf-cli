@@ -18,10 +18,11 @@ One file, standard library only, Python 3.9 or later: copy it to any machine tha
   lf-cli fetch ID [--out PATH] [--poster] [--wake]
   lf-cli upscale ID [--resolution 1080p|2k|4k] [--strength faithful|balanced|full]
          [--audio clip|silence] [--seed N] [--pin auto|off] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
-                                experimental: a finished 5 s clip (Text, Keyframes or Reference; Sol-H3 or LightX2V
-                                Turbo), 16:9 or 9:16, to 1080p, 2K or 4K, on a studio with LFSTUDIO_UPSCALE=1 (about
-                                10 min to 1.6 h in all, 4K over an hour, with a ~22 s load; ~8 min more with
-                                LFSTUDIO_UPSCALE_LOAD=standard)
+                                experimental: a finished clip (Text, Keyframes or Reference; Sol-H3 or LightX2V
+                                Turbo), 16:9 or 9:16, whole, to 1080p (any length), 2K (up to 10 s) or 4K (5 s), on a
+                                studio with LFSTUDIO_UPSCALE=1 (about 10 min (1080p, 5 s) to 1.6 h (4K, full) in all,
+                                4K over an hour, with a ~22 s load; ~8 min more with LFSTUDIO_UPSCALE_LOAD=standard;
+                                longer clips estimated: 1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s)
   lf-cli guide                  the prompt guide for H3
   lf-cli mcp                    an MCP server on stdin/stdout (Claude Code, Hermes, Codex, ...)
   common options, before or after the command: --url URL  --json  --quiet
@@ -310,8 +311,9 @@ INSTRUCTIONS = (
     "call generate: it uploads your files (paths on this machine or http(s) URLs), waits up to wait_s seconds and, "
     "when the clip is done, saves the MP4 here and returns its absolute path, its studio URL and a poster frame. "
     "If it answers that the clip is still running, call wait with the id. Cancelling a tool call does not cancel the "
-    "clip; use cancel for that. A studio with the experimental Upscale on also takes upscale: a finished 5 s clip "
-    "(16:9 or 9:16) to 1080p, 2K or 4K, which takes about 10 min to 1.6 h or more. Every clip is Sol-H3 "
+    "clip; use cancel for that. A studio with the experimental Upscale on also takes upscale: a finished clip "
+    "(16:9 or 9:16) to 1080p, 2K (up to 10 s) or 4K (5 s), which takes about 10 min to 1.6 h or more. Every clip is "
+    "Sol-H3 "
     "unless generate names another model the studio lists: call models to see them, what each makes and its "
     "options (the experimental LightX2V Turbo makes the whole clip in one stage and keeps a keyframe's look more "
     "closely, and is slower).")
@@ -1882,20 +1884,21 @@ TOOLS = [
          "wake": {"type": "boolean", "default": False, "description": "Start the studio if it is stopped"}}}},
     {"name": "upscale", "title": "Upscale a clip (experimental)",
      "description": (
-         "Experimental, on a studio with the Upscale on (LFSTUDIO_UPSCALE=1): upscale a finished clip to 1080p, 2K "
-         "(2560x1440, the default) or 4K with NVIDIA's Open-H3-Regenerate-2K, as a new job with an id of its own. For "
-         "now 5 s clips, 16:9 or 9:16 (a 9:16 clip comes out upright: 2K is 1440x2560; NVIDIA trained its refiner on "
-         "16:9), of every mode and model: a Keyframes or Reference clip is refined against its prompt without its "
+         "Experimental, on a studio with the Upscale on (LFSTUDIO_UPSCALE=1): upscale a finished clip, whole, to "
+         "1080p, 2K (2560x1440, the default) or 4K with NVIDIA's Open-H3-Regenerate-2K, as a new job with an id of its "
+         "own. Clips of every length, 16:9 or 9:16 (a 9:16 clip comes out upright: 2K is 1440x2560; NVIDIA trained its "
+         "refiner on 16:9), of every mode and model: 1080p takes every length, 2K up to 10 s, 4K 5 s clips; another "
+         "size is refused with the reason. A Keyframes or Reference clip is refined against its prompt without its "
          "pictures (encoded first, ~15 s), a LightX2V Turbo clip at 576p is stretched to 768p first and one with a "
-         "last keyframe keeps all its 124 frames (at 4K its first 121). pin (Keep my frames, experimental): auto, the "
-         "default, holds a Keyframes clip's own keyframes in the refine where the clip already shows them (a LightX2V "
-         "Turbo clip's first and last frames, a Sol-H3 clip's first frame), at 1080p and 2K with balanced, ~16 s more "
-         "per end at 1080p, 83 s for both at 2K (one end at 2K not run yet: ~60 s, est.); off never does; the "
-         "result says which ends were kept. It runs after the clips queued, closes the studio's models "
-         "while it runs (the next clip, or the studio's warm-up, loads them again) and takes long: on a DGX Spark "
-         "about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps (4K has run once, with a 16:9 clip; not yet "
-         "with a 9:16 one), reading the clip (~2 min) and the load (~22 s; ~7.5 min on a studio with "
-         "LFSTUDIO_UPSCALE_LOAD=standard) included. strength: faithful (start noise 0.5, 2 steps) redraws the least, "
+         "last keyframe keeps all its frames (a 5 s one at 4K its first 121). pin (Keep my frames, experimental): "
+         "auto, the default, holds a Keyframes clip's own keyframes in the refine where the clip already shows them (a "
+         "LightX2V Turbo clip's first and last frames, a Sol-H3 clip's first frame), at 1080p and 2K with balanced; "
+         "off never does; the result says which ends were kept. It runs after the clips queued, closes the studio's "
+         "models while it runs (the next clip, or the studio's warm-up, loads them again) and takes long: on a DGX "
+         "Spark about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps for a 5 s clip (4K has run once, with "
+         "a 16:9 clip; not yet with a 9:16 one), reading the clip and the load included; longer clips take longer "
+         "(estimates: 1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s). strength: faithful (start noise 0.5, "
+         "2 steps) redraws the least, "
          "balanced (0.7, 2 steps) more, full (NVIDIA's setting, 3 steps) is the sharpest but redraws faces into a "
          "different-looking person; the default is the studio's. audio: what the picture is refined against, the "
          "clip's own (clip) or silence; the result keeps the clip's sound either way. Waits up to wait_s and saves the "
@@ -1903,7 +1906,8 @@ TOOLS = [
          "the id it returns. Each call queues another upscale; cancel stops one."),
      "inputSchema": {"type": "object", "required": ["id"], "additionalProperties": False, "properties": {
          "id": {"type": "string", "description": "The finished clip's id"},
-         "resolution": {"type": "string", "enum": list(UPSCALE_RESOLUTIONS), "default": "2k"},
+         "resolution": {"type": "string", "enum": list(UPSCALE_RESOLUTIONS), "default": "2k",
+                        "description": "Default 2k; a 12 or 15 s clip needs 1080p"},
          "strength": {"type": "string", "enum": list(UPSCALE_STRENGTHS), "description": "Default: the studio's"},
          "audio": {"type": "string", "enum": list(UPSCALE_AUDIO), "description": "Default: the studio's"},
          "seed": {"type": "integer", "minimum": 0, "description": "The refine's seed; default the clip's"},
@@ -2618,10 +2622,11 @@ def parser():
     f.add_argument("--wake", action="store_true",
                    help="start the studio if spark-switchboard has stopped it (it needs most of the machine's memory)")
     u = sub.add_parser("upscale", parents=[common],
-                       help="experimental: upscale a finished 5 s clip, 16:9 or 9:16, to 1080p, 2K or 4K (with "
-                            "--wait or --out: and save it)")
+                       help="experimental: upscale a finished clip, 16:9 or 9:16, whole, to 1080p, 2K (up to 10 s) or "
+                            "4K (5 s) (with --wait or --out: and save it)")
     u.add_argument("id", help="the finished clip")
-    u.add_argument("--resolution", choices=UPSCALE_RESOLUTIONS, help="default 2k (2560x1440, or 1440x2560 for 9:16)")
+    u.add_argument("--resolution", choices=UPSCALE_RESOLUTIONS,
+                   help="default 2k (2560x1440, or 1440x2560 for 9:16); a 12 or 15 s clip needs 1080p")
     u.add_argument("--strength", choices=UPSCALE_STRENGTHS,
                    help="how much it may redraw (default: the studio's); full redraws faces into another person")
     u.add_argument("--audio", choices=UPSCALE_AUDIO,
