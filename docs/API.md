@@ -486,8 +486,9 @@ that night LightX2V Turbo Keyframes clips with a last keyframe kept whole (124 f
 576p stretched) to 1080p, the 768p 16:9 one to 2K too, and a 576p clip with a first frame to 1080p, each in a Text
 clip's time, with the clip's whole sound
 ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). LightX2V Turbo's 768p Text clips have
-not been upscaled through the studio yet (its 768p Keyframes clips with a first frame alone take the route of those
-with both, which has): their times are expected to be a Text clip's, and the page's popover says so for them.
+not been upscaled through the studio yet: their times are expected to be a Text clip's, and the page's popover says so
+for them. Nor have its 576p clips at 2K (run at 1080p only) or its 768p Keyframes clips with a first frame alone, which
+take routes that have run (the 576p clips at 1080p, the 768p ones with both keyframes): the popover gives them no note.
 
 The job refines the clip against a prompt conditioning of text alone, and against the clip's audio (`audio` `clip`).
 Each upscale gets an input folder of its own (`<upscale case>/input/`, in the shape of a Sol-H3 clip's working files;

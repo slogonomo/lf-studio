@@ -353,8 +353,9 @@ The other stages, at 1080p (2K): encoding the final clip 128.3-128.6 s (128.3 s)
   process, Qwen container or GPU memory left, and no job started.
 - **Not run through the studio:** LightX2V Turbo's 768p Text clips (linked as they are), its Keyframes clips at 768p
   without a last keyframe (linked, as those with one, which have run: below), one whose text is encoded at upscale time
-  (a Keyframes clip without `qwen-text/`), and 4K of any clip but a 16:9 Text clip (no 9:16 clip and no 124-frame clip
-  has run at 4K). Expected: a Text clip's times, plus the encode where there is one.
+  (a Keyframes clip without `qwen-text/`), its 576p clips at 2K (run at 1080p only; at 2K apart, in research runs:
+  below), and 4K of any clip but a 16:9 Text clip (no 9:16 clip and no 124-frame clip has run at 4K). Expected: a Text
+  clip's times, plus the encode where there is one.
 
 **Keep my frames** (`pin`). The pinned refine adds one block of condition rows per end held, as MiniMax-H3 holds a
 keyframe: +2,040 rows at 1080p and +3,600 at 2K per end (+2.7 %; 78,130 and 137,410 rows with one end, 80,170 and
@@ -433,8 +434,11 @@ Measured apart:
 
 So the page shows the Text clip's times for every 5 s clip, plus 15 s in its progress bar for an upscale whose text is
 encoded first, and its popover says of the kinds not run through the studio yet (above) that this kind of clip has not
-been upscaled on the GPU through the studio yet. With Keep my frames the progress bar adds 16 s per end at 1080p and
-83 s for both ends at 2K (measured), and 60 s for one end at 2K (an estimate: not run), where the popover says so.
+been upscaled on the GPU through the studio yet. It goes by route (the model, where the text comes from, what is done
+to the MP4), not by size: a route run at one size counts at the others (so a 576p clip at 2K has no note), and a 768p
+Keyframes clip with a first frame alone counts as one with both. With Keep my frames the progress bar adds 16 s per
+end at 1080p and 83 s for both ends at 2K (measured), and 60 s for one end at 2K (an estimate: not run), where the
+popover says so.
 
 **The job itself, standard load** (2026-10-28, before the fast load's runs, the same staging studio and 16:9 clip, an
 earlier version of the job too; 2K, `balanced`, audio `clip`):
