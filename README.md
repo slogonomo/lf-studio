@@ -158,12 +158,11 @@ its own, with the clip's own sound. Agents and scripts have it too: `POST /api/u
 tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
 
 - **Every finished clip, 16:9 or 9:16, of every mode, model and length**: Sol-H3's Text, Keyframes and Reference
-  clips and LightX2V Turbo's Text and Keyframes clips, 5 to 15 s (and Sol-H3's 3 s clips, made up to 0.5.0), whole,
-  in one pass of NVIDIA's refine. The sizes depend on the length:
+  clips and LightX2V Turbo's Text and Keyframes clips, 5 to 15 s, whole, in one pass of NVIDIA's refine. The sizes
+  depend on the length:
 
   | Length | 1080p | 2K | 4K |
   |---|---|---|---|
-  | 3 s | yes | yes | no |
   | 5 s | yes | yes | yes |
   | 6, 7, 8 and 10 s | yes | yes | later |
   | 12 and 15 s | yes | later | later |
@@ -171,15 +170,15 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   The popover greys out the other sizes, with the reason (`2K for 12 s clips comes later: 1080p takes them`). There
   the whole clip would not fit in memory, or only past anything measured (by the memory model below: 2K at 12 s would
   come down to about 10 GiB free, below the lowest of any clean run, 11.1 GiB at 4K; 2K at 15 s and 4K from 6 s would
-  need 121 GiB or more free to start, where the idle box has 117.7 GiB). They need the clip in pieces, which comes
+  need 123 GiB or more free to start, where the idle box has 117.7 GiB). They need the clip in pieces, which comes
   later.
-  Sol-H3's 4 s clips (made up to 0.5.0) are refused, never cut: their button is disabled, with the reason. NVIDIA's
-  pipeline is written for 5 s: the job takes other lengths through it with their own frames and sound (no NVIDIA file
-  changed), and NVIDIA has not validated them. The job refines against text alone: a Keyframes or Reference clip's
-  prompt is encoded first without its pictures (its keyframe line, or its references, taken out; ~15 s more). A
-  LightX2V Turbo clip at 576p is stretched to 768p first. One with a last keyframe keeps every frame its model made
-  (124 at 5 s, 243 at 10 s), so the upscale ends on the frame anchored to your last keyframe and has the clip's whole
-  sound; a 5 s one at 4K is cut to its first 121 frames until a 124-frame 4K run
+  Sol-H3's 3 and 4 s clips (made up to 0.5.0) are refused, never cut: their button is disabled, with the reason.
+  NVIDIA's pipeline is written for 5 s: the job takes other lengths through it with their own frames and sound (no
+  NVIDIA file changed), and NVIDIA has not validated them. The job refines against text alone: a Keyframes or Reference
+  clip's prompt is encoded first without its pictures (its keyframe line, or its references, taken out; ~15 s more). A
+  LightX2V Turbo clip at 576p is stretched to 768p first. One with a last keyframe keeps every frame its model made (124
+  at 5 s, 243 at 10 s), so the upscale ends on the frame anchored to your last keyframe and has the clip's whole sound;
+  a 5 s one at 4K is cut to its first 121 frames until a 124-frame 4K run
   ([#85](https://github.com/slogonomo/lf-studio/issues/85)).
   Through the studio on one DGX Spark (2026-10-29, one clip of each kind), a Sol-H3 Keyframes clip (9:16), a Sol-H3
   Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with first and last keyframes (then cut to 121 frames)
@@ -204,15 +203,18 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   upscaled to 4K yet. While an upscale runs the studio's models are closed; the next clip loads them again, and with
   `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
-- **Only 5 s clips have run on the GPU.** No other length has been upscaled yet, Sol-H3's 3 s clips included. Their
-  times and memory are **estimates**, and the popover says so. They come from a model fitted to the 5 s runs: a
-  refine step's time by the rows of its sequence (within 5 % of the 5 s steps), the other stages by the clip's frames,
-  and the memory by the rows too ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips-estimates)). With 2 steps
-  and the fast load: at 1080p about 13 min for 6 s, 17 min for 8 s, 24 min for 10 s, 32 min for 12 s and 44 min for
-  15 s; at 2K about 27 min for 6 s, 37 min for 8 s and 54 min for 10 s. From 10 s at 1080p and 6 s at 2K the job runs
-  the memory-lean block forward of its 4K run (bit-identical to the stock forward on GB10), so no estimated peak
-  passes what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept). A long clip needs no more free
-  memory to start than a 5 s one (110 GiB), except 2K at 10 s with Keep my frames (111 GiB).
+- **Longer clips have run too.** Through the studio on one DGX Spark (2026-10-30, one clip each, 2 steps, the fast
+  load) a 6 s clip took 12.7 min to 1080p, a 10 s clip 23.7 min, a 15 s 9:16 clip 43.1 min, and the 10 s clip 53.1 min
+  to 2K, each with all its frames and its whole sound, a clean last second and its lip sync; by eye sharper than the
+  clip to the last frame, with the same faces. The other lengths offered (7, 8 and 12 s at 1080p; 6, 7 and 8 s at 2K)
+  have not run, but a longer clip at their size has, and the job's model of the runs held there (steps within 1.4 %,
+  peak memory within 0.1 GiB): their times follow it, and the popover gives no note. With 2 steps the popover
+  expects, closing the studio's models included: at 1080p about 13 min for 6 s, 15 min for 7 s, 17 min for 8 s,
+  24 min for 10 s, 32 min for 12 s and 44 min for 15 s; at 2K about 28 min for 6 s, 32 min for 7 s, 37 min for 8 s
+  and 54 min for 10 s ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips)). From 10 s at 1080p and 6 s at 2K the
+  job runs the memory-lean block forward of its 4K run (bit-identical to the stock forward on GB10), so no peak passes
+  what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept; 90.8 measured at 2K for 10 s). Every length
+  needs the 110 GiB free a 5 s clip needs to start; at 2K for 10 s the free memory came down to 16.7 GiB.
 - **Keep my frames** (experimental). NVIDIA's refine redraws a Keyframes clip's first and last frames like any other,
   away from your pictures. With the popover's box (on by default; the request's `pin` `auto`), the job holds your
   keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already shows them: each end only if the clip's
@@ -223,14 +225,14 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   - Sol-H3's offer their first frame when Stage 2 held it (clips made since 0.5.2 with the default
     `SOL_H3_STAGE2_KEYFRAME=pin`), and never their last: the clip stops a few frames before it (3 at 5 s).
   - Text and Reference clips have no frame to keep.
-  - Balanced at 1080p and 2K only for now (Faithful brought a first frame only about 1 dB closer in a test). At 2K
-    the popover says "only partly" until that is reviewed (research runs with one end at 2K: frame 0 about 1 dB closer
-    to your picture, the face 3-5 dB, but details the refine made up stay; the studio's run with both ends at 2K: +5.0
-    and +4.7 dB, below).
-  - On clips longer than 5 s it is offered at the sizes their length has (1080p alone at 12 and 15 s), but **has not
-    run on the GPU**: the popover says so. The time it adds there is the 5 s one, so a little short (by up to about
-    a minute at 2K for 10 s, estimated: an end's rows cost more in a longer clip's steps). From 10 s at 1080p and 6 s
-    at 2K it runs with the lean block forward, which no pinned run has used yet.
+  - Balanced at 1080p and 2K only for now (Faithful brought a first frame only about 1 dB closer in a test).
+  - On clips longer than 5 s it is offered at the sizes their length has (1080p alone at 12 and 15 s). It has run
+    with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30), with the lean block forward: both ends held,
+    31.9 and 32.0 dB from your pictures (luma PSNR at 1080p), as close as the best 5 s pinned run, with no flash at
+    either end. The other long routes and sizes have not run: the popover says so. The time it adds on a long clip is
+    the 5 s one, so a little short: both ends at 1080p for 10 s add about 45 s (an estimate from that run, which had
+    no unpinned twin) where the progress bar counts 32 s, and at 2K for 10 s up to about a minute more (estimated:
+    an end's rows cost more in a longer clip's steps).
   - The popover says why an end is not offered; the upscale's card says which ends were kept, and why not.
   - It has run through the studio on one DGX Spark (the night of 2026-10-29 to 30) with a LightX2V Turbo clip's first
     frame, last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same
