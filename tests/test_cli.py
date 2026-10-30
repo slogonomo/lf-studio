@@ -588,6 +588,40 @@ class Switchboard(unittest.TestCase):
                          ("POST", "/api/upscale", "30", "application/json"))
         self.assertEqual(json.loads(body), {"id": jid, "resolution": "4k"})
 
+    def test_upscale_pin(self):
+        """--pin goes only to a studio that takes it (/api/state "upscale_pin"): an older studio gets the request
+        without it; a stopped one (switchboard answers /api/state for it) gets it, and again without it when the
+        studio answers that it does not know the key; other refusals are not sent again."""
+        jid, uid = "0123456789abcdef0123456789abcdef", "f" * 32
+        for name, sb_state, state, answers, bodies in (
+                ("takes it", "ready", {"upscale": True, "upscale_pin": True}, [None], [{"pin": "off"}]),
+                ("older", "ready", {"upscale": True, "upscale_pin": None}, [None], [{}]),
+                ("upscale off", "ready", {"upscale": False}, [None], [{}]),
+                ("stopped, takes it", "stopped", None, [None], [{"pin": "off"}]),
+                ("stopped, older", "stopped", None, ['unknown key "pin" (known: id, resolution, strength, audio, seed)',
+                                                     None], [{"pin": "off"}, {}]),
+                ("stopped, refused", "stopped", None, ["no such clip"], [{"pin": "off"}])):
+            with self.subTest(name):
+                posts = []
+
+                def answer(method, path, headers, body):
+                    if path == "/__switchboard/status":
+                        return 200, JSON, {"state": sb_state, "paused": None}
+                    if path == "/api/state":
+                        return (200, JSON, state) if state else switchboard_error("stopped", "not running")
+                    posts.append(json.loads(body))
+                    error = answers[len(posts) - 1]
+                    if error:
+                        return 400, JSON, {"error": error}
+                    return 200, JSON, {"id": uid, "job": {"id": uid, "kind": "upscale", "state": "queued"}}
+                p = self.sol(self.fake(answer), "upscale", jid, "--pin", "off")
+                self.assertEqual(p.returncode, 2 if name == "stopped, refused" else 0, p.stderr)
+                self.assertEqual(posts, [dict({"id": jid}, **b) for b in bodies])
+                if name == "stopped, refused":
+                    self.assertIn("no such clip", p.stderr)
+                else:
+                    self.assertEqual(p.stdout, f"{uid}\n")
+
     def test_loading_is_retried(self):
         """A switchboard 503 "loading" while waiting is retried (5 s later), then the MP4 arrives."""
         jid = "0123456789abcdef0123456789abcdef"
@@ -666,13 +700,14 @@ class Upscale(CliTest):
         p = self.sol("upscale", ten, "--json")
         self.assertEqual(p.returncode, 2, p.stderr)
         self.assertEqual(json.loads(p.stdout), {"error": "Upscale takes 5 s clips for now: other lengths not yet "
-                                                         "(NVIDIA's pipeline is fixed at 121 frames)",
+                                                         "(NVIDIA's pipeline is fixed at 5 s)",
                                                 "http_status": 400, "id": ten})
         p = self.sol("upscale", "f" * 32)
         self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: no such clip\n"))
         for args in (["upscale", ten, "--resolution", "8k"], ["upscale", ten, "--strength", "nvidia"],
                      ["upscale", "nonsense"], ["upscale", ten, "--seed", -1], ["upscale", ten, "--hold", 9999],
-                     ["upscale", ten, "--source", "final"]):                  # no --source: the clip's MP4 only
+                     ["upscale", ten, "--source", "final"],                  # no --source: the clip's MP4 only
+                     ["upscale", ten, "--pin", "on"]):
             p = self.sol(*args)
             self.assertEqual(p.returncode, 2, (args, p.stderr))
         self.assertEqual([j.get("kind") for j in self.studio.state()["jobs"]], [None])     # nothing was queued
@@ -703,6 +738,26 @@ class UpscaleEveryClip(CliTest):
         self.assertTrue(self.ok("status", up["id"]).stdout.startswith(
             f"{up['id']}  done       1080p upscale of {jid[:8]}, balanced, fl2va, 5 s, seed 5"))
 
+    def test_keep_my_frames(self):
+        """--pin: off sends no end, auto (also the studio's default) its first frame (Stage 2 held it); status says
+        what became of it."""
+        line = "For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
+        jid = self.studio.generate(task="fl2va", prompt=line + "\nA red kite rises.", seed=6,
+                                   files={"first_frame": [("f.png", png())]})[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        p = self.ok("upscale", jid, "--resolution", "1080p", "--pin", "off", "--json")
+        rec = json.loads(p.stdout)
+        self.assertEqual(rec["pin"], {"asked": "off", "ends": [], "why": {}})
+        self.ok("wait", rec["id"], "--json")
+        p = self.ok("upscale", jid, "--resolution", "1080p", "--pin", "auto", "--wait", "--out", "up/")
+        up = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.assertEqual((up["pin"]["asked"], up["pin"]["ends"], up["pin"]["result"]["first"]["used"]),
+                         ("auto", ["first"], True))
+        self.assertTrue(self.ok("status", up["id"]).stdout.startswith(
+            f"{up['id']}  done       1080p upscale of {jid[:8]}, balanced, fl2va, 5 s, seed 6, first frame kept  "))
+        self.assertNotIn("kept", self.ok("status", rec["id"]).stdout)
+        self.assertIn("[--pin auto|off]", load_cli().__doc__)
+
     def test_the_model_of_its_clip(self):
         cli = load_cli()
         rec = {"kind": "upscale", "resolution": "2k", "parent": "a" * 32, "strength": "balanced", "task": "fl2va",
@@ -710,6 +765,18 @@ class UpscaleEveryClip(CliTest):
         self.assertEqual(cli.clip_desc(dict(rec, parent_model="lightx2v-turbo", parent_opts={"resolution": "576p"})),
                          "2k upscale of aaaaaaaa (lightx2v-turbo 576p), balanced, fl2va, 5 s, seed 3")
         self.assertEqual(cli.clip_desc(dict(rec, parent_model="sol-h3")), cli.clip_desc(rec))    # as before
+        kept, far = ({"used": True, "agreement_db": 33.1, "why": None},
+                     {"used": False, "agreement_db": 25.43, "why": "the clip's frame 123 is 25.4 dB from your picture "
+                                                                    "(28 needed)"})
+        for result, words in (({"first": kept}, "first frame kept"), ({"first": kept, "last": kept},
+                                                                       "first and last frames kept"),
+                              ({"first": kept, "last": far}, "first frame kept, last frame not kept (25.4 dB)"),
+                              ({"last": {"used": False, "agreement_db": None, "why": "your picture is no longer on "
+                                                                                     "disk"}},
+                               "last frame not kept: your picture is no longer on disk")):
+            self.assertEqual(cli.clip_desc(dict(rec, pin={"asked": "auto", "ends": list(result), "result": result})),
+                             f"{cli.clip_desc(rec)}, {words}")
+        self.assertEqual(cli.clip_desc(dict(rec, pin={"asked": "off", "ends": [], "why": {}})), cli.clip_desc(rec))
 
 
 class UpscaleRunning(CliTest):
