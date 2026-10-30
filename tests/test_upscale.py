@@ -806,8 +806,9 @@ class OfferTests(unittest.TestCase):
     clip's rows choose (lean_chunks_for) and the memory model (case_rows, need_gib), without torch."""
 
     def test_the_table(self):
-        """1080p every length, 2K up to 10 s, 4K 5 s; the 5 s times measured and run on the GPU, the others
-        estimates (not run); every size not offered says why, naming the sizes that take the clip."""
+        """1080p every length, 2K up to 10 s, 4K 5 s; every length and size offered has run on the GPU, or a longer
+        clip at that size has (UPSCALE_RAN: 6, 10 and 15 s at 1080p and 10 s at 2K ran; a run that fails takes its
+        line out); every size not offered says why, naming the sizes that take the clip."""
         table = job_module.offers_table()
         self.assertEqual(json.loads(json.dumps(table)), table)                 # as /api/state carries it
         self.assertEqual(list(table), ["5", "6", "7", "8", "10", "12", "15"])
@@ -820,14 +821,14 @@ class OfferTests(unittest.TestCase):
                                       "2k": {"eta_s": [405, 380], "ran": True},
                                       "4k": {"eta_s": [625, 1685], "ran": True}})          # the page's times until now
         self.assertEqual((table["10"]["1080p"], table["10"]["2k"], table["15"]["1080p"]),
-                         ({"eta_s": [535, 454], "ran": False}, {"eta_s": [708, 1277], "ran": False},
-                          {"eta_s": [763, 932], "ran": False}))
+                         ({"eta_s": [535, 454], "ran": True}, {"eta_s": [708, 1277], "ran": True},
+                          {"eta_s": [763, 932], "ran": True}))
         for seconds, sizes in table.items():
             self.assertEqual(list(sizes), list(job_module.SIZES))
             for size, row in sizes.items():
                 self.assertEqual(set(row), {"eta_s", "ran"} if size in offered[seconds] else {"why"})
                 if "eta_s" in row:
-                    self.assertEqual(row["ran"], seconds == "5", (seconds, size))
+                    self.assertTrue(row["ran"], (seconds, size))
                     self.assertEqual(row["eta_s"], list(job_module.OFFER_ETA_S[int(seconds)][size]))
         why = {(seconds, size): row["why"] for seconds, sizes in table.items() for size, row in sizes.items()
                if "why" in row}
@@ -835,11 +836,21 @@ class OfferTests(unittest.TestCase):
             **{(s, "4k"): f"4K for {s} s clips comes later: 1080p and 2K take them" for s in ("6", "7", "8", "10")},
             **{(s, "4k"): f"4K for {s} s clips comes later: 1080p takes them" for s in ("12", "15")},
             **{(s, "2k"): f"2K for {s} s clips comes later: 1080p takes them" for s in ("12", "15")}})
-        self.assertEqual(job_module.UPSCALE_RAN, ((5, "1080p"), (5, "2k"), (5, "4k")))
-        # a GPU run that lands is one line of UPSCALE_RAN
-        with mock.patch.object(job_module, "UPSCALE_RAN", job_module.UPSCALE_RAN + ((10, "1080p"),)):
-            self.assertEqual(job_module.offers_table()["10"]["1080p"], {"eta_s": [535, 454], "ran": True})
-            self.assertFalse(job_module.offers_table()["10"]["2k"]["ran"])
+        ran = ((5, "1080p"), (5, "2k"), (5, "4k"), (6, "1080p"), (10, "1080p"), (15, "1080p"), (10, "2k"))
+        covered = ((7, "1080p"), (8, "1080p"), (12, "1080p"), (6, "2k"), (7, "2k"), (8, "2k"))     # the offer rule
+        self.assertEqual(sorted(job_module.UPSCALE_RAN), sorted(ran + covered))
+        for seconds, size in covered:              # a longer clip at the same size ran
+            self.assertTrue(any(s > seconds and z == size for s, z in ran), (seconds, size))
+        self.assertEqual({(int(seconds), size) for seconds, sizes in table.items() for size in sizes
+                          if "eta_s" in sizes[size]}, set(job_module.UPSCALE_RAN))
+        # one line each: a run that fails takes its line out, and its length shows the page's "not run" note
+        source = (REPO / "upscale" / "regen2k_job.py").read_text()
+        for seconds, size in ran + covered:
+            self.assertEqual(source.count(f'    ({seconds}, "{size}"),'), 1, (seconds, size))
+        without = tuple(row for row in job_module.UPSCALE_RAN if row != (10, "1080p"))
+        with mock.patch.object(job_module, "UPSCALE_RAN", without):
+            self.assertEqual(job_module.offers_table()["10"]["1080p"], {"eta_s": [535, 454], "ran": False})
+            self.assertTrue(job_module.offers_table()["10"]["2k"]["ran"])
         for seconds in (3, 4):                                      # Sol-H3's old lengths
             self.assertEqual([job_module.offer_row(seconds, size) for size in job_module.SIZES],
                              [{"why": f"Upscale takes no {seconds} s clips"}] * 3)
@@ -1388,7 +1399,7 @@ class InputTests(Fixture):
                                                                                            [1440, 2560]))
             self.assertEqual({k: planned["offer"][k] for k in ("seconds", "forward", "floor_gib", "eta_s", "ran")},
                              {"seconds": 10, "forward": "lean", "floor_gib": floor, "eta_s": [708, 1277],
-                              "ran": False}, (kept, ends))
+                              "ran": True}, (kept, ends))
             self.assertEqual(planned["offer"]["rows"], job_module.case_rows(job["frames"], "2k", len(ends)))
         with self.assertRaisesRegex(JobError, r"^2K for 15 s clips comes later: 1080p takes them$"):
             job_module.plan(dict(job_module.parse_job(self.job(), "/"), orientation="landscape",

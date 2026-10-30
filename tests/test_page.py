@@ -32,8 +32,9 @@ except ImportError:
 # frames, its UP_RAN), and the same for Keep my frames (UP_PIN_UNRUN: its routes' "ran")
 UP_UNRUN = "This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's"
 UP_PIN_UNRUN = "Keeping your frames has not been run on the GPU through the studio yet: its times are estimates"
-# and on a clip of a length and size that has not been upscaled on the GPU through the studio (/api/state
-# upscale_offers "ran": false: every length but 5 s, for now), in UP_UNRUN's place (UP_LEN_UNRUN)
+# and on a clip of a length and size that has not been upscaled on the GPU through the studio, nor a longer one at
+# that size (/api/state upscale_offers "ran": false: none now, but a run that fails takes its line out), in UP_UNRUN's
+# place (UP_LEN_UNRUN)
 UP_LEN_UNRUN = "Clips of this length have not been upscaled on the GPU through the studio yet: the times are estimates"
 FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
 LATER_2K = "2K for {} s clips comes later: 1080p takes them"
@@ -1776,9 +1777,9 @@ class UpscaleDefaults(UpscaleCards, PageTest):
 
 class UpscaleEveryClipPage(UpscaleCards, PageTest):
     """Every clip has the button on: a Keyframes and a Reference clip say in the popover what text the Upscale uses
-    (their prompt without the pictures, encoded first). A clip longer than 5 s has the times of its length (estimates:
-    the popover says they have not run) and the sizes its length does not have greyed out with the reason; the
-    popover then starts at a size it has. The upscale's card shows the text it used, and its progress while that text
+    (their prompt without the pictures, encoded first). A clip longer than 5 s has the times of its length (8 s:
+    covered by the 10 s runs, no note) and the sizes its length does not have greyed out with the reason; the popover
+    then starts at a size it has. The upscale's card shows the text it used, and its progress while that text
     is encoded."""
 
     def seed(self):
@@ -1794,7 +1795,7 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
             self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "aria-disabled"), "false")
         self.assertEqual(self.page.get_attribute(f"{self.card(long)} .act.up", "title"),
                          "Upscale to 1080p or 2K (experimental)")
-        self.open_popover(long)                      # 8 s: its times (estimates), 4K greyed, its first frame kept
+        self.open_popover(long)                      # 8 s: its times, 4K greyed, its first frame kept
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "balanced"])
         text = self.page.inner_text("#uppop")
         for words in ("1080p\n~17 min", "2K\n~37 min", "4K\nlater"):
@@ -1802,7 +1803,7 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.assertEqual((self.page.is_disabled("#up-4k"), self.page.get_attribute('#uppop label[for="up-4k"]', "title")),
                          (True, LATER_4K.format(8)))
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt without its keyframe line, encoded first "
-                                                           f"(~15 s). {UP_LEN_UNRUN}. {UP_PIN_UNRUN}")
+                                                           f"(~15 s). {UP_PIN_UNRUN}")      # not run at 8 s pinned
         self.page.click('#uppop label[for="up-4k"]', force=True)             # greyed: nothing changes
         self.assertEqual(self.checked("up_res"), "2k")
         self.page.keyboard.press("Escape")
@@ -1830,8 +1831,9 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.page.wait_for_selector(f'{card}[data-status="cancelled"]', timeout=20000)
 
     def test_a_clip_whose_length_has_no_2k(self):
-        """A 12 s clip: 2K (the studio's default) and 4K greyed with the reason, 1080p picked, its time an estimate; the
-        request asks for 1080p; the upscale's card has its expected time from its length's row."""
+        """A 12 s clip: 2K (the studio's default) and 4K greyed with the reason, 1080p picked, its time from the job's
+        model (covered by the 15 s run: no note); the request asks for 1080p; the upscale's card has its expected time
+        from its length's row."""
         jid = self.done_clip(prompt="twelve seconds", seconds=12, seed=74)
         self.page.wait_for_timeout(2200)
         self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "title"), "Upscale to 1080p (experimental)")
@@ -1841,7 +1843,7 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
                          ["1920×1080", LATER_2K.format(12), "4K for 12 s clips comes later: 1080p takes them"])
         self.assertIn("1080p\n~32 min", self.page.inner_text("#uppop"))      # 632 + 2 x 638 s (an estimate)
-        self.assertEqual(self.page.inner_text("#upinput"), f"{LATER_2K.format(12)}. {UP_LEN_UNRUN}")
+        self.assertEqual(self.page.inner_text("#upinput"), LATER_2K.format(12))
         with self.page.expect_request("**/api/upscale") as request:
             self.page.click("#upgo")
         self.assertEqual(json.loads(request.value.post_data), {"id": jid, "resolution": "1080p", "strength": "balanced"})
@@ -1894,8 +1896,17 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
             f"{kf}. {stretch}",                                                      # and whole, at 2K
             f"{kf}, encoded first (~15 s). {trim}. {UP_UNRUN}",                      # one without its qwen-text/
             f"{stretch}. {UP_UNRUN}",                                                # a route no model has
-            UP_LEN_UNRUN,                                                            # other lengths: one note
-            f"{kf}. {stretch}. {UP_LEN_UNRUN}"])
+            UP_UNRUN,                                                                # 10 s: its route has not run
+            f"{kf}. {stretch}"])                                                     # 6 s: it has
+        # a length and size whose run failed (its UPSCALE_RAN line out: "ran" false): UP_LEN_UNRUN, one note
+        unrun = self.page.evaluate(f"""() => {{const kept = state.upscale_offers;
+            state.upscale_offers = JSON.parse(JSON.stringify(kept));
+            state.upscale_offers['10']['2k'].ran = false; state.upscale_offers['6']['1080p'].ran = false;
+            try {{return [[{{task: 't2va', model: '{TURBO}', seconds: 10}}, {{}}, '2k'],
+                [{{task: 'fl2va', model: '{TURBO}', seconds: 6}}, {{text: 'generation', video: 'stretch'}}, '1080p'],
+                [{{task: 't2va', seconds: 10}}, {{}}, '1080p']].map(([j, u, res]) => upNotes(j, u, res));}}
+            finally {{state.upscale_offers = kept;}}}}""")
+        self.assertEqual(unrun, [UP_LEN_UNRUN, f"{kf}. {stretch}. {UP_LEN_UNRUN}", ""])
         # the card's line on the frames kept (the record's pin.result)
         kept = {"used": True, "agreement_db": 33.4, "why": None}
         texts = self.page.evaluate("""rs => rs.map(r => upPinText({pin: r}))""", [

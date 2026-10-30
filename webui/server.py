@@ -25,8 +25,8 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   refine, to 1080p, 2k (2560x1440, or 1440x2560 for 9:16; the default) or 4k with NVIDIA's Open-H3-Regenerate-2K
   (upscale/regen2k_job.py, run in its own environment; it upscales a 9:16 clip through NVIDIA's code with the shapes
   turned, see its docstring), at the sizes the job offers for the clip's length (its offer_row: 1080p every length,
-  2K up to 10 s, 4K 5 s clips; /api/state "upscale_offers"; times and memory past 5 s are estimates until those
-  lengths run on the GPU). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS; default
+  2K up to 10 s, 4K 5 s clips; /api/state "upscale_offers"; 6, 10 and 15 s at 1080p and 10 s at 2K have run on the
+  GPU, the other lengths follow the job's model of those runs). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS; default
   LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
   LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). pin: auto (the default) or off, Keep my frames
   (experimental; PIN_ROUTES "ran": where it has run on the GPU): with auto, the clip's keyframes are held in the refine
@@ -70,7 +70,8 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   "audio"}, for the page's choices) and "upscale_load" (null with it off, else LFSTUDIO_UPSCALE_LOAD, for the page's
   expected times), "upscale_pin" (null with it off, else true: the studio takes "pin") and "upscale_offers" (null with
   it off, else UPSCALE_OFFERS: per length, {"<seconds>": {resolution: {"eta_s": [seconds before the refine, per refine
-  step], "ran" (that length and size upscaled on the GPU through the studio; else the times are estimates)} or
+  step], "ran" (that length and size, or a longer clip at that size, upscaled on the GPU through the studio; else the
+  times are estimates)} or
   {"why": why not offered}}}); with it on, every finished job in /api/state, /api/jobs and the API record has
   "upscalable": {"ok": true, "clip_audio": bool} (with "text": "generation" or "encode" when it is not refined against
   the clip's own conditioning; "video": "stretch" when its MP4 is not taken as it is at 1080p and 2K; "frames":
@@ -1580,10 +1581,11 @@ UPSCALE_SHAPE = "Upscale needs a 16:9 or 9:16 clip (1344x768 or 768x1344)"
 UPSCALE_KEEP_ALL = ("1080p", "2k")
 UPSCALE_NAMES = {"1080p": "1080p", "2k": "2K", "4k": "4K"}
 # /api/state "upscale_offers" (null with the Upscale off): what the job offers per length and size, its times and
-# whether that length and size has run on the GPU through the studio (upscale/regen2k_job.py offers_table: {"<seconds>":
-# {size: {"eta_s": [base, step], "ran"} | {"why"}}}), for the lengths the models' "upscale" tables take. The page reads
-# its popover's sizes, times and notes and an upscale's expected time there, by the clip's length; the times past 5 s
-# are estimates until those lengths run (the job's OFFER_ETA_S). A request for a size not offered is refused with why.
+# whether that length and size has run on the GPU through the studio, or a longer clip at that size has
+# (upscale/regen2k_job.py offers_table: {"<seconds>": {size: {"eta_s": [base, step], "ran"} | {"why"}}}), for the
+# lengths the models' "upscale" tables take. The page reads its popover's sizes, times and notes and an upscale's
+# expected time there, by the clip's length (the job's OFFER_ETA_S: measured, or from the job's model of the runs). A
+# request for a size not offered is refused with why.
 UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
                    if int(seconds) in {v for m in MODELS.values() for v in m.get("upscale", {}).get("seconds", ())}}
                   if UPSCALE else None)
@@ -1591,16 +1593,17 @@ UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
 # shows them already (the job's check_pin). PIN_ROUTES says where it is offered, by the clip's model and the ends it
 # can hold (clip_keyframes): the sizes (of those the job offers for the clip's length), the strengths, and where it has
 # run on the GPU through the studio ("ran", 2026-10-29/30; the page notes the others): a size alone is a 5 s clip at
-# that size, "<size>/<seconds>" a clip of that length ("1080p/10"; none yet). One line per route, so a route that fails
-# its GPU run goes with its line. Not at 4K (never run there); Balanced only (Faithful held a first frame only ~1 dB
-# closer). On a long clip the pin runs with the job's lean blocks where its forward is lean (1080p from 10 s, 2K from
-# 6 s: regen.lean_chunks_for), which no pinned run has used on the GPU yet: the length's note says so.
+# that size, "<size>/<seconds>" a clip of that length ("1080p/10": both ends of a LightX2V Turbo 10 s clip, 2026-10-30).
+# One line per route, so a route that fails its GPU run goes with its line. Not at 4K (never run there); Balanced only
+# (Faithful held a first frame only ~1 dB closer). On a long clip the pin runs with the job's lean blocks where its
+# forward is lean (1080p from 10 s, 2K from 6 s: regen.lean_chunks_for), as it ran at 1080p 10 s; at the other
+# lengths and sizes the note says it has not run.
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
 PIN_ROUTES = {
     (TURBO, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
     (TURBO, "last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
-    (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "2k")},
+    (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "2k", "1080p/10")},
     (SOL_H3, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
 }
 # why an end of a Keyframes clip is not held, besides the job's own reasons (regen.PIN_WHY: the picture gone or

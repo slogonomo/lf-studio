@@ -73,8 +73,9 @@ What this wrapper changes, and why:
   none where it keeps them all; the refine takes that T (NVIDIA's refine reads it from the latent) and A audio
   latents (encode_audio: the clip's audio padded with silence or cut to A x 800 samples, and a silence of that length
   where it has none: NVIDIA's round(frames / 24 * 32000) gives one latent too many at 6 and 15 s); the output has all
-  its frames. A 124-frame clip came out with all 124 through the studio at 1080p and 2K (2026-10-29/30); the other
-  lengths have not run on the GPU yet (their times and memory are estimates: OFFER_ETA_S, MODEL_GIB). A 121-frame
+  its frames. A 124-frame clip came out with all 124 through the studio at 1080p and 2K (2026-10-29/30), and clips of
+  6, 10 and 15 s at 1080p and of 10 s at 2K with all their frames and their whole sound (2026-10-30, below); the other
+  lengths follow the job's model of those runs (UPSCALE_RAN, OFFER_ETA_S, need_gib). A 121-frame
   clip runs NVIDIA's own encode_video and decode, as before, and at 5 s the refine has NVIDIA's silence or the clip's
   audio as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run, and for a clip of another
   length its upscaler.py and upscaler_node.py too: their upscale keeps the latent's T (NVIDIA's target has 37, which a
@@ -82,7 +83,7 @@ What this wrapper changes, and why:
   and size (OFFER_ETA_S: 1080p every length, 2K up to 10 s, 4K at 5 s; offer, offers_table) is the server's too:
   prepare refuses the rest with the reason, and a clip of any other count of frames is refused, never cut.
 - Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p,
-  both at 2K). NVIDIA's refine is text to video: it redraws the clip's first and last frames like any other, away from
+  both at 2K, and both ends of a 10 s clip at 1080p with the lean blocks). NVIDIA's refine is text to video: it redraws the clip's first and last frames like any other, away from
   the pictures they were made from.
   With a pin, the clip's keyframes are held as H3 holds a keyframe, the bench wrapper's K1 refine for either end or
   both (refine_pinned): each picture fitted to the refine's grid as the clip's model fitted it to its canvas
@@ -123,8 +124,14 @@ one with a last keyframe (cut to 121 frames) through this job to 1080p: 553.6-56
 night it took LightX2V Turbo clips with a last keyframe whole (124 frames) to 1080p in 557.8-560.1 s and to 2K in
 1118.9 s, as a Text clip; a pin added 16-17 s with one end and 30-34 s with both at 1080p, 83 s with both at 2K (the
 pictures' encode and longer steps; peak allocated +0.4 / +0.7 GiB at 1080p, +1.3 GiB at 2K, where the lowest
-MemAvailable was 14.1 GiB). The bench wrapper it is derived from: docs/PERFORMANCE.md. Clips of other lengths have
-not run on the GPU yet: their times (OFFER_ETA_S) and memory (MODEL_GIB, need_gib) are estimates from these runs.
+MemAvailable was 14.1 GiB). On 2026-10-30 it took clips of other lengths whole, through the studio (one run each,
+from 116.3-116.6 GiB free, the times with a 15-17 s encode of the text but for the 6 s Text clip): 6 s at 1080p (153
+frames, the stock forward) in 759.7 s, steps of 213+212 s, peak allocated 84.78 GiB, lowest MemAvailable 23.5 GiB; 10 s
+at 1080p (241, lean) in 1423.0 s, steps of 455+450 s, 81.15 GiB, 29.0 GiB, and a LightX2V Turbo 10 s clip (243) with
+both ends kept in 1459.2 s, steps of 474+474 s, 81.54 GiB, 28.8 GiB; 15 s 9:16 at 1080p (361, lean) in 2587.0 s, steps
+of 927+930 s, 87.37 GiB, 20.4 GiB; 10 s at 2K (241, lean) in 3188.1 s, steps of 1261+1261 s, 90.83 GiB, 16.7 GiB. The
+other lengths follow the model of these runs (OFFER_ETA_S, MODEL_GIB, need_gib). The bench wrapper it is derived from:
+docs/PERFORMANCE.md.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
 cancelled; the clip's orientation and "frames" (from its MP4: kept, made by H3, pad, T, A and its seconds; frame_case),
@@ -217,7 +224,7 @@ MAX_STEPS = 4
 # stock at 1080p and 2K (75,894 and 133,614 rows), lean at 4K (302,334), with a pin too. 16 chunks: the setup of the
 # one 4K run that finished on GB10; the stock forward with its FFN in 8 chunks ran out of memory there. Longer clips go
 # lean from 10 s at 1080p (147,690 rows) and from 6 s at 2K (169,726), where the stock forward's activations would
-# take the memory the 4K run needed lean_forward for (not run on the GPU at those lengths yet).
+# take the memory the 4K run needed lean_forward for (run on the GPU at 1080p 10 and 15 s and at 2K 10 s).
 LEAN_ROWS, LEAN_CHUNKS = 140_000, 16
 VAE_BATCH = 26                   # NVIDIA's default
 VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior sample of the final MP4)
@@ -310,12 +317,25 @@ OFFER_ETA_S = {
     10: {"1080p": (535, 454), "2k": (708, 1277)},
     12: {"1080p": (632, 638)},
     15: {"1080p": (763, 932)}}
-# The lengths and sizes upscaled on the GPU through the studio, one line each (a run that lands adds its line): the
-# others' times and memory are estimates, which the page says
+# The lengths and sizes upscaled on the GPU through the studio, one line each (a run that lands adds its line, a run
+# that fails takes it out), or covered by the offer rule: a longer clip at the same size ran, and the step and peak
+# models held there. 6, 10 and 15 s at 1080p and 10 s at 2K ran (2026-10-30: steps within 1.4 % of the step model,
+# peaks within 0.1 GiB of the memory model); 7, 8 and 12 s at 1080p and 6, 7 and 8 s at 2K follow by that rule. A
+# length and size not here would show the page's "not run" note: its times and memory would be estimates.
 UPSCALE_RAN = (
     (5, "1080p"),
     (5, "2k"),
     (5, "4k"),
+    (6, "1080p"),
+    (7, "1080p"),                # the offer rule: 10 s ran
+    (8, "1080p"),                # the offer rule: 10 s ran
+    (10, "1080p"),
+    (12, "1080p"),               # the offer rule: 15 s ran
+    (15, "1080p"),
+    (6, "2k"),                   # the offer rule: 10 s ran
+    (7, "2k"),                   # the offer rule: 10 s ran
+    (8, "2k"),                   # the offer rule: 10 s ran
+    (10, "2k"),
 )
 SIZE_NAMES = {"1080p": "1080p", "2k": "2K", "4k": "4K"}
 # the refine's rows per latent frame at each size (its computed grid in 2x2 patches; 9:16 the same): 2040, 3600, 8160
@@ -753,7 +773,8 @@ def need_gib(case, resolution, ends=0):
 
 def offer_row(seconds, resolution):
     """OFFER_ETA_S's answer for a length and size: {"eta_s": [base, step], "ran": whether it ran on the GPU through
-    the studio (UPSCALE_RAN)}, or {"why": the reason it is not offered, naming the sizes that are}."""
+    the studio, or a longer clip at that size did (UPSCALE_RAN)}, or {"why": the reason it is not offered, naming the
+    sizes that are}."""
     times = OFFER_ETA_S.get(seconds, {})
     if resolution in times:
         return {"eta_s": list(times[resolution]), "ran": (seconds, resolution) in UPSCALE_RAN}

@@ -2389,8 +2389,8 @@ class Upscale(UpscaleTest):
         self.assertEqual(sorted(offers, key=int), ["5", "6", "7", "8", "10", "12", "15"])
         self.assertEqual(offers["5"], {"1080p": {"eta_s": [315, 150], "ran": True}, "2k": {"eta_s": [405, 380],
                                        "ran": True}, "4k": {"eta_s": [625, 1685], "ran": True}})
-        self.assertEqual(offers["10"], {"1080p": {"eta_s": [535, 454], "ran": False},
-                                        "2k": {"eta_s": [708, 1277], "ran": False}, "4k": {"why": LATER_4K.format(10)}})
+        self.assertEqual(offers["10"], {"1080p": {"eta_s": [535, 454], "ran": True},
+                                        "2k": {"eta_s": [708, 1277], "ran": True}, "4k": {"why": LATER_4K.format(10)}})
         self.assertEqual(offers["15"]["2k"], {"why": LATER_2K.format(15)})
         ten, fifteen = self.clip(seconds=10, seed=3), self.clip(seconds=15, seed=4)
         for parent in (ten, fifteen):
@@ -4290,6 +4290,8 @@ class ServerParts(unittest.TestCase):
         self.assertEqual(offered(parts, ["last"])["pin_routes"], routes("1080p", "2k"))
         self.assertEqual(offered(parts, made)["pin_routes"], routes("1080p", "2k"))
         parts = self.pin_parts()
+        self.assertEqual(offered(parts, made, 10), {"pin": list(made), "pin_routes": routes("1080p")})   # 1080p/10
+        parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k")))
         self.assertEqual(offered(parts, made, 10), {"pin": list(made), "pin_routes": routes()})     # not at 10 s
         self.assertEqual(offered(parts, made, 12), {"pin": list(made), "pin_routes": {"1080p": unrun}})  # no 2K
         parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k", "1080p/10")))

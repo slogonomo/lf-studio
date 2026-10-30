@@ -358,7 +358,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 </div>
 <div class="pop" id="uppop" role="dialog" aria-labelledby="uptitle" hidden>
   <h3 id="uptitle">Upscale this clip <small>experimental</small></h3>
-  <div class="lbl" title="Each time in all, from runs on one DGX Spark (estimates for clips longer than 5 s): reading the clip ~2 min at 5 s, longer for longer clips, loading the models (the fast load: ~22 s; ~7.5 min with LFSTUDIO_UPSCALE_LOAD=standard), the refine and the decode">Resolution <small data-standard="in all, with a ~7.5 min load">in all, with a ~22 s load</small></div>
+  <div class="lbl" title="Each time in all, from runs on one DGX Spark (6, 10 and 15 s at 1080p and 10 s at 2K among them; the other lengths from a model of those runs): reading the clip ~2 min at 5 s, longer for longer clips, loading the models (the fast load: ~22 s; ~7.5 min with LFSTUDIO_UPSCALE_LOAD=standard), the refine and the decode">Resolution <small data-standard="in all, with a ~7.5 min load">in all, with a ~22 s load</small></div>
   <div class="seg" role="radiogroup" aria-label="Resolution">
     <input type="radio" name="up_res" id="up-1080p" value="1080p"><label for="up-1080p">1080p<small></small></label>
     <input type="radio" name="up_res" id="up-2k" value="2k"><label for="up-2k">2K<small></small></label>
@@ -426,8 +426,9 @@ const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes
 // the job's start, encoding the final clip ~2 min at 5 s, its fast load ~22 s, the decode and the MP4) plus `step` per
 // refine step, plus ~8 min with the standard load (j.load: its 2K run took 498 s more in all, 433 s of it the load and
 // 56 s the encode, which loads its VAE through mmap; neither depends on the resolution). At 5 s from the job's own runs
-// with the fast load on one DGX Spark, a 16:9 clip to each resolution; other lengths are estimates from them until
-// they run ("ran": false; docs/PERFORMANCE.md). An upscale's record has its clip's length, so its bar has its times.
+// with the fast load on one DGX Spark, a 16:9 clip to each resolution; 6, 10 and 15 s at 1080p and 10 s at 2K from
+// their runs too, the other lengths from the job's model of those runs (docs/PERFORMANCE.md). An upscale's record has
+// its clip's length, so its bar has its times.
 // The popover shows upEta for 2 steps with the studio's load (/api/state "upscale_load"), upTime, for each size the
 // clip's length has, and greys out the others with the reason.
 const isUp=j=>j.kind==='upscale';
@@ -443,9 +444,11 @@ const upTime=s=>s<3600?`~${Math.round(s/60)} min`:`~${(s/3600).toFixed(1)} h`;
 // UP_PIN_S, the seconds one end and both ends add at 1080p and 2K, measured through the studio against the same clips
 // unpinned (2026-10-29/30: +16-17 s with one end and +30-34 s with both at 1080p, +83 s with both at 2K: each picture's
 // encode, ~3 s at 1080p, and steps ~6 s longer per end at 1080p, ~37 s with both at 2K); one end at 2K has not run,
-// so its 60 s is an estimate (docs/PERFORMANCE.md), as are they all on a clip longer than 5 s, where its longer
-// steps cost more per end, which they leave out: up to ~30 s per end at 2K for 10 s, about a minute with both ends
-// (docs/PERFORMANCE.md; UP_PIN_UNRUN says so where the pin's route has not run at the clip's length)
+// so its 60 s is an estimate (docs/PERFORMANCE.md). On a clip longer than 5 s its longer steps cost more per end,
+// which these leave out: both ends of a 10 s clip at 1080p add about 45 s in all, 13 s more than here (an estimate:
+// that run's pinned steps against the step model's unpinned ones, as it had no unpinned twin), and at 2K for 10 s the
+// model gives about a minute more with both ends (docs/PERFORMANCE.md; UP_PIN_UNRUN says so where the pin's route has
+// not run at the clip's length)
 const UP_PIN_S={"1080p":[16,32],"2k":[60,83]};
 const upPinS=j=>{const n=j.pin&&Array.isArray(j.pin.ends)?j.pin.ends.length:0;return n?(UP_PIN_S[j.resolution]||[0,0])[n-1]||0:0;};
 const upEta=j=>{const e=(upOffer(j,j.resolution)||{}).eta_s;if(!e)return 0;      // 0: no expected time
@@ -459,8 +462,9 @@ const upEta=j=>{const e=(upOffer(j,j.resolution)||{}).eta_s;if(!e)return 0;     
 // Text clip (stretched), its Keyframes clips with their own text alone, 768p as they are and 576p stretched (one with a
 // last keyframe whole, 124 frames, at 1080p and 2K), and its 768p clip with a last keyframe cut to 121 frames (run at
 // 1080p before such a clip kept all 124 there, its route at 4K now). Any other route has not: UP_UNRUN says so, and
-// its times are a Text clip's. A clip of a length and size that has not run at all (its offer's "ran": false) gets
-// UP_LEN_UNRUN in its place: one note
+// its times are a Text clip's. A clip of a length and size that has not run at all, nor a longer one at that size
+// (its offer's "ran": false; none now, but a run that fails takes its line out), gets UP_LEN_UNRUN in its place: one
+// note
 const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation clip',
   'lightx2v-turbo generation stretch','lightx2v-turbo generation trim'];
 const UP_UNRUN="This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's";
