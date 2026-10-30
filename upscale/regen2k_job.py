@@ -66,8 +66,8 @@ What this wrapper changes, and why:
 - The clip's length. NVIDIA's pipeline is written for 5 s: its encode_video reads 121 frames and adds 3 copies of the
   last one to reach the 124 the VAE takes (37 latent frames), its silence is 207 audio latents and its decode keeps
   121 frames. H3 makes 124 frames at 5 s, and a LightX2V Turbo clip with a last keyframe keeps them all: it ends on
-  the frame that keyframe is anchored to. The studio's other lengths (6 to 15 s, and Sol-H3's 3 s clips) have frames
-  of their own (FRAME_CASES: 73 to 362). Such a clip goes through encode_clip and decode_released instead, NVIDIA's
+  the frame that keyframe is anchored to. The studio's other lengths (6 to 15 s) have frames of their own
+  (FRAME_CASES: 153 to 362). Such a clip goes through encode_clip and decode_released instead, NVIDIA's
   code with the frames as parameters: its frames read, with NVIDIA's 3 copies of the last one where it keeps fewer
   than H3 made (so the VAE's chunks give the T of the frames made: 47 for 153 + 3 at 6 s, where 153 alone give 42),
   none where it keeps them all; the refine takes that T (NVIDIA's refine reads it from the latent) and A audio
@@ -276,18 +276,17 @@ FPS = "24/1"                                     # the clip's MP4 and the output
 NVIDIA_FRAMES = 121              # NVIDIA's 5 s: encode_video reads at most 121 frames, its decode keeps 121
 NVIDIA_AUDIO_LATENTS = 207       # NVIDIA's encode_silence: 124 frames of silence, round(124 / 24 * 32000) samples
 AUDIO_RATE, AUDIO_HOP, AUDIO_CHANNELS = 32000, 800, 32    # the audio VAE: samples a second and a latent, channels
-# The clips this job takes, by the frames their MP4 keeps: every length the studio makes (5 to 15 s) and Sol-H3's 3 s
-# (made up to 0.5.0), with its length and how many copies of its last frame the encode adds (pad). H3 makes 17n+5
-# frames (made_frames: 24 fps snapped up; 124 at 5 s), with 5n+2 latent frames (T) and 40 audio latents a second (A);
-# the studio keeps the largest 8m+1 of them (121 of 124: Sol-H3's clips, and LightX2V Turbo's without a last keyframe)
-# or every frame made (a LightX2V Turbo clip with a last keyframe, which ends on the frame that keyframe is anchored to;
-# Sol-H3's 3 s, 73 of 73). A clip that keeps fewer than made gets NVIDIA's 3 copies of its last frame (121 + 3 = 124,
-# its encode at 5 s): with them the VAE's chunks (encoded_latent_frames) give the T of the frames made at every length,
-# without them 5 fewer at 6, 7, 8 and 12 s. One that keeps every frame made gets none. Any other count (Sol-H3's old
-# 4 s clips, 105 frames; a 14 s research clip, 345) is refused, never cut. tests/test_upscale.py derives the table from
-# the patch's runtime/geometry.py and jobs/h3turbo_job.py at every length.
+# The clips this job takes, by the frames their MP4 keeps: every length the studio makes (5 to 15 s), with its length
+# and how many copies of its last frame the encode adds (pad). H3 makes 17n+5 frames (made_frames: 24 fps snapped up;
+# 124 at 5 s), with 5n+2 latent frames (T) and 40 audio latents a second (A); the studio keeps the largest 8m+1 of them
+# (121 of 124: Sol-H3's clips, and LightX2V Turbo's without a last keyframe) or every frame made (a LightX2V Turbo clip
+# with a last keyframe, which ends on the frame that keyframe is anchored to). A clip that keeps fewer than made gets
+# NVIDIA's 3 copies of its last frame (121 + 3 = 124, its encode at 5 s): with them the VAE's chunks
+# (encoded_latent_frames) give the T of the frames made at every length, without them 5 fewer at 6, 7, 8 and 12 s. One
+# that keeps every frame made gets none. Any other count (Sol-H3's old 3 and 4 s clips, made up to 0.5.0, 73 and 105
+# frames; a 14 s research clip, 345) is refused, never cut. tests/test_upscale.py derives the table from the patch's
+# runtime/geometry.py and jobs/h3turbo_job.py at every length.
 FRAME_CASES = {
-    73: {"seconds": 3, "pad": 0},
     121: {"seconds": 5, "pad": 3}, 124: {"seconds": 5, "pad": 0},
     153: {"seconds": 6, "pad": 3}, 158: {"seconds": 6, "pad": 0},
     169: {"seconds": 7, "pad": 3}, 175: {"seconds": 7, "pad": 0},
@@ -304,7 +303,6 @@ FRAME_CASES = {
 # times is not offered for that length (offer_row says why): 2K takes up to 10 s whole and 4K 5 s (longer ones are
 # past the memory measured here: in pieces, later).
 OFFER_ETA_S = {
-    3: {"1080p": (209, 63), "2k": (259, 155)},
     5: {"1080p": (315, 150), "2k": (405, 380), "4k": (625, 1685)},
     6: {"1080p": (372, 215), "2k": (483, 583)},
     7: {"1080p": (404, 256), "2k": (528, 700)},
@@ -763,10 +761,6 @@ def offer_row(seconds, resolution):
     if not sizes:
         return {"why": f"Upscale takes no {seconds:g} s clips"}
     takes = f"{' and '.join(sizes)} take{'s' if len(sizes) == 1 else ''}"
-    lengths = [length for length, sized in sorted(OFFER_ETA_S.items()) if resolution in sized]
-    if seconds < lengths[0]:                         # a length below what that size takes: Sol-H3's old 3 s at 4K
-        only = "only" if len(lengths) == 1 else "and longer ones"
-        return {"why": f"{name} takes {lengths[0]} s clips {only}: {takes} this one"}
     return {"why": f"{name} for {seconds} s clips comes later: {takes} them"}
 
 

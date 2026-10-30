@@ -527,8 +527,8 @@ def turbo_job():
 
 
 # every case: kept -> (seconds, made, pad, T, A), as the studio's clips have them (FrameTests derives it)
-CASES = {73: (3, 73, 0, 22, 122), 121: (5, 124, 3, 37, 207), 124: (5, 124, 0, 37, 207), 153: (6, 158, 3, 47, 263),
-         158: (6, 158, 0, 47, 263), 169: (7, 175, 3, 52, 292), 175: (7, 175, 0, 52, 292), 185: (8, 192, 3, 57, 320),
+CASES = {121: (5, 124, 3, 37, 207), 124: (5, 124, 0, 37, 207), 153: (6, 158, 3, 47, 263), 158: (6, 158, 0, 47, 263),
+         169: (7, 175, 3, 52, 292), 175: (7, 175, 0, 52, 292), 185: (8, 192, 3, 57, 320),
          192: (8, 192, 0, 57, 320), 241: (10, 243, 3, 72, 405), 243: (10, 243, 0, 72, 405),
          289: (12, 294, 3, 87, 490), 294: (12, 294, 0, 87, 490), 361: (15, 362, 3, 107, 603),
          362: (15, 362, 0, 107, 603)}
@@ -558,7 +558,7 @@ class FrameTests(unittest.TestCase):
             case = job_module.frame_case(kept)
             self.assertEqual((case["kept"] + case["pad"], case["T"], case["A"]),
                              (124, job_module.NATIVE_SHAPE[1], job_module.NVIDIA_AUDIO_LATENTS))
-        for kept in (122, 120, 105, 145, 193, 345, 0):      # Sol-H3's old 4 s, the stub's old 6 and 8 s, a 14 s clip
+        for kept in (122, 120, 73, 105, 145, 193, 345, 0):  # Sol-H3's old 3 and 4 s, the stub's old 6 and 8 s, 14 s
             with self.subTest(kept=kept), self.assertRaises(KeyError):
                 job_module.frame_case(kept)
         with mock.patch.dict(job_module.FRAME_CASES, {153: {"seconds": 6, "pad": 0}}), \
@@ -568,14 +568,15 @@ class FrameTests(unittest.TestCase):
     def test_every_length_the_studio_makes(self):
         """FRAME_CASES has every count of frames the studio's clips keep, and no other: Sol-H3's (both patches'
         runtime/geometry.py: its draft's frames, 24 fps snapped up to 17n+5, of which the largest 8m+1 are kept) at
-        every length the studio makes and at 3 s, LightX2V Turbo's (jobs/h3turbo_job.py: the same frames made, every
-        one kept with a last keyframe) at every length; each with its length, the frames made, T and A as those give
-        them, and its audio within pcm_limit. 9:16 has the same frames."""
+        every length the studio makes, LightX2V Turbo's (jobs/h3turbo_job.py: the same frames made, every one kept
+        with a last keyframe) at every length; each with its length, the frames made, T and A as those give them, and
+        its audio within pcm_limit. 9:16 has the same frames. Sol-H3's old 3 s clips (73 frames, made up to 0.5.0)
+        are not upscaled: their count is refused."""
         lengths = studio_lengths()
         self.assertEqual(lengths, (5, 6, 7, 8, 10, 12, 15))
         found = {}
         for name, geometry in sol_geometries().items():
-            for seconds in (3,) + lengths:
+            for seconds in lengths:
                 made = geometry.draft_frames_for_seconds(seconds)
                 frames = geometry.frame_geometry(made)
                 kept = frames["output_frames"]
@@ -598,11 +599,15 @@ class FrameTests(unittest.TestCase):
                 self.assertEqual(kept == made, "last" in keyframes)
                 found.setdefault(kept, set()).add(f"lightx2v-turbo {seconds}")
         self.assertEqual(set(found), set(job_module.FRAME_CASES))
-        self.assertEqual(found[73], {"sol-h3 3"})
+        for name, geometry in sol_geometries().items():                # Sol-H3's old 3 s: refused
+            kept = geometry.frame_geometry(geometry.draft_frames_for_seconds(3))["output_frames"]
+            self.assertEqual(kept, 73, name)
+            with self.assertRaises(KeyError):
+                job_module.frame_case(kept)
         self.assertEqual(found[121], {"sol-h3 5", "lightx2v-turbo 5"})
         self.assertEqual(found[362], {"lightx2v-turbo 15"})
         self.assertEqual({case["seconds"] for case in map(job_module.frame_case, job_module.FRAME_CASES)},
-                         {3} | set(lengths))
+                         set(lengths))
 
     def test_h3s_frames(self):
         """H3 makes 17n+5 frames (diffusers' align_num_frames), 5n+2 latent frames (video_latent_num_frames); its
@@ -764,13 +769,13 @@ class StudioSettingsTests(unittest.TestCase):
                                              ("2k", 243, 2, 110.0, 111.0), ("2k", 241, 0, 100.0, 110.0),
                                              ("2k", 241, 1, 100.0, 111.0), ("2k", 241, 1, 120.0, 120.0),
                                              ("1080p", 361, 0, 100.0, 107.0), ("1080p", 361, 0, 90.0, 107.0),
-                                             ("1080p", 185, 2, 100.0, 107.0), ("1080p", 73, 0, 80.0, 92.0),
-                                             ("2k", 73, 2, 80.0, 99.0), ("2k", 153, 0, 110.0, 110.0),
+                                             ("1080p", 185, 2, 100.0, 107.0), ("2k", 153, 0, 110.0, 110.0),
                                              ("2k", 241, 1, 0.0, 0.0)):
             with self.subTest(res=res, kept=kept, ends=ends, floor=floor):
                 self.assertEqual(job_module.min_free_for(res, floor, kept, ends), want)
-        with self.assertRaises(KeyError):
-            job_module.min_free_for("2k", 110.0, 145)
+        for kept in (145, 73):                                      # Sol-H3's old 3 s too
+            with self.assertRaises(KeyError):
+                job_module.min_free_for("2k", 110.0, kept)
 
     def test_the_patch_switches_for_o_direct(self):
         """SPARK_FAST_SAFETENSORS and SPARK_DIRECT_IO, which the job inherits: anything but 1 turns fastload's O_DIRECT
@@ -805,18 +810,18 @@ class OfferTests(unittest.TestCase):
         estimates (not run); every size not offered says why, naming the sizes that take the clip."""
         table = job_module.offers_table()
         self.assertEqual(json.loads(json.dumps(table)), table)                 # as /api/state carries it
-        self.assertEqual(list(table), ["3", "5", "6", "7", "8", "10", "12", "15"])
+        self.assertEqual(list(table), ["5", "6", "7", "8", "10", "12", "15"])
         self.assertEqual(list(table), [str(s) for s in sorted({c[0] for c in CASES.values()})])
         offered = {seconds: [size for size, row in sizes.items() if "eta_s" in row] for seconds, sizes in table.items()}
-        self.assertEqual(offered, {"3": ["1080p", "2k"], "5": ["1080p", "2k", "4k"], "6": ["1080p", "2k"],
+        self.assertEqual(offered, {"5": ["1080p", "2k", "4k"], "6": ["1080p", "2k"],
                                    "7": ["1080p", "2k"], "8": ["1080p", "2k"], "10": ["1080p", "2k"],
                                    "12": ["1080p"], "15": ["1080p"]})
         self.assertEqual(table["5"], {"1080p": {"eta_s": [315, 150], "ran": True},
                                       "2k": {"eta_s": [405, 380], "ran": True},
                                       "4k": {"eta_s": [625, 1685], "ran": True}})          # the page's times until now
-        self.assertEqual((table["10"]["1080p"], table["10"]["2k"], table["15"]["1080p"], table["3"]["2k"]),
+        self.assertEqual((table["10"]["1080p"], table["10"]["2k"], table["15"]["1080p"]),
                          ({"eta_s": [535, 454], "ran": False}, {"eta_s": [708, 1277], "ran": False},
-                          {"eta_s": [763, 932], "ran": False}, {"eta_s": [259, 155], "ran": False}))
+                          {"eta_s": [763, 932], "ran": False}))
         for seconds, sizes in table.items():
             self.assertEqual(list(sizes), list(job_module.SIZES))
             for size, row in sizes.items():
@@ -827,7 +832,6 @@ class OfferTests(unittest.TestCase):
         why = {(seconds, size): row["why"] for seconds, sizes in table.items() for size, row in sizes.items()
                if "why" in row}
         self.assertEqual(why, {
-            ("3", "4k"): "4K takes 5 s clips only: 1080p and 2K take this one",
             **{(s, "4k"): f"4K for {s} s clips comes later: 1080p and 2K take them" for s in ("6", "7", "8", "10")},
             **{(s, "4k"): f"4K for {s} s clips comes later: 1080p takes them" for s in ("12", "15")},
             **{(s, "2k"): f"2K for {s} s clips comes later: 1080p takes them" for s in ("12", "15")}})
@@ -836,7 +840,9 @@ class OfferTests(unittest.TestCase):
         with mock.patch.object(job_module, "UPSCALE_RAN", job_module.UPSCALE_RAN + ((10, "1080p"),)):
             self.assertEqual(job_module.offers_table()["10"]["1080p"], {"eta_s": [535, 454], "ran": True})
             self.assertFalse(job_module.offers_table()["10"]["2k"]["ran"])
-        self.assertEqual(job_module.offer_row(4, "1080p"), {"why": "Upscale takes no 4 s clips"})
+        for seconds in (3, 4):                                      # Sol-H3's old lengths
+            self.assertEqual([job_module.offer_row(seconds, size) for size in job_module.SIZES],
+                             [{"why": f"Upscale takes no {seconds} s clips"}] * 3)
 
     def test_every_count_of_a_length_has_its_row(self):
         """offer() for each count of frames, size and pin: its length's row of offers_table, with the route, the
@@ -858,7 +864,7 @@ class OfferTests(unittest.TestCase):
                         "floor_gib": job_module.min_free_for(size, job_module.MIN_FREE_GIB, kept, ends),
                         "eta_s": row["eta_s"], "strengths": ["faithful", "balanced", "full"], "ran": row["ran"]},
                         (kept, size, ends))
-        for kept in (145, 105, 345):
+        for kept in (145, 73, 105, 345):
             with self.assertRaises(KeyError):
                 job_module.offer(kept, "1080p")
 
@@ -884,8 +890,8 @@ class OfferTests(unittest.TestCase):
             for size in job_module.OFFER_ETA_S[seconds]:
                 forwards.setdefault(size, {})[seconds] = job_module.offer(kept, size)["forward"]
         self.assertEqual(forwards, {
-            "1080p": {3: "stock", 5: "stock", 6: "stock", 7: "stock", 8: "stock", 10: "lean", 12: "lean", 15: "lean"},
-            "2k": {3: "stock", 5: "stock", 6: "lean", 7: "lean", 8: "lean", 10: "lean"}, "4k": {5: "lean"}})
+            "1080p": {5: "stock", 6: "stock", 7: "stock", 8: "stock", 10: "lean", 12: "lean", 15: "lean"},
+            "2k": {5: "stock", 6: "lean", 7: "lean", 8: "lean", 10: "lean"}, "4k": {5: "lean"}})
         own = {(size, kept): sum(job_module.case_rows(job_module.frame_case(kept), size)[k] for k in ("video", "audio"))
                for size, kept in (("1080p", 185), ("1080p", 241), ("2k", 121), ("2k", 153), ("4k", 121))}
         self.assertEqual(own, {("1080p", 185): 116920, ("1080p", 241): 147690, ("2k", 121): 133614,
@@ -908,12 +914,12 @@ class OfferTests(unittest.TestCase):
             self.assertLessEqual(116.5 - model - overhead, low[1] + 0.1, size)
         need = {(size, seconds): tuple(job_module.need_gib(job_module.frame_case(kept), size, ends)
                                        for ends in (0, 1, 2))
-                for kept, (seconds, *_) in CASES.items() if kept in (73, 121, 153, 169, 185, 241, 289, 361)
+                for kept, (seconds, *_) in CASES.items() if kept in (121, 153, 169, 185, 241, 289, 361)
                 for size in job_module.OFFER_ETA_S[seconds]}
         self.assertEqual(need, {
-            ("1080p", 3): (92, 92, 92), ("1080p", 5): (97, 97, 97), ("1080p", 6): (103, 103, 103),
+            ("1080p", 5): (97, 97, 97), ("1080p", 6): (103, 103, 103),
             ("1080p", 7): (104, 105, 105), ("1080p", 8): (106, 107, 107), ("1080p", 10): (101, 101, 101),
-            ("1080p", 12): (103, 103, 104), ("1080p", 15): (107, 107, 107), ("2k", 3): (97, 98, 99),
+            ("1080p", 12): (103, 103, 104), ("1080p", 15): (107, 107, 107),
             ("2k", 5): (109, 110, 110), ("2k", 6): (103, 103, 103), ("2k", 7): (104, 104, 105),
             ("2k", 8): (106, 106, 106), ("2k", 10): (110, 111, 111), ("4k", 5): (114, 115, 115)})
         floors = {(kept, size, ends): job_module.offer(kept, size, ends)["floor_gib"] for kept in CASES
@@ -962,7 +968,7 @@ class TextTests(unittest.TestCase):
             with self.subTest(shape=shape), self.assertRaisesRegex(JobError, "not stereo PCM of at most 165333"):
                 job_module.check_pcm_shape(shape, five)
         for kept, taken, refused in ((158, 210666, 210668), (153, 204000, 210668), (361, 482667, 482668),
-                                     (362, 482666, 482668), (73, 97333, 97334), (241, 321333, 324001)):
+                                     (362, 482666, 482668), (241, 321333, 324001)):
             case = job_module.frame_case(kept)
             job_module.check_pcm_shape((1, 2, taken), case)
             with self.subTest(kept=kept), self.assertRaisesRegex(JobError, f"at most {refused - 1} samples"):
@@ -1284,10 +1290,9 @@ class InputTests(Fixture):
                                                          frames=124, audio=False)), ("portrait", 124))
         self.assertEqual(job_module.check_final(make_mp4(self.tmp / "ten9x16.mp4", width=768, height=1344,
                                                          frames=241, audio=False)), ("portrait", 241))
-        self.assertEqual(job_module.check_final(make_mp4(self.tmp / "three.mp4", frames=73, audio=False)),
-                         ("landscape", 73))
-        counts = "73, 121, 124, 153, 158, 169, 175, 185, 192, 241, 243, 289, 294, 361 or 362"
-        for name, kwargs, message in (("four.mp4", {"frames": 105}, "1344x768, 105 frames"),
+        counts = "121, 124, 153, 158, 169, 175, 185, 192, 241, 243, 289, 294, 361 or 362"
+        for name, kwargs, message in (("three.mp4", {"frames": 73}, "1344x768, 73 frames"),      # Sol-H3's old 3 s
+                                      ("four.mp4", {"frames": 105}, "1344x768, 105 frames"),
                                       ("six9x16.mp4", {"frames": 145, "width": 768, "height": 1344},
                                        "768x1344, 145 frames"),
                                       ("fourteen.mp4", {"frames": 345}, "345 frames"),
@@ -1952,7 +1957,7 @@ class LengthTests(Fixture):
         cls.clips = {(kept, "landscape"): make_mp4(cls.media / f"landscape{kept}.mp4", frames=kept, audio=False)
                      for kept in CASES}
         cls.clips.update({(kept, "portrait"): make_mp4(cls.media / f"portrait{kept}.mp4", width=768, height=1344,
-                                                       frames=kept, audio=False) for kept in (73, 158, 241, 362)})
+                                                       frames=kept, audio=False) for kept in (153, 158, 241, 362)})
 
     def use(self, kept, orientation):
         for mp4 in (self.case / "stage2").glob("refined_*.mp4"):
@@ -3712,7 +3717,7 @@ class DiffusersRuleTests(unittest.TestCase):
         NVIDIA's length for those frames would give one latent more at 6 and 15 s."""
         vae = self.audio_vae()
         draw = torch.Generator().manual_seed(4)
-        for kept in (73, 153, 158, 361, 362):
+        for kept in (153, 158, 361, 362):
             with self.subTest(kept=kept):
                 case = job_module.frame_case(kept)
                 samples, n = job_module.audio_samples(case), int(kept / 24 * 32000)
@@ -3889,9 +3894,9 @@ class PinLayoutTests(unittest.TestCase):
         self.assertEqual(layout.sequence_length - 196, 147690)
 
     def test_the_last_block_at_other_lengths(self):
-        """The last block at (5/3)(made - 1) after the text for every length H3 makes (73 to 362 frames; diffusers
-        sums the spans with numpy, as the reference does: these are its values)."""
-        for made, frames, time in ((73, 22, 316.0), (124, 37, 400.99999999999994), (158, 47, 457.66666666666663),
+        """The last block at (5/3)(made - 1) after the text for every length the Upscale takes (124 to 362 frames
+        made; diffusers sums the spans with numpy, as the reference does: these are its values)."""
+        for made, frames, time in ((124, 37, 400.99999999999994), (158, 47, 457.66666666666663),
                                    (175, 52, 486.00000000000006), (192, 57, 514.3333333333334),
                                    (243, 72, 599.3333333333334), (294, 87, 684.3333333333334),
                                    (362, 107, 797.6666666666665)):

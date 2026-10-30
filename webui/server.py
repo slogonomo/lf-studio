@@ -21,7 +21,7 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
 - Experimental, with LFSTUDIO_UPSCALE=1: POST /api/upscale {"id", "resolution", "strength", "audio", "seed", "pin"}
   upscales a finished clip ("id") of a task, model and length the models' "upscale" tables have (MODELS: Sol-H3's
   t2va, fl2va and ref2va clips, LightX2V Turbo's t2va and fl2va clips at 576p or 768p; every length the studio makes,
-  5 to 15 s, and Sol-H3's 3 s clips made up to 0.5.0), 16:9 or 9:16, from its MP4, whole, in one pass of NVIDIA's
+  5 to 15 s, not Sol-H3's 3 and 4 s clips made up to 0.5.0), 16:9 or 9:16, from its MP4, whole, in one pass of NVIDIA's
   refine, to 1080p, 2k (2560x1440, or 1440x2560 for 9:16; the default) or 4k with NVIDIA's Open-H3-Regenerate-2K
   (upscale/regen2k_job.py, run in its own environment; it upscales a 9:16 clip through NVIDIA's code with the shapes
   turned, see its docstring), at the sizes the job offers for the clip's length (its offer_row: 1080p every length,
@@ -269,7 +269,6 @@ TASKS = ("t2va", "fl2va", "ref2va")
 # seconds; 5 = NVIDIA's frozen route, others = lf-studio extension. 3 and 4 s went after 0.5.0 (3 s clips never came
 # out right; the patch still takes 3-15 s, for infer.py and the bench).
 DURATIONS = (5, 6, 7, 8, 10, 12, 15)
-UPSCALE_OLD_SECONDS = (3,)       # Sol-H3's 3 s clips, made up to 0.5.0, upscale too (the experimental Upscale, MODELS)
 
 
 def fail(message):
@@ -457,8 +456,9 @@ if UPSCALE:
 # its options' choices yet. Offering more is a change of this data, after a GPU validation; the page and the clients
 # follow it. A model that "runs" a "job" is a GPU job of its own per clip (run_model_job); "setting" names its
 # settings, LFSTUDIO_<setting>_*. "upscale": the finished clips of the model the experimental Upscale takes, by task and
-# length (upscalable; every format the job has a shape for): every clip each model makes, of every length, and Sol-H3's
-# 3 s ones; which sizes a length gets is the job's table (upscale/regen2k_job.py offer_row, /api/state upscale_offers).
+# length (upscalable; every format the job has a shape for): every clip each model makes, of every length (not Sol-H3's
+# old 3 and 4 s ones); which sizes a length gets is the job's table (upscale/regen2k_job.py offer_row, /api/state
+# upscale_offers).
 SOL_H3, TURBO = "sol-h3", "lightx2v-turbo"
 DEFAULT_MODEL = SOL_H3           # a request without a model, and every record without one (all clips before 0.6)
 FRAME_SETS = ("first", "last", "first+last")      # an fl2va clip's keyframes
@@ -468,7 +468,7 @@ MODELS = {
         "name": "Sol-H3", "about": "NVIDIA's Sol two-stage pipeline: a MiniMax-H3 draft at 384p refined by LTX-2.5",
         "runs": "session", "experimental": False, "backends": tuple(BACKENDS), "options": (),
         "offers": (dict(END_STATE),), "not_yet": (),
-        "upscale": {"tasks": TASKS, "seconds": UPSCALE_OLD_SECONDS + DURATIONS}},
+        "upscale": {"tasks": TASKS, "seconds": DURATIONS}},
     TURBO: {
         "name": "LightX2V Turbo", "setting": "H3TURBO",
         "about": "the full MiniMax-H3 in one stage with LightX2V's turbo LoRA: keeps the look of your keyframe",
@@ -530,7 +530,7 @@ def registry_problems():
     form and JSON carry strings and integers: json_form, check_model, lf-cli), with a value or default not of its
     type or a default not among its choices, or of another type than an option of the same name of another model; a
     row without a dimension of the model or with a value it can't have, or a value not offered without a reason; an
-    Upscale entry with a task or a length the studio does not have (or Sol-H3's old 3 s, UPSCALE_OLD_SECONDS)."""
+    Upscale entry with a task or a length the studio does not have."""
     found, kinds = [], {}
     for mid, m in MODELS.items():
         for o in m["options"]:
@@ -562,8 +562,8 @@ def registry_problems():
                                  "reason not yet")
         up = m.get("upscale", {"tasks": (), "seconds": ()})
         found += [f"{mid}: the Upscale's task {t} is not one of {TASKS}" for t in up["tasks"] if t not in TASKS]
-        found += [f"{mid}: the Upscale's length {v} is not one of {UPSCALE_OLD_SECONDS + DURATIONS}"
-                  for v in up["seconds"] if v not in UPSCALE_OLD_SECONDS + DURATIONS]
+        found += [f"{mid}: the Upscale's length {v} is not one of {DURATIONS}" for v in up["seconds"]
+                  if v not in DURATIONS]
     return found
 
 
@@ -1566,7 +1566,7 @@ UPSCALE_REQUEST = ("id", "resolution", "strength", "audio", "seed", "pin")    # 
 FREE_WAIT_S = 5                  # how long a memory floor waits for a closed session's memory to come back
 GPU_JOB_STOP_S = 20              # Cancel and shutdown: SIGKILL a GPU job's process this long after its SIGTERM
 UPSCALE_FREE_WAIT_S, UPSCALE_STOP_S = FREE_WAIT_S, GPU_JOB_STOP_S      # their names up to 0.5.1
-UPSCALE_LENGTH = "Upscale takes clips of the lengths the studio makes, 5 to 15 s (and Sol-H3's 3 s ones), not {} s"
+UPSCALE_LENGTH = "Upscale takes clips of the lengths the studio makes, 5 to 15 s, not {} s"
 # a clip whose MP4 (its name: _<W>x<H>_<frames>f.mp4) has frames the job has no case for (its FRAME_CASES), or those
 # of another length than its record's: refused, never cut
 UPSCALE_FRAMES = "Upscale can't take this clip: its MP4 has {} frames, not the frames of a {} s clip"
@@ -1824,8 +1824,9 @@ def image_state(path, want, hash_now=False):
 
 def sol_last(final):
     """Why a Sol-H3 clip's last frame is not held (PIN_SOL_LAST), by the frames its MP4 (`final`) stops before the last
-    H3 made, where its last keyframe is: 3 at 5 s, 7 at 8 s ("a few" for an MP4 whose name has no count); none at 3 s,
-    whose clip keeps every frame made (73): not yet, then (no route holds a Sol-H3 clip's last frame)."""
+    H3 made, where its last keyframe is: 3 at 5 s, 7 at 8 s ("a few" for an MP4 whose name has no count); none for an
+    MP4 that keeps every frame made (73 at 3 s, a length the Upscale does not take): not yet, then (no route holds a
+    Sol-H3 clip's last frame)."""
     m = MP4_SIZE.search(Path(final).name)
     n = regen.made_frames(int(m.group(3))) - int(m.group(3)) if m and int(m.group(3)) > 0 else None
     if n == 0:
@@ -1957,8 +1958,8 @@ def upscalable(job):
     pin_why: {end: why not} for the others (the pictures are not hashed here: image_state). Which sizes a clip's
     length gets, with their times, is not here: /api/state "upscale_offers" (upscale/regen2k_job.py offers_table), by
     length. It takes every finished clip of the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference
-    clips, LightX2V Turbo's Text and Keyframes clips at either size), of every length the studio makes (and Sol-H3's
-    3 s ones), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes turned), whole: not one whose
+    clips, LightX2V Turbo's Text and Keyframes clips at either size), of every length the studio makes (not Sol-H3's
+    old 3 and 4 s ones: UPSCALE_LENGTH), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes turned), whole: not one whose
     MP4 has frames the job has no case for, or not those of its length (UPSCALE_FRAMES), nor a Keyframes or Reference
     clip with nothing left of its prompt without its pictures (or a text alone too long), nor one whose text must be
     encoded while the studio has no t2va path manifest (the encode's). Looks at the clip's files: call it without

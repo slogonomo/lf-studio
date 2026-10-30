@@ -622,8 +622,7 @@ class ReleaseReviewPage(PageTest):
 class OldLengths(PageTest):
     """3 and 4 s went after 0.5.0: the page offers 5-15 s, a length kept from 0.5.0 reads 5 s, and clips of 3 and 4 s
     made before still list and play, and Remix brings them back at 5 s without an error. Their Upscale button is
-    disabled with the reason: the 3 s clip's working files are not in a session directory here (the Upscale takes 3 s
-    clips), and the Upscale does not take 4 s clips."""
+    disabled with the reason: the Upscale takes neither length."""
 
     def seed(self):
         old = self.dir / "old"
@@ -659,7 +658,7 @@ class OldLengths(PageTest):
             self.assertEqual(self.page.get_attribute(f"{card} video", "src"), f"/video/{jid}")
             self.assertIn(f"_{seconds}s_", self.page.get_attribute(f"{card} a.act", "download"))
             self.assertEqual(self.page.evaluate("id => fetch('/video/' + id).then(r => r.status)", jid), 200)
-        for jid, why in (("3" * 32, FILES_GONE), ("4" * 32, UPSCALE_LENGTH.format(4))):
+        for jid, why in (("3" * 32, UPSCALE_LENGTH.format(3)), ("4" * 32, UPSCALE_LENGTH.format(4))):
             up = f"{self.card(jid)} .act.up"
             self.page.wait_for_selector(f'{up}[aria-disabled="true"]', state="attached")
             self.assertEqual(self.page.get_attribute(up, "title"), why)
@@ -1878,8 +1877,8 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
             [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'encode', {whole}}}, '4k'],
             [{{task: 't2va'}}, {{video: 'stretch'}}, '2k'],
             [{{task: 't2va', model: '{TURBO}', seconds: 10}}, {{}}, '2k'],
-            [{{task: 'fl2va', model: '{TURBO}', seconds: 6}}, {{text: 'generation', video: 'stretch'}}, '1080p'],
-            [{{task: 't2va', seconds: 3}}, {{}}, '1080p']].map(([j, u, res]) => upNotes(j, u, res))""")
+            [{{task: 'fl2va', model: '{TURBO}', seconds: 6}}, {{text: 'generation', video: 'stretch'}}, '1080p']
+            ].map(([j, u, res]) => upNotes(j, u, res))""")
         kf, stretch, trim = ("Uses your prompt without its keyframe line", "From the 576p clip, stretched to 768p first",
                              "At 4K its first 121 frames: the last 3, up to your last keyframe, are left out")
         self.assertEqual(notes, [
@@ -1896,8 +1895,7 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
             f"{kf}, encoded first (~15 s). {trim}. {UP_UNRUN}",                      # one without its qwen-text/
             f"{stretch}. {UP_UNRUN}",                                                # a route no model has
             UP_LEN_UNRUN,                                                            # other lengths: one note
-            f"{kf}. {stretch}. {UP_LEN_UNRUN}",
-            UP_LEN_UNRUN])                                                           # Sol-H3's 3 s
+            f"{kf}. {stretch}. {UP_LEN_UNRUN}"])
         # the card's line on the frames kept (the record's pin.result)
         kept = {"used": True, "agreement_db": 33.4, "why": None}
         texts = self.page.evaluate("""rs => rs.map(r => upPinText({pin: r}))""", [
@@ -1916,43 +1914,24 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
 
 
 class UpscaleOldClipPage(UpscaleCards, PageTest):
-    """Sol-H3's 3 s clips (made up to 0.5.0): the popover has their times at 1080p and 2K (estimates: the note says
-    they have not run) and 4K greyed as "not this clip" with the reason, as no other length has it; the request asks
-    for the size picked, and the upscale's card has its expected time from the 3 s row."""
+    """Sol-H3's 3 s clips (made up to 0.5.0), with all their working files: the Upscale does not take them. The
+    button is disabled with the reason, a click says it and opens no popover, and nothing is queued."""
 
     def seed(self):
         (self.studio.state_dir / "jobs.json").write_text(json.dumps([session_clip(
             self.studio.runtime, "3" * 32, 3, "refined_336x192_73f.mp4", created=1, prompt="three seconds")]))
 
     def test_a_3_s_clip(self):
-        jid = "3" * 32
+        jid, why = "3" * 32, UPSCALE_LENGTH.format(3)
+        up = f"{self.card(jid)} .act.up"
         self.page.wait_for_selector(f"{self.card(jid)} video")
-        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
-        self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "aria-disabled"), "false")
-        self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "title"),
-                         "Upscale to 1080p or 2K (experimental)")
-        self.open_popover(jid)
-        self.assertEqual(self.checked("up_res"), "2k")                      # the studio's default: offered
-        self.assertEqual([self.page.is_disabled(f"#up-{r}") for r in ("1080p", "2k", "4k")], [False, False, True])
-        self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
-                         ["1920×1080", "2560×1440", "4K takes 5 s clips only: 1080p and 2K take this one"])
-        self.assertEqual([self.page.inner_text(f'#uppop label[for="up-{r}"] small') for r in ("1080p", "2k", "4k")],
-                         ["~6 min", "~9 min", "not this clip"])            # 209 + 2 x 63 s, 259 + 2 x 155 s
-        self.assertEqual(self.page.inner_text("#upinput"), UP_LEN_UNRUN)
-        self.page.click('#uppop label[for="up-4k"]', force=True)             # greyed: nothing changes
-        self.assertEqual(self.checked("up_res"), "2k")
-        self.pick("up_res", "1080p")
-        with self.page.expect_request("**/api/upscale") as request:
-            self.page.click("#upgo")
-        self.assertEqual(json.loads(request.value.post_data), {"id": jid, "resolution": "1080p", "strength": "balanced"})
-        self.page.wait_for_selector("#uppop", state="hidden")
-        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
-        self.assertEqual(self.page.evaluate("id => upEta(known.get(id))", job["id"]), 335)
-        self.studio.wait([job["id"]], timeout=60)
-        self.page.wait_for_selector(f"{self.card(job['id'])} video", timeout=30000)
-        self.assertEqual(self.page.eval_on_selector_all(f"{self.card(job['id'])} .tags .tag",
-                                                        "els => els.map(e => e.textContent)"),
-                         ["1080p upscale", "Text", "3 s"])
+        self.page.wait_for_selector(f'{up}[aria-disabled="true"]', state="attached")
+        self.assertEqual(self.page.get_attribute(up, "title"), why)
+        self.assertNotIn("3", self.page.evaluate("Object.keys(state.upscale_offers)"))
+        self.page.click(up, force=True)                                      # aria-disabled: the reason
+        self.page.wait_for_function("t => document.getElementById('toast').textContent === t", arg=why)
+        self.assertTrue(self.page.is_hidden("#uppop"))
+        self.assertEqual([j["id"] for j in self.studio.state()["jobs"] if j.get("kind") == "upscale"], [])
 
 
 class UpscalePageOff(PageTest):

@@ -1777,8 +1777,8 @@ class WarmUpSkipsDeleted(StudioTest):
 
 class OldLengths(StudioTest):
     """3 and 4 s went after 0.5.0: clips made at those lengths stay in the history. They list, play, download and give
-    their files to Remix as before; the remix itself takes a length offered. The Upscale takes 3 s clips (Sol-H3's
-    tables, MODELS), not these, whose files are not in a session directory; it refuses 4 s, a length no table has."""
+    their files to Remix as before; the remix itself takes a length offered. The Upscale refuses both, lengths no
+    model's table has (the reason before the clip's files: these are not in a session directory)."""
 
     def seed(self):
         self.old = self.dir / "old"
@@ -1809,12 +1809,10 @@ class OldLengths(StudioTest):
         self.assertEqual((job["status"], job["seconds"]), ("done", 5), job.get("error"))
         self.assertEqual(Path(job["first_frame"]).stat().st_ino, (self.old / "first.png").stat().st_ino)
         self.assertEqual(self.studio.job("4" * 32)["seconds"], 4)          # the old clip is as it was
-        # the experimental Upscale (on in the stub studio): the old 3 s t2va clip has no working files here, the 4 s
-        # Keyframes clip a length it does not take
-        self.assertEqual(self.studio.job("3" * 32)["upscalable"], {"ok": False, "why": FILES_GONE})
-        self.assertEqual(self.studio.upscale("3" * 32), (409, {"error": FILES_GONE}))
-        self.assertEqual(self.studio.job("4" * 32)["upscalable"], {"ok": False, "why": UPSCALE_LENGTH.format(4)})
-        self.assertEqual(self.studio.upscale("4" * 32), (400, {"error": UPSCALE_LENGTH.format(4)}))
+        # the experimental Upscale (on in the stub studio): neither length is one it takes
+        for jid, seconds in (("3" * 32, 3), ("4" * 32, 4)):
+            self.assertEqual(self.studio.job(jid)["upscalable"], {"ok": False, "why": UPSCALE_LENGTH.format(seconds)})
+            self.assertEqual(self.studio.upscale(jid), (400, {"error": UPSCALE_LENGTH.format(seconds)}))
 
 
 class OldLengthWarmUp(StudioTest):
@@ -2192,8 +2190,8 @@ class CancelRace(CancelTest):
 
 
 # ------------------------------------------------------------------------------------------ the experimental Upscale
-# a length no model's "upscale" table has (Sol-H3's old 4 s clips): .format(4)
-UPSCALE_LENGTH = "Upscale takes clips of the lengths the studio makes, 5 to 15 s (and Sol-H3's 3 s ones), not {} s"
+# a length no model's "upscale" table has (Sol-H3's old 3 and 4 s clips): .format(3)
+UPSCALE_LENGTH = "Upscale takes clips of the lengths the studio makes, 5 to 15 s, not {} s"
 UPSCALE_FRAMES = "Upscale can't take this clip: its MP4 has {} frames, not the frames of a {} s clip"
 # the job's reasons a size is not offered for a length (upscale/regen2k_job.py offer_row)
 LATER_2K = "2K for {} s clips comes later: 1080p takes them"
@@ -2389,7 +2387,7 @@ class Upscale(UpscaleTest):
         refused with the reason, nothing queued."""
         st = self.studio.state()
         offers = st["upscale_offers"]
-        self.assertEqual(sorted(offers, key=int), ["3", "5", "6", "7", "8", "10", "12", "15"])
+        self.assertEqual(sorted(offers, key=int), ["5", "6", "7", "8", "10", "12", "15"])
         self.assertEqual(offers["5"], {"1080p": {"eta_s": [315, 150], "ran": True}, "2k": {"eta_s": [405, 380],
                                        "ran": True}, "4k": {"eta_s": [625, 1685], "ran": True}})
         self.assertEqual(offers["10"], {"1080p": {"eta_s": [535, 454], "ran": False},
@@ -2608,10 +2606,11 @@ def session_clip(runtime, jid, seconds, name, **extra):
 
 
 class UpscaleOddRecords(UpscaleTest):
-    """Records in a session directory of their own, as an older or hand-edited state may have them: Sol-H3's 3 s clips
-    (made up to 0.5.0, 73 frames) are taken at 1080p and 2K, not at 4K; a 4 s clip (no model's table has that length)
-    and a clip whose MP4 has frames the job has no case for, none in its name, or another length's are refused, never
-    cut: upscalable says why, /api/state and the clip's record answer as ever."""
+    """Records in a session directory of their own, as an older or hand-edited state may have them: Sol-H3's 3 and
+    4 s clips (made up to 0.5.0, 73 and 105 frames: no model's table has those lengths) and a clip whose MP4 has frames
+    the job has no case for, none in its name, or another length's are refused, never cut, at every size: upscalable
+    says why, /api/state and the clip's record answer as ever. A 3 s clip's working files are all there: its length
+    alone refuses it."""
 
     def seed(self):
         runtime = self.studio.runtime
@@ -2622,22 +2621,19 @@ class UpscaleOddRecords(UpscaleTest):
                           session_clip(runtime, "b" * 32, 5, "refined_clip.mp4", created=5)])
 
     def test_old_lengths_and_odd_frames(self):
-        refused = {"4" * 32: UPSCALE_LENGTH.format(4), "6" * 32: UPSCALE_FRAMES.format(145, 6),
-                   "a" * 32: UPSCALE_FRAMES.format(121, 10), "b" * 32: UPSCALE_FRAMES.format("an unknown number of", 5)}
-        found = {j["id"]: j["upscalable"] for j in self.studio.state()["jobs"]}
-        self.assertEqual(found, dict({jid: {"ok": False, "why": why} for jid, why in refused.items()},
-                                     **{"3" * 32: TEXT_CLIP}))
+        refused = {"3" * 32: UPSCALE_LENGTH.format(3), "4" * 32: UPSCALE_LENGTH.format(4),
+                   "6" * 32: UPSCALE_FRAMES.format(145, 6), "a" * 32: UPSCALE_FRAMES.format(121, 10),
+                   "b" * 32: UPSCALE_FRAMES.format("an unknown number of", 5)}
+        state = self.studio.state()
+        self.assertEqual({j["id"]: j["upscalable"] for j in state["jobs"]},
+                         {jid: {"ok": False, "why": why} for jid, why in refused.items()})
+        self.assertNotIn("3", state["upscale_offers"])
         for jid, why in refused.items():
-            self.assertEqual(self.studio.upscale(jid, resolution="1080p"), (400, {"error": why}), jid)
+            for size in ("1080p", "2k", "4k"):
+                self.assertEqual(self.studio.upscale(jid, resolution=size), (400, {"error": why}), (jid, size))
             self.assertEqual(self.studio.job(jid)["upscalable"], {"ok": False, "why": why})
-        self.assertEqual(self.studio.upscale("3" * 32, resolution="4k"),
-                         (400, {"error": "4K takes 5 s clips only: 1080p and 2K take this one"}))
-        self.assertEqual(self.studio.state()["upscale_offers"]["3"]["2k"], {"eta_s": [259, 155], "ran": False})
-        job = self.done(self.upscale("3" * 32))                                        # 2K, the default
-        self.assertEqual((job["seconds"], job["frames"], Path(job["output"]).name), (3, 73, "regen_2560x1440_73f.mp4"))
-        receipt = json.loads((self.regen(job) / "receipt.json").read_text())
-        self.assertEqual(receipt["frames"], {"kept": 73, "made": 73, "pad": 0, "T": 22, "A": 122, "seconds": 3})
-        self.assertEqual(probe(job["output"])["video"]["nb_frames"], "73")
+        self.assertEqual([j["id"] for j in self.studio.state()["jobs"] if j.get("kind") == "upscale"], [])
+        self.assertEqual(self.upscale_dirs(), [])                                      # nothing queued
 
 
 class UpscaleUnfinishedParents(UpscaleTest):
@@ -3933,28 +3929,29 @@ class ServerParts(unittest.TestCase):
                          ["other: option steps is of type string, another model's of type integer"])
 
     def test_registry_upscale_entries(self):
-        """A model's "upscale" entry may only name the studio's tasks and lengths (and Sol-H3's old 3 s,
-        UPSCALE_OLD_SECONDS); the registry's own pass: every length of both models, and Sol-H3's 3 s clips."""
+        """A model's "upscale" entry may only name the studio's tasks and lengths (not Sol-H3's old 3 s); the
+        registry's own pass: every length of both models."""
         end = {"task": ("t2va",), "seconds": (5,)}
 
         def problems(upscale):
             models = {"sol-h3": {"options": (), "offers": (dict(end),), "not_yet": (), "upscale": upscale}}
             return server_function("registry_problems", MODELS=models, END_STATE=end, OPTION_KINDS={},
-                                   TASKS=("t2va", "fl2va", "ref2va"), DURATIONS=(5, 6), UPSCALE_OLD_SECONDS=(3,))()
-        self.assertEqual(problems({"tasks": ("t2va", "ref2va"), "seconds": (3, 5, 6)}), [])
-        self.assertEqual(problems({"tasks": ("i2v",), "seconds": (5, 4)}),
+                                   TASKS=("t2va", "fl2va", "ref2va"), DURATIONS=(5, 6))()
+        self.assertEqual(problems({"tasks": ("t2va", "ref2va"), "seconds": (5, 6)}), [])
+        self.assertEqual(problems({"tasks": ("i2v",), "seconds": (3, 5, 4)}),
                          ["sol-h3: the Upscale's task i2v is not one of ('t2va', 'fl2va', 'ref2va')",
-                          "sol-h3: the Upscale's length 4 is not one of (3, 5, 6)"])
+                          "sol-h3: the Upscale's length 3 is not one of (5, 6)",
+                          "sol-h3: the Upscale's length 4 is not one of (5, 6)"])
         registry = self.registry()
         self.assertEqual({mid: m["upscale"] for mid, m in registry.items()},
-                         {"sol-h3": {"tasks": ("t2va", "fl2va", "ref2va"), "seconds": (3, 5, 6, 7, 8, 10, 12, 15)},
+                         {"sol-h3": {"tasks": ("t2va", "fl2va", "ref2va"), "seconds": (5, 6, 7, 8, 10, 12, 15)},
                           TURBO: {"tasks": ("t2va", "fl2va"), "seconds": (5, 6, 7, 8, 10, 12, 15)}})
 
     def registry(self):
         """The server's MODELS, from its source."""
         return server_value("MODELS", SOL_H3="sol-h3", TURBO=TURBO, TASKS=("t2va", "fl2va", "ref2va"),
                             FRAME_SETS=("first", "last", "first+last"), END_STATE={}, BACKENDS={"spark": 0, "rtx5090": 0},
-                            DURATIONS=server_value("DURATIONS"), UPSCALE_OLD_SECONDS=server_value("UPSCALE_OLD_SECONDS"))
+                            DURATIONS=server_value("DURATIONS"))
 
     def test_the_registry_and_the_jobs_cases(self):
         """The seam between the models' "upscale" tables and the Upscale's job: every clip they take (each model, task,
@@ -4026,14 +4023,15 @@ class ServerParts(unittest.TestCase):
         upscale_frames = server_function("upscale_frames", regen=load_regen(),
                                          UPSCALE_KEEP_ALL=server_value("UPSCALE_KEEP_ALL"))
         self.assertEqual([upscale_frames(124, size) for size in (None, "1080p", "2k", "4k")], [124, 124, 124, 121])
-        for frames in (73, 121, 153, 158, 241, 243, 361, 362):
+        for frames in (121, 153, 158, 241, 243, 361, 362):
             self.assertEqual({upscale_frames(frames, size) for size in (None, "1080p", "2k", "4k")}, {frames}, frames)
-        for frames in (None, 0, 105, 120, 145, 193, 345):
+        for frames in (None, 0, 73, 105, 120, 145, 193, 345):
             self.assertIsNone(upscale_frames(frames, "1080p"), frames)
 
     def test_sol_last_and_the_offer_refusal(self):
         """sol_last: why a Sol-H3 clip's last frame is not held, by the frames its MP4 stops short of the last made (3
-        at 5 s, 7 at 8 s, 1 at 15 s; "a few" without a count in its name; not yet at 3 s, which keeps every frame).
+        at 5 s, 7 at 8 s, 1 at 15 s; "a few" without a count in its name; not yet for one that keeps every frame,
+        73 at 3 s, a length the Upscale does not take).
         offer_refusal: the job's reason for a size, or a strength not offered; None when the offer takes it."""
         regen = load_regen()
         sol_last = server_function("sol_last", regen=regen, Path=Path, MP4_SIZE=server_value("MP4_SIZE", re=re),
@@ -5892,7 +5890,7 @@ class TurboSeam(unittest.TestCase):
     def registry(self):
         return server_value("MODELS", SOL_H3="sol-h3", TURBO=TURBO, END_STATE={}, BACKENDS={},
                             FRAME_SETS=server_value("FRAME_SETS"), DURATIONS=server_value("DURATIONS"),
-                            TASKS=server_value("TASKS"), UPSCALE_OLD_SECONDS=server_value("UPSCALE_OLD_SECONDS"))[TURBO]
+                            TASKS=server_value("TASKS"))[TURBO]
 
     def job_data(self, **changes):
         """A job.json as the server's turbo_job_data writes it."""
