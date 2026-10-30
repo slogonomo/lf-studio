@@ -548,7 +548,8 @@ Through the studio on one DGX Spark (the night of 2026-10-29 to 30) it has run w
 last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same clips upscaled
 with `pin` `off`, every end sent was held, and the frame held came 3.2-5.3 dB closer to the picture (luma PSNR at the
 output size; 2.5-5.5 dB on a face; +5.0 and +4.7 dB at 2K), with no flash there; a dialogue clip, a static shot whose
-plain upscale was already close to the picture, gained 2.3 dB at each end (3 dB on the face), its lip sync unchanged.
+plain upscale was already close to the picture, gained 2.3-2.4 dB at each end (3 dB on the face), its lip sync
+unchanged.
 The cost: +16 s per end at 1080p (+32 s for both) and +83 s for both ends at 2K (each picture's encode on the VAE
 already loaded, 3 s at 1080p, and 2.7 % more rows per end), 0.4-0.7 GiB more GPU memory at the peak at 1080p and 1.3 GiB
 at 2K, where the lowest MemAvailable came down to 14.1 GiB with both ends (16.0 GiB without). One end at 2K has not run:

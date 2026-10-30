@@ -408,7 +408,7 @@ start to the MP4 with the clip's sound, the encode included):
   2.5-5.5 dB on a face), at either end and at 1080p and 2K (+5.0 and +4.7 dB at 2K), with no flash at that frame and
   the motion near it kept (the run's checks). The Sol-H3 clip is compared with its upscale of 2026-10-29 (the table
   above): +4.7 dB, +4.2 dB on the face. The dialogue clip gained less, +2.3 and +2.4 dB at its ends (+3.0 and +3.1 dB
-  on the face): it is a static medium shot, and its plain upscale was already closer to the picture (30.0 dB at either
+  on the face): it is a static shot, and its plain upscale was already closer to the picture (30.0-30.1 dB at either
   end, against 24.1-27.0 dB for the others). Its lip sync held (SyncNet LSE-C 8.94, 8.82 unpinned, offset 0). At 2K
   the page still says "only partly" (the research runs with a first frame at 2K: frame 0 about 1 dB closer, the face
   3-5 dB).

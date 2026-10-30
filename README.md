@@ -206,11 +206,11 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   - It has run through the studio on one DGX Spark (the night of 2026-10-29 to 30) with a LightX2V Turbo clip's first
     frame, last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same
     clips upscaled without it, the frame held came 3.2-5.3 dB closer to your picture (luma PSNR; 2.5-5.5 dB on a face;
-    at 2K +5.0 and +4.7 dB, a clip without a face), with no flash there. A dialogue clip gained less, 2.3 dB at each end
-    (3 dB on the face), as its plain upscale was already close to the picture; its lip sync held. It costs about 16 s
-    per end at 1080p (32 s for both) and 83 s for both ends at 2K, and 0.4-0.7 GiB more GPU memory at the peak at 1080p,
-    1.3 GiB at 2K, where the lowest free memory came down to 14.1 GiB with both ends (16.0 GiB without). One end at 2K
-    has not run: the popover says so there, and its time (+60 s) is an estimate.
+    at 2K +5.0 and +4.7 dB, a clip without a face), with no flash there. A dialogue clip gained less, 2.3-2.4 dB at each
+    end (3 dB on the face), as its plain upscale was already close to the picture; its lip sync held. It costs about
+    16 s per end at 1080p (32 s for both) and 83 s for both ends at 2K, and 0.4-0.7 GiB more GPU memory at the peak at
+    1080p, 1.3 GiB at 2K, where the lowest free memory came down to 14.1 GiB with both ends (16.0 GiB without). One end
+    at 2K has not run: the popover says so there, and its time (+60 s) is an estimate.
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the
