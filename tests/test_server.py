@@ -2902,22 +2902,22 @@ class UpscaleMemory(UpscaleTest):
         self.assertTrue(self.upscaling(self.upscale(parent["id"], resolution="2k")))
 
     def test_floor_of_a_long_clip(self):
-        """A clip of another length needs what its case needs where that is more than the setting (an estimate until it
-        runs on the GPU): 2K at 10 s with Keep my frames 111 GiB, without 110 (the setting); job.json carries the floor
-        the server checked."""
+        """A clip of another length needs the setting where its case needs less (every length at the default 110: 2K
+        at 10 s with Keep my frames 109, the most); job.json carries the floor the server checked."""
         parent = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=10, files={"first_frame": [("f.png", png())]})
         self.assertEqual(self.studio.job(parent["id"])["upscalable"]["pin"], ["first"])
-        self.studio.set_memory(110.5)
+        self.studio.set_memory(109.5)
         job = self.studio.wait([self.upscale(parent["id"], resolution="2k")], timeout=30)[0]
         self.assertEqual((job["status"], job["error"], job["pin"]["ends"]), ("failed", (
-            "UpscaleFailed: not enough free memory for an upscale: 110.5 GiB available with the models closed, 111 GiB "
-            "needed (what a 2K 10 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=110); close other apps"),
-            ["first"]))
+            "UpscaleFailed: not enough free memory for an upscale: 109.5 GiB available with the models closed, 110 GiB "
+            "needed (LFSTUDIO_UPSCALE_MIN_FREE_GIB); close other apps"), ["first"]))
         self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
-        uid = self.upscale(parent["id"], resolution="2k", pin="off")                   # no pin: 110 is enough
+        self.studio.set_memory(110.5)
+        uid = self.upscale(parent["id"], resolution="2k")                             # with its pin: 110 is enough
         self.upscaling(uid)
         job = self.studio.job(uid)
-        self.assertEqual(json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], 110)
+        self.assertEqual((json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], job["pin"]["ends"]),
+                         (110, ["first"]))
 
     def test_guard(self):
         uid = self.upscale(self.clip()["id"])
@@ -2949,7 +2949,8 @@ class UpscaleMemory(UpscaleTest):
 
 class UpscaleMemoryLowSetting(UpscaleTest):
     """LFSTUDIO_UPSCALE_MIN_FREE_GIB below the default: a 5 s clip needs that (and 5 more at 4K), as before; a longer
-    clip what its case needs where that is more (2K at 10 s: 110), with the reason; the job gets the same floor."""
+    clip what its case needs where that is more (2K at 10 s: 109; at 8 s 102, 103 with Keep my frames), with the
+    reason; the job gets the same floor."""
     env = {"LFSTUDIO_UPSCALE_MIN_FREE_GIB": "90", "STUB_UPSCALE_S": "1"}
 
     def test_floor_per_case(self):
@@ -2957,14 +2958,27 @@ class UpscaleMemoryLowSetting(UpscaleTest):
         self.studio.set_memory(105)
         job = self.done(self.upscale(five["id"], resolution="2k"))
         self.assertEqual(json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], 90)
-        job = self.done(self.upscale(ten["id"], resolution="1080p"))                    # 1080p 10 s: 101
-        self.assertEqual(json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], 101)
+        job = self.done(self.upscale(ten["id"], resolution="1080p"))                    # 1080p 10 s: 96
+        self.assertEqual(json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], 96)
         job = self.studio.wait([self.upscale(ten["id"], resolution="2k")], timeout=30)[0]
         self.assertEqual((job["status"], job["error"]), ("failed", (
-            "UpscaleFailed: not enough free memory for an upscale: 105.0 GiB available with the models closed, 110 GiB "
+            "UpscaleFailed: not enough free memory for an upscale: 105.0 GiB available with the models closed, 109 GiB "
             "needed (what a 2K 10 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=90); close other apps")))
         job = self.studio.wait([self.upscale(five["id"], resolution="4k")], timeout=30)[0]
         self.assertEqual(job["status"], "done", job.get("error"))                      # 95 at 4K: as before
+
+    def test_floor_with_a_pin(self):
+        """Keep my frames' condition rows count: an 8 s Keyframes clip at 2K needs 103 GiB with its first frame kept,
+        102 without."""
+        eight = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=8, files={"first_frame": [("f.png", png())]})
+        self.studio.set_memory(102.5)
+        job = self.studio.wait([self.upscale(eight["id"], resolution="2k")], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"], job["pin"]["ends"]), ("failed", (
+            "UpscaleFailed: not enough free memory for an upscale: 102.5 GiB available with the models closed, 103 GiB "
+            "needed (what a 2K 8 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=90); close other apps"),
+            ["first"]))
+        job = self.done(self.upscale(eight["id"], resolution="2k", pin="off"))
+        self.assertEqual(json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], 102)
 
 
 class UpscaleMemoryChecksOff(UpscaleTest):

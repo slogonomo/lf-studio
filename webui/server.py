@@ -44,8 +44,8 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   without its pictures (upscale_text), with "rows" and "encode_s" once encoded) in the same queue, where it waits while
   any clip is queued. It frees the memory first (status "freeing memory": the session is closed), refuses to start
   below its floor of MemAvailable (the job's min_free_for: LFSTUDIO_UPSCALE_MIN_FREE_GIB for a 5 s clip, 5 GiB more at
-  4K; a longer clip what its case needs where that is more, 111 GiB at 2K 10 s with a pin; job.json "min_free_gib",
-  which the job checks again as it starts), then, in one pipeline_call so that Cancel stops each step:
+  4K; a longer clip what its case needs where that is more: none at the default, 109 GiB at most; job.json
+  "min_free_gib", which the job checks again as it starts), then, in one pipeline_call so that Cancel stops each step:
   builds its input folder (build_input: <case>/input/, the clip's MP4, audio and text alone, linked; a LightX2V Turbo
   clip at 576p stretched to 768p, every frame; one with a last keyframe (every frame made: 124 at 5 s) whole, a 5 s
   one cut to its first 121 at 4K; the pictures of the ends sent, linked into keyframe/; source.json), for a clip

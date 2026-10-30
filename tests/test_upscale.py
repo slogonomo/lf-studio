@@ -756,7 +756,8 @@ class StudioSettingsTests(unittest.TestCase):
     def test_min_free_for(self):
         """4K needs 5 GiB more than the floor (its job used ~105 GiB, 2K ~101); a floor of 0 stays off. A 5 s clip
         (121 or 124 frames, with a pin or not) needs that at any floor; a longer one that or what its case needs
-        (need_gib), whichever is more: 2K at 10 s 110 GiB, 111 with a pin."""
+        (need_gib), whichever is more: at the default 110 every length needs 110 (2K at 10 s needs 109, with a pin
+        too); below it, a case's own need (2K at 8 s 102, 103 with a pin)."""
         self.assertEqual([job_module.min_free_for(res, 110.0) for res in ("1080p", "2k", "4k")], [110.0, 110.0, 115.0])
         self.assertEqual(job_module.min_free_for("4k", 0.0), 0.0)
         self.assertEqual(job_module.min_free_for("4k", 100.0), 105.0)
@@ -765,11 +766,12 @@ class StudioSettingsTests(unittest.TestCase):
                 for floor in (110.0, 100.0, 90.0, 0.0):
                     self.assertEqual([job_module.min_free_for(res, floor, kept, ends) for res in ("1080p", "2k", "4k")],
                                      [floor, floor, floor + 5 if floor else 0.0], (kept, ends, floor))
-        for res, kept, ends, floor, want in (("2k", 241, 0, 110.0, 110.0), ("2k", 241, 1, 110.0, 111.0),
-                                             ("2k", 243, 2, 110.0, 111.0), ("2k", 241, 0, 100.0, 110.0),
-                                             ("2k", 241, 1, 100.0, 111.0), ("2k", 241, 1, 120.0, 120.0),
-                                             ("1080p", 361, 0, 100.0, 107.0), ("1080p", 361, 0, 90.0, 107.0),
+        for res, kept, ends, floor, want in (("2k", 241, 0, 110.0, 110.0), ("2k", 241, 1, 110.0, 110.0),
+                                             ("2k", 243, 2, 110.0, 110.0), ("2k", 241, 0, 100.0, 109.0),
+                                             ("2k", 241, 1, 100.0, 109.0), ("2k", 241, 1, 120.0, 120.0),
+                                             ("1080p", 361, 0, 100.0, 104.0), ("1080p", 361, 0, 90.0, 104.0),
                                              ("1080p", 185, 2, 100.0, 107.0), ("2k", 153, 0, 110.0, 110.0),
+                                             ("2k", 185, 0, 90.0, 102.0), ("2k", 185, 1, 90.0, 103.0),
                                              ("2k", 241, 1, 0.0, 0.0)):
             with self.subTest(res=res, kept=kept, ends=ends, floor=floor):
                 self.assertEqual(job_module.min_free_for(res, floor, kept, ends), want)
@@ -945,34 +947,70 @@ class OfferTests(unittest.TestCase):
                                ("2k", 153): 169726, ("4k", 121): 302334})
 
     def test_the_memory_model(self):
-        """The model reproduces the job's 5 s runs (allocated at the peak 81.29 / 91.08 / 94.46 GiB at 1080p / 2K /
-        4K; the lowest MemAvailable from ~116.5 GiB 28.0-28.8, 15.8-16.6 and 11.1); the floors of the other lengths
-        it gives stay within today's 110 GiB, but for 2K at 10 s with a pin (111)."""
-        for size, allocated, low in (("1080p", 81.29, (28.0, 28.8)), ("2k", 91.08, (15.8, 16.6)),
-                                     ("4k", 94.46, (11.1, 11.1))):
+        """The peak model reproduces the job's 5 s runs of 2026-10-28 (a 16:9 clip; allocated at the peak 81.29 / 91.08
+        / 94.46 GiB at 1080p / 2K / 4K) and their lowest MemAvailable from their start (27.4 GiB from ~116.5, 15.7 from
+        116.7, 11.1 from 116.4) within 0.6 GiB; the overhead is a straight line in the clip's own rows per
+        forward. The floors of the other lengths it gives stay within today's 110 GiB: 2K at 10 s needs the most, 109,
+        with Keep my frames or without."""
+        for size, allocated, start, low in (("1080p", 81.29, 116.5, 27.4), ("2k", 91.08, 116.7, 15.7),
+                                            ("4k", 94.46, 116.4, 11.1)):
             case = job_module.frame_case(121)
             rows = job_module.case_rows(case, size)
             forward = "lean" if job_module.lean_chunks_for(case, size) else "stock"
-            model = job_module.MODEL_GIB + rows["sequence"] * job_module.ROW_BYTES[forward] / 2 ** 30
-            overhead = next(g for most, g in job_module.OVERHEAD_GIB
-                            if most is None or rows["video"] + rows["audio"] <= most)
-            self.assertAlmostEqual(model, allocated, delta=0.06)
-            self.assertGreaterEqual(116.5 - model - overhead, low[0] - 0.1, size)
-            self.assertLessEqual(116.5 - model - overhead, low[1] + 0.1, size)
+            self.assertAlmostEqual(job_module.peak_gib(rows, forward), allocated, delta=0.06)
+            lowest = start - job_module.peak_gib(rows, forward) - job_module.overhead_gib(rows, forward)
+            self.assertLess(abs(lowest - low), 0.6, size)
+        self.assertEqual(job_module.OVERHEAD_GIB, {"stock": (3.5, 5.0), "lean": (2.1, 2.8)})
+        self.assertEqual([round(job_module.overhead_gib({"video": own, "audio": 0}, forward), 2)
+                          for forward, own in (("stock", 0), ("stock", 100_000), ("lean", 0), ("lean", 100_000))],
+                         [3.5, 8.5, 2.1, 4.9])
         need = {(size, seconds): tuple(job_module.need_gib(job_module.frame_case(kept), size, ends)
                                        for ends in (0, 1, 2))
                 for kept, (seconds, *_) in CASES.items() if kept in (121, 153, 169, 185, 241, 289, 361)
                 for size in job_module.OFFER_ETA_S[seconds]}
         self.assertEqual(need, {
-            ("1080p", 5): (97, 97, 97), ("1080p", 6): (103, 103, 103),
-            ("1080p", 7): (104, 105, 105), ("1080p", 8): (106, 107, 107), ("1080p", 10): (101, 101, 101),
-            ("1080p", 12): (103, 103, 104), ("1080p", 15): (107, 107, 107),
-            ("2k", 5): (109, 110, 110), ("2k", 6): (103, 103, 103), ("2k", 7): (104, 104, 105),
-            ("2k", 8): (106, 106, 106), ("2k", 10): (110, 111, 111), ("4k", 5): (114, 115, 115)})
+            ("1080p", 5): (97, 97, 98), ("1080p", 6): (102, 102, 102), ("1080p", 7): (104, 104, 105),
+            ("1080p", 8): (106, 106, 107), ("1080p", 10): (96, 96, 96), ("1080p", 12): (99, 100, 100),
+            ("1080p", 15): (104, 104, 104), ("2k", 5): (110, 110, 111), ("2k", 6): (98, 99, 99),
+            ("2k", 7): (100, 101, 101), ("2k", 8): (102, 103, 103), ("2k", 10): (109, 109, 109),
+            ("4k", 5): (113, 114, 115)})
         floors = {(kept, size, ends): job_module.offer(kept, size, ends)["floor_gib"] for kept in CASES
                   for size in job_module.SIZES for ends in (0, 1, 2) if "why" not in job_module.offer(kept, size)}
         self.assertEqual({key: floor for key, floor in floors.items() if floor != (115 if key[1] == "4k" else 110)},
-                         {(241, "2k", 1): 111, (241, "2k", 2): 111, (243, "2k", 1): 111, (243, "2k", 2): 111})
+                         {})
+
+    def test_the_long_clips_runs(self):
+        """The memory model against the job's runs through a staging studio on 2026-10-30, each from its own
+        MemAvailable at the start, with its receipt's rows (the prompt's real ones, a pin's condition rows) and block
+        forward: the peak allocated within 0.1 GiB of peak_gib, the lowest MemAvailable within 1.5 GiB of the model's
+        (start - peak_gib - overhead_gib; all of them within 0.5). The rows are the job's case_rows for those clips,
+        but for a 73-frame clip (Sol-H3's old 3 s, no longer offered), which measures the stock overhead at few rows."""
+        runs = {   # (kept, size, ends, the prompt's rows) or the receipt's rows; forward; start, peak, lowest (GiB)
+            "5 s at 1080p, both ends": ((124, "1080p", 2, 58), "stock", 116.58, 81.98, 27.53),
+            "5 s 9:16 at 1080p, a first end": ((121, "1080p", 1, 195), "stock", 116.54, 81.66, 27.39),
+            "3 s at 1080p": ({"video": 44880, "audio": 244, "text": 387, "condition": 0}, "stock", 116.6, 76.1, 35.17),
+            "6 s at 1080p": ((153, "1080p", 0, 226), "stock", 116.55, 84.78, 23.5),
+            "10 s at 1080p": ((241, "1080p", 0, 387), "lean", 116.52, 81.15, 28.99),
+            "10 s at 1080p, both ends": ((243, "1080p", 2, 280), "lean", 116.42, 81.54, 28.83),
+            "15 s 9:16 at 1080p": ((361, "1080p", 0, 772), "lean", 116.27, 87.37, 20.43),
+            "10 s at 2K": ((241, "2k", 0, 387), "lean", 116.45, 90.83, 16.67)}
+        sequences = {"5 s at 1080p, both ends": 80032, "5 s 9:16 at 1080p, a first end": 78129, "3 s at 1080p": 45511,
+                     "6 s at 1080p": 96632, "10 s at 1080p": 148077, "10 s at 1080p, both ends": 152050,
+                     "15 s 9:16 at 1080p": 220258, "10 s at 2K": 260397}            # the receipts'
+        off = {}
+        for name, (case, forward, start, peak, lowest) in runs.items():
+            if isinstance(case, tuple):
+                kept, size, ends, text = case
+                rows = job_module.case_rows(job_module.frame_case(kept), size, ends, text)
+                self.assertEqual("lean" if job_module.lean_chunks_for(job_module.frame_case(kept), size) else "stock",
+                                 forward, name)
+            else:
+                rows = dict(case, sequence=sum(case.values()))
+            self.assertEqual(rows["sequence"], sequences[name], name)
+            self.assertLess(abs(job_module.peak_gib(rows, forward) - peak), 0.1, name)
+            off[name] = start - job_module.peak_gib(rows, forward) - job_module.overhead_gib(rows, forward) - lowest
+            self.assertLess(abs(off[name]), 1.5, name)                     # the validation's gate
+        self.assertLess(max(map(abs, off.values())), 0.5, off)
 
 
 class TextTests(unittest.TestCase):
@@ -1426,8 +1464,8 @@ class InputTests(Fixture):
         self.assertEqual((planned["sigmas"], planned["size"], planned["lean_chunks"], planned["frames"]),
                          ([0.5, 0.25, 0.0], [3840, 2160], 16, case_of(124)))
         self.assertEqual((planned["offer"]["forward"], planned["offer"]["floor_gib"]), ("lean", 115))
-        # a 10 s clip at 2K: lean_forward by its rows; its floor with the pin's ends (one asked: 111 GiB)
-        for kept, ends, floor in ((241, (), 110), (243, ("first",), 111), (241, ("first", "last"), 111)):
+        # a 10 s clip at 2K: lean_forward by its rows; its floor the setting's, with the pin's ends too (its case: 109)
+        for kept, ends, floor in ((241, (), 110), (243, ("first",), 110), (241, ("first", "last"), 110)):
             job = dict(job_module.parse_job(self.job(**({"pin": pin(*ends)} if ends else {})), "/"),
                        orientation="portrait", frames=job_module.frame_case(kept))
             planned = job_module.plan(job, schedules, grid)

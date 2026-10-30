@@ -254,17 +254,22 @@ DEFAULT_AUDIO = "clip"
 MIN_FREE_GIB = 110
 FLOOR_4K_EXTRA_GIB = 5
 GUARD_GIB = 5
-# Memory past 5 s, a model of the runs above (estimates until those lengths run on the GPU): GPU memory allocated at the
-# refine's peak is MODEL_GIB (the DiT, the upscaler and the video VAE kept for the decode) plus ROW_BYTES per row of
-# its sequence (case_rows: the stock block forward's activations, or lean_forward's), and MemAvailable falls by
-# OVERHEAD_GIB more than that (the allocator's reserve and the process), by the clip's own rows. Fitted to the job's
-# runs: 81.29 / 91.08 GiB allocated at 1080p / 2K (stock; 76,094 / 133,814 rows with a prompt of TEXT_ROWS) and 94.46
-# at 4K (lean, 302,534 rows); with ~116.5 GiB free at the start the lowest MemAvailable it gives is the measured
-# 28.0-28.8, 15.8-16.6 and 11.1 GiB. A clip of another length needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start
-# (need_gib; min_free_for) where that is more than the floor: 2K at 10 s with a pin, 111 GiB.
+# Memory, a model of the runs above: GPU memory allocated at the refine's peak (peak_gib) is MODEL_GIB (the DiT, the
+# upscaler and the video VAE kept for the decode) plus ROW_BYTES per row of its sequence (case_rows: the stock block
+# forward's activations, or lean_forward's), and MemAvailable falls by OVERHEAD_GIB more than that (overhead_gib: the
+# allocator's reserve and the process), a straight line in the clip's own rows (video and audio) per forward. The peak
+# model was fitted to the job's 5 s runs (81.29 / 91.08 GiB allocated at 1080p / 2K, stock, 76,094 / 133,814 rows
+# with a prompt of TEXT_ROWS; 94.46 at 4K, lean, 302,534 rows) and held within 0.1 GiB on the long clips' runs
+# (2026-10-30: 6 s at 1080p stock, 10 and 15 s at 1080p and 10 s at 2K lean). The overhead was fitted to all of them
+# (start - peak - lowest MemAvailable): stock 5.3 GiB at 45,124 own rows (a 73-frame clip), 7.1-7.8 at 75,894 (5 s at
+# 1080p), 8.3 at 96,406 (6 s), 9.9 at 133,614 (5 s at 2K); lean 6.0-6.4 at 147,690 (10 s at 1080p, with both ends kept
+# too), 8.5 at 219,486 (15 s), 9.0 at 260,010 (10 s at 2K), 10.8 at 302,334 (5 s at 4K). From each 2026-10-30 run's
+# own start the model's lowest MemAvailable is within 0.5 GiB of the measured one (tests/test_upscale.py has them). A
+# clip of another length needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start (need_gib; min_free_for) where that is
+# more than the floor: none does at the default 110 GiB (the most, 2K at 10 s, 109 with Keep my frames or without).
 MODEL_GIB = 68.4
 ROW_BYTES = {"stock": 181_800, "lean": 92_300}
-OVERHEAD_GIB = ((80_000, 7.0), (140_000, 9.5), (None, 11.0))      # by the clip's own rows: up to 80,000, 140,000, more
+OVERHEAD_GIB = {"stock": (3.5, 5.0), "lean": (2.1, 2.8)}     # GiB, plus GiB per 100,000 of the clip's own rows
 FLOOR_MARGIN_GIB = 3
 TEXT_ROWS = 200                  # a prompt's rows, for the model (169 to 387 in the studio's runs)
 START_SLACK_GIB = 0.5            # what the job's own start takes after the server's check (job.json min_free_gib)
@@ -597,8 +602,7 @@ def min_free_for(resolution, floor, kept=NVIDIA_FRAMES, ends=0):
     """The MemAvailable an upscale of a clip that keeps `kept` frames, at this resolution and with `ends` ends of a pin,
     needs to start. A 5 s clip: the floor (LFSTUDIO_UPSCALE_MIN_FREE_GIB), plus FLOOR_4K_EXTRA_GIB at 4K (see
     MIN_FREE_GIB), as measured, whatever the floor is set to. Another length: that, or what its case needs by the
-    memory model where that is more (need_gib; an estimate until the length runs on the GPU). A floor of 0 (no check)
-    stays 0."""
+    memory model where that is more (need_gib: none at the default 110 GiB). A floor of 0 (no check) stays 0."""
     if floor <= 0:
         return floor
     floor = floor + FLOOR_4K_EXTRA_GIB if resolution == "4k" else floor
@@ -763,15 +767,25 @@ def lean_chunks_for(case, resolution):
     return LEAN_CHUNKS if rows["video"] + rows["audio"] > LEAN_ROWS else None
 
 
+def peak_gib(rows, forward):
+    """The memory model's GPU memory allocated at the refine's peak, in GiB, for a sequence of `rows` (case_rows, or a
+    receipt's "rows") with the block forward `forward` ("stock" or "lean"): MODEL_GIB and ROW_BYTES a row."""
+    return MODEL_GIB + rows["sequence"] * ROW_BYTES[forward] / 2 ** 30
+
+
+def overhead_gib(rows, forward):
+    """How much further than peak_gib MemAvailable falls, in GiB (OVERHEAD_GIB): a straight line in the clip's own rows
+    (video and audio: not its prompt's or a pin's) per block forward."""
+    base, per = OVERHEAD_GIB[forward]
+    return base + per * (rows["video"] + rows["audio"]) / 100_000
+
+
 def need_gib(case, resolution, ends=0):
-    """The MemAvailable the memory model (MODEL_GIB) says a case needs to start, in whole GiB: allocated at the
-    refine's peak, the overhead, the guard and the margin."""
+    """The MemAvailable the memory model says a case needs to start, in whole GiB: allocated at the refine's peak
+    (peak_gib), the overhead (overhead_gib), the guard and the margin."""
     rows = case_rows(case, resolution, ends)
     forward = "lean" if lean_chunks_for(case, resolution) else "stock"
-    allocated = MODEL_GIB + rows["sequence"] * ROW_BYTES[forward] / 2 ** 30
-    own = rows["video"] + rows["audio"]
-    overhead = next(gib for most, gib in OVERHEAD_GIB if most is None or own <= most)
-    return math.ceil(allocated + overhead + GUARD_GIB + FLOOR_MARGIN_GIB)
+    return math.ceil(peak_gib(rows, forward) + overhead_gib(rows, forward) + GUARD_GIB + FLOOR_MARGIN_GIB)
 
 
 def offer_row(seconds, resolution):
