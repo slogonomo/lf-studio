@@ -313,8 +313,9 @@ at 4K has not run**; there the upscaler goes through the 2K grid (turned), as fo
 
 **Every 5 s clip: Keyframes, Reference and LightX2V Turbo clips.** The studio now gives the job every 5 s clip
 through an input folder of its own (docs/API.md, Upscale): the clip's MP4 (a LightX2V Turbo clip at 576p stretched to
-768p, one with a last keyframe cut to 121 frames), its audio, and a prompt conditioning of text alone (for Sol-H3
-Keyframes and Reference clips encoded first). The job's work is a Text clip's work: the same frames, sizes and steps.
+768p; one with a last keyframe was cut to 121 frames in the runs below, and since #85 keeps all 124 at 1080p and 2K),
+its audio, and a prompt conditioning of text alone (for Sol-H3 Keyframes and Reference clips encoded first). The job's
+work is a Text clip's work: the same latent frames (37 for 121 or 124 frames), sizes and steps.
 
 Through the studio (a staging studio of this version on the same DGX Spark, 2026-10-29, driven by `lf-cli`; one clip of
 each kind, made in that studio just before; nothing else loaded, so no models to close, and MemAvailable
@@ -344,14 +345,28 @@ The other stages, at 1080p (2K): encoding the final clip 128.3-128.6 s (128.3 s)
   [LightX2V Turbo](#experimental-lightx2v-turbo)). So such a clip's `qwen-text/` is what an encode at upscale time
   would give.
 - **The sound:** each upscale has the clip's own: every AAC packet of a linked or stretched clip (5.04 s), and for the
-  clip cut to 121 frames 5.02 s of its 5.17 s, cut with the picture. That cut leaves out the clip's last 3 frames, the
-  last of them the one anchored to the last keyframe (issue #85).
+  clip cut to 121 frames 5.02 s of its 5.17 s, cut with the picture. That cut was that day's route: it left out the
+  clip's last 3 frames, the last of them the one anchored to the last keyframe. Since #85 such a clip keeps all 124 at
+  1080p and 2K, with its 5.17 s of sound (not run on the GPU through the studio yet: the same 37 latent frames, so a
+  Text clip's time is expected), and is cut to 121 only at 4K.
 - **Cancel** about 2 s into the encode (an upscale of the Reference clip) stopped it in 5.4 s, with no encode or job
   process, Qwen container or GPU memory left, and no job started.
 - **Not run through the studio:** LightX2V Turbo's 768p Text clips (linked as they are), its Keyframes clips at 576p
-  (stretched; the research runs below) or at 768p without a last keyframe (linked), one whose text is encoded at upscale
-  time (a Keyframes clip without `qwen-text/`), and 4K of any clip but a 16:9 Text clip (no 9:16 clip has run at 4K).
-  Expected: a Text clip's times, plus the encode where there is one.
+  (stretched; the research runs below) or at 768p without a last keyframe (linked), a clip with a last keyframe kept
+  whole (124 frames), one whose text is encoded at upscale time (a Keyframes clip without `qwen-text/`), and 4K of any
+  clip but a 16:9 Text clip (no 9:16 clip has run at 4K). Expected: a Text clip's times, plus the encode where there is
+  one.
+
+**Keep my frames** (`pin`; not run on the GPU through the studio yet, so every number here is an estimate). The
+pinned refine adds one block of condition rows per end held, as MiniMax-H3 holds a keyframe: +2,040 rows at 1080p and
++3,600 at 2K per end (+2.7 %; 78,130 and 137,410 rows with one end, 80,170 and 141,010 with both), and encodes each
+picture on the VAE the clip's encode already loaded. Research runs of the bench wrapper with a first frame
+(2026-10-28, one clip each, the same machine) measured the steps at 149.9 and 149.4 s at 1080p (151.3 and 148.9 s
+unpinned: within the noise) and 395 s at 2K (387-390 s unpinned), peak allocated 81.66 and 91.74 GiB (+0.37 and +0.66
+GiB). Their picture encode took 8.7 s and 10.6 s, but that included a VAE load and two diagnostic encodes, so the job's
+encode on the loaded VAE is expected below that. Estimated: about +10 s at 1080p and +40 s at 2K for one end, +30 s
+and +70 s for both, and about 82.0 and 92.4 GiB peak with both (the page's progress bar adds these seconds). The
+check before anything loads reads one frame of the clip per end and takes about a second on the CPU.
 
 Measured apart:
 

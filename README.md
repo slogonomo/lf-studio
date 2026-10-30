@@ -158,11 +158,13 @@ its own, with the clip's own sound. Agents and scripts have it too: `POST /api/u
 tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
 
 - **5 s clips for now, 16:9 or 9:16, of every mode and model**: Sol-H3's Text, Keyframes and Reference clips and
-  LightX2V Turbo's Text and Keyframes clips. NVIDIA's pipeline is fixed at 121 frames, so other lengths are not yet
-  (their cards show the button disabled, with the reason). The job refines against text alone: a Keyframes or Reference
+  LightX2V Turbo's Text and Keyframes clips. NVIDIA's pipeline is fixed at 5 s, so other lengths are not yet (their
+  cards show the button disabled, with the reason). The job refines against text alone: a Keyframes or Reference
   clip's prompt is encoded first without its pictures (its keyframe line, or its references, taken out; ~15 s more). A
-  LightX2V Turbo clip at 576p is stretched to 768p first, and one with a last keyframe (124 frames) gives its first 121,
-  so the frame anchored to your last keyframe is left out ([#85](https://github.com/slogonomo/lf-studio/issues/85)).
+  LightX2V Turbo clip at 576p is stretched to 768p first. One with a last keyframe keeps all its 124 frames at 1080p and
+  2K, so the upscale ends on the frame anchored to your last keyframe and has the clip's whole 5.17 s of sound; at 4K
+  it is cut to its first 121 frames until a 124-frame 4K run
+  ([#85](https://github.com/slogonomo/lf-studio/issues/85)). Neither route has run on the GPU through the studio yet.
   Through the studio on one DGX Spark (2026-10-29, one clip of each kind), a Sol-H3 Keyframes clip (9:16), a Sol-H3
   Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with first and last keyframes each took 9.2-9.4 min to
   1080p, the encode included, as a Text clip does (9.6 min); the Keyframes clip took 18.6 min to 2K. LightX2V Turbo's
@@ -182,14 +184,23 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   upscaled to 4K yet. While an upscale runs the studio's models are closed; the next clip loads them again, and with
   `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
+- **Keep my frames** (experimental, not run on the GPU through the studio yet). NVIDIA's refine redraws a Keyframes
+  clip's first and last frames like any other, away from your pictures. With the popover's box (on by default, the
+  request's `pin`), the job holds your keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already
+  shows them: each end only if the clip's own frame is within 28 dB of your picture (luma, at 672×384), and only while
+  the picture on disk is the one the clip was made from. LightX2V Turbo's Keyframes clips offer their first frame, last
+  frame or both; Sol-H3's offer their first frame when Stage 2 held it (clips made since 0.5.2 with the default
+  `SOL_H3_STAGE2_KEYFRAME=pin`), never their last (the clip stops 3 frames before it). Balanced at 1080p and 2K only
+  for now, and at 2K it holds the picture only partly (research runs with a first frame: the face 3-5 dB closer to
+  your picture, frame 0 about 1 dB). Its cost is an estimate until it runs through the studio: about +10 s at 1080p
+  and +40 s at 2K for one end, +30 s and +70 s for both. The upscale's card says which ends were kept.
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the
   clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
   defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
 
-Not yet: lengths other than 5 s, keeping a Keyframes clip's first frame (your picture) in the upscale, and NVIDIA's
-faster Sol-Attn forward. Setup:
+Not yet: lengths other than 5 s, and NVIDIA's faster Sol-Attn forward. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
 

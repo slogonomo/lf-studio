@@ -326,9 +326,25 @@ the t2va path manifest: without it the Upscale button of such a clip says so (`.
 media labels out); if the result reads oddly, `prompt-text-only.txt` shows what the upscale used.
 
 **The upscale of a LightX2V Turbo clip is shorter than the clip.** A LightX2V Turbo clip with a last keyframe has 124
-frames (5.17 s), ending on that keyframe; the Upscale's job takes 121, so the upscale is its first 121 frames (5.04 s)
-and its sound is cut with them (the popover says so). It ends 3 frames before your last keyframe; keeping them is
-issue #85. A 576p clip is stretched to 768p first, as the popover says too.
+frames (5.17 s), ending on that keyframe. At 1080p and 2K the upscale keeps all of them, with the clip's whole sound;
+at 4K, which has not run with 124 frames yet, it is the first 121 frames (5.04 s) and its sound is cut with them (the
+popover says so at 4K): it ends 3 frames before your last keyframe. A 576p clip is stretched to 768p first, as the
+popover says too.
+
+**The card says "first frame not kept" or "last frame not kept".** Keep my frames (the popover's box, `pin`) holds an
+end only where the clip already shows your picture, and says why not on the card:
+- `(25.4 dB from your picture)`: the clip's own frame (its first, or its last) is further from your picture than the
+  28 dB the job needs (luma, at 672×384). The clip itself drifted from the picture there, and the Upscale does not pull
+  it back; the rest of the upscale is NVIDIA's refine, as without the box.
+- `your picture is no longer on disk` or `your picture changed since the clip was made`: the picture in the clip's
+  input files is gone (a Delete of the clip moves it to the trash) or is another file now. The studio and the job
+  compare it with the sha256 the clip was made from (the LightX2V Turbo receipt's, or Sol-H3's capture). The popover
+  says so too, under the box; a picture changed in place shows there once an upscale has seen it.
+- `the clip stops N frames before your last picture`: the clip keeps fewer frames than its model made, so its last
+  frame is not the one your last keyframe was anchored to.
+A Sol-H3 clip never offers its last frame (it stops 3 frames before it), and offers its first frame only when Stage 2
+held it: a clip made before 0.5.2, or with `SOL_H3_STAGE2_KEYFRAME=off`, says so in the popover. The box is off at
+4K and with Faithful or Full for now.
 
 **`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
 `missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's
