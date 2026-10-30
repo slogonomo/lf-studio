@@ -481,11 +481,13 @@ takes a 9:16 clip (768×1344) through it with the shapes turned, without changin
 upright (1080×1920, 1440×2560 or 2160×3840). 9:16 has run on the GPU at 1080p and 2K, as fast as 16:9, not yet at 4K,
 and NVIDIA trained its refiner on 16:9 video. Through the studio on one DGX Spark (2026-10-29), a Sol-H3 Keyframes clip
 (9:16), a Sol-H3 Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with a last keyframe (then cut to 121
-frames) have been upscaled to 1080p, and the Keyframes clip to 2K, each in a Text clip's time plus its encode
-([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). LightX2V Turbo's 768p Text clips, its
-other Keyframes clips (576p, or without a last keyframe) have not been upscaled through the studio yet, and a clip with
-a last keyframe kept whole (124 frames, since #85) not on the GPU at all: their times are expected to be a Text clip's,
-and the page's popover says so for them.
+frames) have been upscaled to 1080p, and the Keyframes clip to 2K, each in a Text clip's time plus its encode; later
+that night LightX2V Turbo Keyframes clips with a last keyframe kept whole (124 frames, since #85; 768p 16:9 and 9:16,
+576p stretched) to 1080p, the 768p 16:9 one to 2K too, and a 576p clip with a first frame to 1080p, each in a Text
+clip's time, with the clip's whole sound
+([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). LightX2V Turbo's 768p Text clips have
+not been upscaled through the studio yet (its 768p Keyframes clips with a first frame alone take the route of those
+with both, which has): their times are expected to be a Text clip's, and the page's popover says so for them.
 
 The job refines the clip against a prompt conditioning of text alone, and against the clip's audio (`audio` `clip`).
 Each upscale gets an input folder of its own (`<upscale case>/input/`, in the shape of a Sol-H3 clip's working files;
@@ -518,14 +520,14 @@ no text left to refine against: it can't be upscaled (400). The result always ge
 whole, or for a clip cut to 121 frames at 4K, cut with it), and has the frames kept:
 `regen_<W>x<H>_<frames>f.mp4`.
 
-**Keep my frames** (`pin`; experimental, not run on the GPU yet). NVIDIA's refine is text to video: it redraws a
-Keyframes clip's first and last frames like any other. With `pin` `auto` (the default) the job holds the clip's
-keyframes in the refine as MiniMax-H3 holds a keyframe (condition rows at the frame's place, never stepped), each end
-only where the clip already shows its picture: before anything loads it compares the picture, fitted as the clip's
-model fitted it, with the clip's own frame (0 for the first, the last frame for the last), luma PSNR at 384p (672×384,
-384×672 for 9:16), and holds the end at 28 dB or more, while the picture is the one the clip was made from (its
-sha256). An end that does not pass is not held, with its reason; the job never refuses for it. With no end held, or
-`pin` `off`, the refine is NVIDIA's. Which ends a clip offers (`upscalable` `pin`):
+**Keep my frames** (`pin`; experimental). NVIDIA's refine is text to video: it redraws a Keyframes clip's first and last
+frames like any other. With `pin` `auto` (the default) the job holds the clip's keyframes in the refine as MiniMax-H3
+holds a keyframe (condition rows at the frame's place, never stepped), each end only where the clip already shows its
+picture: before anything loads it compares the picture, fitted as the clip's model fitted it, with the clip's own frame
+(0 for the first, the last frame for the last), luma PSNR at 384p (672×384, 384×672 for 9:16), and holds the end at 28
+dB or more, while the picture is the one the clip was made from (its sha256). An end that does not pass is not held,
+with its reason; the job never refuses for it. With no end held, or `pin` `off`, the refine is NVIDIA's. Which ends a
+clip offers (`upscalable` `pin`):
 
 | The clip | First frame | Last frame |
 |---|---|---|
@@ -533,16 +535,23 @@ sha256). An end that does not pass is not held, with its reason; the job never r
 | Sol-H3 Keyframes | when Stage 2 held it: made since 0.5.2 with `SOL_H3_STAGE2_KEYFRAME=pin` (the default) | never: the clip stops 3 frames before it |
 | Text, Reference | – | – |
 
-It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet); at 2K research
-runs held a first frame only partly (the face 3-5 dB closer to the picture, frame 0 about 1 dB), so the page says
-"only partly" there. An end the clip offers but the request does not send has its reason in the record's `pin.why`
-(`not at 4K yet`, `with strength balanced only, for now`); an end sent but not held has the job's in `pin.result`
-(`the clip's frame 123 is 25.4 dB from your picture (28 needed)`, `your picture is no longer on disk`, `your picture
-changed since the clip was made`, `your picture does not open`, `the clip stops N frames before your last picture`).
-The job's pinned refine has not run on the GPU yet (research runs have held a first frame the same way; no run has
-held a last frame), so its cost is an estimate: about +10 s at 1080p and +60 s at 2K for one end, +30 s and +120 s for
-both (each picture's encode on the VAE already loaded, and 2.7 % more rows per end;
-[PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
+It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet: `faithful` held a
+first frame only about 1 dB closer in a test); at 2K research runs held a first frame only partly (the face 3-5 dB
+closer to the picture, frame 0 about 1 dB), so the page says "only partly" there. An end the clip offers but the request
+does not send has its reason in the record's `pin.why` (`not at 4K yet`, `with strength balanced only, for now`); an end
+sent but not held has the job's in `pin.result` (`the clip's frame 123 is 25.4 dB from your picture (28 needed)`, `your
+picture is no longer on disk`, `your picture changed since the clip was made`, `your picture does not open`, `the clip
+stops N frames before your last picture`).
+Through the studio on one DGX Spark (the night of 2026-10-29 to 30) it has run with a LightX2V Turbo clip's first frame,
+last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same clips upscaled
+with `pin` `off`, every end sent was held, and the frame held came 3.2-5.3 dB closer to the picture (luma PSNR at the
+output size; 2.5-5.5 dB on a face; +5.0 and +4.7 dB at 2K), with no flash there; a dialogue clip, a static shot whose
+plain upscale was already close to the picture, gained 2.3 dB at each end (3 dB on the face), its lip sync unchanged.
+The cost: +16 s per end at 1080p (+32 s for both) and +83 s for both ends at 2K (each picture's encode on the VAE
+already loaded, 3 s at 1080p, and 2.7 % more rows per end), 0.4-0.7 GiB more GPU memory at the peak at 1080p and 1.3 GiB
+at 2K, where the lowest MemAvailable came down to 14.1 GiB with both ends (16.0 GiB without). One end at 2K has not run:
+the page notes it there, and estimates +60 s
+([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
 
 ```bash
 curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: application/json' \
