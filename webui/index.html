@@ -446,10 +446,12 @@ const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
 // nothing for a Sol-H3 Text clip, which it takes as it is.
 // UP_RAN: the routes (model, text, video) that have run on the GPU through the studio, each in a Text clip's time plus
 // its encode (docs/PERFORMANCE.md): Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's 576p Text clip
-// (stretched) and its 768p clip with a last keyframe cut to 121 frames (its own text alone; run at 1080p before such a
-// clip kept all 124 there, its route at 4K now). Any other route has not (a clip with a last keyframe taken whole among
-// them): UP_UNRUN says so, and its times are a Text clip's
-const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation trim'];
+// (stretched), its Keyframes clips with their own text alone, 768p as they are and 576p stretched (one with a last
+// keyframe whole, 124 frames, at 1080p and 2K), and its 768p clip with a last keyframe cut to 121 frames (run at 1080p
+// before such a clip kept all 124 there, its route at 4K now). Any other route has not: UP_UNRUN says so, and its
+// times are a Text clip's
+const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation clip',
+  'lightx2v-turbo generation stretch','lightx2v-turbo generation trim'];
 const UP_UNRUN="This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's";
 // the video route at a size: cut to 121 frames where the clip keeps more and that size does not (4K)
 const upVideo=(u,res)=>{const v=u.video||'clip',f=u.frames||{},cut=f[res]!=null&&f[res]<Math.max(...Object.values(f));

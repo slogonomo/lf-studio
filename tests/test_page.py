@@ -27,8 +27,9 @@ except ImportError:
     sync_playwright = None
 
 # the Upscale popover's note on a clip whose route has not run on the GPU through the studio yet (the page's UP_UNRUN:
-# not on Sol-H3's clips, LightX2V Turbo's 576p Text clips or its 768p clips with a last keyframe cut to 121 frames, its
-# UP_RAN), and the same for Keep my frames (UP_PIN_UNRUN: its routes' "ran")
+# not on Sol-H3's clips, LightX2V Turbo's 576p Text clips, its Keyframes clips with their own text (768p as they are,
+# 576p stretched; one with a last keyframe whole at 1080p and 2K) or its 768p clips with a last keyframe cut to 121
+# frames, its UP_RAN), and the same for Keep my frames (UP_PIN_UNRUN: its routes' "ran")
 UP_UNRUN = "This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's"
 UP_PIN_UNRUN = "Keeping your frames has not been run on the GPU through the studio yet: its times are estimates"
 SOL_LAST = "Last frame not kept: Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it"
@@ -1821,12 +1822,12 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
             f"{kf}, encoded first (~15 s)", "Uses your prompt with the references taken out, encoded first (~15 s)",
             stretch,                                                                 # the turbo's 576p Text clip
             f"{kf}. {trim}",                                                         # 768p with a last keyframe at 4K
-            f"{kf}. {UP_UNRUN}",                                                     # and whole, at 1080p
+            kf,                                                                      # and whole, at 1080p
             UP_UNRUN,                                                                # its 768p Text clip, as it is
-            f"{kf}. {UP_UNRUN}",                                                     # 768p, a first frame
-            f"{kf}. {stretch}. {UP_UNRUN}",                                          # 576p, a first frame
+            kf,                                                                      # 768p, a first frame
+            f"{kf}. {stretch}",                                                      # 576p, a first frame
             f"{kf}. {stretch}. {trim}. {UP_UNRUN}",                                  # 576p with a last keyframe, 4K
-            f"{kf}. {stretch}. {UP_UNRUN}",                                          # and whole, at 2K
+            f"{kf}. {stretch}",                                                      # and whole, at 2K
             f"{kf}, encoded first (~15 s). {trim}. {UP_UNRUN}",                      # one without its qwen-text/
             f"{stretch}. {UP_UNRUN}"])                                               # a route no model has
         # the card's line on the frames kept (the record's pin.result)
@@ -2310,7 +2311,7 @@ class ModelUpscale(ModelPage):
         self.page.click(f"{self.card(jid)} .act.up")
         self.page.wait_for_selector("#uppop", state="visible")
         common = "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first"
-        self.assertEqual(self.notes(), f"{common}. {UP_UNRUN}")          # 2K: every frame; both ends have run there
+        self.assertEqual(self.notes(), common)          # 2K: every frame; its route has run (UP_RAN), both ends at 2K
         kept = "Kept where the clip already shows your picture"
         self.assertEqual(self.pin(), ["Keep my first and last frames", f"{kept} · at 2K only partly", True, False])
         self.page.click('#uppop label[for="up-4k"]')
@@ -2330,7 +2331,7 @@ class ModelUpscale(ModelPage):
         self.page.wait_for_selector("#uppop", state="visible")
         self.page.click('#uppop label[for="up-1080p"]')
         self.assertEqual(self.pin(), ["Keep my first and last frames", kept, True, False])     # checked again
-        self.assertEqual(self.notes(), f"{common}. {UP_UNRUN}")
+        self.assertEqual(self.notes(), common)
         self.page.click("#uppinrow")                                           # unticked: off
         with self.page.expect_request("**/api/upscale") as request:
             self.page.click("#upgo")
@@ -2375,16 +2376,16 @@ class ModelUpscale(ModelPage):
         common = "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first"
         kept = "Kept where the clip already shows your picture"
         self.assertEqual(self.pin(), ["Keep my last frame", f"{kept} · at 2K only partly", True, False])
-        self.assertEqual(self.notes(), f"{common}. {UP_UNRUN}. {UP_PIN_UNRUN}")      # its route has not run at 2K
+        self.assertEqual(self.notes(), f"{common}. {UP_PIN_UNRUN}")                   # its route has not run at 2K
         self.page.click('#uppop label[for="up-1080p"]')
         self.assertEqual(self.pin(), ["Keep my last frame", kept, True, False])
-        self.assertEqual(self.notes(), f"{common}. {UP_UNRUN}")                       # and has at 1080p
+        self.assertEqual(self.notes(), common)                                        # and has at 1080p
         # the same clip with its route's "ran" (the server's PIN_ROUTES) the other way round: run at 2K, not at 1080p
         seen = self.page.evaluate("""() => {const j = known.get(up.id), u = JSON.parse(JSON.stringify(j.upscalable));
             u.pin_routes['2k'].ran = true; u.pin_routes['1080p'].ran = false;
             return ['2k', '1080p'].map(res => {document.getElementById('up-' + res).checked = true;
               upRefresh({...j, upscalable: u}); return document.getElementById('upinput').textContent;});}""")
-        self.assertEqual(seen, [f"{common}. {UP_UNRUN}", f"{common}. {UP_UNRUN}. {UP_PIN_UNRUN}"])
+        self.assertEqual(seen, [common, f"{common}. {UP_PIN_UNRUN}"])
         self.page.keyboard.press("Escape")
 
     def test_a_sol_h3_clip_with_both_keyframes(self):
