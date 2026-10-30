@@ -26,7 +26,7 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   turned, see its docstring). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS; default
   LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
   LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). pin: auto (the default) or off, Keep my frames
-  (experimental, not run on the GPU through the studio yet): with auto, the clip's keyframes are held in the refine
+  (experimental; PIN_ROUTES "ran": where it has run on the GPU): with auto, the clip's keyframes are held in the refine
   where its route offers it (PIN_ROUTES: LightX2V Turbo's Keyframes clips, either end or both, and Sol-H3's first frame
   on a clip made with the Stage-2 pin; 1080p and 2K, balanced) and the clip shows each picture already (the job's own
   check, before anything loads: 28 dB at 384p, the sha256 the clip was made from); off, or no end held: NVIDIA's
@@ -1561,16 +1561,16 @@ UPSCALE_NAMES = {"1080p": "1080p", "2k": "2K", "4k": "4K"}
 # Keep my frames (POST /api/upscale "pin", the docstring): the clip's keyframes held in the refine where the clip
 # shows them already (the job's check_pin). PIN_ROUTES says where it is offered, by the clip's model and the ends it
 # can hold (clip_keyframes): the sizes, the strengths, and the sizes it has run at on the GPU through the studio
-# ("ran"; the page notes the others). One line per route, so a route that fails its GPU run goes with its line. Not
-# at 4K (not run with the job's lean blocks), Balanced only until Faithful has run.
+# ("ran", 2026-10-30; the page notes the others). One line per route, so a route that fails its GPU run goes with its
+# line. Not at 4K (not run with the job's lean blocks); Balanced only (Faithful held a first frame only ~1 dB closer).
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
 PIN_PARTLY = ("2k",)             # sizes where it holds the picture only partly (a research run at 2K): the page says so
 PIN_ROUTES = {
-    (TURBO, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ()},
-    (TURBO, "last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ()},
-    (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ()},
-    (SOL_H3, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ()},
+    (TURBO, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
+    (TURBO, "last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
+    (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "2k")},
+    (SOL_H3, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
 }
 # why an end of a Keyframes clip is not held, besides the job's own reasons (regen.PIN_WHY: the picture gone or
 # changed, the clip stopping short of the last one)

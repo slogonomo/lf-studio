@@ -2191,9 +2191,11 @@ UPSCALE_LENGTH = "Upscale takes 5 s clips for now: other lengths not yet (NVIDIA
 NOTHING_LEFT = "nothing is left of the prompt without its keyframe line: the Upscale needs text"
 TEXT_CLIP = {"ok": True, "clip_audio": True}     # a Sol-H3 Text clip's upscalable, as before every clip was taken
 # where a clip's Keep my frames is offered (upscalable "pin_routes"; the server's PIN_ROUTES): 1080p and 2K (there
-# "partly"), balanced, not run on the GPU through the studio yet
-PIN_ROUTES = {"1080p": {"strengths": ["balanced"], "partly": False, "ran": False},
+# "partly"), balanced; run on the GPU through the studio at 1080p, and at 2K too with both ends of a LightX2V Turbo
+# clip (PIN_ROUTES_BOTH)
+PIN_ROUTES = {"1080p": {"strengths": ["balanced"], "partly": False, "ran": True},
               "2k": {"strengths": ["balanced"], "partly": True, "ran": False}}
+PIN_ROUTES_BOTH = {**PIN_ROUTES, "2k": dict(PIN_ROUTES["2k"], ran=True)}
 PIN_GONE, PIN_CHANGED = "your picture is no longer on disk", "your picture changed since the clip was made"
 SOL_LAST = "Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it"
 FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
@@ -3904,7 +3906,7 @@ class ServerParts(unittest.TestCase):
     def pin_parts(self, drop=None, ran=None, sizes=None):
         """upscalable, pin_offer and pin_plan from the server's source with stand-ins for the clip's files, and its
         PIN_ROUTES as one would change it by one line: without the route whose line names `drop`, with `ran` (a
-        route's line) given "ran": ("1080p",), or with PIN_SIZES `sizes`."""
+        route's line, the sizes) given those sizes as its "ran", or with PIN_SIZES `sizes`."""
         spec = importlib.util.spec_from_file_location("regen2k_job_under_test", REPO_DIR / "upscale" / "regen2k_job.py")
         regen = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(regen)
@@ -3912,10 +3914,10 @@ class ServerParts(unittest.TestCase):
         node = next(n for n in ast.parse(source).body if isinstance(n, ast.Assign) and len(n.targets) == 1
                     and getattr(n.targets[0], "id", None) == "PIN_ROUTES")
         lines = ast.get_source_segment(source, node.value).splitlines()
-        for name in filter(None, (drop, ran)):
+        for name in filter(None, (drop, ran and ran[0])):
             self.assertEqual(sum(name in line for line in lines), 1, name)                     # one line each
-        table = "\n".join(line.replace('"ran": ()', '"ran": ("1080p",)') if ran and ran in line else line
-                          for line in lines if not drop or drop not in line)
+        table = "\n".join(re.sub(r'"ran": \([^)]*\)', f'"ran": {tuple(ran[1])!r}', line) if ran and ran[0] in line
+                          else line for line in lines if not drop or drop not in line)
         names = {name: server_value(name) for name in ("PIN_PARTLY", "PIN_NOT_YET", "PIN_SIZE", "PIN_STRENGTH",
                                                         "UPSCALE_NAMES", "UPSCALE_KEEP_ALL")}
         names.update(regen=regen, SOL_H3="sol-h3", TURBO=TURBO, PIN_SIZES=sizes or server_value("PIN_SIZES"),
@@ -3930,8 +3932,8 @@ class ServerParts(unittest.TestCase):
 
     def test_the_pin_routes_table(self):
         """PIN_ROUTES changed by one line: a route taken out (one that fails its GPU run) is no longer offered, with
-        why, while the others still are; a route marked as run at 1080p loses the page's note there ("ran"); PIN_SIZES
-        ("1080p",) takes 2K out, with why."""
+        why, while the others still are; "ran" per route and size (the page's note where a route has not run), as the
+        table says and with one route's sizes changed; PIN_SIZES ("1080p",) takes 2K out, with why."""
         made = ("first", "last")
 
         def clip(ends):
@@ -3952,21 +3954,27 @@ class ServerParts(unittest.TestCase):
         def plan(parts, ends, resolution):
             return parts["pin_plan"](*clip(ends), resolution, "balanced", "auto")
         unrun = {"strengths": ["balanced"], "partly": False, "ran": False}
-        routes = {"1080p": unrun, "2k": dict(unrun, partly=True)}
+
+        def routes(*ran):
+            return {"1080p": dict(unrun, ran="1080p" in ran), "2k": dict(unrun, partly=True, ran="2k" in ran)}
         parts = self.pin_parts()
         self.assertEqual([offered(parts, ends) for ends in (["last"], made)],
-                         [{"pin": ["last"], "pin_routes": routes}, {"pin": list(made), "pin_routes": routes}])
+                         [{"pin": ["last"], "pin_routes": routes("1080p")},
+                          {"pin": list(made), "pin_routes": routes("1080p", "2k")}])
         not_yet = "not for this clip's keyframes yet"
         parts = self.pin_parts(drop='(TURBO, "last")')
         self.assertEqual(offered(parts, ["last"]), {"pin_why": {"last": not_yet}})
         self.assertEqual(plan(parts, ["last"], "1080p"), {"asked": "auto", "ends": [], "why": {"last": not_yet}})
-        self.assertEqual(offered(parts, made), {"pin": list(made), "pin_routes": routes})       # its own route
+        self.assertEqual(offered(parts, made), {"pin": list(made), "pin_routes": routes("1080p", "2k")})  # its own
         self.assertEqual(plan(parts, made, "1080p")["ends"], list(made))
-        parts = self.pin_parts(ran='(TURBO, "first+last")')
-        self.assertEqual(offered(parts, made)["pin_routes"], {"1080p": dict(unrun, ran=True), "2k": routes["2k"]})
-        self.assertEqual(offered(parts, ["last"])["pin_routes"], routes)                         # the others not
+        parts = self.pin_parts(ran=('(TURBO, "first+last")', ()))
+        self.assertEqual(offered(parts, made)["pin_routes"], routes())
+        self.assertEqual(offered(parts, ["last"])["pin_routes"], routes("1080p"))                # the others not
+        parts = self.pin_parts(ran=('(TURBO, "last")', ("1080p", "2k")))
+        self.assertEqual(offered(parts, ["last"])["pin_routes"], routes("1080p", "2k"))
+        self.assertEqual(offered(parts, made)["pin_routes"], routes("1080p", "2k"))
         parts = self.pin_parts(sizes=("1080p",))
-        self.assertEqual(offered(parts, ["last"]), {"pin": ["last"], "pin_routes": {"1080p": unrun}})
+        self.assertEqual(offered(parts, ["last"]), {"pin": ["last"], "pin_routes": {"1080p": dict(unrun, ran=True)}})
         self.assertEqual([plan(parts, ["last"], size) for size in ("1080p", "2k")],
                          [{"asked": "auto", "ends": ["last"], "why": {}},
                           {"asked": "auto", "ends": [], "why": {"last": "not at 2K yet"}}])
@@ -5114,7 +5122,7 @@ class TurboUpscale(TurboTest):
                 frames = {"1080p": 124, "2k": 124, "4k": 121}
                 self.assertEqual(self.studio.job(parent["id"])["upscalable"],
                                  dict({"ok": True, "clip_audio": True, "text": "generation", "frames": frames,
-                                       "pin": ["first", "last"], "pin_routes": PIN_ROUTES},
+                                       "pin": ["first", "last"], "pin_routes": PIN_ROUTES_BOTH},
                                       **({"video": video} if video != "clip" else {})))
                 for size, output in (("1080p", "regen_1920x1080_124f.mp4"), ("2k", "regen_2560x1440_124f.mp4")):
                     job = self.done(self.upscale(parent["id"], resolution=size))
@@ -5232,7 +5240,8 @@ class TurboPin(TurboTest):
             with self.subTest(ends):
                 parent = self.keyframes_clip(files, seed=seed)
                 u = self.studio.job(parent["id"])["upscalable"]
-                self.assertEqual((u["pin"], u["pin_routes"]), (ends, PIN_ROUTES))
+                self.assertEqual((u["pin"], u["pin_routes"]),
+                                 (ends, PIN_ROUTES_BOTH if len(ends) > 1 else PIN_ROUTES))
                 self.assertNotIn("pin_why", u)
                 job = self.done(self.upscale(parent["id"], resolution="1080p"))
                 view = self.regen(job).parent / "input"
