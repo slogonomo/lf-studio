@@ -218,8 +218,9 @@ at every length: the 3 copies of the last frame, the audio of A × 800 samples),
 (`OFFER_ETA_S`, `offers_table`, `offer`: 1080p every length, 2K up to 10 s, 4K at 5 s, the reasons), the block
 forward by rows (`lean_chunks_for`) and the memory model and floor (`case_rows`, `need_gib`, `min_free_for`), the
 shape table (with every orientation the patches make), the portrait entries for NVIDIA's dicts, the upscale route and
-`check_package`, the text check on stand-in tensors, the command lines (NVIDIA's read of the clip; the mux run with
-ffmpeg) and the environment, the progress lines, the memory trace, `--check` (of every count of frames, at every size:
+`check_package` (every pinned file for a 9:16 clip and for a clip of another length), the text check on stand-in
+tensors, the command lines (NVIDIA's read of the clip, the others without its tpad: a clip cut off after its header
+reads short; the mux run with ffmpeg) and the environment, the progress lines, the memory trace, `--check` (of every count of frames, at every size:
 a size its length has not got refused with the reason), the receipt when a job is done, fails, is refused, starts with
 too little memory or gets SIGTERM, `--parent` (the job dies with the server), v0.5.2's job from git refusing a long
 clip and `min_free_gib` (`OlderJobTests`: so job.json stays version 1), and `run()` with a stand-in torch and a
@@ -227,7 +228,8 @@ stand-in of NVIDIA's `open_h3`, with both loads (fast and standard: stand-ins fo
 record every load, which the fast load must have replaced before the first one): a 16:9 clip makes the same calls into
 NVIDIA's code as before the job took 9:16, a 9:16 one its portrait route (the same with either load), a clip of 124
 frames and clips of other lengths the job's copies of NVIDIA's encode and decode (their audio and silence, the lean
-blocks by their rows), every 5 s route the block forward it ran on the GPU, and a pin the pinned refine with the ends
+blocks by their rows, NVIDIA's upscaler.py and upscaler_node.py pinned, an upscaled latent of another T failing before
+the refine), every 5 s route the block forward it ran on the GPU, and a pin the pinned refine with the ends
 its check kept (a 10 s clip's too). The pin's fit (`cover_crop`, `fit_box`) against the LightX2V Turbo receipts'
 records, "as is" too, and the grids are standard library. With `LFSTUDIO_UPSCALE_PKG` naming NVIDIA's real package it
 also checks the files the job pins, the entries it was written against and its encode command (read, not imported).
