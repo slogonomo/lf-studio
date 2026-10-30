@@ -24,12 +24,15 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   the server builds per upscale (`upscale_sources`, `build_input`: the clip's MP4, audio and text alone, linked, a
   LightX2V Turbo clip's MP4 stretched, or cut to 121 frames at 4K (`UPSCALE_KEEP_ALL`: one with a last keyframe keeps
   its 124 at 1080p and 2K), the pictures of the ends Keep my frames sends (`clip_keyframes`, `PIN_ROUTES`, job.json
-  `"pin"`), `source.json`), job.json `"case"`; a Keyframes or Reference
-  clip's text alone is encoded first by `bench/h3turbo_encode.py --upscale` (`encode_upscale_text`), whose
-  `text_only_prompt` and `ref_text_only_prompt` write it (`upscale_text`). The page's Upscale button and popover,
-  `lf-cli upscale` and the MCP tool `upscale` use the endpoint; `install/65-regen2k.sh` (optional) builds its
-  environment from the hashed lock `install/freeze/regen2k-lock.txt` and fetches its weights
-  (`install/regen2k_weights.py`); `--env-only` builds the environment alone.
+  `"pin"`), `source.json`), job.json `"case"`; a Keyframes or Reference clip's text alone is encoded first by
+  `bench/h3turbo_encode.py --upscale` (`encode_upscale_text`), whose `text_only_prompt` and `ref_text_only_prompt`
+  write it (`upscale_text`). The page's Upscale button and popover, `lf-cli upscale` and the MCP tool `upscale` use the
+  endpoint; `install/65-regen2k.sh` (optional) builds its environment from the hashed lock
+  `install/freeze/regen2k-lock.txt` and fetches its weights (`install/regen2k_weights.py`); `--env-only` builds the
+  environment alone. What has run on the GPU through the studio is listed twice: per clip route in the page's
+  `UP_RAN`, per Keep my frames route and size in `PIN_ROUTES`' `"ran"` (one line per route, so a route that fails its
+  GPU run goes out with its line; `PIN_SIZES` and `PIN_PARTLY` hold the sizes). The rest shows the page's "not run on
+  the GPU" note, and the docs call its times estimates: change both when a run lands.
 - `install/66-h3turbo.sh` (optional) sets up the experimental LightX2V Turbo model: it checks the base model (refusing
   one without the VAE's weights), uses the Upscale's environment (or runs `65-regen2k.sh --env-only`; it never touches
   a venv itself), fetches LightX2V's turbo LoRA files at a pinned revision (`install/h3turbo_weights.py`, standard
