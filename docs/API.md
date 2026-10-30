@@ -483,9 +483,9 @@ and NVIDIA trained its refiner on 16:9 video. Through the studio on one DGX Spar
 (9:16), a Sol-H3 Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with a last keyframe (then cut to 121
 frames) have been upscaled to 1080p, and the Keyframes clip to 2K, each in a Text clip's time plus its encode
 ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). LightX2V Turbo's 768p Text clips, its
-other Keyframes clips (576p, or without a last keyframe) and a clip with a last keyframe kept whole (124 frames, since
-#85) have not been upscaled through the studio yet: their times are expected to be a Text clip's, and the page's
-popover says so for them.
+other Keyframes clips (576p, or without a last keyframe) have not been upscaled through the studio yet, and a clip with
+a last keyframe kept whole (124 frames, since #85) not on the GPU at all: their times are expected to be a Text clip's,
+and the page's popover says so for them.
 
 The job refines the clip against a prompt conditioning of text alone, and against the clip's audio (`audio` `clip`).
 Each upscale gets an input folder of its own (`<upscale case>/input/`, in the shape of a Sol-H3 clip's working files;
@@ -518,14 +518,14 @@ no text left to refine against: it can't be upscaled (400). The result always ge
 whole, or for a clip cut to 121 frames at 4K, cut with it), and has the frames kept:
 `regen_<W>x<H>_<frames>f.mp4`.
 
-**Keep my frames** (`pin`; experimental, not run on the GPU through the studio yet). NVIDIA's refine is text to video:
-it redraws a Keyframes clip's first and last frames like any other. With `pin` `auto` (the default) the job holds the
-clip's keyframes in the refine as MiniMax-H3 holds a keyframe (condition rows at the frame's place, never stepped),
-each end only where the clip already shows its picture: before anything loads it compares the picture, fitted as the
-clip's model fitted it, with the clip's own frame (0 for the first, the last frame for the last), luma PSNR at
-672×384, and holds the end at 28 dB or more, while the picture is the one the clip was made from (its sha256). An end
-that does not pass is not held, with its reason; the job never refuses for it. With no end held, or `pin` `off`, the
-refine is NVIDIA's. Which ends a clip offers (`upscalable` `pin`):
+**Keep my frames** (`pin`; experimental, not run on the GPU yet). NVIDIA's refine is text to video: it redraws a
+Keyframes clip's first and last frames like any other. With `pin` `auto` (the default) the job holds the clip's
+keyframes in the refine as MiniMax-H3 holds a keyframe (condition rows at the frame's place, never stepped), each end
+only where the clip already shows its picture: before anything loads it compares the picture, fitted as the clip's
+model fitted it, with the clip's own frame (0 for the first, the last frame for the last), luma PSNR at 384p (672×384,
+384×672 for 9:16), and holds the end at 28 dB or more, while the picture is the one the clip was made from (its
+sha256). An end that does not pass is not held, with its reason; the job never refuses for it. With no end held, or
+`pin` `off`, the refine is NVIDIA's. Which ends a clip offers (`upscalable` `pin`):
 
 | The clip | First frame | Last frame |
 |---|---|---|
@@ -533,10 +533,16 @@ refine is NVIDIA's. Which ends a clip offers (`upscalable` `pin`):
 | Sol-H3 Keyframes | when Stage 2 held it: made since 0.5.2 with `SOL_H3_STAGE2_KEYFRAME=pin` (the default) | never: the clip stops 3 frames before it |
 | Text, Reference | – | – |
 
-It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet); at 2K a research run
-held a first frame only partly (the face 3-5 dB closer to the picture, frame 0 about 1 dB), so the page says "only
-partly" there. Its cost is an estimate until it has run through the studio: about +10 s at 1080p and +40 s at 2K for
-one end, +30 s and +70 s for both (each picture's encode on the VAE already loaded, and 2.7 % more rows per end).
+It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet); at 2K research
+runs held a first frame only partly (the face 3-5 dB closer to the picture, frame 0 about 1 dB), so the page says
+"only partly" there. An end the clip offers but the request does not send has its reason in the record's `pin.why`
+(`not at 4K yet`, `with strength balanced only, for now`); an end sent but not held has the job's in `pin.result`
+(`the clip's frame 123 is 25.4 dB from your picture (28 needed)`, `your picture is no longer on disk`, `your picture
+changed since the clip was made`, `your picture does not open`, `the clip stops N frames before your last picture`).
+The job's pinned refine has not run on the GPU yet (research runs have held a first frame the same way; no run has
+held a last frame), so its cost is an estimate: about +10 s at 1080p and +40 s at 2K for one end, +30 s and +70 s for
+both (each picture's encode on the VAE already loaded, and 2.7 % more rows per end;
+[PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)).
 
 ```bash
 curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: application/json' \
@@ -611,11 +617,13 @@ LightX2V Turbo Keyframes clip made with itself; `encode`: encoded first, about 1
 its MP4 at 1080p and 2K when it is not taken as it is (`stretch` from 576p); `"frames"`, for a clip of more than 121
 frames, the frames kept per size (`{"1080p": 124, "2k": 124, "4k": 121}`); `"pin"`, the ends it can keep (`["first"]`,
 `["last"]` or `["first", "last"]`), with `"pin_routes"`, where: `{resolution: {"strengths", "partly" (it holds the
-picture only partly there), "ran" (on the GPU through the studio)}}`; and `"pin_why"`, `{end: why not}` for an end
-it has but can't keep (`Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it`, `the clip
-was made before 0.5.2, which did not hold your first frame`, `your picture is no longer on disk`, `your picture
-changed since the clip was made`, ...). The pictures are not read for `/api/state`: a picture changed in place shows
-as changed once a request (which hashes it) has seen it; the job checks it again.
+picture only partly there), "ran" (on the GPU through the studio)}}` for each size it is offered at (`1080p` and `2k`
+for now); and `"pin_why"`, `{end: why not}` for an end it has but can't keep (`Sol-H3 clips stop 3 frames before your
+last picture, so the Upscale can't hold it`, `the clip was made before 0.5.2, which did not hold your first frame`,
+`the clip was made with SOL_H3_STAGE2_KEYFRAME=off, ...`, `your picture is no longer on disk`, `your picture changed
+since the clip was made`, `the clip has no record of how it used your picture`, ...). The pictures are not read for
+`/api/state`: a picture changed in place shows as changed once a request (which hashes it) has seen it; the job
+checks it again.
 This endpoint is the page's, like Cancel: it works with `LFSTUDIO_API=0`.
 
 ## Models (experimental): LightX2V Turbo

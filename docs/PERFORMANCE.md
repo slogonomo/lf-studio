@@ -347,8 +347,8 @@ The other stages, at 1080p (2K): encoding the final clip 128.3-128.6 s (128.3 s)
 - **The sound:** each upscale has the clip's own: every AAC packet of a linked or stretched clip (5.04 s), and for the
   clip cut to 121 frames 5.02 s of its 5.17 s, cut with the picture. That cut was that day's route: it left out the
   clip's last 3 frames, the last of them the one anchored to the last keyframe. Since #85 such a clip keeps all 124 at
-  1080p and 2K, with its 5.17 s of sound (not run on the GPU through the studio yet: the same 37 latent frames, so a
-  Text clip's time is expected), and is cut to 121 only at 4K.
+  1080p and 2K, with its 5.17 s of sound (not run on the GPU yet: the same 37 latent frames, so a Text clip's time is
+  expected), and is cut to 121 only at 4K.
 - **Cancel** about 2 s into the encode (an upscale of the Reference clip) stopped it in 5.4 s, with no encode or job
   process, Qwen container or GPU memory left, and no job started.
 - **Not run through the studio:** LightX2V Turbo's 768p Text clips (linked as they are), its Keyframes clips at 576p
@@ -357,16 +357,19 @@ The other stages, at 1080p (2K): encoding the final clip 128.3-128.6 s (128.3 s)
   clip but a 16:9 Text clip (no 9:16 clip has run at 4K). Expected: a Text clip's times, plus the encode where there is
   one.
 
-**Keep my frames** (`pin`; not run on the GPU through the studio yet, so every number here is an estimate). The
-pinned refine adds one block of condition rows per end held, as MiniMax-H3 holds a keyframe: +2,040 rows at 1080p and
-+3,600 at 2K per end (+2.7 %; 78,130 and 137,410 rows with one end, 80,170 and 141,010 with both), and encodes each
-picture on the VAE the clip's encode already loaded. Research runs of the bench wrapper with a first frame
-(2026-10-28, one clip each, the same machine) measured the steps at 149.9 and 149.4 s at 1080p (151.3 and 148.9 s
+**Keep my frames** (`pin`). The job's pinned refine has not run on the GPU yet, so its times and memory here are
+estimates. The pinned refine adds one block of condition rows per end held, as MiniMax-H3 holds a keyframe: +2,040
+rows at 1080p and +3,600 at 2K per end (+2.7 %; 78,130 and 137,410 rows with one end, 80,170 and 141,010 with both),
+and encodes each picture on the VAE the clip's encode already loaded. Research runs held a first frame the same way
+(the job run by a research wrapper that adds the block; LightX2V Turbo 576p clips, 2026-10-28, one clip at 1080p and
+two at 2K, the same machine, with CPU work alongside): steps of 149.9 and 149.4 s at 1080p (151.3 and 148.9 s
 unpinned: within the noise) and 395 s at 2K (387-390 s unpinned), peak allocated 81.66 and 91.74 GiB (+0.37 and +0.66
 GiB). Their picture encode took 8.7 s and 10.6 s, but that included a VAE load and two diagnostic encodes, so the job's
-encode on the loaded VAE is expected below that. Estimated: about +10 s at 1080p and +40 s at 2K for one end, +30 s
-and +70 s for both, and about 82.0 and 92.4 GiB peak with both (the page's progress bar adds these seconds). The
-check before anything loads reads one frame of the clip per end and takes about a second on the CPU.
+encode on the loaded VAE is expected below that. No run has held a last frame yet; its block has as many rows as the
+first's. Estimated: about +10 s at 1080p and +40 s at 2K for one end, +30 s and +70 s for both (the page's progress
+bar adds these seconds); about 82.0 and 92.4 GiB peak with both, and at 2K a lowest MemAvailable about 1 GiB lower
+than unpinned. Measured on the CPU (2026-10-29, three LightX2V Turbo clips): the check before anything loads (the
+pictures' sha256, one frame of the clip per end) took 0.18 s for one end and 0.27-0.29 s for both.
 
 Measured apart:
 
