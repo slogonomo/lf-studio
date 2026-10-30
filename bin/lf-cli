@@ -17,7 +17,7 @@ One file, standard library only, Python 3.9 or later: copy it to any machine tha
   lf-cli cancel ID
   lf-cli fetch ID [--out PATH] [--poster] [--wake]
   lf-cli upscale ID [--resolution 1080p|2k|4k] [--strength faithful|balanced|full]
-         [--audio clip|silence] [--seed N] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
+         [--audio clip|silence] [--seed N] [--pin auto|off] [--wait] [--out PATH] [--poster] [--timeout S] [--hold S]
                                 experimental: a finished 5 s clip (Text, Keyframes or Reference; Sol-H3 or LightX2V
                                 Turbo), 16:9 or 9:16, to 1080p, 2K or 4K, on a studio with LFSTUDIO_UPSCALE=1 (about
                                 10 min to 1.6 h in all, 4K over an hour, with a ~22 s load; ~8 min more with
@@ -77,6 +77,7 @@ FINISHED = ("done", "failed", "cancelled")
 UPSCALE_RESOLUTIONS = ("1080p", "2k", "4k")
 UPSCALE_STRENGTHS = ("faithful", "balanced", "full")
 UPSCALE_AUDIO = ("clip", "silence")
+UPSCALE_PIN = ("auto", "off")      # Keep my frames: sent only to a studio that takes it (pin_support)
 FRAMES = ("first_frame", "last_frame")
 # The model of a clip (docs/API.md, "Models"): sol-h3 (Sol-H3) when none is named. Another model, and its options,
 # come from the studio's own table (GET /api/state "models"), read before the submit, so this file needs no change for
@@ -355,13 +356,32 @@ def model_text(rec):
             + (f" {opts['steps']} steps" if opts.get("steps") else ""))
 
 
+def pin_text(rec):
+    """What became of the frames an upscale was to keep (its "pin" result, the job's check per end): "first frame
+    kept", "first and last frames kept", "last frame not kept (25.4 dB)", or with the job's reason; "" for none."""
+    result = (rec.get("pin") or {}).get("result") if isinstance(rec.get("pin"), dict) else None
+    if not isinstance(result, dict):
+        return ""
+    ends = [end for end in ("first", "last") if isinstance(result.get(end), dict)]
+    kept = [end for end in ends if result[end].get("used")]
+    parts = ["first and last frames kept" if len(kept) > 1 else f"{kept[0]} frame kept"] if kept else []
+    for end in ends:
+        if end not in kept:
+            db, why = result[end].get("agreement_db"), result[end].get("why")
+            far = isinstance(db, (int, float)) and " dB from " in str(why or "")
+            parts.append(f"{end} frame not kept" + (f" ({db:.1f} dB)" if far else f": {why}" if why else ""))
+    return ", ".join(parts)
+
+
 def clip_desc(rec):
     if is_upscale(rec):                    # of a clip of another model than Sol-H3: its model and size too
         model = rec.get("parent_model") if rec.get("parent_model") != DEFAULT_MODEL else None
         size = (rec.get("parent_opts") or {}).get("resolution") if isinstance(rec.get("parent_opts"), dict) else None
         of = f" ({model}{' ' + str(size) if size else ''})" if isinstance(model, str) and model else ""
+        pinned = pin_text(rec)
         return (f"{rec.get('resolution')} upscale of {str(rec.get('parent'))[:8]}{of}, {rec.get('strength')}, "
-                f"{rec.get('task')}, {rec.get('seconds')} s, seed {rec.get('seed')}")
+                f"{rec.get('task')}, {rec.get('seconds')} s, seed {rec.get('seed')}"
+                + (f", {pinned}" if pinned else ""))
     return (f"{rec.get('task')}, {rec.get('orientation')}, {rec.get('seconds')} s, seed {rec.get('seed')}"
             + model_text(rec))
 
@@ -934,13 +954,46 @@ def submit(studio, req, hold, sent=None):
     raise error
 
 
-def upscale_body(jid, resolution=None, strength=None, audio=None, seed=None):
+def upscale_body(jid, resolution=None, strength=None, audio=None, seed=None, pin=None):
     """POST /api/upscale's JSON: the clip and only the choices given (the studio fills in its defaults)."""
     body = {"id": jid}
-    for key, value in (("resolution", resolution), ("strength", strength), ("audio", audio), ("seed", seed)):
+    for key, value in (("resolution", resolution), ("strength", strength), ("audio", audio), ("seed", seed),
+                       ("pin", pin)):
         if value is not None:
             body[key] = value
     return body
+
+
+def pin_support(studio):
+    """Whether the studio takes an upscale's "pin", Keep my frames (GET /api/state "upscale_pin": true): True; False
+    for an older studio (it never keeps them, which is what either value gets there) or one with the Upscale off;
+    None when spark-switchboard answers for a stopped or starting studio, which can't be asked without starting it.
+    /api/state is a passive path behind switchboard, not held (X-Switchboard-Wait: 0). Raises Fail."""
+    status, headers, raw = studio.call("GET", "/api/state", None, {"X-Switchboard-Wait": "0"}, 30)
+    obj = parse_json(raw)
+    if status == 200 and isinstance(obj, dict):
+        return obj.get("upscale_pin") is True
+    error = refusal(status, headers, raw)
+    if isinstance(error, Busy):
+        return None
+    raise error
+
+
+def queue_upscale(studio, body, hold):
+    """submit_upscale with the body's "pin" only for a studio that takes it (pin_support): left out for one that
+    does not; for a stopped one (switchboard starts it while it holds the request) sent, and sent again without it
+    if the studio answers that it does not know the key."""
+    if "pin" not in body:
+        return submit_upscale(studio, body, hold)
+    support, without = pin_support(studio), {k: v for k, v in body.items() if k != "pin"}
+    if support is False:
+        return submit_upscale(studio, without, hold)
+    try:
+        return submit_upscale(studio, body, hold)
+    except Fail as error:
+        if support is None and error.http_status == 400 and 'unknown key "pin"' in error.message:
+            return submit_upscale(studio, without, hold)
+        raise
 
 
 def submit_upscale(studio, body, hold):
@@ -1661,9 +1714,9 @@ def cmd_upscale(studio, args, output):
     why = saver and saver.unwritable()
     if why:
         raise Fail(f"can't save the upscale there: {why}; nothing was queued (--out picks another place)", 2)
-    body = upscale_body(jid, args.resolution, args.strength, args.audio, args.seed)
+    body = upscale_body(jid, args.resolution, args.strength, args.audio, args.seed, args.pin)
     try:
-        answer = submit_upscale(studio, body, args.hold)
+        answer = queue_upscale(studio, body, args.hold)
     except Fail as error:
         error.jid = error.jid or jid
         raise
@@ -1834,7 +1887,11 @@ TOOLS = [
          "now 5 s clips, 16:9 or 9:16 (a 9:16 clip comes out upright: 2K is 1440x2560; NVIDIA trained its refiner on "
          "16:9), of every mode and model: a Keyframes or Reference clip is refined against its prompt without its "
          "pictures (encoded first, ~15 s), a LightX2V Turbo clip at 576p is stretched to 768p first and one with a "
-         "last keyframe is cut to its first 121 frames. It runs after the clips queued, closes the studio's models "
+         "last keyframe keeps all its 124 frames (at 4K its first 121). pin (Keep my frames, experimental): auto, the "
+         "default, holds a Keyframes clip's own keyframes in the refine where the clip already shows them (a LightX2V "
+         "Turbo clip's first and last frames, a Sol-H3 clip's first frame), at 1080p and 2K with balanced, ~16 s more "
+         "per end at 1080p, 83 s for both at 2K (one end at 2K not run yet: ~60 s, est.); off never does; the "
+         "result says which ends were kept. It runs after the clips queued, closes the studio's models "
          "while it runs (the next clip, or the studio's warm-up, loads them again) and takes long: on a DGX Spark "
          "about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps (4K has run once, with a 16:9 clip; not yet "
          "with a 9:16 one), reading the clip (~2 min) and the load (~22 s; ~7.5 min on a studio with "
@@ -1850,6 +1907,8 @@ TOOLS = [
          "strength": {"type": "string", "enum": list(UPSCALE_STRENGTHS), "description": "Default: the studio's"},
          "audio": {"type": "string", "enum": list(UPSCALE_AUDIO), "description": "Default: the studio's"},
          "seed": {"type": "integer", "minimum": 0, "description": "The refine's seed; default the clip's"},
+         "pin": {"type": "string", "enum": list(UPSCALE_PIN),
+                 "description": "Keep my frames: auto (the default) or off; sent only to a studio that takes it"},
          "wait_s": WAIT_S, "out": OUT, "poster": POSTER}}},
     {"name": "models", "title": "The studio's models",
      "description": ("The models this studio makes clips with (generate's model): for each, what it makes now (tasks, "
@@ -2187,8 +2246,9 @@ class McpServer:
             if saved_poster:
                 data["poster_path"] = str(saved_poster)
         if is_upscale(rec):
+            pinned = pin_text(rec)
             text = (f"{prefix}Upscale {jid} is done: saved {path} ({megabytes(n)}, {rec.get('resolution')} of clip "
-                    f"{rec.get('parent')}, {rec.get('strength')}).")
+                    f"{rec.get('parent')}, {rec.get('strength')}{', ' + pinned if pinned else ''}).")
         else:
             text = (f"{prefix}Clip {jid} is done: saved {path} ({megabytes(n)}, {rec.get('seconds')} s "
                     f"{rec.get('task')} {rec.get('orientation')}, seed {rec.get('seed')}{model_text(rec)}).")
@@ -2459,9 +2519,10 @@ class McpServer:
         budget = self.budget(args.get("wait_s"))
         saver = self.saver(args.get("out"), args.get("poster", True))
         call.set_phase("queueing the upscale (held while the studio starts)")
-        body = upscale_body(jid, args.get("resolution"), args.get("strength"), args.get("audio"), args.get("seed"))
+        body = upscale_body(jid, args.get("resolution"), args.get("strength"), args.get("audio"), args.get("seed"),
+                            args.get("pin"))
         try:
-            answer = submit_upscale(self.studio, body, max(0.0, budget - 15))
+            answer = queue_upscale(self.studio, body, max(0.0, budget - 15))
         except Fail as error:
             error.message = error.message.replace("try again in about", "call upscale again in about").replace(
                 "check with: lf-cli status", "call status without an id to see it")
@@ -2567,6 +2628,9 @@ def parser():
                    help="what the picture is refined against (default: the studio's); the result has the clip's "
                         "sound either way")
     u.add_argument("--seed", type=int, metavar="N", help="the refine's seed (default: the clip's)")
+    u.add_argument("--pin", choices=UPSCALE_PIN,
+                   help="keep my frames (experimental): auto (the default) holds the clip's keyframes where it already "
+                        "shows them (1080p and 2K, balanced); off: never")
     u.add_argument("--wait", action="store_true", help="wait for the upscale and save the MP4 (into the current "
                                                        "directory unless --out)")
     u.add_argument("--out", metavar="PATH", help="the MP4 file, or a directory for it (implies --wait)")

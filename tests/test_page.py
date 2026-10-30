@@ -27,8 +27,12 @@ except ImportError:
     sync_playwright = None
 
 # the Upscale popover's note on a clip whose route has not run on the GPU through the studio yet (the page's UP_UNRUN:
-# not on Sol-H3's clips, LightX2V Turbo's 576p Text clips or its 768p clips with a last keyframe, its UP_RAN)
+# not on Sol-H3's clips, LightX2V Turbo's 576p Text clips, its Keyframes clips with their own text (768p as they are,
+# 576p stretched; one with a last keyframe whole at 1080p and 2K) or its 768p clips with a last keyframe cut to 121
+# frames, its UP_RAN), and the same for Keep my frames (UP_PIN_UNRUN: its routes' "ran")
 UP_UNRUN = "This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's"
+UP_PIN_UNRUN = "Keeping your frames has not been run on the GPU through the studio yet: its times are estimates"
+SOL_LAST = "Last frame not kept: Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it"
 
 
 @unittest.skipUnless(sync_playwright and shutil.which("ffmpeg"), "needs playwright (webkit) and ffmpeg")
@@ -1583,6 +1587,11 @@ class UpscalePage(UpscaleCards, PageTest):
         # it opens (one evaluate: no poll in between)
         self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
             upEta({resolution: r, steps: 2, load})))"""), [615, 1115, 1165, 1665, 3995, 4495])
+        # Keep my frames: +16 / +32 s at 1080p and +60 / +83 s at 2K for one end and both (measured, but one end at 2K:
+        # an estimate), nothing for an upscale that sends none
+        self.assertEqual(self.page.evaluate("""[['1080p', ['first']], ['1080p', ['first', 'last']], ['2k', ['last']],
+            ['2k', ['first', 'last']], ['2k', []], ['4k', []]].map(([resolution, ends]) =>
+            upEta({resolution, steps: 2, pin: {asked: 'auto', ends}}))"""), [631, 647, 1225, 1248, 1165, 3995])
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
         times = self.page.evaluate("""id => {
@@ -1763,7 +1772,9 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
                           self.page.get_attribute(f"{self.card(long)} .act.up", "title")), ("true", UPSCALE_LENGTH))
         self.open_popover(kf)                        # routes that have run through the studio: no UP_UNRUN
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt without its keyframe line, encoded first "
-                                                           "(~15 s)")
+                                                           f"(~15 s). {UP_PIN_UNRUN}")     # its first frame: kept
+        self.assertEqual((self.page.inner_text("#uppinlabel"), self.page.is_checked("#uppin")),
+                         ("Keep my first frame", True))
         self.page.keyboard.press("Escape")
         self.open_popover(ref)
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt with the references taken out, encoded "
@@ -1783,35 +1794,57 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.page.wait_for_selector(f'{card}[data-status="cancelled"]', timeout=20000)
 
     def test_eta_and_notes(self):
-        """+15 s for an encode in the expected time; the notes for each kind of clip, LightX2V Turbo's too, with
-        UP_UNRUN only on the routes that have not run on the GPU through the studio."""
+        """+15 s for an encode in the expected time; the notes for each kind of clip at a size, LightX2V Turbo's too
+        (one with a last keyframe whole at 1080p and 2K, cut to 121 frames at 4K), with UP_UNRUN only on the routes
+        that have not run on the GPU through the studio."""
         self.assertEqual(self.page.evaluate("""[{resolution: '1080p', steps: 2, text: {source: 'encode'}},
             {resolution: '1080p', steps: 2, text: {source: 'generation'}},
             {resolution: '1080p', steps: 2, text: {source: 'clip'}}].map(upEta)"""), [630, 615, 615])
+        whole = "frames: {'1080p': 124, '2k': 124, '4k': 121}"
         notes = self.page.evaluate(f"""[
-            [{{task: 't2va'}}, {{text: 'clip', video: 'clip'}}], [{{task: 't2va'}}, undefined],
-            [{{task: 'fl2va'}}, {{text: 'encode'}}], [{{task: 'ref2va', model: 'sol-h3'}}, {{text: 'encode'}}],
-            [{{task: 't2va', model: '{TURBO}'}}, {{video: 'stretch'}}],
-            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'trim'}}],
-            [{{task: 't2va', model: '{TURBO}'}}, {{}}],
-            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation'}}],
-            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch'}}],
-            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch+trim'}}],
-            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'encode', video: 'trim'}}],
-            [{{task: 't2va'}}, {{video: 'stretch'}}]].map(([j, u]) => upNotes(j, u))""")
+            [{{task: 't2va'}}, {{text: 'clip', video: 'clip'}}, '2k'], [{{task: 't2va'}}, undefined, '4k'],
+            [{{task: 'fl2va'}}, {{text: 'encode'}}, '2k'],
+            [{{task: 'ref2va', model: 'sol-h3'}}, {{text: 'encode'}}, '2k'],
+            [{{task: 't2va', model: '{TURBO}'}}, {{video: 'stretch'}}, '1080p'],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', {whole}}}, '4k'],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', {whole}}}, '1080p'],
+            [{{task: 't2va', model: '{TURBO}'}}, {{}}, '2k'],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation'}}, '2k'],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch'}}, '2k'],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch', {whole}}}, '4k'],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'generation', video: 'stretch', {whole}}}, '2k'],
+            [{{task: 'fl2va', model: '{TURBO}'}}, {{text: 'encode', {whole}}}, '4k'],
+            [{{task: 't2va'}}, {{video: 'stretch'}}, '2k']].map(([j, u, res]) => upNotes(j, u, res))""")
         kf, stretch, trim = ("Uses your prompt without its keyframe line", "From the 576p clip, stretched to 768p first",
-                             "Its first 121 frames: the last 3, up to your last keyframe, are left out")
+                             "At 4K its first 121 frames: the last 3, up to your last keyframe, are left out")
         self.assertEqual(notes, [
             "", "",                                                                  # Sol-H3 Text
             f"{kf}, encoded first (~15 s)", "Uses your prompt with the references taken out, encoded first (~15 s)",
             stretch,                                                                 # the turbo's 576p Text clip
-            f"{kf}. {trim}",                                                         # its 768p clip with a last keyframe
+            f"{kf}. {trim}",                                                         # 768p with a last keyframe at 4K
+            kf,                                                                      # and whole, at 1080p
             UP_UNRUN,                                                                # its 768p Text clip, as it is
-            f"{kf}. {UP_UNRUN}",                                                     # 768p, a first frame
-            f"{kf}. {stretch}. {UP_UNRUN}",                                          # 576p, a first frame
-            f"{kf}. {stretch}. {trim}. {UP_UNRUN}",                                  # 576p with a last keyframe
+            kf,                                                                      # 768p, a first frame
+            f"{kf}. {stretch}",                                                      # 576p, a first frame
+            f"{kf}. {stretch}. {trim}. {UP_UNRUN}",                                  # 576p with a last keyframe, 4K
+            f"{kf}. {stretch}",                                                      # and whole, at 2K
             f"{kf}, encoded first (~15 s). {trim}. {UP_UNRUN}",                      # one without its qwen-text/
             f"{stretch}. {UP_UNRUN}"])                                               # a route no model has
+        # the card's line on the frames kept (the record's pin.result)
+        kept = {"used": True, "agreement_db": 33.4, "why": None}
+        texts = self.page.evaluate("""rs => rs.map(r => upPinText({pin: r}))""", [
+            {"asked": "auto", "ends": ["first"], "result": {"first": kept}},
+            {"asked": "auto", "ends": ["first", "last"], "result": {"first": kept, "last": kept}},
+            {"asked": "auto", "ends": ["first", "last"], "result": {"first": kept, "last": {
+                "used": False, "agreement_db": 25.43, "why": "the clip's frame 123 is 25.4 dB from your picture (28 "
+                                                            "needed)"}}},
+            {"asked": "auto", "ends": ["last"], "result": {"last": {
+                "used": False, "agreement_db": None, "why": "your picture changed since the clip was made"}}},
+            {"asked": "auto", "ends": [], "why": {"first": "not at 4K yet"}},
+            {"asked": "off", "ends": [], "why": {}}, None])
+        self.assertEqual(texts, ["first frame kept", "first and last frames kept",
+                                 "first frame kept · last frame not kept (25.4 dB from your picture)",
+                                 "last frame not kept: your picture changed since the clip was made", "", "", ""])
 
 
 class UpscalePageOff(PageTest):
@@ -2252,8 +2285,20 @@ class ModelCards(ModelPage):
 
 class ModelUpscale(ModelPage):
     """The Upscale of a LightX2V Turbo Keyframes clip at 576p with a last keyframe: the popover says what is done to it
-    (its text made with the clip, stretched to 768p, cut to its first 121 frames), and the upscale's card names the
-    model and size of its clip."""
+    at each size (its text made with the clip, stretched to 768p; at 4K cut to its first 121 frames) and has Keep my
+    first and last frames, checked, off with the reason at 4K and at another strength than Balanced, "only partly" at
+    2K; the request says pin auto or off; the upscale's card names the model and size of its clip and the frames kept.
+    One with a last keyframe alone has Keep my last frame, and only at a size where its route has not run on the GPU
+    through the studio (pin_routes "ran": 2K) the note that it has not. A Sol-H3 clip with both keyframes keeps its
+    first frame only, and the popover says why not its last."""
+
+    def notes(self):
+        return self.page.inner_text("#upinput")
+
+    def pin(self):
+        """The box: [its label, its note, checked, disabled]."""
+        return [self.page.inner_text("#uppinlabel"), self.page.inner_text("#uppinnote"),
+                self.page.is_checked("#uppin"), self.page.is_disabled("#uppin")]
 
     def test_a_576p_clip_with_a_last_keyframe(self):
         prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second "
@@ -2265,19 +2310,98 @@ class ModelUpscale(ModelPage):
         self.page.wait_for_timeout(2200)                                     # a poll with upscalable
         self.page.click(f"{self.card(jid)} .act.up")
         self.page.wait_for_selector("#uppop", state="visible")
-        self.assertEqual(self.page.inner_text("#upinput"),
-                         "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first. Its "
-                         f"first 121 frames: the last 3, up to your last keyframe, are left out. {UP_UNRUN}")
+        common = "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first"
+        self.assertEqual(self.notes(), common)          # 2K: every frame; its route has run (UP_RAN), both ends at 2K
+        kept = "Kept where the clip already shows your picture"
+        self.assertEqual(self.pin(), ["Keep my first and last frames", f"{kept} · at 2K only partly", True, False])
+        self.page.click('#uppop label[for="up-4k"]')
+        self.assertEqual(self.notes(), f"{common}. At 4K its first 121 frames: the last 3, up to your last keyframe, "
+                                       f"are left out. {UP_UNRUN}")
+        self.assertEqual(self.pin(), ["Keep my first and last frames", "Not at 4K yet", True, True])
+        self.assertEqual(self.page.get_attribute("#uppinrow", "title"), "Not at 4K yet")
         self.page.click('#uppop label[for="up-1080p"]')
-        self.page.click("#upgo")
+        self.page.click('#uppop input[name="up_strength"][value="faithful"]')
+        self.assertEqual(self.pin()[1:], ["With Balanced only, for now", True, True])
+        with self.page.expect_request("**/api/upscale") as request:          # off there: no pin sent
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data),
+                         {"id": jid, "resolution": "1080p", "strength": "faithful"})
         self.page.wait_for_selector("#uppop", state="hidden")
-        job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
+        self.page.click(f"{self.card(jid)} .act.up")
+        self.page.wait_for_selector("#uppop", state="visible")
+        self.page.click('#uppop label[for="up-1080p"]')
+        self.assertEqual(self.pin(), ["Keep my first and last frames", kept, True, False])     # checked again
+        self.assertEqual(self.notes(), common)
+        self.page.click("#uppinrow")                                           # unticked: off
+        with self.page.expect_request("**/api/upscale") as request:
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data),
+                         {"id": jid, "resolution": "1080p", "strength": "balanced", "pin": "off"})
+        self.page.wait_for_selector("#uppop", state="hidden")
+        self.page.click(f"{self.card(jid)} .act.up")
+        self.page.wait_for_selector("#uppop", state="visible")
+        self.page.click('#uppop label[for="up-1080p"]')
+        with self.page.expect_request("**/api/upscale") as request:
+            self.page.click("#upgo")
+        self.assertEqual(json.loads(request.value.post_data),
+                         {"id": jid, "resolution": "1080p", "strength": "balanced", "pin": "auto"})
+        self.page.wait_for_selector("#uppop", state="hidden")
+        ups = [j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale"]
+        self.assertEqual(len(ups), 3)
+        job = ups[0]                                                         # the newest: pin auto
         card = self.card(job["id"])
-        self.page.wait_for_selector(f"{card} video", timeout=30000)
+        self.page.wait_for_selector(f"{card} video", timeout=60000)
         self.assertEqual(self.tags(job["id"]), ["1080p upscale", "Keyframes", "5 s", "of LightX2V Turbo 576p"])
         self.assertEqual(self.page.inner_text(f"{card} .p"), "A dancer turns slowly.")
-        self.assertIn("· its prompt without its keyframe line", self.page.inner_text(f"{card} .when"))
-        self.assertEqual(self.studio.job(job["id"])["video"], "stretch+trim")
+        self.page.wait_for_function("c => document.querySelector(c + ' .when').textContent.includes('frames kept')",
+                                    arg=card)
+        self.assertIn("· its prompt without its keyframe line · first and last frames kept",
+                      self.page.inner_text(f"{card} .when"))
+        rec = self.studio.job(job["id"])
+        self.assertEqual((rec["video"], rec["frames"], rec["pin"]["ends"]), ("stretch", 124, ["first", "last"]))
+        self.assertEqual([self.studio.job(j["id"])["pin"]["ends"] for j in ups[1:]], [[], []])
+        for other in ups[1:]:                                                # off, or none sent: nothing said
+            self.page.wait_for_selector(f"{self.card(other['id'])} video", timeout=60000)
+            self.assertNotIn("kept", self.page.inner_text(f"{self.card(other['id'])} .when"))
+
+    def test_a_last_keyframe_alone(self):
+        prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 5.00-second "
+                  "mark.\nA dancer turns slowly.")
+        jid = self.studio.turbo(task="fl2va", prompt=prompt, seed=83, files={"last_frame": [("b.png", png())]})[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        self.page.wait_for_selector(f"{self.card(jid)} video")
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        self.page.click(f"{self.card(jid)} .act.up")
+        self.page.wait_for_selector("#uppop", state="visible")
+        common = "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first"
+        kept = "Kept where the clip already shows your picture"
+        self.assertEqual(self.pin(), ["Keep my last frame", f"{kept} · at 2K only partly", True, False])
+        self.assertEqual(self.notes(), f"{common}. {UP_PIN_UNRUN}")                   # its route has not run at 2K
+        self.page.click('#uppop label[for="up-1080p"]')
+        self.assertEqual(self.pin(), ["Keep my last frame", kept, True, False])
+        self.assertEqual(self.notes(), common)                                        # and has at 1080p
+        # the same clip with its route's "ran" (the server's PIN_ROUTES) the other way round: run at 2K, not at 1080p
+        seen = self.page.evaluate("""() => {const j = known.get(up.id), u = JSON.parse(JSON.stringify(j.upscalable));
+            u.pin_routes['2k'].ran = true; u.pin_routes['1080p'].ran = false;
+            return ['2k', '1080p'].map(res => {document.getElementById('up-' + res).checked = true;
+              upRefresh({...j, upscalable: u}); return document.getElementById('upinput').textContent;});}""")
+        self.assertEqual(seen, [common, f"{common}. {UP_PIN_UNRUN}"])
+        self.page.keyboard.press("Escape")
+
+    def test_a_sol_h3_clip_with_both_keyframes(self):
+        both = {"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}
+        jid = self.studio.generate(task="fl2va", prompt=KEYFRAME_PROMPT, seed=82, files=both)[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        self.page.wait_for_selector(f"{self.card(jid)} video")
+        self.page.wait_for_timeout(2200)
+        self.page.click(f"{self.card(jid)} .act.up")
+        self.page.wait_for_selector("#uppop", state="visible")
+        self.assertEqual(self.notes(), "Uses your prompt without its keyframe line, encoded first (~15 s). "
+                                       f"{SOL_LAST}. {UP_PIN_UNRUN}")
+        self.assertEqual(self.pin()[0], "Keep my first frame")
+        self.page.click('#uppop label[for="up-4k"]')                          # 4K: off, the reasons stay
+        self.assertEqual(self.notes(), f"Uses your prompt without its keyframe line, encoded first (~15 s). {SOL_LAST}")
+        self.page.keyboard.press("Escape")
 
 
 class ModelRunning(ModelPage):

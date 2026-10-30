@@ -584,6 +584,8 @@ class UpscaleRecord(ApiTest):
         self.assertEqual((body["job"]["kind"], body["job"]["parent"], body["job"]["resolution"]),
                          ("upscale", jid, "1080p"))
         self.assertNotIn("source", body["job"])                               # always from the clip's MP4
+        self.assertEqual(body["job"]["frames"], 121)                           # the frames it keeps
+        self.assertNotIn("pin", body["job"])                                  # a Text clip has no keyframes
         rec = self.wait_state(uid, lambda r: r["phase"] == "upscaling")
         self.assertEqual((rec["state"], rec["status"]), ("running", "upscaling"))
         self.assertIn(rec["upscale_phase"], ("starting", "encoding", "loading", "refine 1/2", "refine 2/2",

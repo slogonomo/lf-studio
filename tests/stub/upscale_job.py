@@ -6,15 +6,19 @@
 The server runs it as it runs the real job (LFSTUDIO_UPSCALE_SCRIPT; tests/stub/studio.py sets that): in its own
 process group, with its output in worker.log. It reads job.json, prints the real job's progress lines
 ("[lf-studio] phase encoding", "loading", "refine 1/N" ... "refine N/N", "decoding", "saving"; N = the job's steps)
-spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (a small ffmpeg testsrc2 pattern,
-121 frames at 24 fps, no audio, as the real job's MP4 has none; upright when the clip's MP4, <case>/stage2/
-refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json. SIGTERM (Cancel) ends it at once,
-like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status 143. With --parent, as the
-real job, it is killed when that process (the server) ends. Before anything else it checks job.json's "case" as the
-real job does (the real job's own case_inputs, from upscale/regen2k_job.py: one stage2/refined_*.mp4, the conditioning,
-the audio for audio clip), and that its MP4 has the 121 frames at 24 fps the real job takes (check_final; the stub
-clips' size is their own) and that a conditioning.json beside the conditioning is t2va's (check_text); else, as the
-real job, a "refused" error line and exit status 2.
+spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (a small ffmpeg testsrc2 pattern with
+the clip's frames, 121 or 124, at 24 fps, no audio, as the real job's MP4 has none; upright when the clip's MP4,
+<case>/stage2/refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json, with the real job's
+"frames" (frame_case) and, for a job.json with a "pin", its "pin": per keyframe its picture checked by its sha256 as
+the real job checks it (PIN_WHY: gone, changed; a last end of a clip that keeps fewer frames than made: past_end),
+else held at 33.0 dB (STUB_UPSCALE_PIN_DB sets others: "last=25.4", below the 28 needed, is not held: far). SIGTERM
+(Cancel) ends it at once, like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status
+143. With --parent, as the real job, it is killed when that process (the server) ends. Before anything else it checks
+job.json's "case" as the real job does (the real job's own case_inputs, from upscale/regen2k_job.py: one
+stage2/refined_*.mp4, the conditioning, the audio for audio clip), that its MP4 has the frames at 24 fps the real job
+takes (check_final's FRAME_CASES: 121 or 124; the stub clips' size is their own), that a conditioning.json beside the
+conditioning is t2va's (check_text) and its "pin" (the real job's parse_pin); else, as the real job, a "refused" error
+line and exit status 2.
   STUB_UPSCALE_S          seconds the job takes (default 2)
   STUB_UPSCALE_FAIL       1: fail after loading, as a job that ran out of memory ("[lf-studio] error ...", exit 1)
   STUB_UPSCALE_LOG        a file each run appends a JSON line to ({"pid", "job", "argv"}), so a test can find a
@@ -22,8 +26,10 @@ real job, a "refused" error line and exit status 2.
   STUB_UPSCALE_TERM       "ignore": SIGTERM does nothing, like the real job's handler while a long GPU call runs
   STUB_UPSCALE_OUTPUT     "none": exit 0 without video_noaudio.mp4; "bad": a video_noaudio.mp4 that is not an MP4
                           (the server's mux fails)
+  STUB_UPSCALE_PIN_DB     each end's agreement in dB, as "first=31.2,last=25.4" (default 33.0)
 Standard library only, so it runs under -I with any Python 3.10+.
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -68,12 +74,15 @@ def real_job():
 
 
 def check_case(job):
-    """The real job's checks of its input folder (the docstring): None, or why it is refused."""
+    """The real job's checks of its input folder and pin (the docstring): (None, the MP4's frames), or (why it is
+    refused, None)."""
     regen = real_job()
     try:
         files = regen.case_inputs({"case": Path(job["case"]), "audio": job["audio"]})
+        if "pin" in job:
+            regen.parse_pin(job["pin"])
     except regen.JobError as error:
-        return str(error)
+        return str(error), None
     probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                             "stream=nb_frames,r_frame_rate", "-of", "json", str(files["final"])],
                            capture_output=True, text=True, timeout=60)
@@ -82,12 +91,44 @@ def check_case(job):
         found = (stream.get("nb_frames"), stream.get("r_frame_rate"))
     except (ValueError, KeyError, IndexError):
         found = None
-    if found != (str(regen.FINAL["frames"]), regen.FINAL["fps"]):
-        return f"{files['final'].name} is {found}: not 121 frames at 24 fps"
+    if found is None or found[0] not in {str(frames) for frames in regen.FRAME_CASES} or found[1] != regen.FPS:
+        return f"{files['final'].name} is {found}: not 121 or 124 frames at 24 fps", None
     receipt = files["conditioning"].with_suffix(".json")
     if receipt.is_file() and json.loads(receipt.read_text()).get("task") not in (None, "t2va"):
-        return f"the conditioning is {json.loads(receipt.read_text())['task']}'s: it needs a text-only encode"
-    return None
+        return f"the conditioning is {json.loads(receipt.read_text())['task']}'s: it needs a text-only encode", None
+    return None, int(found[0])
+
+
+def check_pin(pin, frames):
+    """The receipt's "pin" (the real job's shape, check_pin's records): each keyframe's picture by its sha256, then
+    the dB of STUB_UPSCALE_PIN_DB (33.0 by default) against the real job's 28."""
+    regen = real_job()
+    pin = regen.parse_pin(pin)
+    dbs = dict(item.split("=") for item in os.environ.get("STUB_UPSCALE_PIN_DB", "").split(",") if "=" in item)
+    record = {"asked": [k["anchor"] for k in pin["keyframes"]]}
+    for keyframe in pin["keyframes"]:
+        anchor = keyframe["anchor"]
+        frame = 0 if anchor == "first" else frames["kept"] - 1
+        result = record[anchor] = {"used": False, "agreement_db": None, "frame": frame, "fit": keyframe["fit"],
+                                   "box": None, "size": None, "why": None}
+        try:
+            data = Path(keyframe["image"]).read_bytes()
+        except OSError:
+            result["why"] = regen.PIN_WHY["gone"]
+            continue
+        if hashlib.sha256(data).hexdigest() != keyframe["sha256"]:
+            result["why"] = regen.PIN_WHY["changed"]
+            continue
+        result["agreement_db"] = db = float(dbs.get(anchor, 33.0))
+        if anchor == "last" and frames["kept"] != frames["made"]:
+            result["why"] = regen.PIN_WHY["past_end"].format(n=frames["made"] - frames["kept"])
+        elif db < pin["check"]["min_db"]:
+            result["why"] = regen.PIN_WHY["far"].format(frame=frame, db=db, min=pin["check"]["min_db"])
+        else:
+            result["used"] = True
+    record.update(min_db=pin["check"]["min_db"], noise_aug=pin["noise_aug"], encode_seed=pin["encode_seed"],
+                  noise_seed=pin["noise_seed"])
+    return record
 
 
 def cancel(signum, frame):
@@ -127,12 +168,15 @@ def main(argv):
             log.write(json.dumps({"pid": os.getpid(), "job": str(job_path), "argv": argv[1:]}) + "\n")
     receipt = {"state": "running", "pid": os.getpid(), "job": job, "orientation": orientation(job["case"]),
                "times_s": {}, "stub": True}
-    refused = check_case(job)
+    refused, kept = check_case(job)
     if refused:
         receipt.update(state="refused", error=refused, exit_status=2)
         write_json(out / "receipt.json", receipt)
         say("error", refused)
         return 2
+    receipt["frames"] = frames = real_job().frame_case(kept)
+    if "pin" in job:
+        receipt["pin"] = check_pin(job["pin"], frames)
     started, status = time.time(), 0
     phases = ["encoding", "loading"] + [f"refine {i}/{job['steps']}" for i in range(1, job["steps"] + 1)] + \
         ["decoding", "saving"]
@@ -153,11 +197,11 @@ def main(argv):
             partial.write_bytes(b"not an mp4\n" * 100)
         elif output != "none":
             subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
-                            f"testsrc2=s={width}x{height}:r=24", "-frames:v", "121", "-an", "-c:v", "libx264",
+                            f"testsrc2=s={width}x{height}:r=24", "-frames:v", str(kept), "-an", "-c:v", "libx264",
                             "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(partial)], check=True, timeout=120)
         if output != "none":
             os.replace(partial, out / "video_noaudio.mp4")
-        receipt.update(state="done", output={"file": "video_noaudio.mp4", "size": [width, height], "frames": 121})
+        receipt.update(state="done", output={"file": "video_noaudio.mp4", "size": [width, height], "frames": kept})
     except Cancelled as error:
         receipt.update(state="cancelled", error=str(error))
         status = 143

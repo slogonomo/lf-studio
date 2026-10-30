@@ -238,14 +238,17 @@ class Protocol(McpTest):
                          {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went after 0.5.0
         upscale = r["tools"][5]["description"]
         for words in ("Experimental", "5 s clips, 16:9 or 9:16", "of every mode and model",
-                      "Keyframes or Reference clip", "stretched to 768p", "cut to its first 121 frames",
+                      "Keyframes or Reference clip", "stretched to 768p", "keeps all its 124 frames (at 4K its "
+                      "first 121)", "pin (Keep my frames, experimental)",
+                      "~16 s more per end at 1080p, 83 s for both at 2K (one end at 2K not run yet: ~60 s, est.)",
                       "2K is 1440x2560", "redraws faces",
                       "closes the studio's models", "4K has run once, with a 16:9 clip; not yet with a 9:16 one"):
             self.assertIn(words, upscale)
         self.assertNotIn("untested", upscale)
         self.assertNotIn("draft", upscale)                                       # from the clip's MP4 only
         self.assertEqual(set(r["tools"][5]["inputSchema"]["properties"]),
-                         {"id", "resolution", "strength", "audio", "seed", "wait_s", "out", "poster"})
+                         {"id", "resolution", "strength", "audio", "seed", "pin", "wait_s", "out", "poster"})
+        self.assertEqual(r["tools"][5]["inputSchema"]["properties"]["pin"]["enum"], ["auto", "off"])
         generate = r["tools"][0]["description"]
         self.assertIn("stretched or cropped", generate)                          # DECISIONS 12
         self.assertIn("change the seed", generate)                               # DECISIONS 14
@@ -543,6 +546,30 @@ class Upscale(McpTest):
         self.assertFalse(r["isError"], text(r))
         self.assertEqual(Path(r["structuredContent"]["path"]).name,
                          f"lf-studio_t2va_5s_seed9_{jid[:6]}_2k_{rec['id'][:6]}.mp4")
+
+    def test_keep_my_frames(self):
+        """pin: off sends no end; auto (the default) the clip's first frame (Stage 2 held it); the text says what
+        became of it; another value is refused before anything is sent."""
+        line = "For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
+        jid = self.studio.generate(task="fl2va", prompt=line + "\nA red kite rises.", seed=4,
+                                   files={"first_frame": [("f.png", png())]})[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        m = self.mcp()
+        r = m.call("upscale", {"id": jid, "resolution": "1080p", "pin": "off", "wait_s": 0})
+        self.assertFalse(r["isError"], text(r))
+        self.assertEqual(r["structuredContent"]["pin"], {"asked": "off", "ends": [], "why": {}})
+        r = m.call("upscale", {"id": jid, "resolution": "1080p", "wait_s": 60, "poster": False})
+        self.assertFalse(r["isError"], text(r))
+        rec = r["structuredContent"]
+        self.assertEqual((rec["state"], rec["pin"]["ends"], rec["pin"]["result"]["first"]["used"]),
+                         ("done", ["first"], True))
+        self.assertIn(f"1080p of clip {jid}, balanced, first frame kept).", text(r))
+        r = m.call("status", {"id": rec["id"]})
+        self.assertIn("1080p upscale of", text(r))
+        self.assertIn("first frame kept", text(r))
+        r = m.call("upscale", {"id": jid, "pin": "on"})
+        self.assertTrue(r["isError"])
+        self.assertIn("pin must be one of auto, off", text(r))
 
     def test_errors(self):
         ten = self.clip(seconds=10)
@@ -852,6 +879,48 @@ class FakeStudio(McpTest):
         self.assertIn(f"Already submitted as {self.JID}", text(r))
         self.assertEqual([p for p in fake.paths() if p == "/api/generate"], ["/api/generate"])
         self.assertNotIn(json.dumps("g1"), m.responses)
+
+    def test_pin_for_an_older_studio(self):
+        """An older studio (no "upscale_pin" in /api/state) never keeps the frames: the upscale goes without pin."""
+        posts = []
+
+        def answer(method, path, headers, body):
+            if path == "/api/state":
+                return 200, JSON, {"now": time.time(), "jobs": [], "upscale": True}
+            if path == "/api/upscale":
+                posts.append(json.loads(body))
+                return 200, JSON, {"id": "f" * 32, "job": {"id": "f" * 32, "kind": "upscale", "state": "queued"}}
+            return 404, JSON, {"error": "not found"}
+        r = self.mcp(url=self.fake(answer).url).call("upscale", {"id": self.JID, "pin": "auto", "wait_s": 0})
+        self.assertFalse(r["isError"], text(r))
+        self.assertEqual(posts, [{"id": self.JID}])
+
+    def test_pin_for_a_stopped_studio(self):
+        """switchboard has the studio stopped, so /api/state can't say whether it takes pin without starting it: the
+        upscale goes with pin, and again without it when the studio answers that it does not know the key (an older
+        studio); another refusal is not sent again."""
+        unknown = 'unknown key "pin" (known: id, resolution, strength, audio, seed)'
+        for name, answers, bodies in (("takes it", [None], [{"pin": "auto"}]),
+                                      ("older", [unknown, None], [{"pin": "auto"}, {}]),
+                                      ("refused", ["no such clip"], [{"pin": "auto"}])):
+            with self.subTest(name):
+                posts = []
+
+                def answer(method, path, headers, body):
+                    if path == "/api/state":
+                        return switchboard_error("stopped", "LF Studio is not running")
+                    if path == "/api/upscale":
+                        posts.append(json.loads(body))
+                        if answers[len(posts) - 1]:
+                            return 400, JSON, {"error": answers[len(posts) - 1]}
+                        return 200, JSON, {"id": "f" * 32, "job": {"id": "f" * 32, "kind": "upscale",
+                                                                   "state": "queued"}}
+                    return 404, JSON, {"error": "not found"}
+                r = self.mcp(url=self.fake(answer).url).call("upscale", {"id": self.JID, "pin": "auto", "wait_s": 0})
+                self.assertEqual(r["isError"], name == "refused", text(r))
+                self.assertEqual(posts, [dict({"id": self.JID}, **b) for b in bodies])
+                if name == "refused":
+                    self.assertIn("no such clip", text(r))
 
     def test_a_model_on_a_stopped_studio(self):
         """switchboard has the studio stopped, so its models can't be read without starting it: the submit goes

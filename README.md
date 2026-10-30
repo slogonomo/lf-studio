@@ -158,17 +158,23 @@ its own, with the clip's own sound. Agents and scripts have it too: `POST /api/u
 tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale)).
 
 - **5 s clips for now, 16:9 or 9:16, of every mode and model**: Sol-H3's Text, Keyframes and Reference clips and
-  LightX2V Turbo's Text and Keyframes clips. NVIDIA's pipeline is fixed at 121 frames, so other lengths are not yet
-  (their cards show the button disabled, with the reason). The job refines against text alone: a Keyframes or Reference
+  LightX2V Turbo's Text and Keyframes clips. NVIDIA's pipeline is fixed at 5 s, so other lengths are not yet (their
+  cards show the button disabled, with the reason). The job refines against text alone: a Keyframes or Reference
   clip's prompt is encoded first without its pictures (its keyframe line, or its references, taken out; ~15 s more). A
-  LightX2V Turbo clip at 576p is stretched to 768p first, and one with a last keyframe (124 frames) gives its first 121,
-  so the frame anchored to your last keyframe is left out ([#85](https://github.com/slogonomo/lf-studio/issues/85)).
+  LightX2V Turbo clip at 576p is stretched to 768p first. One with a last keyframe keeps all its 124 frames at 1080p and
+  2K, so the upscale ends on the frame anchored to your last keyframe and has the clip's whole 5.17 s of sound; at 4K
+  it is cut to its first 121 frames until a 124-frame 4K run
+  ([#85](https://github.com/slogonomo/lf-studio/issues/85)).
   Through the studio on one DGX Spark (2026-10-29, one clip of each kind), a Sol-H3 Keyframes clip (9:16), a Sol-H3
-  Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with first and last keyframes each took 9.2-9.4 min to
-  1080p, the encode included, as a Text clip does (9.6 min); the Keyframes clip took 18.6 min to 2K. LightX2V Turbo's
-  768p Text clips and its other Keyframes clips (576p, or without a last keyframe) have not been upscaled through the
-  studio yet (576p Keyframes clips have been, by hand in research runs): the popover says so for them, and their times
-  are a Text clip's ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). NVIDIA's
+  Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with first and last keyframes (then cut to 121 frames)
+  each took 9.2-9.4 min to 1080p, the encode included, as a Text clip does (9.6 min); the Keyframes clip took 18.6 min
+  to 2K. Later that night LightX2V Turbo Keyframes clips with a last keyframe, kept whole (768p 16:9 and 9:16, 576p
+  stretched), took 9.3 min to 1080p with all 124 frames and the clip's whole sound, and the 768p 16:9 one 18.6 min to
+  2K, and a 576p clip with a first frame (121 frames) took 9.3 min to 1080p. LightX2V Turbo's 768p Text clips have not
+  been upscaled through the studio yet: the popover says so, and their times are a Text clip's. Nor have its 576p clips
+  at 2K (run at 1080p only) or its 768p Keyframes clips with a first frame alone; the popover counts them with those
+  that have (the 576p clips at 1080p, the 768p ones with both keyframes) and gives no note
+  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). NVIDIA's
   code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA file changed). It
   has as many tokens as 16:9 and took the same time at 1080p and 2K; **9:16 has not run at 4K yet**, and NVIDIA trained
   its refiner on 16:9 video.
@@ -182,14 +188,36 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   upscaled to 4K yet. While an upscale runs the studio's models are closed; the next clip loads them again, and with
   `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
+- **Keep my frames** (experimental). NVIDIA's refine redraws a Keyframes clip's first and last frames like any other,
+  away from your pictures. With the popover's box (on by default; the request's `pin` `auto`), the job holds your
+  keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already shows them: each end only if the clip's
+  own frame matches your picture at 28 dB or more (luma PSNR at 384p: 672×384, or 384×672 for 9:16), and only while the
+  picture on disk is the one the clip was made from. An end that does not pass is refined as without the box. With the
+  box off (`pin` `off`) the refine is NVIDIA's as it is.
+  - LightX2V Turbo's Keyframes clips offer their first frame, their last frame or both, as they have them.
+  - Sol-H3's offer their first frame when Stage 2 held it (clips made since 0.5.2 with the default
+    `SOL_H3_STAGE2_KEYFRAME=pin`), and never their last: the clip stops 3 frames before it.
+  - Text and Reference clips have no frame to keep.
+  - Balanced at 1080p and 2K only for now (Faithful brought a first frame only about 1 dB closer in a test). At 2K
+    the popover says "only partly" until that is reviewed (research runs with one end at 2K: frame 0 about 1 dB closer
+    to your picture, the face 3-5 dB, but details the refine made up stay; the studio's run with both ends at 2K: +5.0
+    and +4.7 dB, below).
+  - The popover says why an end is not offered; the upscale's card says which ends were kept, and why not.
+  - It has run through the studio on one DGX Spark (the night of 2026-10-29 to 30) with a LightX2V Turbo clip's first
+    frame, last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same
+    clips upscaled without it, the frame held came 3.2-5.3 dB closer to your picture (luma PSNR; 2.5-5.5 dB on a face;
+    at 2K +5.0 and +4.7 dB, a clip without a face), with no flash there. A dialogue clip gained less, 2.3-2.4 dB at each
+    end (3 dB on the face), as its plain upscale was already close to the picture; its lip sync held. It costs about
+    16 s per end at 1080p (32 s for both) and 83 s for both ends at 2K, and 0.4-0.7 GiB more GPU memory at the peak at
+    1080p, 1.3 GiB at 2K, where the lowest free memory came down to 14.1 GiB with both ends (16.0 GiB without). One end
+    at 2K has not run: the popover says so there, and its time (+60 s) is an estimate.
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the
   clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
   defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
 
-Not yet: lengths other than 5 s, keeping a Keyframes clip's first frame (your picture) in the upscale, and NVIDIA's
-faster Sol-Attn forward. Setup:
+Not yet: lengths other than 5 s, and NVIDIA's faster Sol-Attn forward. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
 

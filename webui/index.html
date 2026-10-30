@@ -238,6 +238,10 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
 .opt:hover{background:var(--panel2)}
 .opt input{margin:3px 0 0;flex:none;accent-color:var(--acc)}
 .opt small{display:block;font-weight:400;color:var(--mut);font-size:12px;line-height:1.4}
+/* Keep my frames: a box under Strength; off (with the reason in place of its note) where its route does not go */
+#uppinrow{margin-top:8px}
+#uppinrow.off{cursor:default;color:var(--faint)}
+#uppinrow.off:hover{background:none}
 .pop .note{font-size:12.5px;color:var(--warn);margin:12px 0 0}
 .pop .errtxt{margin-top:6px}
 .pop .row{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
@@ -364,6 +368,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
     <label class="opt"><input type="radio" name="up_strength" value="balanced"><span>Balanced<small>Start noise 0.7, 2 steps</small></span></label>
     <label class="opt"><input type="radio" name="up_strength" value="full"><span>Full re-generate<small>NVIDIA's setting, one step more: sharpest, but it redraws faces into a different-looking person</small></span></label>
   </div>
+  <label class="opt" id="uppinrow" hidden><input type="checkbox" id="uppin" checked><span><span id="uppinlabel">Keep my first frame</span><small id="uppinnote"></small></span></label>
   <p class="note" id="upportrait" hidden>9:16 comes out upright (2K: 1440×2560). NVIDIA trained its refiner on 16:9 video</p>
   <p class="note" id="upinput" hidden></p>
   <p class="note">Unloads the models while it runs</p>
@@ -427,27 +432,66 @@ const UPSCALE={"1080p":{name:'1080p',base:315,step:150,size:[1920,1080]},"2k":{n
   "4k":{name:'4K',base:625,step:1685,size:[3840,2160]}};
 const upSize=(res,orientation)=>{const s=UPSCALE[res].size;return (orientation==='portrait'?[s[1],s[0]]:s).join('×');};
 // +15 s for an upscale whose text is encoded first (the clip's prompt without its pictures: ~9-18 s with its Qwen
-// worker's start, measured with LightX2V Turbo's prompt encode; 9.1-9.2 s in the studio's upscales)
+// worker's start, measured with LightX2V Turbo's prompt encode; 9.1-9.2 s in the studio's upscales). Keep my frames:
+// UP_PIN_S, the seconds one end and both ends add at 1080p and 2K, measured through the studio against the same clips
+// unpinned (2026-10-29/30: +16-17 s with one end and +30-34 s with both at 1080p, +83 s with both at 2K: each picture's
+// encode, ~3 s at 1080p, and steps ~6 s longer per end at 1080p, ~37 s with both at 2K); one end at 2K has not run,
+// so its 60 s is an estimate (docs/PERFORMANCE.md)
+const UP_PIN_S={"1080p":[16,32],"2k":[60,83]};
+const upPinS=j=>{const n=j.pin&&Array.isArray(j.pin.ends)?j.pin.ends.length:0;return n?(UP_PIN_S[j.resolution]||[0,0])[n-1]||0:0;};
 const upEta=j=>{const u=UPSCALE[j.resolution]||UPSCALE['2k'];
-  return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0);};
-// What the Upscale does with a clip besides its MP4 (/api/state upscalable: "text", where its text alone comes from;
-// "video", what is done to the MP4), for the popover; nothing for a Sol-H3 Text clip, which it takes as it is.
+  return u.base+(j.steps||2)*u.step+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0)+upPinS(j);};
+// What the Upscale does with a clip besides its MP4 at a size (/api/state upscalable: "text", where its text alone
+// comes from; "video", what is done to the MP4 at 1080p and 2K; "frames", the frames kept per size, for a clip that
+// keeps more than 121: one with a last keyframe, whole at 1080p and 2K, cut to its first 121 at 4K), for the popover;
+// nothing for a Sol-H3 Text clip, which it takes as it is.
 // UP_RAN: the routes (model, text, video) that have run on the GPU through the studio, each in a Text clip's time plus
 // its encode (docs/PERFORMANCE.md): Sol-H3's Text, Keyframes and Reference clips, LightX2V Turbo's 576p Text clip
-// (stretched) and its 768p clip with a last keyframe (cut to 121 frames, its own text alone). Any other route has not:
-// UP_UNRUN says so, and its times are a Text clip's
-const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation trim'];
+// (stretched), its Keyframes clips with their own text alone, 768p as they are and 576p stretched (one with a last
+// keyframe whole, 124 frames, at 1080p and 2K), and its 768p clip with a last keyframe cut to 121 frames (run at 1080p
+// before such a clip kept all 124 there, its route at 4K now). Any other route has not: UP_UNRUN says so, and its
+// times are a Text clip's
+const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation clip',
+  'lightx2v-turbo generation stretch','lightx2v-turbo generation trim'];
 const UP_UNRUN="This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's";
-const upNotes=(j,u)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='generation';
+// the video route at a size: cut to 121 frames where the clip keeps more and that size does not (4K)
+const upVideo=(u,res)=>{const v=u.video||'clip',f=u.frames||{},cut=f[res]!=null&&f[res]<Math.max(...Object.values(f));
+  return cut?(v==='clip'?'trim':v+'+trim'):v;};
+const upNotes=(j,u,res)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='generation',video=upVideo(u,res);
   if(own)n.push(j.task==='ref2va'?'Uses your prompt with the references taken out':'Uses your prompt without its keyframe line');
   if(u.text==='encode')n[n.length-1]+=', encoded first (~15 s)';
-  if(/stretch/.test(u.video||''))n.push('From the 576p clip, stretched to 768p first');
-  if(/trim/.test(u.video||''))n.push('Its first 121 frames: the last 3, up to your last keyframe, are left out');
-  if(!UP_RAN.includes([jobModel(j),u.text||'clip',u.video||'clip'].join(' ')))n.push(UP_UNRUN);
+  if(/stretch/.test(video))n.push('From the 576p clip, stretched to 768p first');
+  if(/trim/.test(video))n.push(`At ${(UPSCALE[res]||{name:res}).name} its first 121 frames: the last 3, up to your last keyframe, are left out`);
+  if(!UP_RAN.includes([jobModel(j),u.text||'clip',video].join(' ')))n.push(UP_UNRUN);
   return n.join('. ');};
+// Keep my frames (/api/state "upscale_pin"; upscalable "pin", the ends the clip can hold, "pin_routes", where, and
+// "pin_why", why not for its other ends): a box, checked, named after the ends; off with the reason at a size or
+// strength its route does not have; at a size where it holds the picture only partly its note says so. Where it has
+// not run on the GPU through the studio, UP_PIN_UNRUN: its times (UP_PIN_S) are estimates
+const UP_PIN_UNRUN='Keeping your frames has not been run on the GPU through the studio yet: its times are estimates';
+const pinLabel=ends=>ends.length>1?'Keep my first and last frames':`Keep my ${ends[0]} frame`;
+const END_NAME={first:'First',last:'Last'};
+function upRefresh(j){const u=j.upscalable||{},res=upVal('up_res'),str=upVal('up_strength'),row=$('uppinrow'),box=$('uppin');
+  const ends=state.upscale_pin&&Array.isArray(u.pin)?u.pin:[],notes=[upNotes(j,u,res)];
+  for(const [end,why] of Object.entries(u.pin_why||{}))notes.push(`${END_NAME[end]||end} frame not kept: ${why}`);
+  setHidden(row,!ends.length);
+  if(ends.length){const r=(u.pin_routes||{})[res],name=(UPSCALE[res]||{name:res}).name;
+    const off=!r?`Not at ${name} yet`:!r.strengths.includes(str)?`With ${r.strengths.map(s=>STRENGTH[s]||s).join(' or ')} only, for now`:'';
+    setText($('uppinlabel'),pinLabel(ends));setDisabled(box,!!off);row.classList.toggle('off',!!off);setAttr(row,'title',off||null);
+    setText($('uppinnote'),off||'Kept where the clip already shows your picture'+(r.partly?` · at ${name} only partly`:''));
+    if(!off&&!r.ran)notes.push(UP_PIN_UNRUN);}
+  const text=notes.filter(Boolean).join('. ');setText($('upinput'),text);setHidden($('upinput'),!text);}
 // an upscale's card: the text it used, when not the clip's own prompt
 const upText=j=>j.text&&j.text.prompt?(j.task==='ref2va'?'prompt without its references':'prompt without its keyframe line'):'';
 const STRENGTH={faithful:'Faithful',balanced:'Balanced',full:'Full re-generate'};
+// and what became of the frames it was to keep (its record's pin.result, the job's check per end): "first frame kept",
+// "first and last frames kept", "last frame not kept (25.4 dB from your picture)" or with the job's reason
+const upPinText=j=>{const r=j.pin&&j.pin.result;if(!r)return '';const ends=Object.keys(r).filter(e=>r[e]),
+    kept=ends.filter(e=>r[e].used),n=[];
+  if(kept.length)n.push(kept.length>1?'first and last frames kept':`${kept[0]} frame kept`);
+  for(const e of ends.filter(e=>!r[e].used))n.push(`${e} frame not kept`+(r[e].agreement_db!=null&&/ dB from /.test(r[e].why||'')
+    ?` (${(+r[e].agreement_db).toFixed(1)} dB from your picture)`:r[e].why?`: ${r[e].why}`:''));
+  return n.join(' · ');};
 const UP_PHASE={starting:'starting',encoding:'reading the clip',loading:'loading its models',decoding:'decoding',
   saving:'saving','adding the sound':"adding the clip's sound",prompt:'encoding the prompt'};
 // durations: whole seconds first (none, negative or not a number: 0), then minutes and seconds, so 119.6 s reads
@@ -938,7 +982,7 @@ function update(d,j,queue,s,t){
   if(stEl.className!=='st '+cls)stEl.className='st '+cls;
   setText(stEl,j.status==='done'?'Done':j.status==='failed'?'Failed':j.status==='cancelled'?'Cancelled':cancelling?'Cancelling'
     :j.status==='queued'?'Queued':isUp(j)?'Upscaling':runsJob(j)?JOB_ST[j.status]||'Generating':loading?'Loading models':'Generating');
-  const when=stamp(j.created)+(isUp(j)?` · ${STRENGTH[j.strength]||j.strength}${upText(j)?` · its ${upText(j)}`:''}`:'');
+  const when=stamp(j.created)+(isUp(j)?` · ${STRENGTH[j.strength]||j.strength}${upText(j)?` · its ${upText(j)}`:''}${upPinText(j)?` · ${upPinText(j)}`:''}`:'');
   setText(d.querySelector('.when'),j.e2e_s?`${when} · ${j.includes_model_load?`${fmtS(j.e2e_s)} incl. model load`:j.cold_start_s?`made in ${fmtS(j.e2e_s)} · +${fmtS(j.cold_start_s)} model load`:`made in ${fmtS(j.e2e_s)}`}`:when);
   setText(d.querySelector('.errtxt'),j.status==='cancelled'?'':j.error||(j.first_error?'Recovered after: '+j.first_error:''));
   const media=d.querySelector('.media');
@@ -1048,7 +1092,7 @@ function openUpscale(id,btn,keyboard){const j=known.get(id);if(!j)return;
     upSize(i.value,j.orientation)+(i.value==='4k'&&j.orientation==='portrait'?
       " · the studio's 4K upscale has not been run with a 9:16 clip yet":'');});
   $('upportrait').hidden=j.orientation!=='portrait';
-  const notes=upNotes(j,j.upscalable);setText($('upinput'),notes);$('upinput').hidden=!notes;
+  $('uppin').checked=true;upRefresh(j);                  // Keep my frames and the notes, for the size and strength
   const std=state.upscale_load==='standard';              // the times with the studio's load (LFSTUDIO_UPSCALE_LOAD)
   pop.querySelectorAll('small[data-standard]').forEach(e=>{if(e.dataset.fast==null)e.dataset.fast=e.textContent;
     setText(e,std?e.dataset.standard:e.dataset.fast);});
@@ -1066,9 +1110,11 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!pop.hidden){e.prev
   closeUpscale(pop.contains(document.activeElement)||document.activeElement===up.btn);}});   // keyboard: back to the button
 document.addEventListener('pointerdown',e=>{if(!pop.hidden&&!pop.contains(e.target)&&!(up.btn&&up.btn.contains(e.target)))closeUpscale(false);});
 addEventListener('resize',placeUpscale);
+pop.addEventListener('change',e=>{const j=known.get(up.id);if(j&&/^up_(res|strength)$/.test(e.target.name||'')){upRefresh(j);placeUpscale();}});
 $('upgo').onclick=async e=>{if(e.detail>1)return;const id=up.id,j=known.get(id),go=$('upgo');if(!j)return;
   const body={id,resolution:upVal('up_res'),strength:upVal('up_strength')};
   if(j.upscalable&&j.upscalable.clip_audio===false)body.audio='silence';   // the clip has no Stage-1 audio to use
+  if(!$('uppinrow').hidden&&!$('uppin').disabled)body.pin=$('uppin').checked?'auto':'off';    // Keep my frames
   go.disabled=true;let r,x;
   try{r=await postJSON('/api/upscale',body);x=await r.json().catch(()=>({}));}catch(err){x={error:'Could not reach the server'};}
   if(up.id!==id)return;                                                  // closed meanwhile

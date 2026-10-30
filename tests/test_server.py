@@ -8,6 +8,7 @@ import base64
 import concurrent.futures
 import contextlib
 import errno
+import functools
 import hashlib
 import importlib.util
 import io
@@ -2186,9 +2187,17 @@ class CancelRace(CancelTest):
 
 
 # ------------------------------------------------------------------------------------------ the experimental Upscale
-UPSCALE_LENGTH = "Upscale takes 5 s clips for now: other lengths not yet (NVIDIA's pipeline is fixed at 121 frames)"
+UPSCALE_LENGTH = "Upscale takes 5 s clips for now: other lengths not yet (NVIDIA's pipeline is fixed at 5 s)"
 NOTHING_LEFT = "nothing is left of the prompt without its keyframe line: the Upscale needs text"
 TEXT_CLIP = {"ok": True, "clip_audio": True}     # a Sol-H3 Text clip's upscalable, as before every clip was taken
+# where a clip's Keep my frames is offered (upscalable "pin_routes"; the server's PIN_ROUTES): 1080p and 2K (there
+# "partly"), balanced; run on the GPU through the studio at 1080p, and at 2K too with both ends of a LightX2V Turbo
+# clip (PIN_ROUTES_BOTH)
+PIN_ROUTES = {"1080p": {"strengths": ["balanced"], "partly": False, "ran": True},
+              "2k": {"strengths": ["balanced"], "partly": True, "ran": False}}
+PIN_ROUTES_BOTH = {**PIN_ROUTES, "2k": dict(PIN_ROUTES["2k"], ran=True)}
+PIN_GONE, PIN_CHANGED = "your picture is no longer on disk", "your picture changed since the clip was made"
+SOL_LAST = "Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it"
 FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
 PARENT_BUSY = "an upscale of this clip is queued or running; cancel it first, or wait for it"
 
@@ -2285,6 +2294,7 @@ class Upscale(UpscaleTest):
         self.assertEqual(st["upscale_defaults"], {"resolution": "2k", "strength": "balanced",
                                                   "audio": "clip"})            # the page's choices start there
         self.assertEqual(st["upscale_load"], "fast")                         # the page's times: LFSTUDIO_UPSCALE_LOAD
+        self.assertIs(st["upscale_pin"], True)                               # it takes "pin" (lf-cli asks)
         self.assertEqual(st["jobs"][0]["upscalable"], TEXT_CLIP)
         uid = self.upscale(parent["id"])
         job = self.done(uid)
@@ -2295,6 +2305,8 @@ class Upscale(UpscaleTest):
                          {"kind": "upscale", "parent": parent["id"], "resolution": "2k", "strength": "balanced",
                           "steps": 2, "start_sigma": 0.7, "audio": "clip", "refine_seed": 1})
         self.assertNotIn("source", job)                                     # from the clip's MP4, always
+        self.assertNotIn("pin", job)                                        # a Text clip has no keyframes
+        self.assertEqual((job["video"], job["frames"]), ("clip", 121))
         self.assertRegex(job["case_id"], rf"^up_\d{{6}}_{uid[:6]}$")
         case = Path(job["case_dirs"][0])
         self.assertEqual((case.name, case.parent.parent), (job["case_id"], self.studio.runtime / "outputs" / "webui"))
@@ -2454,14 +2466,16 @@ class UpscaleRefusals(UpscaleTest):
                ({"id": jid, "strength": "nvidia"}, "strength must be one of faithful, balanced, full"),
                ({"id": jid, "strength": ["full"]}, "strength must be one of faithful, balanced, full"),
                ({"id": jid, "audio": "both"}, "audio must be one of clip, silence"),
-               ({"id": jid, "steps": 3}, 'unknown key "steps" (known: id, resolution, strength, audio, seed)'))
+               ({"id": jid, "steps": 3}, 'unknown key "steps" (known: id, resolution, strength, audio, seed, pin)'))
         bad += tuple(({"id": jid, "source": source}, 'unknown key "source" (known: id, resolution, strength, audio, '
-                      'seed)') for source in ("draft", "final", None))          # no source to pick: the clip's MP4
+                      'seed, pin)') for source in ("draft", "final", None))     # no source to pick: the clip's MP4
+        bad += tuple(({"id": jid, "pin": pin}, "pin must be auto or off") for pin in ("on", "first", True, ["auto"]))
         bad += tuple(({"id": jid, "seed": seed}, "seed must be a nonnegative 63-bit integer, or null for the clip's")
                      for seed in (-1, 2 ** 63, "5", True, 1.5))
         for body, error in bad:
             self.assertEqual(self.studio.post("/api/upscale", json_body=body), (400, {"error": error}), body)
-        expected = 'expected JSON {"id": ..., "resolution": ..., "strength": ..., "audio": ..., "seed": ...}'
+        expected = ('expected JSON {"id": ..., "resolution": ..., "strength": ..., "audio": ..., "seed": ..., '
+                    '"pin": ...}')
         for raw_body in (b"{", b"[1]", b'"x"', b"\xff"):
             code, _, answer = self.studio.request("POST", "/api/upscale", raw_body,
                                                   {"Content-Type": "application/json"})
@@ -2996,15 +3010,16 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
     env = {"STUB_UPSCALE_S": "1"}
 
     def test_a_keyframes_clip(self):
-        """A first frame: upscalable with its text encoded; the statuses in order; the encode's arguments; the input
-        folder (the clip's MP4 and audio linked, the encode's qwen/, source.json) and job.json; the record's text."""
+        """A first frame: upscalable with its text encoded and its first frame held (Stage 2 held it: Keep my frames);
+        the statuses in order; the encode's arguments; the input folder (the clip's MP4, audio and first frame linked,
+        the encode's qwen/, source.json) and job.json; the record's text."""
         self.studio.stop()                 # the models' close takes a second, so "freeing memory" is seen
         self.studio.env.update(STUB_QWEN_S="1.5", STUB_UPSCALE_S="2", STUB_CLOSE_S="1")
         self.studio.start()
         parent = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=3, files={"first_frame": [("f.png", png())]})
         want = load_rewrites().text_only_prompt(KEYFRAME_PROMPT)
         self.assertEqual(self.studio.job(parent["id"])["upscalable"],
-                         {"ok": True, "clip_audio": True, "text": "encode"})
+                         {"ok": True, "clip_audio": True, "text": "encode", "pin": ["first"], "pin_routes": PIN_ROUTES})
         self.assertEqual(self.studio.state()["session"]["state"], "ready")
         uid = self.upscale(parent["id"], resolution="1080p")
         seen, rec = self.statuses(uid)
@@ -3031,15 +3046,23 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
         self.assertEqual(sorted(p.name for p in case.iterdir()),
                          ["encode.log", "input", "prompt-text-only.txt", "regen"])
         self.assertEqual(sorted(str(p.relative_to(view)) for p in view.rglob("*") if p.is_file()),
-                         ["encode.json", "qwen-worker/worker.log", "qwen/conditioning.json", "qwen/conditioning.pt",
-                          "source.json", f"stage1/stage1_direct_tensors.pt", f"stage2/{Path(parent['output']).name}"])
+                         ["encode.json", "keyframe/first.png", "qwen-worker/worker.log", "qwen/conditioning.json",
+                          "qwen/conditioning.pt", "source.json", f"stage1/stage1_direct_tensors.pt",
+                          f"stage2/{Path(parent['output']).name}"])
+        self.assertEqual(inode(view / "keyframe" / "first.png"), inode(self.studio.job(parent["id"])["first_frame"]))
+        self.assertEqual(job["pin"], {"asked": "auto", "ends": ["first"], "why": {},
+                                      "result": {"first": {"used": True, "agreement_db": 33.0, "why": None}}})
         parent_case = Path(parent["output"]).parents[1]
         self.assertEqual(inode(view / "stage2" / Path(parent["output"]).name), inode(parent["output"]))
         self.assertEqual(inode(view / "stage1" / "stage1_direct_tensors.pt"),
                          inode(parent_case / "stage1" / "stage1_direct_tensors.pt"))
         cond = json.loads((view / "qwen" / "conditioning.json").read_text())
         self.assertEqual((cond["task"], cond["prompt"]), ("t2va", want["prompt"]))
-        self.assertEqual(json.loads((case / "regen" / "job.json").read_text())["case"], str(view))
+        data = json.loads((case / "regen" / "job.json").read_text())
+        sha = hashlib.sha256(png()).hexdigest()
+        self.assertEqual((data["case"], data["pin"]),
+                         (str(view), {"keyframes": [{"anchor": "first", "image": str(view / "keyframe" / "first.png"),
+                                                     "sha256": sha, "fit": "stretch", "canvas": [1344, 768]}]}))
         source = json.loads((view / "source.json").read_text())
         self.assertEqual({k: source[k] for k in ("parent", "model", "options", "task", "orientation", "seconds",
                                                  "video")},
@@ -3052,6 +3075,11 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
         self.assertEqual(source["files"]["qwen/conditioning.pt"]["how"], "encode")
         self.assertEqual(source["files"]["qwen/conditioning.pt"]["sha256"],
                          hashlib.sha256((view / "qwen" / "conditioning.pt").read_bytes()).hexdigest())
+        first = self.studio.job(parent["id"])["first_frame"]
+        self.assertEqual((source["frames"], source["files"]["keyframe/first.png"], source["keyframes"]),
+                         ({"clip": 121, "made": 124, "kept": 121}, {"from": first, "how": "link", "sha256": sha},
+                          {"first": {"from": first, "how": "link", "sha256": sha, "size": None, "fit": "stretch",
+                                     "canvas": [1344, 768], "same_as_clip": True}}))
         self.assertIn("encoding the text of", self.studio.log.read_text())
         # the mux took the clip's own sound; Delete and Undo move the input folder with the rest
         self.assertEqual(probe(job["output"])["audio"]["duration"], probe(parent["output"])["audio"]["duration"])
@@ -3175,6 +3203,80 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
         self.assertEqual(inode(view / "qwen" / "conditioning.pt"), inode(parent_case / "qwen" / "conditioning.pt"))
         self.assertEqual((job["text"], self.encodes()), ({"source": "clip"}, []))
         self.assertEqual(json.loads((view / "source.json").read_text())["files"]["qwen/conditioning.pt"]["how"], "link")
+
+    def test_keep_my_first_frame(self):
+        """Keep my frames on Sol-H3's clips (its stage2/stage2_result.json): the first frame where Stage 2 held it
+        (0.5.2's pin, the default), with the reason where it did not (a clip made before 0.5.2, or with
+        SOL_H3_STAGE2_KEYFRAME off or draft); never the last frame (the clip stops 3 frames before it); Text and
+        Reference clips have none. The request's pin off sends no end; Faithful and 4K none either, with the reason."""
+        first, last = {"first_frame": [("f.png", png())]}, {"last_frame": [("l.png", png(40, 24))]}
+        both = dict(first, **last)
+        kf = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=21, files=both)
+        result = Path(kf["output"]).parent / "stage2_result.json"
+        record = json.loads(result.read_text())
+        self.assertEqual((record["stage2_keyframe"], record["stage2_keyframe_setting"],
+                          record["capture"]["input_sha256"]),
+                         ("pin", "pin", {"first_frame": hashlib.sha256(png()).hexdigest(),
+                                         "last_frame": hashlib.sha256(png(40, 24)).hexdigest()}))
+        answer = {"ok": True, "clip_audio": True, "text": "encode", "pin": ["first"], "pin_routes": PIN_ROUTES,
+                  "pin_why": {"last": SOL_LAST}}
+        self.assertEqual(self.studio.job(kf["id"])["upscalable"], answer)
+        before = "the clip was made before 0.5.2, which did not hold your first frame"
+        for change, why in ((dict(stage2_keyframe="off", stage2_keyframe_setting="off"),
+                             "the clip was made with SOL_H3_STAGE2_KEYFRAME=off, which did not hold your first frame"),
+                            (dict(stage2_keyframe="draft", stage2_keyframe_setting="draft"),
+                             "the clip was made with SOL_H3_STAGE2_KEYFRAME=draft, which did not hold your first "
+                             "frame"),
+                            ({"stage2_keyframe": None, "stage2_keyframe_setting": None}, before),
+                            ({"capture": {}}, "the clip has no record of how it used your picture")):
+            with self.subTest(change):
+                changed = {k: v for k, v in dict(record, **change).items() if v is not None}
+                result.write_text(json.dumps(changed))
+                os.utime(result, ns=(time.time_ns(), time.time_ns() + 10**9))     # another mtime: read again
+                self.assertEqual(self.studio.job(kf["id"])["upscalable"],
+                                 {"ok": True, "clip_audio": True, "text": "encode",
+                                  "pin_why": {"first": why, "last": SOL_LAST}})
+        result.unlink()                                                          # a clip without it
+        self.assertEqual(self.studio.job(kf["id"])["upscalable"]["pin_why"],
+                         {"first": "the clip has no record of how it used your picture", "last": SOL_LAST})
+        result.write_text(json.dumps(record))
+        self.assertEqual(self.studio.job(kf["id"])["upscalable"], answer)
+        # the request: pin off, Faithful and 4K send no end (the record says why); auto at 2K sends the first
+        for fields, pin in (({"pin": "off"}, {"asked": "off", "ends": [], "why": {"last": SOL_LAST}}),
+                            ({"strength": "faithful"},
+                             {"asked": "auto", "ends": [], "why": {"first": "with strength balanced only, for now",
+                                                                    "last": SOL_LAST}}),
+                            ({"resolution": "4k"}, {"asked": "auto", "ends": [], "why": {"first": "not at 4K yet",
+                                                                                          "last": SOL_LAST}}),
+                            ({"pin": None}, {"asked": "auto", "ends": ["first"], "why": {"last": SOL_LAST}})):
+            with self.subTest(fields):
+                job = self.done(self.upscale(kf["id"], **fields))
+                self.assertEqual({k: v for k, v in job["pin"].items() if k != "result"}, pin)
+                data = json.loads((self.regen(job) / "job.json").read_text())
+                view = Path(job["case_dirs"][0]) / "input"
+                if pin["ends"]:
+                    self.assertEqual([k["anchor"] for k in data["pin"]["keyframes"]], ["first"])
+                    self.assertEqual(sorted(p.name for p in (view / "keyframe").iterdir()), ["first.png"])
+                    self.assertEqual(job["pin"]["result"], {"first": {"used": True, "agreement_db": 33.0,
+                                                                      "why": None}})
+                else:                              # job.json without a pin: NVIDIA's refine, no pin in its receipt
+                    self.assertNotIn("pin", data)
+                    self.assertFalse((view / "keyframe").exists())
+                    self.assertNotIn("result", job["pin"])
+                    self.assertNotIn("pin", json.loads((self.regen(job) / "receipt.json").read_text()))
+        # a last frame alone: nothing to hold; Text and Reference clips: no keys at all
+        alone = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seed=22, files=last)
+        self.assertEqual(self.studio.job(alone["id"])["upscalable"],
+                         {"ok": True, "clip_audio": True, "text": "encode", "pin_why": {"last": SOL_LAST}})
+        job = self.done(self.upscale(alone["id"]))
+        self.assertEqual(job["pin"], {"asked": "auto", "ends": [], "why": {"last": SOL_LAST}})
+        ref = self.clip(task="ref2va", prompt=REFERENCE_PROMPT, seed=23, files={"ref_images": [("r.png", png())]})
+        for jid in (ref["id"], self.clip(seed=24)["id"]):
+            self.assertFalse({"pin", "pin_why", "pin_routes", "frames"} & set(self.studio.job(jid)["upscalable"]))
+            job = self.done(self.upscale(jid))
+            self.assertNotIn("pin", job)
+            self.assertEqual(json.loads((Path(job["case_dirs"][0]) / "input" / "source.json").read_text())["keyframes"],
+                             {})
 
 
 class UpscaleEncode(EveryClipParts, UpscaleTest):
@@ -3453,8 +3555,8 @@ class LauncherUpscale(LauncherSettingsCheck):
         upscale_on = ("the experimental Upscale is on (LFSTUDIO_UPSCALE=1): its environment, package and weights are "
                       "there")
         note = ("note: NVIDIA's package (LFSTUDIO_UPSCALE_PKG) has other files than the Upscale's 9:16 route was "
-                "written for ({}; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips will be refused (16:9 clips "
-                "are not checked against these files)")
+                "written for ({}; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips, of 124-frame clips and of "
+                "clips that keep your frames will be refused (other 16:9 clips are not checked against these files)")
         code, out = self.check(**settings)
         self.assertEqual(code, 0, out)
         self.assertIn(upscale_on, out)
@@ -3646,7 +3748,8 @@ class ServerParts(unittest.TestCase):
         self.assertEqual(((tmp / "c").read_bytes(), inode(tmp / "c") != inode(tmp / "a")), (b"clip", True))
 
     def test_the_stretch_and_the_cut(self):
-        """prepare_video_command on a 124-frame 576p clip with sound: 1344x768, 121 frames at 24 fps, its sound cut to
+        """prepare_video_command on a 124-frame 576p clip with sound: stretched alone (1080p and 2K), 1344x768 with
+        all 124 frames and its sound whole (copied); stretched and cut (4K), 121 frames at 24 fps, its sound cut to
         about the 121 frames (copied); a 768p clip is cut but not scaled."""
         tmp = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -3655,17 +3758,25 @@ class ServerParts(unittest.TestCase):
                         "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=32000:duration=5.1667", "-frames:v",
                         "124", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
                         str(src)], check=True, timeout=120)
-        regen = types.SimpleNamespace(FINAL={"frames": 121, "fps": "24/1"})
-        command = server_function("prepare_video_command", regen=regen)
+        command = server_function("prepare_video_command")
+        whole = tmp / "refined_1344x768_124f.mp4"
+        self.assertFalse({"-t", "-frames:v"} & set(command(src, whole, (1344, 768), "stretch", 124)))
+        subprocess.run(command(src, whole, (1344, 768), "stretch", 124), check=True, timeout=120)
+        streams, clip = probe(whole), probe(src)
+        self.assertEqual((streams["video"]["width"], streams["video"]["height"], streams["video"]["nb_frames"],
+                          streams["video"]["r_frame_rate"]), (1344, 768, "124", "24/1"))
+        self.assertEqual([streams["audio"][k] for k in ("nb_frames", "duration")],
+                         [clip["audio"][k] for k in ("nb_frames", "duration")])
         out = tmp / "refined_1344x768_121f.mp4"
-        subprocess.run(command(src, out, (1344, 768), "stretch+trim"), check=True, timeout=120)
+        subprocess.run(command(src, out, (1344, 768), "stretch+trim", 121), check=True, timeout=120)
         streams = probe(out)
         self.assertEqual((streams["video"]["width"], streams["video"]["height"], streams["video"]["nb_frames"],
                           streams["video"]["r_frame_rate"]), (1344, 768, "121", "24/1"))
         self.assertEqual((streams["audio"]["codec_name"], streams["audio"]["sample_rate"]), ("aac", "32000"))
         self.assertLess(abs(float(streams["audio"]["duration"]) - 121 / 24), 0.07)
-        self.assertNotIn("-vf", command(src, out, (1344, 768), "trim"))
-        self.assertIn("scale=768:1344:flags=lanczos", command(src, out, (768, 1344), "stretch"))
+        self.assertNotIn("-vf", command(src, out, (1344, 768), "trim", 121))
+        self.assertIn("121", command(src, out, (1344, 768), "trim", 121))
+        self.assertIn("scale=768:1344:flags=lanczos", command(src, out, (768, 1344), "stretch", 121))
         # a 576p clip of 121 frames (Text, or a first frame only), stretched alone: its sound is copied as it is, every
         # AAC packet (-t 121/24 or -frames:v 121 would drop the last one)
         src = tmp / "clip_1024x576_121f.mp4"
@@ -3673,12 +3784,235 @@ class ServerParts(unittest.TestCase):
                         "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=32000", "-frames:v", "121",
                         "-af", "atrim=end_sample=161333", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt",
                         "yuv420p", "-c:a", "aac", str(src)], check=True, timeout=120)
-        self.assertFalse({"-t", "-frames:v"} & set(command(src, out, (1344, 768), "stretch")))
-        subprocess.run(command(src, out, (1344, 768), "stretch"), check=True, timeout=120)
+        self.assertFalse({"-t", "-frames:v"} & set(command(src, out, (1344, 768), "stretch", 121)))
+        subprocess.run(command(src, out, (1344, 768), "stretch", 121), check=True, timeout=120)
         streams, clip = probe(out), probe(src)
         self.assertEqual((streams["video"]["width"], streams["video"]["nb_frames"]), (1344, "121"))
         self.assertEqual([streams["audio"][k] for k in ("nb_frames", "duration")],
                          [clip["audio"][k] for k in ("nb_frames", "duration")])
+
+    def keep_parts(self, **names):
+        """keyframe_record, image_state and the names they use, from the server's source with the real job's
+        standard-library part as regen; `names` (file_sha256, read_record) replace theirs."""
+        spec = importlib.util.spec_from_file_location("regen2k_job_under_test", REPO_DIR / "upscale" / "regen2k_job.py")
+        regen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(regen)
+        values = {name: server_value(name) for name in ("PIN_SOL_LAST", "PIN_BEFORE", "PIN_SETTING", "PIN_NO_RECORD",
+                                                        "PIN_FIT", "IMAGE_SHA_MAX")}
+        found = dict(values, regen=regen, functools=functools, json=json, re=re, Path=Path, threading=threading,
+                     SOL_H3="sol-h3", TURBO=TURBO, IMAGE_SHA={}, image_lock=threading.Lock(), log=lambda *a: None)
+        for name in ("read_record", "_dict", "_count", "_size_pair", "_sha", "keyframe_record", "image_state",
+                     "file_sha256"):
+            found[name] = server_function(name, **found)
+        found.update(names)
+        for name in ("keyframe_record", "image_state"):              # with the stand-ins in their globals
+            found[name] = server_function(name, **found)
+        return found
+
+    def test_the_turbo_receipts_records(self):
+        """keyframe_record reads a LightX2V Turbo clip's receipt as the GPU validation's runs wrote them (their
+        "images", "geometry" and "inputs_sha256"): a first frame stretched and a last one cover-cropped at 576p (the
+        crop the job's cover_crop gives), both "as is" at 768p (no box: the pictures had the canvas's size), a last
+        frame alone stretched, a 9:16 first frame; a crop the rule does not give, a last frame the clip stopped short
+        of, a fit it does not know or no record are reasons."""
+        parts, sha = self.keep_parts(), {"first_frame": "1" * 64, "last_frame": "2" * 64}
+        tmp = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+
+        def read(images, width=1024, height=576, frames=124, keep=124, ends=("first", "last"), shas=sha):
+            path = tmp / f"receipt{len(list(tmp.iterdir()))}.json"
+            path.write_text(json.dumps({"images": images, "inputs_sha256": shas, "geometry": {
+                "width": width, "height": height, "frames": frames, "keep_frames": keep}}))
+            return json.loads(parts["keyframe_record"](TURBO, "landscape", str(path), path.stat().st_mtime_ns,
+                                                       ends))
+        both576 = {"first": {"size": [1344, 768], "fit": "stretch", "stretch": 1.01587},
+               "last": {"size": [1344, 768], "fit": "cover-crop", "resized": [1024, 585], "crop": [0, 4, 1024, 580],
+                        "kept": 0.9846}}
+        self.assertEqual(read(both576), [{"first": {"sha256": "1" * 64, "fit": "stretch", "canvas": [1024, 576],
+                                                "size": [1344, 768]},
+                                      "last": {"sha256": "2" * 64, "fit": "cover-crop", "canvas": [1024, 576],
+                                               "size": [1344, 768]}}, {}])
+        both768 = {"first": {"size": [1344, 768], "fit": "as is"}, "last": {"size": [1344, 768], "fit": "as is"}}
+        self.assertEqual([sorted((e, v["fit"], v["canvas"][0]) for e, v in read(both768, 1344, 768)[0].items())],
+                         [[("first", "as is", 1344), ("last", "as is", 1344)]])
+        self.assertEqual(read({"last": dict(both576["first"])}, ends=("last",))[0]["last"]["fit"], "stretch")
+        tall = {"first": {"size": [1648, 2944], "fit": "stretch", "stretch": 1.00485}}
+        self.assertEqual(read(tall, 576, 1024, keep=121, ends=("first",))[0]["first"]["canvas"], [576, 1024])
+        wrong = dict(both576, last=dict(both576["last"], crop=[0, 0, 1024, 576]))
+        self.assertEqual(read(wrong)[1], {"last": "the studio can't tell how your picture was fitted to the clip"})
+        self.assertEqual(read(both576, keep=121)[1], {"last": "the clip stops 3 frames before your last picture"})
+        no_record = "the clip has no record of how it used your picture"
+        self.assertEqual(read(dict(both576, first=dict(both576["first"], fit="cover")))[1], {"first": no_record})
+        self.assertEqual(read(both576, shas={"first_frame": "x"})[1], {"first": no_record, "last": no_record})
+        self.assertEqual(read({})[1], {"first": no_record, "last": no_record})
+        self.assertEqual(json.loads(parts["keyframe_record"](TURBO, "landscape", str(tmp / "none"), None,
+                                                             ("first",))), [{}, {"first": no_record}])
+
+    def test_records_of_another_shape(self):
+        """A record that is JSON of another shape (hand-edited, or not the studio's) never makes keyframe_record or
+        read_record raise (with_upscalable asks on every /api/state, /api/jobs and record): a value of another type
+        where the studio writes a dict, frames that are not numbers, JSON nested too deep; each end gets its reason."""
+        logged = []
+        parts, sha = self.keep_parts(log=logged.append), {"first_frame": "1" * 64, "last_frame": "2" * 64}
+        tmp = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        image = {"size": [1344, 768], "fit": "stretch"}
+        turbo = {"images": {"first": image, "last": image}, "inputs_sha256": sha,
+                 "geometry": {"width": 1024, "height": 576, "frames": 124, "keep_frames": 124}}
+        sol = {"stage2_keyframe": "pin", "capture": {"input_sha256": sha}}
+
+        def read(model, record, ends=("first", "last")):
+            path = tmp / f"record{len(list(tmp.iterdir()))}.json"
+            path.write_text(record if isinstance(record, str) else json.dumps(record))
+            return json.loads(parts["keyframe_record"](model, "landscape", str(path), path.stat().st_mtime_ns, ends))
+        no_record, sol_last = "the clip has no record of how it used your picture", parts["PIN_SOL_LAST"]
+        self.assertEqual(sorted(read(TURBO, turbo)[0]), ["first", "last"])
+        self.assertEqual(sorted(read("sol-h3", sol)[0]), ["first"])
+        for change, why in (({"images": [1]}, {"first": no_record, "last": no_record}),
+                            ({"images": "first"}, {"first": no_record, "last": no_record}),
+                            ({"images": {"first": "a.png", "last": image}}, {"first": no_record}),
+                            ({"images": {"first": image, "last": [image]}}, {"last": no_record}),
+                            ({"geometry": [1024, 576]}, {"first": no_record, "last": no_record}),
+                            ({"inputs_sha256": ["1" * 64]}, {"first": no_record, "last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], frames="124")}, {"last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], keep_frames="121")}, {"last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], keep_frames=None)}, {"last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], keep_frames=125)}, {"last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], keep_frames=121)},
+                             {"last": "the clip stops 3 frames before your last picture"})):
+            with self.subTest(change):
+                found, got = read(TURBO, dict(turbo, **change))
+                self.assertEqual((got, sorted(found)), (why, [e for e in ("first", "last") if e not in why]))
+        for change in ({"capture": ["x"]}, {"capture": {"input_sha256": "1" * 64}},
+                       {"capture": {"input_sha256": ["1" * 64]}}):
+            with self.subTest(change):
+                self.assertEqual(read("sol-h3", dict(sol, **change)), [{}, {"first": no_record, "last": sol_last}])
+        for deep in ("[" * 100000 + "]" * 100000, '{"a":' * 100000 + "1" + "}" * 100000):
+            path = tmp / "deep.json"
+            path.write_text(deep)
+            self.assertIsNone(parts["read_record"](path))
+            self.assertEqual(read(TURBO, deep), [{}, {"first": no_record, "last": no_record}])
+        self.assertEqual(logged, [])
+        # an error the checks above do not foresee is logged, and every end gets a reason
+        broken = self.keep_parts(log=logged.append, _sha=lambda value: 1 / 0)
+        path = tmp / "record.json"
+        for model, record, why in ((TURBO, turbo, {"first": no_record, "last": no_record}),
+                                   ("sol-h3", sol, {"first": no_record, "last": sol_last})):
+            path.write_text(json.dumps(record))
+            self.assertEqual(json.loads(broken["keyframe_record"](model, "landscape", str(path), 1, ("first", "last"))),
+                             [{}, why])
+        self.assertEqual([line.split(": ")[1] for line in logged], ["ZeroDivisionError", "ZeroDivisionError"])
+
+    def pin_parts(self, drop=None, ran=None, sizes=None):
+        """upscalable, pin_offer and pin_plan from the server's source with stand-ins for the clip's files, and its
+        PIN_ROUTES as one would change it by one line: without the route whose line names `drop`, with `ran` (a
+        route's line, the sizes) given those sizes as its "ran", or with PIN_SIZES `sizes`."""
+        spec = importlib.util.spec_from_file_location("regen2k_job_under_test", REPO_DIR / "upscale" / "regen2k_job.py")
+        regen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(regen)
+        source = (REPO_DIR / "webui" / "server.py").read_text()
+        node = next(n for n in ast.parse(source).body if isinstance(n, ast.Assign) and len(n.targets) == 1
+                    and getattr(n.targets[0], "id", None) == "PIN_ROUTES")
+        lines = ast.get_source_segment(source, node.value).splitlines()
+        for name in filter(None, (drop, ran and ran[0])):
+            self.assertEqual(sum(name in line for line in lines), 1, name)                     # one line each
+        table = "\n".join(re.sub(r'"ran": \([^)]*\)', f'"ran": {tuple(ran[1])!r}', line) if ran and ran[0] in line
+                          else line for line in lines if not drop or drop not in line)
+        names = {name: server_value(name) for name in ("PIN_PARTLY", "PIN_NOT_YET", "PIN_SIZE", "PIN_STRENGTH",
+                                                        "UPSCALE_NAMES", "UPSCALE_KEEP_ALL")}
+        names.update(regen=regen, SOL_H3="sol-h3", TURBO=TURBO, PIN_SIZES=sizes or server_value("PIN_SIZES"),
+                     job_model=lambda job: job.get("model") or "sol-h3", is_upscale=lambda job: False,
+                     upscale_text=lambda job: {"prompt": "A dancer turns slowly."},
+                     MODELS={TURBO: {"name": "LightX2V Turbo", "upscale": {"tasks": ("t2va", "fl2va"),
+                                                                           "seconds": (5,)}}})
+        names["PIN_ROUTES"] = eval(table, dict(names))      # noqa: S307 - the repo's own source
+        for name in ("upscale_frames", "pin_offer", "pin_plan", "upscalable"):
+            names[name] = server_function(name, **names)
+        return names
+
+    def test_the_pin_routes_table(self):
+        """PIN_ROUTES changed by one line: a route taken out (one that fails its GPU run) is no longer offered, with
+        why, while the others still are; "ran" per route and size (the page's note where a route has not run), as the
+        table says and with one route's sizes changed; PIN_SIZES ("1080p",) takes 2K out, with why."""
+        made = ("first", "last")
+
+        def clip(ends):
+            job = {"id": "x", "model": TURBO, "task": "fl2va", "seconds": 5, "orientation": "landscape",
+                   "status": "done", **{f"{end}_frame": f"{end}.png" for end in ends}}
+            sources = {"pcm": types.SimpleNamespace(is_file=lambda: True), "conditioning": None, "text": "generation",
+                       "video": "stretch", "frames": {"clip": 124, "made": 124, "kept": 124},
+                       "keyframes": {end: {"sha256": "1" * 64} for end in ends}, "pin_why": {}}
+            return job, sources
+
+        def offered(parts, ends):
+            job, sources = clip(ends)
+            parts["upscale_sources"] = lambda job: sources
+            code, answer = server_function("upscalable", **parts)(job)
+            self.assertEqual(code, 200)
+            return {k: v for k, v in answer.items() if k.startswith("pin")}
+
+        def plan(parts, ends, resolution):
+            return parts["pin_plan"](*clip(ends), resolution, "balanced", "auto")
+        unrun = {"strengths": ["balanced"], "partly": False, "ran": False}
+
+        def routes(*ran):
+            return {"1080p": dict(unrun, ran="1080p" in ran), "2k": dict(unrun, partly=True, ran="2k" in ran)}
+        parts = self.pin_parts()
+        self.assertEqual([offered(parts, ends) for ends in (["last"], made)],
+                         [{"pin": ["last"], "pin_routes": routes("1080p")},
+                          {"pin": list(made), "pin_routes": routes("1080p", "2k")}])
+        not_yet = "not for this clip's keyframes yet"
+        parts = self.pin_parts(drop='(TURBO, "last")')
+        self.assertEqual(offered(parts, ["last"]), {"pin_why": {"last": not_yet}})
+        self.assertEqual(plan(parts, ["last"], "1080p"), {"asked": "auto", "ends": [], "why": {"last": not_yet}})
+        self.assertEqual(offered(parts, made), {"pin": list(made), "pin_routes": routes("1080p", "2k")})  # its own
+        self.assertEqual(plan(parts, made, "1080p")["ends"], list(made))
+        parts = self.pin_parts(ran=('(TURBO, "first+last")', ()))
+        self.assertEqual(offered(parts, made)["pin_routes"], routes())
+        self.assertEqual(offered(parts, ["last"])["pin_routes"], routes("1080p"))                # the others not
+        parts = self.pin_parts(ran=('(TURBO, "last")', ("1080p", "2k")))
+        self.assertEqual(offered(parts, ["last"])["pin_routes"], routes("1080p", "2k"))
+        self.assertEqual(offered(parts, made)["pin_routes"], routes("1080p", "2k"))
+        parts = self.pin_parts(sizes=("1080p",))
+        self.assertEqual(offered(parts, ["last"]), {"pin": ["last"], "pin_routes": {"1080p": dict(unrun, ran=True)}})
+        self.assertEqual([plan(parts, ["last"], size) for size in ("1080p", "2k")],
+                         [{"asked": "auto", "ends": ["last"], "why": {}},
+                          {"asked": "auto", "ends": [], "why": {"last": "not at 2K yet"}}])
+
+    def test_image_state(self):
+        """image_state never hashes a picture without hash_now (/api/state): a file there and not empty is taken as
+        the clip's until a request hashes it; with hash_now it hashes each path, size and mtime once and keeps the
+        answer (at most IMAGE_SHA_MAX of them)."""
+        hashed = []
+
+        def file_sha256(path):
+            hashed.append(Path(path).name)
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        parts = self.keep_parts(file_sha256=file_sha256)
+        state = parts["image_state"]
+        tmp = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        picture = tmp / "a.png"
+        picture.write_bytes(png())
+        want = hashlib.sha256(png()).hexdigest()
+        self.assertEqual((state(picture, want), state(picture, "0" * 64), hashed), (None, None, []))
+        self.assertEqual((state(picture, want, True), state(picture, want, True), hashed), (None, None, ["a.png"]))
+        self.assertEqual(state(picture, "0" * 64), PIN_CHANGED)                  # the hash it found
+        picture.write_bytes(png(16, 24))                                         # another size and mtime
+        self.assertEqual((state(picture, want), hashed), (None, ["a.png"]))      # not hashed here
+        self.assertEqual((state(picture, want, True), state(picture, want), hashed),
+                         (PIN_CHANGED, PIN_CHANGED, ["a.png", "a.png"]))
+        picture.write_bytes(b"")
+        self.assertEqual((state(picture, want), state(tmp / "none.png", want, True), state(tmp, want)),
+                         (PIN_GONE, PIN_GONE, PIN_GONE))
+        cache = parts["IMAGE_SHA"]
+        for i in range(parts["IMAGE_SHA_MAX"] + 5):
+            cache[(str(i), 1, 1)] = want
+        (tmp / "b.png").write_bytes(png())
+        state(tmp / "b.png", want, True)
+        self.assertEqual(len(cache), parts["IMAGE_SHA_MAX"])
+        self.assertNotIn(("0", 1, 1), cache)                                     # the oldest went
+        self.assertIn((str(tmp / "b.png"), len(png()), (tmp / "b.png").stat().st_mtime_ns), cache)
 
     def test_model_refusal_of_values_made_apart(self):
         """A table of two rows (LightX2V Turbo's before its 15 s and 768p 12 s ran on the GPU: 576p up to 12 s, 768p up
@@ -3743,7 +4077,8 @@ class ModelChoiceOff(unittest.TestCase):
     server (from git), the same /api/state, records and API records, the same answers to bad requests and the same
     lf-cli output; the page as it is, without the models' table; LightX2V Turbo's settings are not read. What is new:
     a request that names a model, which v0.5.1's form ignored and its JSON refused, makes the clip with "model":
-    "sol-h3" (its record as before) and is refused for a model that is off or unknown."""
+    "sol-h3" (its record as before) and is refused for a model that is off or unknown; /api/state's "upscale_pin"
+    (the experimental Upscale's Keep my frames)."""
 
     def setUp(self):
         self.d = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
@@ -3777,7 +4112,13 @@ class ModelChoiceOff(unittest.TestCase):
         self.same(self.each(start_log), "the start log")
         out = self.d / "out"
         here = lambda s, value: normalized(value, s.root, s.url, out / s.root.name)            # noqa: E731
-        st = self.same(self.each(lambda s: here(s, s.state())), "/api/state")
+
+        def state(s):                      # without what is new: the Upscale's upscale_pin
+            value = s.state()
+            if s is self.now:
+                self.assertIs(value.pop("upscale_pin"), True)
+            return value
+        st = self.same(self.each(lambda s: here(s, state(s))), "/api/state")
         self.assertNotIn('"models"', st)
         self.assertIn('"session"', st)
         clips = self.each(lambda s: cli(s.url, "generate", "--prompt", "a test clip", "--seed", "1", "--json", "-q",
@@ -3788,7 +4129,7 @@ class ModelChoiceOff(unittest.TestCase):
         rec = records["now"]
         self.assertTrue(Path(rec["path"]).is_file())
         self.assertNotIn("model", rec)
-        self.same(self.each(lambda s: here(s, s.state())), "/api/state with the clip")
+        self.same(self.each(lambda s: here(s, state(s))), "/api/state with the clip")
         api = self.same(self.each(lambda s: here(s, json.loads(s.get(f"/api/jobs/{s.state()['jobs'][0]['id']}")[2]))),
                         "a clip's API record")
         self.assertNotIn("file_name", api)
@@ -3806,7 +4147,7 @@ class ModelChoiceOff(unittest.TestCase):
         done = self.each(lambda s: s.wait([jids[s.root.name]])[0])
         self.same({name: here(self.studios[name], job) for name, job in done.items()},
                   "a clip whose form had other fields")
-        self.same(self.each(lambda s: here(s, s.state())), "/api/state with both clips")
+        self.same(self.each(lambda s: here(s, state(s))), "/api/state with both clips")
 
     def test_v051s_client(self):
         """v0.5.1's lf-cli (from git) and this one print the same against a studio with the model choice off: a
@@ -4690,10 +5031,11 @@ class TurboWithoutUpscale(TurboTest):
 
 class TurboUpscale(TurboTest):
     """The Upscale takes every 5 s LightX2V Turbo clip, Text and Keyframes, at either size, 16:9 or 9:16: its input
-    folder links the clip's 768p MP4 and stretches a 576p one to 768p (LANCZOS; 121 frames), cuts a clip with a last
-    keyframe (124 frames) to its first 121, links its audio.pt as the job's audio, and its qwen/ (Text) or qwen-text/
-    (Keyframes: made with the clip) as its text; a Keyframes clip without qwen-text/ gets the upscale's encode. The
-    result has the clip's sound, cut to the frames kept."""
+    folder links the clip's 768p MP4 and stretches a 576p one to 768p (LANCZOS, every frame), keeps every frame of a
+    clip with a last keyframe (124) at 1080p and 2K and cuts it to its first 121 at 4K, links its audio.pt as the
+    job's audio, and its qwen/ (Text) or qwen-text/ (Keyframes: made with the clip) as its text; a Keyframes clip
+    without qwen-text/ gets the upscale's encode. The result has the clip's sound, whole, or cut with the frames at
+    4K."""
     env = {"STUB_UPSCALE_S": "1"}
 
     def view(self, job):
@@ -4752,7 +5094,8 @@ class TurboUpscale(TurboTest):
                   "\nA kite.")
         parent = self.done(self.turbo(task="fl2va", prompt=prompt, files={"first_frame": [("a.png", png())]}))
         self.assertEqual(self.studio.job(parent["id"])["upscalable"],
-                         {"ok": True, "clip_audio": True, "text": "generation", "video": "stretch"})
+                         {"ok": True, "clip_audio": True, "text": "generation", "video": "stretch", "pin": ["first"],
+                          "pin_routes": PIN_ROUTES})
         job = self.done(self.upscale(parent["id"]))
         self.assertEqual(job["text"], {"source": "generation", "prompt": parent["text_only"]["prompt"],
                                        "dropped": parent["text_only"]["dropped"]})
@@ -4762,31 +5105,62 @@ class TurboUpscale(TurboTest):
         self.assertEqual(json.loads((self.view(job) / "qwen" / "conditioning.json").read_text())["task"], "t2va")
         self.assertEqual(len(self.runs("encodes.log")), 1)
 
-    def test_a_last_keyframe_cut_to_121_frames(self):
-        """124 frames at 5 s, its last keyframe on the last: the input is its first 121 (768p: cut; 576p: stretched
-        and cut), its sound cut with it, and the upscale has 121 frames."""
+    def test_a_last_keyframe_keeps_124_frames(self):
+        """124 frames at 5 s, its last keyframe on the last: at 1080p and 2K the input has all of them (768p: linked;
+        576p: stretched), its sound whole (5.167 s), and the upscale has 124 frames and that sound; at 4K (no 124-frame
+        4K run yet) its first 121 (768p: cut; 576p: stretched and cut), its sound cut with it."""
         line = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; "
                 "Picture 2 aligns with the 5.00-second mark.\nA dancer turns slowly.")
         both = {"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}
-        for resolution, video in (("768p", "trim"), ("576p", "stretch+trim")):
+        for resolution, video in (("768p", "clip"), ("576p", "stretch")):
             with self.subTest(resolution):
                 parent = self.done(self.turbo(task="fl2va", prompt=line, resolution=resolution, files=both,
                                               seed=7 if resolution == "768p" else 8))
-                self.assertEqual(probe(parent["output"])["video"]["nb_frames"], "124")
+                clip = probe(parent["output"])
+                self.assertEqual(clip["video"]["nb_frames"], "124")
+                self.assertGreater(float(clip["audio"]["duration"]), 5.15)
+                frames = {"1080p": 124, "2k": 124, "4k": 121}
                 self.assertEqual(self.studio.job(parent["id"])["upscalable"],
-                                 {"ok": True, "clip_audio": True, "text": "generation", "video": video})
-                job = self.done(self.upscale(parent["id"]))
-                self.assertEqual(job["video"], video)
+                                 dict({"ok": True, "clip_audio": True, "text": "generation", "frames": frames,
+                                       "pin": ["first", "last"], "pin_routes": PIN_ROUTES_BOTH},
+                                      **({"video": video} if video != "clip" else {})))
+                for size, output in (("1080p", "regen_1920x1080_124f.mp4"), ("2k", "regen_2560x1440_124f.mp4")):
+                    job = self.done(self.upscale(parent["id"], resolution=size))
+                    self.assertEqual((job["video"], job["frames"]), (video, 124))
+                    name = "refined_1344x768_124f.mp4"
+                    self.assertEqual(self.input_mp4(job).name, name)
+                    if video == "clip":
+                        self.assertEqual(inode(self.input_mp4(job)), inode(parent["output"]))
+                    mp4 = probe(self.input_mp4(job))
+                    self.assertEqual((mp4["video"]["width"], mp4["video"]["height"], mp4["video"]["nb_frames"]),
+                                     (1344, 768, "124"))
+                    self.assertEqual(Path(job["output"]).name, output)
+                    out = probe(job["output"])
+                    self.assertEqual(out["video"]["nb_frames"], "124")
+                    for key in ("nb_frames", "duration"):                    # the clip's sound, whole, copied
+                        self.assertEqual(out["audio"][key], clip["audio"][key], key)
+                    source = json.loads((self.view(job) / "source.json").read_text())
+                    self.assertEqual((source["files"][f"stage2/{name}"]["how"], source["frames"], source["video"]),
+                                     ("link" if video == "clip" else video, {"clip": 124, "made": 124, "kept": 124},
+                                      video))
+                    receipt = json.loads((self.regen(job) / "receipt.json").read_text())
+                    self.assertEqual(receipt["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37})
+                # 4K: its first 121
+                cut = "trim" if video == "clip" else "stretch+trim"
+                job = self.done(self.upscale(parent["id"], resolution="4k"))
+                self.assertEqual((job["video"], job["frames"]), (cut, 121))
                 mp4 = probe(self.input_mp4(job))
-                self.assertEqual((mp4["video"]["width"], mp4["video"]["height"], mp4["video"]["nb_frames"]),
-                                 (1344, 768, "121"))
+                self.assertEqual((self.input_mp4(job).name, mp4["video"]["nb_frames"]),
+                                 ("refined_1344x768_121f.mp4", "121"))
                 self.assertLess(float(mp4["audio"]["duration"]), 5.1)
-                self.assertGreater(float(probe(parent["output"])["audio"]["duration"]), 5.15)
                 out = probe(job["output"])
-                self.assertEqual(out["video"]["nb_frames"], "121")
+                self.assertEqual((Path(job["output"]).name, out["video"]["nb_frames"]),
+                                 ("regen_3840x2160_121f.mp4", "121"))
                 self.assertEqual(out["audio"]["duration"], mp4["audio"]["duration"])     # the cut sound, copied
                 self.assertEqual(json.loads((self.view(job) / "source.json").read_text())["files"][
-                    "stage2/refined_1344x768_121f.mp4"]["how"], video)
+                    "stage2/refined_1344x768_121f.mp4"]["how"], cut)
+                self.assertEqual(job["pin"], {"asked": "auto", "ends": [], "why": {"first": "not at 4K yet",
+                                                                                   "last": "not at 4K yet"}})
 
     def test_keyframes_without_qwen_text_get_the_upscales_encode(self):
         prompt = ("For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced."
@@ -4795,7 +5169,7 @@ class TurboUpscale(TurboTest):
                                       files={"first_frame": [("a.png", png())]}))
         shutil.rmtree(Path(parent["output"]).parents[1] / "qwen-text")          # an older clip, say
         self.assertEqual(self.studio.job(parent["id"])["upscalable"],
-                         {"ok": True, "clip_audio": True, "text": "encode"})
+                         {"ok": True, "clip_audio": True, "text": "encode", "pin": ["first"], "pin_routes": PIN_ROUTES})
         job = self.done(self.upscale(parent["id"]))
         self.assertEqual((job["text"]["source"], job["text"]["prompt"]), ("encode", "A kite."))
         run = self.runs("encodes.log")[-1]
@@ -4832,6 +5206,155 @@ class TurboUpscale(TurboTest):
                          {"ok": True, "clip_audio": True, "video": "stretch"})
         job = self.done(self.upscale(parent["id"]))
         self.assertEqual((job["parent_model"], job["video"]), (TURBO, "stretch"))
+
+
+class TurboPin(TurboTest):
+    """Keep my frames on LightX2V Turbo's Keyframes clips: the ends each clip offers (its keyframes, as its receipt
+    records their fit and sha256), job.json's "pin" with the ends sent (auto, at 1080p and 2K, balanced), their
+    pictures linked into the input folder, source.json and the record's result per end (the stand-in job's check);
+    an end whose picture is gone or changed is not held, with the reason, also when that happens after the request;
+    /api/state never reads the pictures (a change shows once a request has hashed it)."""
+    env = {"STUB_UPSCALE_S": "0.5"}
+    LINE = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; "
+            "Picture 2 aligns with the 5.00-second mark.\nA dancer turns slowly.")
+
+    def keyframes_clip(self, files, resolution="576p", seed=1):
+        return self.done(self.turbo(task="fl2va", prompt=self.LINE, resolution=resolution, files=files, seed=seed))
+
+    def test_the_ends_of_each_clip(self):
+        """A Text clip has none; a first frame, a last frame alone, both: each end, with its fit (the first stretched,
+        a lone last stretched, a last after a first cover-cropped at the clip's canvas) in job.json, linked and in
+        source.json; the job's result per end in the record (one below the 28 dB needed is not held)."""
+        self.restart(STUB_UPSCALE_PIN_DB="last=25.4")
+        text = self.done(self.turbo(seed=2))
+        self.assertFalse({"pin", "pin_why", "pin_routes"} & set(self.studio.job(text["id"])["upscalable"]))
+        a, b = png(), png(40, 24)
+        sha = {"first": hashlib.sha256(a).hexdigest(), "last": hashlib.sha256(b).hexdigest()}
+        stretch = lambda end: {"anchor": end, "sha256": sha[end], "fit": "stretch", "canvas": [1024, 576]}  # noqa
+        cover = {"anchor": "last", "sha256": sha["last"], "fit": "cover-crop", "canvas": [1024, 576]}
+        for seed, files, ends, keyframes in (
+                (21, {"first_frame": [("a.png", a)]}, ["first"], [stretch("first")]),
+                (22, {"last_frame": [("b.png", b)]}, ["last"], [stretch("last")]),
+                (23, {"first_frame": [("a.png", a)], "last_frame": [("b.png", b)]}, ["first", "last"],
+                 [stretch("first"), cover])):
+            with self.subTest(ends):
+                parent = self.keyframes_clip(files, seed=seed)
+                u = self.studio.job(parent["id"])["upscalable"]
+                self.assertEqual((u["pin"], u["pin_routes"]),
+                                 (ends, PIN_ROUTES_BOTH if len(ends) > 1 else PIN_ROUTES))
+                self.assertNotIn("pin_why", u)
+                job = self.done(self.upscale(parent["id"], resolution="1080p"))
+                view = self.regen(job).parent / "input"
+                data = json.loads((self.regen(job) / "job.json").read_text())
+                self.assertEqual(data["pin"], {"keyframes": [
+                    dict(k, image=str(view / "keyframe" / f"{k['anchor']}.png")) for k in keyframes]})
+                rec = self.studio.job(parent["id"])
+                for end in ends:
+                    self.assertEqual(inode(view / "keyframe" / f"{end}.png"), inode(rec[f"{end}_frame"]))
+                source = json.loads((view / "source.json").read_text())
+                self.assertEqual(sorted(source["keyframes"]), ends)
+                for k in keyframes:
+                    self.assertEqual(source["keyframes"][k["anchor"]],
+                                     {"from": rec[f"{k['anchor']}_frame"], "how": "link", "sha256": k["sha256"],
+                                      "size": [32, 24] if k["anchor"] == "first" else [40, 24], "fit": k["fit"],
+                                      "canvas": [1024, 576], "same_as_clip": True})
+                far = {"used": False, "agreement_db": 25.4,
+                       "why": f"the clip's frame {job['frames'] - 1} is 25.4 dB from your picture (28 needed)"}
+                self.assertEqual(job["pin"], {"asked": "auto", "ends": ends, "why": {}, "result": {
+                    end: far if end == "last" else {"used": True, "agreement_db": 33.0, "why": None} for end in ends}})
+                self.assertEqual(job["frames"], 124 if "last" in ends else 121)
+        log = self.studio.log.read_text()
+        self.assertIn("1080p, balanced, audio clip, seed 21, keeping its first frame)", log)
+        self.assertIn("seed 23, keeping its first and last frames)", log)
+
+    def test_where_no_end_is_sent(self):
+        """pin off; 4K; Faithful and Full: no pin in job.json, nothing linked, the record says why; the other keys
+        of a request as before."""
+        parent = self.keyframes_clip({"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]},
+                                     resolution="768p")
+        balanced, at_4k = "with strength balanced only, for now", "not at 4K yet"
+        for fields, why in (({"pin": "off", "resolution": "1080p"}, {}),
+                            ({"resolution": "4k"}, {"first": at_4k, "last": at_4k}),
+                            ({"strength": "faithful"}, {"first": balanced, "last": balanced}),
+                            ({"strength": "full", "pin": "auto"}, {"first": balanced, "last": balanced})):
+            with self.subTest(fields):
+                job = self.done(self.upscale(parent["id"], **fields))
+                self.assertEqual(job["pin"], {"asked": fields.get("pin", "auto"), "ends": [], "why": why})
+                self.assertNotIn("pin", json.loads((self.regen(job) / "job.json").read_text()))
+                self.assertFalse((self.regen(job).parent / "input" / "keyframe").exists())
+
+    def test_pictures_gone_or_changed(self):
+        """A picture deleted: that end is not offered (pin_why), the other's route is its own. A picture changed (a
+        new file under the same name): /api/state does not hash pictures, so it is offered until a request hashes it,
+        which sends no end then; from then on /api/state says why."""
+        parent = self.keyframes_clip({"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}, seed=3)
+        rec = self.studio.job(parent["id"])
+        Path(rec["last_frame"]).unlink()
+        self.assertEqual({k: v for k, v in self.studio.job(parent["id"])["upscalable"].items() if "pin" in k},
+                         {"pin": ["first"], "pin_routes": PIN_ROUTES, "pin_why": {"last": PIN_GONE}})
+        Path(rec["first_frame"]).write_bytes(png(16, 24))
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"]["pin"], ["first"])     # not hashed here
+        job = self.done(self.upscale(parent["id"], resolution="1080p"))
+        self.assertEqual(job["pin"], {"asked": "auto", "ends": [], "why": {"first": PIN_CHANGED, "last": PIN_GONE}})
+        self.assertNotIn("pin", json.loads((self.regen(job) / "job.json").read_text()))
+        u = self.studio.job(parent["id"])["upscalable"]
+        self.assertEqual((u.get("pin"), u["pin_why"]), (None, {"first": PIN_CHANGED, "last": PIN_GONE}))
+        Path(rec["first_frame"]).write_bytes(png())                             # back as it was
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"]["pin"], ["first"])
+        job = self.done(self.upscale(parent["id"], resolution="2k"))
+        self.assertEqual((job["pin"]["ends"], job["pin"]["result"]["first"]["used"]), (["first"], True))
+
+    def test_a_picture_deleted_after_the_request(self):
+        """The run checks the pictures again: one deleted while the upscale waited is not sent, with the reason."""
+        parent = self.keyframes_clip({"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}, seed=4)
+        self.restart(STUB_H3TURBO_S="4")
+        ahead = self.turbo(seed=5)                                           # a clip runs before the upscale
+        uid = self.upscale(parent["id"], resolution="1080p")
+        self.assertEqual(self.studio.job(uid)["pin"]["ends"], ["first", "last"])
+        Path(self.studio.job(parent["id"])["last_frame"]).unlink()
+        self.assertNotEqual(self.studio.job(ahead)["status"], "done")             # still ahead of it
+        job = self.done(uid, timeout=90)
+        self.assertEqual(job["pin"], {"asked": "auto", "ends": ["first"], "why": {"last": PIN_GONE},
+                                      "result": {"first": {"used": True, "agreement_db": 33.0, "why": None}}})
+        data = json.loads((self.regen(job) / "job.json").read_text())
+        self.assertEqual([k["anchor"] for k in data["pin"]["keyframes"]], ["first"])
+        self.assertEqual(sorted(p.name for p in (self.regen(job).parent / "input" / "keyframe").iterdir()),
+                         ["first.png"])
+
+    def test_the_clips_record(self):
+        """The clip's receipt decides: a cover-crop it records that the job's rule does not give, no record of the
+        pictures, or no receipt at all, turn the end off with the reason; so does a receipt of another shape (a list
+        where the job writes a dict, frames that are not a number), while /api/state, /api/jobs and the clip's record
+        answer as ever."""
+        parent = self.keyframes_clip({"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}, seed=6)
+        path = Path(parent["output"]).parent / "receipt.json"
+        receipt = json.loads(path.read_text())
+        self.assertEqual(receipt["images"]["last"]["fit"], "cover-crop")
+        self.assertEqual((receipt["geometry"]["frames"], receipt["geometry"]["keep_frames"]), (124, 124))
+        no_record = "the clip has no record of how it used your picture"
+        for n, (change, why) in enumerate((({"images": dict(receipt["images"], last=dict(receipt["images"]["last"],
+                                                                         crop=[0, 0, 1024, 576]))},
+                             {"last": "the studio can't tell how your picture was fitted to the clip"}),
+                            ({"geometry": dict(receipt["geometry"], keep_frames=121)},
+                             {"last": "the clip stops 3 frames before your last picture"}),
+                            ({"images": {}}, {"first": no_record, "last": no_record}),
+                            ({"images": [1]}, {"first": no_record, "last": no_record}),
+                            ({"geometry": dict(receipt["geometry"], frames="124")}, {"last": no_record}),
+                            (None, {"first": no_record, "last": no_record}))):
+            with self.subTest(change):
+                path.unlink()
+                if change is not None:
+                    path.write_text(json.dumps(dict(receipt, **change)))
+                    os.utime(path, ns=(time.time_ns(), time.time_ns() + n * 10**9))     # read again
+                u = self.studio.job(parent["id"])["upscalable"]
+                self.assertEqual(u["pin_why"], why)
+                self.assertEqual(u.get("pin"), [e for e in ("first", "last") if e not in why] or None)
+                for query in (f"/api/jobs/{parent['id']}", "/api/jobs?limit=5"):
+                    code, _, data = self.studio.request("GET", query)
+                    self.assertEqual(code, 200, query)
+                    record = json.loads(data)
+                    record = record if "id" in record else next(j for j in record["jobs"] if j["id"] == parent["id"])
+                    self.assertEqual(record["upscalable"]["pin_why"], why)
 
 
 class TurboLoad(TurboTest):
@@ -5062,6 +5585,32 @@ class TurboSeam(unittest.TestCase):
             for job in (stub, real):
                 with self.assertRaisesRegex(ValueError, "seconds: a whole number from 5 to 15"):
                     job.parse_job(self.job_data(seconds=seconds), "/c/turbo")
+        for size, canvas, first in itertools.product(((1344, 768), (1024, 576), (32, 24), (1648, 2944), (577, 1024),
+                                                      (4000, 1000)), ((1024, 576), (576, 1024), (1344, 768)),
+                                                     (True, False)):
+            self.assertEqual(stub.keyframe_fit(size, canvas, first), real.keyframe_fit(size, canvas, first))
+
+    def test_the_receipt_keys_keep_my_frames_reads(self):
+        """The server's Keep my frames reads the job's receipt: "geometry" (width, height, frames, keep_frames: a clip
+        with a last keyframe keeps every frame made), "images" per end (keyframe_fit's "fit", and for a cover-crop the
+        "resized" and "crop" the Upscale's cover_crop computes too) and "inputs_sha256" (<end>_frame)."""
+        real = self.load(self.REAL)
+        spec = importlib.util.spec_from_file_location("regen2k_job_seam", REPO_DIR / "upscale" / "regen2k_job.py")
+        regen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(regen)
+        for first, last in (("/c/a.png", None), (None, "/c/b.png"), ("/c/a.png", "/c/b.png")):
+            g = real.geometry(real.parse_job(self.job_data(first_frame=first, last_frame=last), "/c/turbo"))
+            self.assertLessEqual({"width", "height", "frames", "keep_frames"}, set(g))
+            self.assertEqual(g["keep_frames"] == g["frames"], last is not None)
+        self.assertIn('files[f"{anchor}_frame"] = job[f"{anchor}_frame"]', self.REAL.read_text())
+        self.assertIn('receipt["images"][anchor] = {"size": list(image.size), "exif_transposed": turned, **fit}',
+                      self.REAL.read_text())
+        for size, canvas in itertools.product(((1344, 768), (32, 24), (1648, 2944), (4000, 1000), (577, 1024)),
+                                              ((1024, 576), (576, 1024), (1344, 768), (768, 1344))):
+            fit = real.keyframe_fit(size, canvas, first=False)
+            self.assertIn(fit["fit"], regen.FITS)
+            if fit["fit"] == "cover-crop":
+                self.assertEqual([list(v) for v in regen.cover_crop(size, canvas)], [fit["resized"], fit["crop"]])
 
 
 def server_value(name, **names):

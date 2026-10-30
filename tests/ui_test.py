@@ -262,8 +262,9 @@ with sync_playwright() as p:
     reasons = pg.evaluate("[...document.querySelectorAll('.job .act.up[aria-disabled=true]:not([hidden])')]"
                           ".map(b => b.title)")
     check(all(reasons), f"a disabled Upscale button says why ({len(reasons)} disabled)")
-    # the Upscale popover of a Keyframes clip says which text the Upscale uses (its prompt without the keyframe line);
-    # Escape closes it, nothing is sent
+    # the Upscale popover of a Keyframes clip says which text the Upscale uses (its prompt without the keyframe line),
+    # and has Keep my frames, named after the ends it can hold, where the studio offers it; Escape closes it, nothing
+    # is sent
     kf = pg.evaluate("(() => { const c = [...document.querySelectorAll('.job:not([data-kind])')].find(c => "
                      "c.dataset.status === 'done' && (known.get(c.dataset.id) || {}).task === 'fl2va' && "
                      "c.querySelector('.act.up[aria-disabled=false]:not([hidden])'));"
@@ -274,6 +275,10 @@ with sync_playwright() as p:
         note = pg.inner_text("#upinput") if pg.is_visible("#upinput") else ""
         check(note.startswith("Uses your prompt without its keyframe line"),
               f"the Upscale popover of a Keyframes clip says which text it uses ({note[:60]!r})")
+        ends = pg.evaluate(f"state.upscale_pin && (known.get('{kf}').upscalable || {{}}).pin || []")
+        label = pg.inner_text("#uppinlabel") if pg.is_visible("#uppinrow") else ""
+        want = ("" if not ends else "Keep my first and last frames" if len(ends) > 1 else f"Keep my {ends[0]} frame")
+        check(label == want, f"Keep my frames in the popover of a Keyframes clip ({label or 'none'}, ends {ends})")
         pg.keyboard.press("Escape")
         pg.wait_for_selector("#uppop", state="hidden")
     else:

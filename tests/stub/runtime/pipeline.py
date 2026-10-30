@@ -4,7 +4,11 @@ Loading and generating are `sleep` processes in their own sessions, like the rea
 them (a stopped warm-up, a cancelled clip). A pipeline whose worker was stopped by a signal is broken like a real one
 whose workers died: it fails until it is closed and a new one is started. Each clip is a small ffmpeg test pattern
 with a tone, with the requested format and length (seconds x 24 + 1 frames, as the real clips), next to stand-ins
-for the real clip's working files the Upscale reads (qwen/conditioning.pt and stage1/stage1_direct_tensors.pt).
+for the real clip's working files the Upscale reads (qwen/conditioning.pt and stage1/stage1_direct_tensors.pt) and
+stage2/stage2_result.json with what the Upscale's Keep my frames reads of it: "stage2_keyframe" (the patch's rule:
+SOL_H3_STAGE2_KEYFRAME for an fl2va clip with a first frame, else "off"), "stage2_keyframe_setting" and the capture's
+"input_sha256" of its keyframes. STUB_STAGE2_KEYFRAME=absent leaves the first two out, as a clip made before 0.5.2
+(and a copy of this stub as an older patch, without config.stage2_keyframe_mode, does).
   STUB_LOAD_S    seconds the loading pass waits before its clip (default 3)
   STUB_CLIP_S    seconds per clip once loaded (default 2)
   STUB_CLOSE_S   seconds close() takes (default 0; the real pipeline needs ~40 s)
@@ -23,12 +27,15 @@ for the real clip's working files the Upscale reads (qwen/conditioning.pt and st
   first marks the pipeline as closing, reshape() and generate() refuse a closing one, and a reshape that a close
   overlaps fails.
 """
+import hashlib
 import json
 import os
 import subprocess
 import threading
 import time
 from pathlib import Path
+
+from . import config
 
 SIZE = {"landscape": (336, 192), "portrait": (192, 336)}
 
@@ -76,6 +83,14 @@ class Pipeline:
                         "-i", f"sine=frequency=440:duration={frames / 24:.4f}",
                         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(out)],
                        check=True, timeout=120)
+        result = {"status": "PASS", "case_id": case["case_id"],
+                  "capture": {"input_sha256": {k: hashlib.sha256(Path(case[k]).read_bytes()).hexdigest()
+                                               for k in ("first_frame", "last_frame") if case.get(k)}}}
+        mode = getattr(config, "stage2_keyframe_mode", None)
+        if mode and os.environ.get("STUB_STAGE2_KEYFRAME") != "absent":
+            pinned = self.task == "fl2va" and case.get("task") == "fl2va" and case.get("first_frame")
+            result.update(stage2_keyframe=mode() if pinned else "off", stage2_keyframe_setting=mode())
+        (out.parent / "stage2_result.json").write_text(json.dumps(result, indent=1))
         return str(out)
 
     def _row(self, case, request, started):
