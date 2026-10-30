@@ -136,12 +136,12 @@ for a stopped studio that does not know it, against fake servers: `Switchboard` 
 `UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a route has not run on the GPU through
 the studio (on the routes the page's `UP_RAN` leaves out), and the one that a length has not (its offer's `"ran"`), a
 long clip's times and the sizes its length does not have greyed with the reason (and the popover at 1080p for a 12 s
-clip; `UpscaleOldClipPage` a 3 s clip's, its 4K greyed as "not this clip"), the encode's phase and time, the text an upscale used and its clip's model; in cards too narrow for the names,
-Upscale and Delete show icons, so the buttons keep one row; `OneRowUpscaleOff` checks that row with the Upscale off),
-the popover (`ModelUpscale` its notes per size and Keep my frames: the box per ends, off with the reason at 4K and other
-strengths, "only partly" at 2K, its note only at a size where its route has not run, `pin` in the request, the card's
-result), the upscale's card and `tests/ui_test.py` with an upscale in the gallery (and the popover of a Keyframes clip,
-with its Keep my frames box).
+clip; `UpscaleOldClipPage` a 3 s clip's, its 4K greyed as "not this clip"), the encode's phase and time, the text an
+upscale used and its clip's model; in cards too narrow for the names, Upscale and Delete show icons, so the buttons keep
+one row; `OneRowUpscaleOff` checks that row with the Upscale off), the popover (`ModelUpscale` its notes per size and
+Keep my frames: the box per ends, off with the reason at 4K and other strengths, "only partly" at 2K, its note only at a
+size where its route has not run, `pin` in the request, the card's result), the upscale's card and `tests/ui_test.py`
+with an upscale in the gallery (and the popover of a Keyframes clip, with its Keep my frames box).
 
 The experimental model choice (`LFSTUDIO_MODELS`, the registry `MODELS` in the server) is off in the stub studio, as by
 default; `StubStudio(models="sol-h3,lightx2v-turbo")` (or `tests/stub/studio.py --models ...`) turns LightX2V Turbo on.
@@ -220,31 +220,30 @@ forward by rows (`lean_chunks_for`) and the memory model and floor (`case_rows`,
 shape table (with every orientation the patches make), the portrait entries for NVIDIA's dicts, the upscale route and
 `check_package` (every pinned file for a 9:16 clip and for a clip of another length), the text check on stand-in
 tensors, the command lines (NVIDIA's read of the clip, the others without its tpad: a clip cut off after its header
-reads short; the mux run with ffmpeg) and the environment, the progress lines, the memory trace, `--check` (of every count of frames, at every size:
-a size its length has not got refused with the reason), the receipt when a job is done, fails, is refused, starts with
-too little memory or gets SIGTERM, `--parent` (the job dies with the server), v0.5.2's job from git refusing a long
-clip and `min_free_gib` (`OlderJobTests`: so job.json stays version 1), and `run()` with a stand-in torch and a
-stand-in of NVIDIA's `open_h3`, with both loads (fast and standard: stand-ins for safetensors, diffusers and `fastload`
-record every load, which the fast load must have replaced before the first one): a 16:9 clip makes the same calls into
-NVIDIA's code as before the job took 9:16, a 9:16 one its portrait route (the same with either load), a clip of 124
-frames and clips of other lengths the job's copies of NVIDIA's encode and decode (their audio and silence, the lean
-blocks by their rows, NVIDIA's upscaler.py and upscaler_node.py pinned, an upscaled latent of another T failing before
-the refine), every 5 s route the block forward it ran on the GPU, and a pin the pinned refine with the ends
-its check kept (a 10 s clip's too). The pin's fit (`cover_crop`, `fit_box`) against the LightX2V Turbo receipts'
+reads short; the mux run with ffmpeg) and the environment, the progress lines, the memory trace, `--check` (of every
+count of frames, at every size: a size its length has not got refused with the reason), the receipt when a job is done,
+fails, is refused, starts with too little memory or gets SIGTERM, `--parent` (the job dies with the server), v0.5.2's
+job from git refusing a long clip and `min_free_gib` (`OlderJobTests`: so job.json stays version 1), and `run()` with a
+stand-in torch and a stand-in of NVIDIA's `open_h3`, with both loads (fast and standard: stand-ins for safetensors,
+diffusers and `fastload` record every load, which the fast load must have replaced before the first one): a 16:9 clip
+makes the same calls into NVIDIA's code as before the job took 9:16, a 9:16 one its portrait route (the same with either
+load), a clip of 124 frames and clips of other lengths the job's copies of NVIDIA's encode and decode (their audio and
+silence, the lean blocks by their rows, NVIDIA's upscaler.py and upscaler_node.py pinned, an upscaled latent of another
+T failing before the refine), every 5 s route the block forward it ran on the GPU, and a pin the pinned refine with the
+ends its check kept (a 10 s clip's too). The pin's fit (`cover_crop`, `fit_box`) against the LightX2V Turbo receipts'
 records, "as is" too, and the grids are standard library. With `LFSTUDIO_UPSCALE_PKG` naming NVIDIA's real package it
-also checks the files the job pins, the entries it was written against and its encode command (read, not imported).
-Its torch tests (the merger, the lean block forward against a stock-style block, the tensor checks, the column crop)
-run where torch is importable (CPU is enough) and are skipped otherwise. With Pillow and numpy (the Regen-2K
-environment) the pin's check runs on ffmpeg-made clips (each reason an end is not kept, the EXIF turn, the fit at the
-grid, `--check`); with diffusers and imageio-ffmpeg too and NVIDIA's package, the job's copies of NVIDIA's encode and
-decode against NVIDIA's own run on the CPU with a stand-in VAE (bit for bit at 121 frames; other lengths too),
-diffusers' VAE chunks and H3's frame rules (`DiffusersRuleTests`: every case's T and A), `encode_audio` with a small
-audio VAE of diffusers' against NVIDIA's silence, NVIDIA's t2va layout of every frame case, the pin's layout at 1080p
-and 2K (the last block 205 after the text at 5 s, and at every length) and the pinned refine with a stand-in
-transformer: without a keyframe NVIDIA's `Pipeline.refine` bit for bit, with a first frame the bench wrapper's K1
-refine (copied into the test) bit for bit, and with both ends (at 5 s and 10 s) the first block unchanged, the
-condition rows never written and only the rows after them stepped. Run those with the Regen-2K Python, CUDA hidden
-(the command is in the file's docstring).
+also checks the files the job pins, the entries it was written against and its encode command (read, not imported). Its
+torch tests (the merger, the lean block forward against a stock-style block, the tensor checks, the column crop) run
+where torch is importable (CPU is enough) and are skipped otherwise. With Pillow and numpy (the Regen-2K environment)
+the pin's check runs on ffmpeg-made clips (each reason an end is not kept, the EXIF turn, the fit at the grid,
+`--check`); with diffusers and imageio-ffmpeg too and NVIDIA's package, the job's copies of NVIDIA's encode and decode
+against NVIDIA's own run on the CPU with a stand-in VAE (bit for bit at 121 frames; other lengths too), diffusers' VAE
+chunks and H3's frame rules (`DiffusersRuleTests`: every case's T and A), `encode_audio` with a small audio VAE of
+diffusers' against NVIDIA's silence, NVIDIA's t2va layout of every frame case, the pin's layout at 1080p and 2K (the
+last block 205 after the text at 5 s, and at every length) and the pinned refine with a stand-in transformer: without a
+keyframe NVIDIA's `Pipeline.refine` bit for bit, with a first frame the bench wrapper's K1 refine (copied into the test)
+bit for bit, and with both ends (at 5 s and 10 s) the first block unchanged, the condition rows never written and only
+the rows after them stepped. Run those with the Regen-2K Python, CUDA hidden (the command is in the file's docstring).
 
 `tests/test_h3turbo_job.py` covers `jobs/h3turbo_job.py` on the CPU: job.json and its refusals, the geometry (every
 length against the patch's `runtime/geometry.py`, the frames a clip with a last frame keeps, the layout rows against the
