@@ -257,6 +257,8 @@ NVIDIA's merge, checked). The numbers come from four kinds of runs, kept apart h
   apart", below).
 
 The first tables have one run per resolution and orientation; the runs through the studio on 2026-10-29 add more.
+Every run here is of a 5 s clip: clips of other lengths have not been upscaled on the GPU yet, and their times and
+memory are estimates from these runs ([Longer clips (estimates)](#longer-clips-estimates), below).
 
 **The job itself, fast load** (staging studio, with the job as it was just before it took 9:16 clips: its calls into
 NVIDIA's code for a 16:9 clip are unchanged since, which `tests/test_upscale.py` checks; one 16:9 clip (1344×768) to
@@ -432,13 +434,15 @@ Measured apart:
 | The upscale's prompt encode (Sol-H3 Keyframes and Reference clips; a LightX2V Turbo Keyframes clip without its own text) | 9.1-18 s in all, 1.1-1.8 s of it the encode; ~15 GiB while its Qwen worker lives | the times: ten runs of the same helper (`bench/h3turbo_encode.py`) for LightX2V Turbo clips on the GPU, 2026-10-28; the memory (15.1-15.4 GiB): the receipts of the studio's own Qwen encodes on the same machine |
 | The stretch of a 576p clip to 768p | 0.55-0.92 s | two clips, on the CPU |
 
-So the page shows the Text clip's times for every 5 s clip, plus 15 s in its progress bar for an upscale whose text is
-encoded first, and its popover says of the kinds not run through the studio yet (above) that this kind of clip has not
-been upscaled on the GPU through the studio yet. It goes by route (the model, where the text comes from, what is done
-to the MP4), not by size: a route run at one size counts at the others (so a 576p clip at 2K has no note), and a 768p
-Keyframes clip with a first frame alone counts as one with both. With Keep my frames the progress bar adds 16 s per
-end at 1080p and 83 s for both ends at 2K (measured), and 60 s for one end at 2K (an estimate: not run), where the
-popover says so.
+So the page shows the Text clip's times for every 5 s clip (and a longer clip its length's estimates, below), plus
+15 s in its progress bar for an upscale whose text is encoded first, and its popover says of the kinds not run through
+the studio yet (above) that this kind of clip has not been upscaled on the GPU through the studio yet. It goes by
+route (the model, where the text comes from, what is done to the MP4), not by size: a route run at one size counts at
+the others (so a 576p clip at 2K has no note), and a 768p Keyframes clip with a first frame alone counts as one with
+both. A clip of a length that has not run at that size gets the length's note in its place, that its times are
+estimates. With Keep my frames the progress bar adds 16 s per end at 1080p and 83 s for both ends at 2K (measured),
+and 60 s for one end at 2K (an estimate: not run), where the popover says so; on a clip longer than 5 s these are
+estimates too, and a little short (below).
 
 **The job itself, standard load** (2026-10-28, before the fast load's runs, the same staging studio and 16:9 clip, an
 earlier version of the job too; 2K, `balanced`, audio `clip`):
@@ -495,14 +499,17 @@ runs above did (128-133 s).
   neither depends on the resolution. In all, with 2 steps (`faithful`, `balanced`) about 10 min at 1080p, 19 min at 2K
   and 1.1 h at 4K; with 3 (`full`) about 13 min, 26 min and 1.6 h. The popover shows the 2-step times with the
   studio's load (`/api/state` `upscale_load`; with the standard load ~19 min, ~28 min and ~1.2 h), the same for a
-  9:16 clip and for every other 5 s clip (15 s more in the progress bar when its text is encoded first). A run with
-  the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
+  9:16 clip and for every other 5 s clip (15 s more in the progress bar when its text is encoded first). These times
+  come from the job's table, per length (`OFFER_ETA_S` in `upscale/regen2k_job.py`; `/api/state` `upscale_offers`
+  carries it to the page, and `lf-cli`'s texts are checked against it): a longer clip gets its length's estimates
+  (below). A run with the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
   page cache first) loaded in 539 s, against 445 s without; the files were cached already, so this says little about
   a cold start.
 - 4K: the stock block forward with only its FFN in 8 sequence chunks ran out of memory in the first step (the bench's
-  guard stopped it at 3 GiB of MemAvailable). At 4K the job runs every block with a memory-lean forward (everything but
-  the attention over the sequence in 16 chunks, q/k/v straight into SDPA's layout; bit-identical to the stock forward
-  on GB10, with 2.5x less activation memory; `lean_chunks` 16 in the receipt). **The studio's 4K path has run end to
+  guard stopped it at 3 GiB of MemAvailable). At 4K (and on longer clips from 10 s at 1080p and 6 s at 2K, below) the
+  job runs every block with a memory-lean forward (everything but the attention over the sequence in 16 chunks, q/k/v
+  straight into SDPA's layout; bit-identical to the stock forward on GB10, with 2.5x less activation memory; `forward`
+  `lean` and `lean_chunks` 16 in the receipt). **The studio's 4K path has run end to
   end once**, with a 16:9 clip (the first table): 66 min from the job's start to the MP4, 56 min of it the two refine
   steps, with the most memory of the three (94.46 GiB allocated at the peak, MemAvailable down to 11.1 GiB in the first
   step; the studio's guard stops a job below 5 GiB). The bench's 4K run (the same forward, the weights loaded with
@@ -511,13 +518,118 @@ runs above did (128-133 s).
 - The studio needs 110 GiB free to start an upscale, 115 GiB at 4K (`LFSTUDIO_UPSCALE_MIN_FREE_GIB`, plus 5 GiB at
   4K; 117.7 GiB were free on the idle box), and kills it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`). The job's
   16:9 runs above took ~101 GiB at 2K (MemAvailable 116.7 → 15.7 GiB) and ~105 GiB at 4K (116.4 → 11.1 GiB): a 4K
-  upscale that started with just 110 GiB free would come down to ~4.7 GiB, below the guard.
+  upscale that started with just 110 GiB free would come down to ~4.7 GiB, below the guard. A longer clip needs what
+  the memory model below gives where that is more (an estimate: 111 GiB at 2K for 10 s with Keep my frames), and the
+  job checks the floor again as it starts (job.json `min_free_gib`).
 - Quality, so far: at NVIDIA's settings (start noise 0.909, 3 steps: `full`) the result is much sharper but has a
   different-looking face. Lower start noise (0.7 and 0.5 with 2 steps) and refining
   against the clip's own audio instead of NVIDIA's silence are being measured; the defaults (`balanced`, `clip`)
   are provisional until then.
 - Not tried: NVIDIA's `sol_engine` forward (Sol-Attn sparse attention, MXFP8; NVIDIA lists ~150 GB for it) and its
   fast VAE decoder.
+
+### Longer clips (estimates)
+
+**No clip of another length than 5 s has been upscaled on the GPU yet**, Sol-H3's old 3 s clips included. Every time
+and memory figure in this part is an **estimate** from a model fitted to the 5 s runs above, until those lengths run.
+The job takes such a clip whole, in one pass of NVIDIA's refine, as it takes a 5 s one, at 1080p (every length), 2K
+(up to 10 s) or 4K (5 s only). Its tables are in `upscale/regen2k_job.py`: `FRAME_CASES`, `OFFER_ETA_S`,
+`UPSCALE_RAN` and the memory model (`MODEL_GIB`, `need_gib`).
+
+**What each length gives the refine.** H3 makes 17n+5 frames (124 at 5 s), with 5n+2 latent frames (T) and 40 audio
+latents a second (A). Sol-H3's clips, and LightX2V Turbo's without a last keyframe, keep the largest 8m+1 of them (121
+at 5 s); the job adds NVIDIA's 3 copies of the last frame, as NVIDIA's encode does at 5 s, so the VAE gives the T of
+the frames made. A LightX2V Turbo clip with a last keyframe keeps every frame made, and gets no copies. The refine's
+sequence has T × 2,040 video rows at 1080p (3,600 at 2K, 8,160 at 4K), 2 × A audio rows and the prompt's rows (about
+200; the table counts 200). The output has the clip's frames, and its whole sound.
+
+| Length | Frames kept (made) | T | A | Rows at 1080p | Rows at 2K |
+|---|---|---|---|---|---|
+| 3 s (Sol-H3, up to 0.5.0) | 73 (73) | 22 | 122 | 45,324 | 79,644 |
+| 5 s | 121 or 124 (124) | 37 | 207 | 76,094 | 133,814 |
+| 6 s | 153 or 158 (158) | 47 | 263 | 96,606 | 169,926 |
+| 7 s | 169 or 175 (175) | 52 | 292 | 106,864 | 187,984 |
+| 8 s | 185 or 192 (192) | 57 | 320 | 117,120 | 206,040 |
+| 10 s | 241 or 243 (243) | 72 | 405 | 147,890 | 260,210 |
+| 12 s | 289 or 294 (294) | 87 | 490 | 178,660 | 314,380 |
+| 15 s | 361 or 362 (362) | 107 | 603 | 219,686 | 386,606 |
+
+At 4K a 5 s clip has 302,534 rows. A clip of any other count of frames (Sol-H3's 4 s clips, 105; a 14 s research
+clip, 345) is refused, never cut.
+
+**Time.** A refine step takes 6.457e-4 × S + 1.638e-8 × S² seconds for S rows: a fit to the 5 s steps of the bench
+and the job, within 5 % of them (143-154 s at 1080p, 375-406 s at 2K, 1684-1688 s at 4K). Most of a long step is the
+attention (the S² term). The rest of the job is scaled from the fast-load job's 5 s stages: the clip's encode and the
+decode by the VAE's chunks of its frames, the latent upscaler by its latent frames, the MP4 by its frames, plus the
+load (~22 s) and closing the studio's models (~40 s). That gives the page's `base` + `step` per length
+(`OFFER_ETA_S`; at 5 s the measured ones above, which the model comes within a few percent of), and the time in all
+with the fast load (the standard load adds ~8 min):
+
+| Length | 1080p: base + step | 2 steps / 3 steps | 2K: base + step | 2 steps / 3 steps |
+|---|---|---|---|---|
+| 3 s | 209 + 63 s | 6 / 7 min | 259 + 155 s | 9 / 12 min |
+| 5 s (measured) | 315 + 150 s | 10 / 13 min | 405 + 380 s | 19 / 26 min |
+| 6 s | 372 + 215 s | 13 / 17 min | 483 + 583 s | 27 / 37 min |
+| 7 s | 404 + 256 s | 15 / 20 min | 528 + 700 s | 32 / 44 min |
+| 8 s | 437 + 300 s | 17 / 22 min | 573 + 828 s | 37 / 51 min |
+| 10 s | 535 + 454 s | 24 / 32 min | 708 + 1277 s | 54 / 76 min |
+| 12 s | 632 + 638 s | 32 / 42 min | not offered | |
+| 15 s | 763 + 932 s | 44 / 59 min | not offered | |
+
+4K: 625 + 1685 s at 5 s (measured), 67 / 95 min; not offered for other lengths.
+
+**Memory.** GPU memory allocated at the refine's peak = 68.4 GiB (the DiT, the upscaler and the video VAE kept for
+the decode) + S × 181,800 bytes with the stock block forward, or S × 92,300 bytes with the lean one. MemAvailable
+falls 7, 9.5 or 11 GiB more than that (the allocator's reserve and the process; by the clip's own rows: up to 80,000,
+up to 140,000, more). Fitted to the job's 5 s runs, from ~116.5 GiB free at the start the model gives 81.3 / 91.1 /
+94.4 GiB allocated and 28.2 / 15.9 / 11.1 GiB at the lowest at 1080p / 2K / 4K; measured: 81.26-81.30 / 91.06-91.09
+/ 94.46 GiB, and 27.4-29.2 / 15.7-16.8 / 11.1 GiB. The floor to start (`min_free_for`) is allocated + that overhead +
+the guard's 5 GiB + 3 GiB of margin, and never below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` (110 GiB; 115 at 4K). Every 5 s
+clip keeps the floor it had, whatever the setting.
+
+**The forward, by rows.** Where the clip's own rows (video and audio: not the prompt's or Keep my frames') pass
+140,000, the job runs every block with the lean forward (16 chunks), as at 4K: at 1080p from 10 s, at 2K from 6 s.
+Every 5 s clip keeps the forward it ran with on the GPU: stock at 1080p and 2K (also with both ends kept, about
+141,000 rows at 2K), lean at 4K (`tests/test_upscale.py` checks it). The receipt has the refine's `rows` and its
+`forward`. The table gives the model's figures, the 5 s rows too (their runs: above):
+
+| Size and length | Forward | Peak allocated | Lowest MemAvailable | Floor to start |
+|---|---|---|---|---|
+| 1080p 3 s | stock | 76.1 GiB | 33.4 GiB | 110 GiB |
+| 1080p 5 s (ran) | stock | 81.3 GiB | 28.2 GiB | 110 GiB |
+| 1080p 6 s | stock | 84.8 GiB | 22.2 GiB | 110 GiB |
+| 1080p 7 s | stock | 86.5 GiB | 20.5 GiB | 110 GiB |
+| 1080p 8 s | stock | 88.2 GiB | 18.8 GiB | 110 GiB |
+| 1080p 10 s | lean | 81.1 GiB | 24.4 GiB | 110 GiB |
+| 1080p 12 s | lean | 83.8 GiB | 21.7 GiB | 110 GiB |
+| 1080p 15 s | lean | 87.3 GiB | 18.2 GiB | 110 GiB |
+| 2K 3 s | stock | 81.9 GiB | 27.6 GiB | 110 GiB |
+| 2K 5 s (ran) | stock | 91.1 GiB | 15.9 GiB | 110 GiB |
+| 2K 6 s | lean | 83.0 GiB | 22.5 GiB | 110 GiB |
+| 2K 7 s | lean | 84.6 GiB | 20.9 GiB | 110 GiB |
+| 2K 8 s | lean | 86.1 GiB | 19.4 GiB | 110 GiB |
+| 2K 10 s | lean | 90.8 GiB | 14.7 GiB | 110 GiB (111 with Keep my frames) |
+| 4K 5 s (ran) | lean | 94.4 GiB | 11.1 GiB | 115 GiB |
+
+**Why 2K stops at 10 s and 4K at 5 s, for now.** By the same model a whole clip there would not fit, or only past
+anything measured: 2K at 12 s would allocate 95.4 GiB and come down to about 10.1 GiB free, below the lowest of any
+clean run (11.1 GiB, at 4K), and needs 115 GiB to start; 2K at 15 s would come down to about 3.9 GiB, below the
+guard's 5. 4K at 6 s would need 121 GiB free to start, and 4K at 15 s 163 GiB, where the idle box has 117.7 GiB.
+These take the clip in pieces (windows of the refine), which comes later. A 3 s clip would fit at 4K, but is not
+offered there.
+
+**Keep my frames on longer clips** has not run on the GPU either. Each end adds 2,040 rows at 1080p and 3,600 at 2K,
+which cost more in a longer clip's steps: by the step model both ends add about 45 s of steps at 1080p for 10 s and
+about 2.2 min at 2K for 10 s (26 s and 74 s at 5 s, where the runs above measured 30-34 s and 83 s in all). The page
+adds the 5 s seconds per end (`UP_PIN_S`), so its time for a long clip with Keep my frames is short by up to about a
+minute (2K at 10 s); the popover says that Keep my frames has not run there. From 10 s at 1080p and 6 s at 2K the
+pinned refine runs with the lean forward, which no pinned run has used yet.
+
+**What has run where.** `UPSCALE_RAN` in the job lists the lengths and sizes upscaled on the GPU through the studio
+(5 s at 1080p, 2K and 4K for now); the page shows "Clips of this length have not been upscaled on the GPU through the
+studio yet: the times are estimates" for the others. A run that lands adds its line there (and Keep my frames its
+`"<size>/<seconds>"` in the server's `PIN_ROUTES` `"ran"`), and its measured times replace the estimates here and in
+`OFFER_ETA_S`.
 
 ## Experimental LightX2V Turbo
 

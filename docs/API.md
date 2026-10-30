@@ -479,7 +479,8 @@ clip, from its MP4, to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regene
 Text and Keyframes clips at either size (5 to 15 s), whole, in one pass of NVIDIA's refine. **1080p** takes every
 length, **2K** clips up to 10 s, **4K** 5 s clips; another size is refused with the reason (`2K for 12 s clips comes
 later: 1080p takes them`: those need the clip in pieces, later). Only 5 s clips have run on the GPU: the times and
-memory of the other lengths are estimates from the 5 s runs until they run, and the page says so. A clip of 4 s (made
+memory of the other lengths are estimates from a model of the 5 s runs until they run
+([PERFORMANCE.md](PERFORMANCE.md#longer-clips-estimates)), and the page says so. A clip of 4 s (made
 up to 0.5.0), or whose MP4 has other frames than its length's, is refused, never cut. NVIDIA's code is written for 5 s
 16:9 (1344×768, 121 frames): the job takes other lengths through it with the frames and audio of their own (the
 clip's frames, and 3 copies of the last one where it keeps fewer than H3 made, as NVIDIA's encode does at 5 s), and a
