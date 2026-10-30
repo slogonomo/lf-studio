@@ -187,7 +187,7 @@ class Generate(CliTest):
         p = self.ok("generate", "--prompt", "a test clip", "--seconds", 6, "--wait", "--out", "c.mp4")
         out = self.work / "c.mp4"
         self.assertEqual(p.stdout, f"{out}\n")
-        self.assertAlmostEqual(duration(out), 6.04, delta=0.1)
+        self.assertAlmostEqual(duration(out), 6.375, delta=0.1)                # 153 frames, as a 6 s clip has
         self.assertRegex(p.stderr, r"queued [0-9a-f]{8} \(t2va, landscape, 6 s, seed \d+\), next in line")
         self.assertRegex(p.stderr, r"done in 0:0\d")
         self.assertEqual([f.name for f in self.work.iterdir()], ["c.mp4"])     # no .part left behind
