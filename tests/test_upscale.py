@@ -1167,6 +1167,19 @@ class PinCheckTests(Fixture):
         self.assertGreater(job_module.luma_psnr(np.asarray(got), np.asarray(two_steps)), 35)   # the same part of it
         self.assertEqual(job_module.luma_psnr(self.first, self.first), 99.0)
 
+    def test_the_clips_frame(self):
+        """clip_frame gives frame N of the clip, the same pixels as NVIDIA's read (here without tpad) at that size."""
+        import numpy as np
+        mp4 = moving_mp4(self.tmp / "moving.mp4", 124, "1344x768")
+        raw = subprocess.run(job_module.clip_read_command(mp4, (672, 384), 124, 0, "ffmpeg"), capture_output=True,
+                             check=True).stdout
+        frames = np.frombuffer(raw, np.uint8).reshape(124, 384, 672, 3)
+        for index in (0, 1, 120, 123):
+            self.assertTrue(np.array_equal(job_module.clip_frame(mp4, (672, 384), index), frames[index]), index)
+        self.assertIn("select=eq(n\\,123),scale=672:384:", job_module.frame_command(mp4, (672, 384), 123)[7])
+        with self.assertRaisesRegex(JobError, r"^cannot read frame 124 of moving\.mp4 at 672x384"):
+            job_module.clip_frame(mp4, (672, 384), 124)
+
     def test_check_prints_each_end_and_writes_nothing(self):
         """--check with a pin (in the Regen-2K environment): each end's answer in the plan, nothing written."""
         for mp4 in (self.case / "stage2").glob("refined_*.mp4"):
