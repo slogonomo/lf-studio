@@ -41,8 +41,9 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   `OFFER_ETA_S` has the measured times where a run is and the others fitted to them, the memory model (`peak_gib`,
   `overhead_gib`, `need_gib`) is fitted to the runs (each 2026-10-30 run's lowest MemAvailable within 0.5 GiB,
   `tests/test_upscale.py`), and the docs say which lengths ran and which follow the model
-  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips), the README): change them, and the pin's seconds in the
-  page's `UP_PIN_S`, when a run lands.
+  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips), the README): change them when a run lands. The page's
+  `UP_PIN_S` holds the seconds Keep my frames adds at 5 s, per size; the page adds them at every length (a little short
+  on a longer clip, as the docs say). Change it when a 5 s run lands, not for a longer one.
 - `install/66-h3turbo.sh` (optional) sets up the experimental LightX2V Turbo model: it checks the base model (refusing
   one without the VAE's weights), uses the Upscale's environment (or runs `65-regen2k.sh --env-only`; it never touches
   a venv itself), fetches LightX2V's turbo LoRA files at a pinned revision (`install/h3turbo_weights.py`, standard
