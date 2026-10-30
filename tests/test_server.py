@@ -5144,7 +5144,8 @@ class TurboUpscale(TurboTest):
                                      ("link" if video == "clip" else video, {"clip": 124, "made": 124, "kept": 124},
                                       video))
                     receipt = json.loads((self.regen(job) / "receipt.json").read_text())
-                    self.assertEqual(receipt["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37})
+                    self.assertEqual(receipt["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37, "A": 207,
+                                                         "seconds": 5})
                 # 4K: its first 121
                 cut = "trim" if video == "clip" else "stretch+trim"
                 job = self.done(self.upscale(parent["id"], resolution="4k"))

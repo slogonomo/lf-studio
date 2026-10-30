@@ -42,7 +42,8 @@ What this wrapper changes, and why:
 - The strength: start_sigma re-noises from there on NVIDIA's shifted_grid; null keeps NVIDIA's schedule for the
   steps (3 steps: 0.909375, which regenerates faces: a sharper, different-looking person).
 - Memory, for GB10 again. The DiT is freed before the decode (a job is the only work in its process; at 4K the
-  decode's pixels don't fit next to it). At 4K every transformer block runs lean_forward: diffusers' block forward
+  decode's pixels don't fit next to it). At 4K, and for clips from 10 s at 1080p and from 6 s at 2K (more than
+  LEAN_ROWS rows of their own: lean_chunks_for), every transformer block runs lean_forward: diffusers' block forward
   with its row-wise parts over the sequence in 16 chunks and q/k/v written straight into SDPA's layout (on GB10
   bit-identical to the stock forward, with 2.5x less activation memory). The stock forward with only its FFN in 8
   chunks ran out of memory at 4K. Once the weights are in GPU memory their page cache is dropped (on GB10 it takes
@@ -62,13 +63,22 @@ What this wrapper changes, and why:
   columns (keep_columns: 1088 -> 1080 at 1080p, 2176 -> 2160 at 4K), as that decode keeps the centre rows of a
   landscape one. check_package pins NVIDIA's pipeline.py, upscaler.py and upscaler_node.py (sha256) for this, and
   refuses a portrait key NVIDIA has itself; bin/lf-studio notes at start when the package's files are other ones.
-- The clip's length. NVIDIA's encode_video reads 121 frames and adds 3 copies of the last one to reach the 124 the
-  VAE takes at 5 s (37 latent frames), and its decode keeps 121. H3 makes 124 frames at 5 s, and a LightX2V Turbo clip
-  with a last keyframe keeps them all: it ends on the frame that keyframe is anchored to. Such a clip goes through
-  encode_clip and decode_released instead, NVIDIA's code with the frames as parameters (FRAME_CASES: 124 read, no
-  copies; the same 37 latent frames, rows and refine), and comes out with all 124 (as it did through the studio at
-  1080p and 2K, 2026-10-29/30). A 121-frame clip runs NVIDIA's own encode_video and decode, as before. check_package
-  pins NVIDIA's pipeline.py (sha256) when the copies run.
+- The clip's length. NVIDIA's pipeline is written for 5 s: its encode_video reads 121 frames and adds 3 copies of the
+  last one to reach the 124 the VAE takes (37 latent frames), its silence is 207 audio latents and its decode keeps
+  121 frames. H3 makes 124 frames at 5 s, and a LightX2V Turbo clip with a last keyframe keeps them all: it ends on
+  the frame that keyframe is anchored to. The studio's other lengths (6 to 15 s, and Sol-H3's 3 s clips) have frames
+  of their own (FRAME_CASES: 73 to 362). Such a clip goes through encode_clip and decode_released instead, NVIDIA's
+  code with the frames as parameters: its frames read, with NVIDIA's 3 copies of the last one where it keeps fewer
+  than H3 made (so the VAE's chunks give the T of the frames made: 47 for 153 + 3 at 6 s, where 153 alone give 42),
+  none where it keeps them all; the refine takes that T (NVIDIA's refine reads it from the latent) and A audio
+  latents (encode_audio: the clip's audio padded with silence or cut to A x 800 samples, and a silence of that length
+  where it has none: NVIDIA's round(frames / 24 * 32000) gives one latent too many at 6 and 15 s); the output has all
+  its frames. A 124-frame clip came out with all 124 through the studio at 1080p and 2K (2026-10-29/30); the other
+  lengths have not run on the GPU yet (their times and memory are estimates: OFFER_ETA_S, MODEL_GIB). A 121-frame
+  clip runs NVIDIA's own encode_video and decode, as before, and at 5 s the refine has NVIDIA's silence or the clip's
+  audio as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run. What is offered per length
+  and size (OFFER_ETA_S: 1080p every length, 2K up to 10 s, 4K at 5 s; offer, offers_table) is the server's too:
+  prepare refuses the rest with the reason, and a clip of any other count of frames is refused, never cut.
 - Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p,
   both at 2K). NVIDIA's refine is text to video: it redraws the clip's first and last frames like any other, away from
   the pictures they were made from.
@@ -86,15 +96,14 @@ What this wrapper changes, and why:
 The input: job.json "case", a folder in the shape of a Sol-H3 clip's own: stage2/refined_*.mp4 (the clip's MP4,
 through NVIDIA's encode_video at 768p: 1344x768, or 768x1344 for 9:16), qwen/conditioning.pt (text alone: t2va) and,
 for audio clip, stage1/stage1_direct_tensors.pt ({"audio": (1, 2, samples)} PCM at 32 kHz). The studio's server builds
-it for every upscale (webui/server.py build_input: the upscale's input/ folder) from any finished 5 s clip: Sol-H3's
-Text, Keyframes and Reference clips and LightX2V Turbo's Text and Keyframes clips, 16:9 or 9:16. It links the clip's
-MP4 (a LightX2V Turbo clip at 576p stretched to 768p; one with a last keyframe whole, all 124 frames, or at 4K cut
-to its first 121), its audio (a LightX2V Turbo clip's turbo/audio.pt) and a conditioning of text alone: the clip's
-own for a Text clip, a LightX2V Turbo Keyframes clip's qwen-text/, or an encode of the prompt without its keyframe
-line or its references for the others (bench/h3turbo_encode.py --upscale). This job takes that folder as it took a
-Sol-H3 Text clip's own: 5 s (121 frames at 24 fps, the length NVIDIA's pipeline is fixed at, or the 124 H3 makes:
-FRAME_CASES), 16:9 or 9:16, a t2va conditioning; its output has the clip's frames. The other lengths the studio offers
-(6 to 15 s) change NVIDIA's fixed length: a follow-up.
+it for every upscale (webui/server.py build_input: the upscale's input/ folder) from a finished clip: Sol-H3's Text,
+Keyframes and Reference clips and LightX2V Turbo's Text and Keyframes clips, 16:9 or 9:16. It links the clip's MP4 (a
+LightX2V Turbo clip at 576p stretched to 768p; one with a last keyframe whole, all its frames, or at 4K cut to its
+first 121), its audio (a LightX2V Turbo clip's turbo/audio.pt) and a conditioning of text alone: the clip's own for a
+Text clip, a LightX2V Turbo Keyframes clip's qwen-text/, or an encode of the prompt without its keyframe line or its
+references for the others (bench/h3turbo_encode.py --upscale). This job takes that folder as it took a Sol-H3 Text
+clip's own: the frames of a length the studio makes at 24 fps (FRAME_CASES; 121 at 5 s, the length NVIDIA's pipeline
+is fixed at), 16:9 or 9:16, a t2va conditioning; its output has the clip's frames.
 
 Measured on a DGX Spark (GB10), 2026-10-28: this job run by a staging studio with nothing else loaded, 5 s clips,
 balanced (2 steps from 0.7), the clip's audio, standard forward and VAE, cuDNN attention, one run each. A 16:9 clip with
@@ -112,17 +121,19 @@ one with a last keyframe (cut to 121 frames) through this job to 1080p: 553.6-56
 night it took LightX2V Turbo clips with a last keyframe whole (124 frames) to 1080p in 557.8-560.1 s and to 2K in
 1118.9 s, as a Text clip; a pin added 16-17 s with one end and 30-34 s with both at 1080p, 83 s with both at 2K (the
 pictures' encode and longer steps; peak allocated +0.4 / +0.7 GiB at 1080p, +1.3 GiB at 2K, where the lowest
-MemAvailable was 14.1 GiB). The bench wrapper it is derived from: docs/PERFORMANCE.md.
+MemAvailable was 14.1 GiB). The bench wrapper it is derived from: docs/PERFORMANCE.md. Clips of other lengths have
+not run on the GPU yet: their times (OFFER_ETA_S) and memory (MODEL_GIB, need_gib) are estimates from these runs.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
-cancelled; the clip's orientation and "frames" (from its MP4: kept, made by H3, pad and T; frame_case), times per
-stage, the latent grids the upscaler ran to, steps, sigmas, peak GPU memory, lowest MemAvailable, the inputs' sha256,
-versions, the load: its mode, and for fast the files and how many fell back to mmap; with a pin its "pin": "asked"
-(the ends job.json names), per end "used", "agreement_db", "frame", "fit", "box", "size" and "why" (check_pin's) and,
-when held, "latent_shape" and "latent_sha256"; "grid", "check_grid", "min_db", "noise_aug", "encode_seed",
-"noise_seed", "native_sha256" (the clip's latent) and, with an end held, "encode_s" (the pictures' encode), "layout"
-(check_pin_layout's facts), "timesteps" per step, "condition_sha256" and "refined_sha256"). Progress on stdout:
-"[lf-studio] phase <name>" for encoding, loading, refine k/n, decoding and saving, in that order, and
+cancelled; the clip's orientation and "frames" (from its MP4: kept, made by H3, pad, T, A and its seconds; frame_case),
+the refine's "rows" (case_rows: video, audio, text, condition, sequence), its block "forward" ("stock" or "lean") and
+"lean_chunks", times per stage, the latent grids the upscaler ran to, steps, sigmas, peak GPU memory, lowest
+MemAvailable, the inputs' sha256, versions, the load: its mode, and for fast the files and how many fell back to mmap;
+with a pin its "pin": "asked" (the ends job.json names), per end "used", "agreement_db", "frame", "fit", "box", "size"
+and "why" (check_pin's) and, when held, "latent_shape" and "latent_sha256"; "grid", "check_grid", "min_db", "noise_aug",
+"encode_seed", "noise_seed", "native_sha256" (the clip's latent) and, with an end held, "encode_s" (the pictures'
+encode), "layout" (check_pin_layout's facts), "timesteps" per step, "condition_sha256" and "refined_sha256"). Progress
+on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n, decoding and saving, in that order, and
 "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loaded), 143 stopped by SIGTERM.
 --check validates job.json and the inputs (the pin's check too: it needs Pillow and numpy), prints the plan and exits
@@ -130,17 +141,16 @@ Exit status: 0 done, 1 failed, 2 the job or its inputs were refused (nothing loa
 --parent PID (the server passes its own): the job is killed when that process ends (PR_SET_PDEATHSIG), so it never
 outlives the studio that guards its memory; if that process is gone already, it exits at once (143).
 
-job.json: {"version": 1, "case": DIR, "resolution": "1080p"|"2k"|"4k", "steps": 1-4,
-"start_sigma": 0<x<1 | null (steps 2 or 3), "seed": INT, "audio": "clip"|"silence", "load": "fast"|"standard" ("fast"),
-"preread": BOOL (false; true only with load "standard"), "vae_batch": INT (26), "paths": {"package": DIR,
-"weights": DIR, "base_model": DIR, "output": DIR (optional)}, "meta": {...} (optional, copied into the receipt),
-"pin": {"keyframes": [{"anchor": "first"|"last", "image": FILE, "sha256": HEX (the picture's, as the clip was made
-from it), "fit": "as is"|"stretch"|"cover-crop" (how the clip's model put it on its canvas), "canvas": [W, H] (the
-clip's)}, ...] (one or both ends, first before last), "check": {"grid": "384p", "min_db": 28}, "noise_aug": 0.999,
-"encode_seed": 42, "noise_seed": 42} (optional; the values shown are the defaults)}. Paths are absolute. Any other
-field is refused, "source" too: the job has no draft source any more (the clip's Stage-1 latent, which redrew the
-video too much), it always reads the clip's MP4. The orientation is not a field either: the clip's MP4 has it (16:9
-or 9:16), and the output is that way round (2k: 2560x1440 or 1440x2560).
+job.json: {"version": 1, "case": DIR, "resolution": "1080p"|"2k"|"4k", "steps": 1-4, "start_sigma": 0<x<1 | null (steps
+2 or 3), "seed": INT, "audio": "clip"|"silence", "load": "fast"|"standard" ("fast"), "preread": BOOL (false; true only
+with load "standard"), "vae_batch": INT (26), "paths": {"package": DIR, "weights": DIR, "base_model": DIR, "output": DIR
+(optional)}, "meta": {...} (optional, copied into the receipt), "pin": {"keyframes": [{"anchor": "first"|"last",
+"image": FILE, "sha256": HEX (the picture's, as the clip was made from it), "fit": "as is"|"stretch"|"cover-crop" (how
+the clip's model put it on its canvas), "canvas": [W, H] (the clip's)}, ...] (one or both ends, first before last),
+"check": {"grid": "384p", "min_db": 28}, "noise_aug": 0.999, "encode_seed": 42, "noise_seed": 42} (optional; the values
+shown are the defaults)}. Paths are absolute. Any other field is refused, "source" too: the job has no draft source any
+more (the clip's Stage-1 latent, which redrew the video too much), it always reads the clip's MP4. The orientation is
+not a field either: the clip's MP4 has it (16:9 or 9:16), and the output is that way round (2k: 2560x1440 or 1440x2560).
 
 Everything outside run() and the torch helpers is standard library only, so the server (its settings, the command
 line, the progress lines, the mux), bin/lf-studio --check (studio_settings, check_weights, nvidia_files) and
@@ -196,9 +206,13 @@ NVIDIA_FILES = {"open_h3/pipeline.py": "361729e81b9d15c8af4b1336e4bcbc36a4f20ddf
                 "open_h3/upscaler_node.py": "f5945b500ddb38afee23c377034bf15394ba64748511a7e9608953040c4be437"}
 NVIDIA_STEPS = (2, 3)            # steps with a schedule of their own (sigmas.SCHEDULES); others need start_sigma
 MAX_STEPS = 4
-# sequence chunks of lean_forward, which every transformer block runs at these sizes (the stock forward elsewhere).
-# 4K: the setup of the one 4K run that finished on GB10; the stock forward with its FFN in 8 chunks ran out of memory.
-LEAN_CHUNKS = {"4k": 16}
+# lean_forward, which every transformer block runs (in LEAN_CHUNKS sequence chunks) where the clip's own rows (its video
+# and audio, lean_chunks_for) are more than LEAN_ROWS; the stock forward elsewhere. So every 5 s clip runs as measured:
+# stock at 1080p and 2K (75,894 and 133,614 rows), lean at 4K (302,334), with a pin too. 16 chunks: the setup of the
+# one 4K run that finished on GB10; the stock forward with its FFN in 8 chunks ran out of memory there. Longer clips go
+# lean from 10 s at 1080p (147,690 rows) and from 6 s at 2K (169,726), where the stock forward's activations would
+# take the memory the 4K run needed lean_forward for (not run on the GPU at those lengths yet).
+LEAN_ROWS, LEAN_CHUNKS = 140_000, 16
 VAE_BATCH = 26                   # NVIDIA's default
 VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior sample of the final MP4)
 PIXEL_MEAN, PIXEL_STD = (.485, .456, .406), (.229, .224, .225)    # the video VAE's pixels (ImageNet's), as NVIDIA's
@@ -227,6 +241,19 @@ DEFAULT_AUDIO = "clip"
 MIN_FREE_GIB = 110
 FLOOR_4K_EXTRA_GIB = 5
 GUARD_GIB = 5
+# Memory past 5 s, a model of the runs above (estimates until those lengths run on the GPU): GPU memory allocated at the
+# refine's peak is MODEL_GIB (the DiT, the upscaler and the video VAE kept for the decode) plus ROW_BYTES per row of
+# its sequence (case_rows: the stock block forward's activations, or lean_forward's), and MemAvailable falls by
+# OVERHEAD_GIB more than that (the allocator's reserve and the process), by the clip's own rows. Fitted to the job's
+# runs: 81.29 / 91.08 GiB allocated at 1080p / 2K (stock; 76,094 / 133,814 rows with a prompt of TEXT_ROWS) and 94.46
+# at 4K (lean, 302,534 rows); with ~116.5 GiB free at the start the lowest MemAvailable it gives is the measured
+# 28.0-28.8, 15.8-16.6 and 11.1 GiB. A clip of another length needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start
+# (need_gib; min_free_for) where that is more than the floor: 2K at 10 s with a pin, 111 GiB.
+MODEL_GIB = 68.4
+ROW_BYTES = {"stock": 181_800, "lean": 92_300}
+OVERHEAD_GIB = ((80_000, 7.0), (140_000, 9.5), (None, 11.0))      # by the clip's own rows: up to 80,000, 140,000, more
+FLOOR_MARGIN_GIB = 3
+TEXT_ROWS = 200                  # a prompt's rows, for the model (169 to 387 in the studio's runs)
 
 # what this wrapper was written against (checked against the package's own names at run time)
 NVIDIA_COMMIT = "6e4a44002149418a547434b91d7280a8bbdcace3"
@@ -237,15 +264,58 @@ CURVE_TABLE = "lora/adaln_t_table.bin"
 UPSCALER_FILE = "latent_upsampler/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors"
 BASE_PARTS = ("transformer", "vae", "audio_vae")
 NATIVE_SHAPE = SHAPES["landscape"]["native"]     # 1344x768, 5 s (37 latent frames), normalized (pipeline.NATIVE_SHAPE)
-AUDIO_SAMPLES = round(124 / 24 * 32000)          # encode_silence's length: 124 frames at 32 kHz
 TEXT_WIDTH = 5120
 FPS = "24/1"                                     # the clip's MP4 and the output
 NVIDIA_FRAMES = 121              # NVIDIA's 5 s: encode_video reads at most 121 frames, its decode keeps 121
-# The clips this job takes, by the frames their MP4 keeps (5 s): how many copies of its last frame the encode adds to
-# reach the frames H3 makes (made_frames: 124 at 5 s, 37 latent frames either way). 121: NVIDIA's own encode, 3
-# copies of frame 120. 124: every frame made, none added (a LightX2V Turbo clip with a last keyframe, which ends on the
-# frame that keyframe is anchored to).
-FRAME_CASES = {121: {"pad": 3}, 124: {"pad": 0}}
+NVIDIA_AUDIO_LATENTS = 207       # NVIDIA's encode_silence: 124 frames of silence, round(124 / 24 * 32000) samples
+AUDIO_RATE, AUDIO_HOP, AUDIO_CHANNELS = 32000, 800, 32    # the audio VAE: samples a second and a latent, channels
+# The clips this job takes, by the frames their MP4 keeps: every length the studio makes (5 to 15 s) and Sol-H3's 3 s
+# (made up to 0.5.0), with its length and how many copies of its last frame the encode adds (pad). H3 makes 17n+5
+# frames (made_frames: 24 fps snapped up; 124 at 5 s), with 5n+2 latent frames (T) and 40 audio latents a second (A);
+# the studio keeps the largest 8m+1 of them (121 of 124: Sol-H3's clips, and LightX2V Turbo's without a last keyframe)
+# or every frame made (a LightX2V Turbo clip with a last keyframe, which ends on the frame that keyframe is anchored to;
+# Sol-H3's 3 s, 73 of 73). A clip that keeps fewer than made gets NVIDIA's 3 copies of its last frame (121 + 3 = 124,
+# its encode at 5 s): with them the VAE's chunks (encoded_latent_frames) give the T of the frames made at every length,
+# without them 5 fewer at 6, 7, 8 and 12 s. One that keeps every frame made gets none. Any other count (Sol-H3's old
+# 4 s clips, 105 frames; a 14 s research clip, 345) is refused, never cut. tests/test_upscale.py derives the table from
+# the patch's runtime/geometry.py and jobs/h3turbo_job.py at every length.
+FRAME_CASES = {
+    73: {"seconds": 3, "pad": 0},
+    121: {"seconds": 5, "pad": 3}, 124: {"seconds": 5, "pad": 0},
+    153: {"seconds": 6, "pad": 3}, 158: {"seconds": 6, "pad": 0},
+    169: {"seconds": 7, "pad": 3}, 175: {"seconds": 7, "pad": 0},
+    185: {"seconds": 8, "pad": 3}, 192: {"seconds": 8, "pad": 0},
+    241: {"seconds": 10, "pad": 3}, 243: {"seconds": 10, "pad": 0},
+    289: {"seconds": 12, "pad": 3}, 294: {"seconds": 12, "pad": 0},
+    361: {"seconds": 15, "pad": 3}, 362: {"seconds": 15, "pad": 0}}
+# What the Upscale offers, per length (seconds) and size: the whole clip in one pass of NVIDIA's refine, with its time:
+# seconds before the refine (the base: closing the studio's models ~40 s, the job's start, the encodes, the fast load,
+# the decode and the MP4) and per refine step. 5 s: from the job's runs with the fast load (a 16:9 clip to each size:
+# the base the run's time less its two steps, plus 40 s; the step their mean; docs/PERFORMANCE.md). Every other length
+# is an estimate from those runs until it runs on the GPU: a step's time by the rows of its sequence (6.457e-4 S +
+# 1.638e-8 S^2 s for S rows, within 5 % of the 5 s steps), the rest by the clip's frames and VAE chunks. A size without
+# times is not offered for that length (offer_row says why): 2K takes up to 10 s whole and 4K 5 s (longer ones are
+# past the memory measured here: in pieces, later).
+OFFER_ETA_S = {
+    3: {"1080p": (209, 63), "2k": (259, 155)},
+    5: {"1080p": (315, 150), "2k": (405, 380), "4k": (625, 1685)},
+    6: {"1080p": (372, 215), "2k": (483, 583)},
+    7: {"1080p": (404, 256), "2k": (528, 700)},
+    8: {"1080p": (437, 300), "2k": (573, 828)},
+    10: {"1080p": (535, 454), "2k": (708, 1277)},
+    12: {"1080p": (632, 638)},
+    15: {"1080p": (763, 932)}}
+# The lengths and sizes upscaled on the GPU through the studio, one line each (a run that lands adds its line): the
+# others' times and memory are estimates, which the page says
+UPSCALE_RAN = (
+    (5, "1080p"),
+    (5, "2k"),
+    (5, "4k"),
+)
+SIZE_NAMES = {"1080p": "1080p", "2k": "2K", "4k": "4K"}
+# the refine's rows per latent frame at each size (its computed grid in 2x2 patches; 9:16 the same): 2040, 3600, 8160
+ROWS_PER_FRAME = {name: (height // 32) * (width // 32)
+                  for name, (height, width, _) in NVIDIA_ENTRIES["RESOLUTIONS"].items()}
 # Keep my frames (job.json "pin", the docstring): the clip's keyframes held in the refine as H3 holds them, each end
 # only where the clip shows its picture already (check_pin): luma PSNR of the clip's frame against the picture, fitted
 # as the clip's model fitted it, at the check's grid, at least min_db
@@ -491,10 +561,17 @@ def studio_settings(environ):
     return settings, problems
 
 
-def min_free_for(resolution, floor):
-    """The MemAvailable a job of this resolution needs to start: the floor (LFSTUDIO_UPSCALE_MIN_FREE_GIB), plus
-    FLOOR_4K_EXTRA_GIB at 4K (see MIN_FREE_GIB). A floor of 0 (no check) stays 0."""
-    return floor + FLOOR_4K_EXTRA_GIB if floor > 0 and resolution == "4k" else floor
+def min_free_for(resolution, floor, kept=NVIDIA_FRAMES, ends=0):
+    """The MemAvailable an upscale of a clip that keeps `kept` frames, at this resolution and with `ends` ends of a pin,
+    needs to start. A 5 s clip: the floor (LFSTUDIO_UPSCALE_MIN_FREE_GIB), plus FLOOR_4K_EXTRA_GIB at 4K (see
+    MIN_FREE_GIB), as measured, whatever the floor is set to. Another length: that, or what its case needs by the
+    memory model where that is more (need_gib; an estimate until the length runs on the GPU). A floor of 0 (no check)
+    stays 0."""
+    if floor <= 0:
+        return floor
+    floor = floor + FLOOR_4K_EXTRA_GIB if resolution == "4k" else floor
+    case = frame_case(kept)
+    return floor if case["seconds"] == 5 else max(floor, float(need_gib(case, resolution, ends)))
 
 
 # ---------------------------------------------------------------- inputs (standard library only)
@@ -546,17 +623,56 @@ def latent_frames(frames):
     return (frames - 5) // 17 * 5 + 2
 
 
+def encoded_latent_frames(frames):
+    """The latent frames the H3 VAE's encode gives for any number of pixel frames past one (diffusers 0.40's
+    AutoencoderKLMiniMaxH3._encode): padded to whole chunks of 17 with copies of the last frame, 5 latent frames a
+    chunk, the last 3 dropped. For 17n+5 frames latent_frames (124 -> 37); 124 for 121 kept + 3 copies, 156 for 153 +
+    3 -> 47 as for the 158 made, but 153 alone -> 42."""
+    return 5 * -(-frames // 17) - 3
+
+
+def audio_latents(frames):
+    """The audio latents H3 makes with `frames` frames (diffusers' audio_latent_num_frames: 40 a second at 24 fps):
+    124 -> 207."""
+    return int(round(frames / 24 * 40))
+
+
 def frame_case(kept):
     """A clip's frames (FRAME_CASES): kept (its MP4's, and the output's), made (by H3), pad (the copies of its last
-    frame the encode adds) and T (the latent frames)."""
-    pad = FRAME_CASES[kept]["pad"]
-    return {"kept": kept, "made": made_frames(kept), "pad": pad, "T": latent_frames(kept + pad)}
+    frame the encode adds), T (the latent frames), A (the audio latents of the frames made) and its length in
+    seconds. Raises KeyError for a count off the table."""
+    entry, made = FRAME_CASES[kept], made_frames(kept)
+    case = {"kept": kept, "made": made, "pad": entry["pad"], "T": latent_frames(made), "A": audio_latents(made),
+            "seconds": entry["seconds"]}
+    if encoded_latent_frames(kept + case["pad"]) != case["T"]:         # a guard on the table
+        raise ValueError(f"{kept} frames and {case['pad']} copies are not {case['T']} latent frames")
+    return case
+
+
+def audio_samples(case):
+    """The audio the refine takes for a case: its A latents of AUDIO_HOP samples (165,600 at 5 s), the clip's audio
+    padded with silence or cut to it. NVIDIA's own silence, round(frames / 24 * 32000) samples padded by the VAE to
+    whole latents, is one latent more than H3's at 6 and 15 s (264 and 604)."""
+    return case["A"] * AUDIO_HOP
+
+
+def pcm_limit(case):
+    """The most samples a clip's audio may have: its frames made at 32 kHz, rounded (165,333 at 5 s, NVIDIA's
+    silence). A LightX2V Turbo clip with a last keyframe has 266 samples past A x 800 at 6 and 15 s (its decoded audio
+    mirrored to its length): they are cut."""
+    return round(case["made"] / 24 * AUDIO_RATE)
+
+
+def native_shape(orientation, case):
+    """The normalized 768p latent of a clip: (24, T, H/16, W/16), SHAPES' with the case's T."""
+    shape = SHAPES[orientation]["native"]
+    return (shape[0], case["T"]) + shape[2:]
 
 
 def check_final(mp4, ffprobe=None):
-    """The clip's MP4 must be a 5 s clip at 24 fps, 16:9 (1344x768) or 9:16 (768x1344), of 121 frames (the length
-    NVIDIA's pipeline is fixed at) or 124 (every frame H3 makes): FRAME_CASES. Returns (its orientation, "landscape"
-    or "portrait", and its frames)."""
+    """The clip's MP4 must be 16:9 (1344x768) or 9:16 (768x1344) at 24 fps, with the frames of a length the studio
+    makes (FRAME_CASES: 121 or 124 at 5 s, NVIDIA's length and every frame H3 makes, up to 361 or 362 at 15 s).
+    Returns (its orientation, "landscape" or "portrait", and its frames). Any other count is refused, never cut."""
     ffprobe = ffprobe or shutil.which("ffprobe")
     if not ffprobe:
         raise JobError("ffprobe is not installed")
@@ -573,9 +689,10 @@ def check_final(mp4, ffprobe=None):
     found = tuple(video[0].get(key) for key in ("width", "height", "nb_frames", "r_frame_rate"))
     orientation = next((name for name, shape in SHAPES.items() if shape["input"] == found[:2]), None)
     if orientation is None or found[2] not in {str(frames) for frames in FRAME_CASES} or found[3] != FPS:
-        raise JobError(f"{Path(mp4).name} is {found[0]}x{found[1]}, {found[2]} frames at {found[3]} fps: not a 5 s "
-                       f"16:9 or 9:16 clip (1344x768 or 768x1344, {' or '.join(map(str, FRAME_CASES))} frames at "
-                       "24 fps)")
+        counts = sorted(FRAME_CASES)
+        raise JobError(f"{Path(mp4).name} is {found[0]}x{found[1]}, {found[2]} frames at {found[3]} fps: not a clip "
+                       "the Upscale takes (1344x768 or 768x1344 at 24 fps, with the frames of a length the studio "
+                       f"makes: {', '.join(map(str, counts[:-1]))} or {counts[-1]}); it never cuts a clip")
     return orientation, int(found[2])
 
 
@@ -590,6 +707,77 @@ def computed_grid(orientation, resolution):
     height, width, _ = {**NVIDIA_ENTRIES["RESOLUTIONS"], **PORTRAIT_ENTRIES["RESOLUTIONS"]}[
         SHAPES[orientation]["resolutions"][resolution]]
     return width, height
+
+
+# ---------------------------------------------------------------- what is offered, its rows and memory (standard
+# library only: the server, --check and the tests share it)
+
+def case_rows(case, resolution, ends=0, text=TEXT_ROWS):
+    """The rows of the refine's sequence for a clip case at a size (NVIDIA's t2va layout: build_t2va_layout; a pin
+    puts R more in front per end held): {"video": T R, "audio": 2 A, "text", "condition": ends R, "sequence": all}.
+    `text`: the prompt's rows, TEXT_ROWS (an estimate) where it is not known yet."""
+    per_frame = ROWS_PER_FRAME[resolution]
+    rows = {"video": case["T"] * per_frame, "audio": 2 * case["A"], "text": text, "condition": ends * per_frame}
+    rows["sequence"] = sum(rows.values())
+    return rows
+
+
+def lean_chunks_for(case, resolution):
+    """LEAN_CHUNKS where the clip's own rows (video and audio: not its prompt's or a pin's, so every 5 s run stays as
+    measured) are more than LEAN_ROWS, else None (the stock block forward)."""
+    rows = case_rows(case, resolution)
+    return LEAN_CHUNKS if rows["video"] + rows["audio"] > LEAN_ROWS else None
+
+
+def need_gib(case, resolution, ends=0):
+    """The MemAvailable the memory model (MODEL_GIB) says a case needs to start, in whole GiB: allocated at the
+    refine's peak, the overhead, the guard and the margin."""
+    rows = case_rows(case, resolution, ends)
+    forward = "lean" if lean_chunks_for(case, resolution) else "stock"
+    allocated = MODEL_GIB + rows["sequence"] * ROW_BYTES[forward] / 2 ** 30
+    own = rows["video"] + rows["audio"]
+    overhead = next(gib for most, gib in OVERHEAD_GIB if most is None or own <= most)
+    return math.ceil(allocated + overhead + GUARD_GIB + FLOOR_MARGIN_GIB)
+
+
+def offer_row(seconds, resolution):
+    """OFFER_ETA_S's answer for a length and size: {"eta_s": [base, step], "ran": whether it ran on the GPU through
+    the studio (UPSCALE_RAN)}, or {"why": the reason it is not offered, naming the sizes that are}."""
+    times = OFFER_ETA_S.get(seconds, {})
+    if resolution in times:
+        return {"eta_s": list(times[resolution]), "ran": (seconds, resolution) in UPSCALE_RAN}
+    name, sizes = SIZE_NAMES[resolution], [SIZE_NAMES[size] for size in SIZES if size in times]
+    if not sizes:
+        return {"why": f"Upscale takes no {seconds:g} s clips"}
+    takes = f"{' and '.join(sizes)} take{'s' if len(sizes) == 1 else ''}"
+    lengths = [length for length, sized in sorted(OFFER_ETA_S.items()) if resolution in sized]
+    if seconds < lengths[0]:                         # a length below what that size takes: Sol-H3's old 3 s at 4K
+        only = "only" if len(lengths) == 1 else "and longer ones"
+        return {"why": f"{name} takes {lengths[0]} s clips {only}: {takes} this one"}
+    return {"why": f"{name} for {seconds} s clips comes later: {takes} them"}
+
+
+def offers_table():
+    """What is offered per length and size, for the server's /api/state and the page: {"<seconds>": {size:
+    offer_row}} for every length of FRAME_CASES. Every count of frames of a length has its length's row."""
+    return {str(seconds): {size: offer_row(seconds, size) for size in SIZES}
+            for seconds in sorted({entry["seconds"] for entry in FRAME_CASES.values()})}
+
+
+def offer(kept, resolution, ends=0):
+    """The Upscale of a clip that keeps `kept` frames (FRAME_CASES; KeyError off it) at a size, with `ends` ends of a
+    pin: {"route": "whole" (the clip in one pass of the refine), "seconds", "rows" (case_rows; the prompt's an
+    estimate), "forward" ("stock" or "lean"), "lean_chunks", "floor_gib" (min_free_for at MIN_FREE_GIB), "eta_s",
+    "strengths", "ran"}, or {"why"} where that size is not offered for its length (offer_row)."""
+    case = frame_case(kept)
+    row = offer_row(case["seconds"], resolution)
+    if "why" in row:
+        return row
+    lean = lean_chunks_for(case, resolution)
+    return {"route": "whole", "seconds": case["seconds"], "rows": case_rows(case, resolution, ends),
+            "forward": "lean" if lean else "stock", "lean_chunks": lean,
+            "floor_gib": min_free_for(resolution, MIN_FREE_GIB, kept, ends), "eta_s": row["eta_s"],
+            "strengths": list(STRENGTHS), "ran": row["ran"]}
 
 
 def weight_paths(job, upscaler_file=UPSCALER_FILE):
@@ -645,10 +833,12 @@ def check_text(cond):
     return len(tags)
 
 
-def check_pcm_shape(shape):
-    shape = tuple(shape)
-    if len(shape) != 3 or shape[:2] != (1, 2) or not 0 < shape[2] <= AUDIO_SAMPLES:
-        raise JobError(f"the Stage-1 audio is {shape}, not stereo PCM of at most {AUDIO_SAMPLES} samples")
+def check_pcm_shape(shape, case):
+    """The clip's audio: (1, 2, samples) PCM, at most pcm_limit's samples for its case."""
+    shape, limit = tuple(shape), pcm_limit(case)
+    if len(shape) != 3 or shape[:2] != (1, 2) or not 0 < shape[2] <= limit:
+        raise JobError(f"the Stage-1 audio is {shape}, not stereo PCM of at most {limit} samples (a clip of "
+                       f"{case['made']} frames made)")
 
 
 def sha256(path):
@@ -668,16 +858,21 @@ def nvidia_files(package):
 
 def plan(job, schedules, shifted_grid):
     """What the job will do, with NVIDIA's sigma functions (open_h3.sigmas, standard library only). `job` has the
-    clip's orientation and frames (prepare)."""
+    clip's orientation and frames (prepare). "offer": offer's record for the clip, the size and the ends the pin asks
+    for (its rows with an estimate of the prompt's)."""
     if job["start_sigma"] is None:
         if job["steps"] not in schedules:
             raise JobError(f"NVIDIA's package has no {job['steps']}-step schedule")
         sigmas = list(schedules[job["steps"]])
     else:
         sigmas = list(shifted_grid(job["start_sigma"], job["steps"]))
+    ends = len(job["pin"]["keyframes"]) if job.get("pin") else 0
+    offered = offer(job["frames"]["kept"], job["resolution"], ends)
+    if "why" in offered:
+        raise JobError(offered["why"])
     planned = {"orientation": job["orientation"], "size": list(output_size(job["orientation"], job["resolution"])),
                "frames": job["frames"], "steps": len(sigmas) - 1, "sigmas": sigmas,
-               "lean_chunks": LEAN_CHUNKS.get(job["resolution"])}
+               "lean_chunks": offered["lean_chunks"], "offer": offered}
     if job.get("pin_check"):                      # check_pin's answer per end
         planned["pin"] = {anchor: {key: record[key] for key in ("used", "agreement_db", "frame", "why")}
                           for anchor, record in job["pin_check"].items()}
@@ -929,8 +1124,9 @@ def worker_environment(environ):
 
 def mux_command(silent, parent_mp4, out, ffmpeg="ffmpeg"):
     """The server's step after a job: the job's silent video with the parent clip's audio, both copied. Both are the
-    clip's length (the frames it keeps at 24 fps, 121 or 124), as in the parent clip. No -shortest: the AAC stream ends
-    a few ms before the last frame, and with -shortest that frame was dropped (120 of 121 frames)."""
+    clip's length (the frames it keeps at 24 fps: FRAME_CASES), as in the parent clip, with its whole sound. No
+    -shortest: the AAC stream ends a few ms before the last frame, and with -shortest that frame was dropped (120 of
+    121 frames)."""
     return [ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(silent), "-i", str(parent_mp4), "-map", "0:v:0",
             "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", str(out)]
 
@@ -1132,26 +1328,30 @@ def text_input(cond, torch):
     return {"prompt_embeds": embeds, "text_token_tags": cond["text_token_tags"].flatten().long()}
 
 
-def pcm_input(saved, torch):
-    """stage1_direct_tensors.pt -> the clip's Stage-1 audio, (2, samples) fp32 at 32 kHz."""
+def pcm_input(saved, torch, case):
+    """stage1_direct_tensors.pt -> the clip's Stage-1 audio, (2, samples) fp32 at 32 kHz (check_pcm_shape)."""
     if not isinstance(saved, dict) or "audio" not in saved:
         raise JobError("the Stage-1 tensors have no audio")
-    check_pcm_shape(saved["audio"].shape)
+    check_pcm_shape(saved["audio"].shape, case)
     pcm = saved["audio"][0].float()
     if not bool(torch.isfinite(pcm).all()):
         raise JobError("the Stage-1 audio has values that are not finite")
     return pcm
 
 
-def encode_audio(base_model, pcm, torch):
-    """NVIDIA's pipeline.encode_silence with the clip's audio in place of the zeros: (2, samples) PCM padded with
-    silence to its length, each channel through the audio VAE, normalized, bf16 -> (2, 32, 207)."""
+def encode_audio(base_model, pcm, samples, torch):
+    """NVIDIA's pipeline.encode_silence with `samples` (audio_samples: A x 800) in place of its 5 s and the clip's
+    audio in place of the zeros: (2, n) PCM padded with silence to that length or cut to it, each channel through the
+    audio VAE, normalized, bf16 -> (2, 32, A). With `pcm` None the silence of that length. At 5 s (165,600 samples)
+    the VAE's input is the one of NVIDIA's 165,333, which it pads with zeros to whole latents itself."""
     from diffusers import AutoencoderKLMiniMaxH3Audio
     audio_vae = AutoencoderKLMiniMaxH3Audio.from_pretrained(
         base_model, subfolder="audio_vae", torch_dtype=torch.float32, local_files_only=True).cuda().eval()
     with torch.inference_mode():
-        x = torch.zeros(2, 1, AUDIO_SAMPLES, device="cuda")
-        x[:, 0, :pcm.shape[1]] = pcm.cuda()
+        x = torch.zeros(2, 1, samples, device="cuda")
+        if pcm is not None:
+            n = min(pcm.shape[1], samples)
+            x[:, 0, :n] = pcm[:, :n].cuda()
         audio = audio_vae.encode(x, return_dict=False)[0].mode().float().cpu()
         mean = torch.tensor(audio_vae.config.latents_mean).view(1, -1, 1)
         std = torch.tensor(audio_vae.config.latents_std).view(1, -1, 1)
@@ -1174,12 +1374,12 @@ def load_video_vae(base_model, torch, device="cuda"):
 def encode_clip(base_model, mp4, size, kept, pad, seed, torch, keyframes=(), encode_seed=None, device="cuda",
                 vae_loader=None, ffmpeg=None):
     """NVIDIA's encode_video (pipeline.py:46-83) with the clip's frames as parameters: its MP4 read at `size` (w, h)
-    as NVIDIA reads it (clip_read_command), `kept` frames, `pad` copies of the last one (NVIDIA's 3, to the VAE's
-    124), the FP32 VAE's posterior sampled under `seed`, normalized -> (24, T, h/16, w/16) fp32 on the CPU,
-    T = latent_frames(kept + pad). With 121 frames and 3 copies it is NVIDIA's encode_video. The pin's `keyframes`,
-    [(anchor, (H, W, 3) uint8 pixels)], go through the same VAE before it is freed, each as H3 encodes a keyframe
-    (diffusers' encode_vae_condition: its posterior sampled under `encode_seed`, rounded through fp16, normalized) ->
-    (1, 24, 1, H/16, W/16). Returns (the clip's latent, {anchor: latent}, the keyframes' seconds)."""
+    as NVIDIA reads it (clip_read_command), `kept` frames, `pad` copies of the last one (NVIDIA's 3: 124 at 5 s), the
+    FP32 VAE's posterior sampled under `seed`, normalized -> (24, T, h/16, w/16) fp32 on the CPU, T =
+    encoded_latent_frames(kept + pad). With 121 frames and 3 copies it is NVIDIA's encode_video. The pin's
+    `keyframes`, [(anchor, (H, W, 3) uint8 pixels)], go through the same VAE before it is freed, each as H3 encodes a
+    keyframe (diffusers' encode_vae_condition: its posterior sampled under `encode_seed`, rounded through fp16,
+    normalized) -> (1, 24, 1, H/16, W/16). Returns (the clip's latent, {anchor: latent}, the keyframes' seconds)."""
     import numpy as np
     width, height = size
     if ffmpeg is None:
@@ -1212,8 +1412,8 @@ def encode_clip(base_model, mp4, size, kept, pad, seed, torch, keyframes=(), enc
     seconds = time.perf_counter() - start
     del vae
     torch.cuda.empty_cache()
-    if latents.shape[1] != latent_frames(kept + pad):
-        raise ValueError(f"expected {latent_frames(kept + pad)} latent frames, got {tuple(latents.shape)}")
+    if latents.shape[1] != encoded_latent_frames(kept + pad):
+        raise ValueError(f"expected {encoded_latent_frames(kept + pad)} latent frames, got {tuple(latents.shape)}")
     return latents, encoded, seconds
 
 
@@ -1509,15 +1709,18 @@ def install_fast_load(adapters, fastload, safetensors_torch, diffusers):
 
 def run(job, files, receipt, trace):
     """The upscale on the GPU. Fills the receipt as it goes. A 16:9 clip of 121 frames runs NVIDIA's calls; a 9:16
-    one adds its portrait entries to NVIDIA's dicts, and runs upscale_route and keep_columns; a clip of 124 frames
-    or one with an end of the pin kept (check_pin) goes through encode_clip, and with 124 frames decode_released; the
-    pin through refine_pinned (the docstring)."""
+    one adds its portrait entries to NVIDIA's dicts, and runs upscale_route and keep_columns; a clip of any other
+    count of frames (124, or another length's) or one with an end of the pin kept (check_pin) goes through
+    encode_clip, and with any count but 121 decode_released; the audio of another length than 5 s is its own
+    (encode_audio, the silence too); the pin goes through refine_pinned; the blocks run lean_forward by the clip's
+    rows (lean_chunks_for) (the docstring)."""
     import torch
     sys.path.insert(0, str(job["package"]))           # -I drops PYTHONPATH and the script dir: name it explicitly
     from open_h3 import adapters, pipeline
     shape = SHAPES[job["orientation"]]
     portrait = job["orientation"] == "portrait"
-    kept, pad = job["frames"]["kept"], job["frames"]["pad"]
+    case = job["frames"]
+    kept, pad = case["kept"], case["pad"]
     pin = receipt.get("pin")                          # with an end the check kept: the keyframes' rows in the refine
     used = [anchor for anchor in ANCHORS if pin and pin.get(anchor, {}).get("used")]
     own = kept != NVIDIA_FRAMES or bool(used)         # encode_clip (and decode_released), NVIDIA's with the frames
@@ -1555,9 +1758,9 @@ def run(job, files, receipt, trace):
     receipt["prompt"] = cond.get("prompt") if isinstance(cond.get("prompt"), str) else None
     receipt["text_rows"] = int(text["text_token_tags"].numel())
     del cond
-    pcm = clip_audio = None
+    pcm = audio = None
     if job["audio"] == "clip":
-        pcm = pcm_input(torch.load(files["pcm"], map_location="cpu", weights_only=True), torch)
+        pcm = pcm_input(torch.load(files["pcm"], map_location="cpu", weights_only=True), torch, case)
 
     if job["load"] == "fast":                         # before any model loads, the encodes too
         import diffusers
@@ -1594,8 +1797,8 @@ def run(job, files, receipt, trace):
                                                                      seed=VAE_SEED))
     if pin:
         pin["native_sha256"] = tensor_sha256(native)
-    if pcm is not None:
-        clip_audio = timed("encode_audio", lambda: encode_audio(base, pcm, torch))
+    if pcm is not None or case["A"] != NVIDIA_AUDIO_LATENTS:     # the clip's audio, or a silence of its length
+        audio = timed("encode_audio", lambda: encode_audio(base, pcm, audio_samples(case), torch))
     gc.collect()
     torch.cuda.empty_cache()
     drop_from_page_cache(p for part in ("vae", "audio_vae") for p in (base / part).glob("*.safetensors"))
@@ -1620,16 +1823,17 @@ def run(job, files, receipt, trace):
     if job["load"] == "fast":
         say(f"fast load: {receipt['load']['files']} files, {receipt['load']['fallbacks']} of them through mmap")
     receipt["merge"] = {"weights": pipe.merger.merged, "seconds": round(pipe.merger.seconds, 2)}
-    receipt["lean_chunks"] = LEAN_CHUNKS.get(job["resolution"])
+    receipt["lean_chunks"] = lean_chunks_for(case, job["resolution"])
+    receipt["forward"] = "lean" if receipt["lean_chunks"] else "stock"
     if receipt["lean_chunks"]:
         install_lean_blocks(pipe.model, receipt["lean_chunks"])
-    if clip_audio is not None:
-        if tuple(clip_audio.shape) != tuple(pipe.audio.shape):
-            raise RuntimeError(f"the clip's audio latent is {tuple(clip_audio.shape)}, NVIDIA's silence "
-                               f"{tuple(pipe.audio.shape)}")
-        pipe.audio = clip_audio.to(pipe.device)
-    if tuple(native.shape) != shape["native"]:
-        raise RuntimeError(f"the 768p latent is {tuple(native.shape)}, not {shape['native']}")
+    if audio is not None:                             # else NVIDIA's silence (5 s)
+        pipe.audio = audio.to(pipe.device)
+    if tuple(pipe.audio.shape) != (2, AUDIO_CHANNELS, case["A"]):
+        raise RuntimeError(f"the audio latent is {tuple(pipe.audio.shape)}, not (2, {AUDIO_CHANNELS}, {case['A']}) "
+                           f"for {case['made']} frames made")
+    if tuple(native.shape) != native_shape(job["orientation"], case):
+        raise RuntimeError(f"the 768p latent is {tuple(native.shape)}, not {native_shape(job['orientation'], case)}")
     route = upscale_route(native.shape, pipe.target_shape, pipeline.UPSCALED_SHAPE)
     receipt["upscale_route"] = [list(grid[2:]) for grid in route]      # NVIDIA's own for 16:9 (the same grids)
     if portrait:
@@ -1652,8 +1856,8 @@ def run(job, files, receipt, trace):
 
     def refine():
         if keyframes:                                 # the ends the check kept, in packed order
-            result, facts = refine_pinned(pipe, low, text, job["seed"], list(keyframes.items()),
-                                          job["frames"]["made"], job["pin"]["noise_aug"], job["pin"]["noise_seed"])
+            result, facts = refine_pinned(pipe, low, text, job["seed"], list(keyframes.items()), case["made"],
+                                          job["pin"]["noise_aug"], job["pin"]["noise_seed"])
             pin.update(timesteps=facts.pop("timesteps"), condition_sha256=facts.pop("condition_sha256"),
                        layout={k: v for k, v in facts.items() if k not in ("noise_aug", "noise_seed")})
         else:
@@ -1661,6 +1865,7 @@ def run(job, files, receipt, trace):
         torch.cuda.synchronize()
         marks.append(time.perf_counter())
         return result
+    receipt["rows"] = case_rows(case, job["resolution"], len(keyframes), receipt["text_rows"])
     refined = timed("refine", refine)
     receipt["steps_s"] = [round(b - a, 2) for a, b in zip(marks, marks[1:])]
     if keyframes:
@@ -1698,13 +1903,17 @@ def run(job, files, receipt, trace):
 
 def prepare(job_path, receipt):
     """job.json and the inputs, checked without torch -> (job, files), job["orientation"] and job["frames"] from the
-    clip's MP4, and with a pin job["pin_check"] (check_pin). Fills the receipt's job as soon as it parses."""
+    clip's MP4 (refused where its size is not offered for its length: offer), and with a pin job["pin_check"]
+    (check_pin). Fills the receipt's job as soon as it parses."""
     job = load_job(job_path)
     receipt["job"] = job_record(job)
     files = case_inputs(job)
     orientation, kept = check_final(files["final"])         # from the MP4 (not in job.json)
     job["orientation"] = receipt["orientation"] = orientation
     job["frames"] = receipt["frames"] = frame_case(kept)
+    offered = offer(kept, job["resolution"])
+    if "why" in offered:
+        raise JobError(offered["why"])
     check_weights(job)
     if job["pin"]:
         job["pin_check"] = check_pin(job, files["final"])
