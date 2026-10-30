@@ -3789,6 +3789,29 @@ class PinLayoutTests(unittest.TestCase):
         layout, t2va = job_module.pin_layout(self.tags, h3_geometry(37, 68, 120), ())
         self.assertIs(layout, t2va)
 
+    def test_every_case_layout(self):
+        """NVIDIA's t2va layout (build_t2va_layout) of every case, its geometry valid: the prompt's rows, 2 A audio
+        rows and T R video rows, as case_rows counts them (also at 1080p for a 10 s clip, 147,690 rows of its own);
+        with both ends R more per end. R of each size's computed grid, either way round, is ROWS_PER_FRAME's."""
+        from open_h3.geometry import build_t2va_layout
+        for size, rows in job_module.ROWS_PER_FRAME.items():
+            for orientation in job_module.SHAPES:
+                width, height = job_module.computed_grid(orientation, size)
+                self.assertEqual(h3_geometry(37, height // 16, width // 16).rows_per_video_frame, rows)
+        for kept in CASES:
+            case = job_module.frame_case(kept)
+            geometry = h3_geometry(case["T"], 4, 6, case["A"])
+            geometry.validate()
+            self.assertEqual(build_t2va_layout(self.tags, geometry).sequence_length,
+                             196 + 2 * case["A"] + 6 * case["T"])
+            layout, _, facts = self.layout(("first", "last"), geometry, case["made"])
+            self.assertEqual((layout.sequence_length, facts["condition_rows"]),
+                             (196 + 2 * case["A"] + 6 * case["T"] + 2 * 6, 2 * 6))
+        ten = job_module.frame_case(241)
+        layout = build_t2va_layout(self.tags, h3_geometry(72, 68, 120, 405))
+        self.assertEqual(layout.sequence_length, job_module.case_rows(ten, "1080p", 0, 196)["sequence"])
+        self.assertEqual(layout.sequence_length - 196, 147690)
+
     def test_the_last_block_at_other_lengths(self):
         """The last block at (5/3)(made - 1) after the text for every length H3 makes (73 to 362 frames; diffusers
         sums the spans with numpy, as the reference does: these are its values)."""
