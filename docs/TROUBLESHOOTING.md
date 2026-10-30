@@ -304,10 +304,10 @@ upscale's card shows the job's own error line.
 `LFSTUDIO_BACKEND=rtx5090`, where it does not run. Set `LFSTUDIO_UPSCALE=1` and restart.
 
 **The Upscale button is greyed out.** It says why when you point at it, or click or tap it. It takes every finished
-clip of a length the studio makes, 5 to 15 s (and Sol-H3's 3 s clips), 16:9 or 9:16, of every mode and model. Sol-H3's
-4 s clips, made up to 0.5.0, are not taken (`Upscale takes clips of the lengths the studio makes, 5 to 15 s (and
-Sol-H3's 3 s ones), not 4 s`), nor a clip whose MP4 has other frames than its length's (`Upscale can't take this clip:
-its MP4 has 145 frames, not the frames of a 6 s clip`): the Upscale never cuts a clip to fit. It reads the clip's
+clip of a length the studio makes, 5 to 15 s, 16:9 or 9:16, of every mode and model. Sol-H3's 3 and 4 s clips, made
+up to 0.5.0, are not taken (`Upscale takes clips of the lengths the studio makes, 5 to 15 s, not 3 s`), nor a clip
+whose MP4 has other frames than its length's (`Upscale can't take this clip: its MP4 has 145 frames, not the frames of
+a 6 s clip`): the Upscale never cuts a clip to fit. It reads the clip's
 working files, which clips made before per-clip folders, or whose session folder was removed, no longer have (`the
 clip's working files (its session directory) are gone`). A Keyframes clip whose prompt is only its keyframe line (or a
 Reference prompt of references alone) has no text to refine against (`nothing is left of the prompt without its
@@ -318,19 +318,20 @@ Upscale can't write this clip's prompt as text alone` means the rewrite itself f
 
 **A size is greyed out in the popover, or the Upscale is refused for one.** The sizes depend on the clip's length:
 1080p takes every length, 2K clips up to 10 s, 4K 5 s clips. A size the clip's length has not got is greyed out,
-`later` under its name (`not this clip` for 4K of a 3 s clip), with the reason as its title (`2K for 12 s clips comes
-later: 1080p takes them`, `4K for 10 s clips comes later: 1080p and 2K take them`). When that is the studio's
+`later` under its name, with the reason as its title (`2K for 12 s clips comes later: 1080p takes them`, `4K for
+10 s clips comes later: 1080p and 2K take them`). When that is the studio's
 default size, the popover starts at the first size the clip has, with that reason as its first note. A whole clip at
 those sizes would not fit in memory, or only past anything measured: they need the clip in pieces, which comes later
-([PERFORMANCE.md](PERFORMANCE.md#longer-clips-estimates)). `lf-cli upscale`, the MCP tool and `POST /api/upscale` ask
+([PERFORMANCE.md](PERFORMANCE.md#longer-clips)). `lf-cli upscale`, the MCP tool and `POST /api/upscale` ask
 for 2K unless told otherwise, so a 12 or 15 s clip needs `--resolution 1080p` (`resolution` `1080p`); the other sizes
 are refused with the same reason (400; `lf-cli` exits 2).
 
 **The popover says `Clips of this length have not been upscaled on the GPU through the studio yet: the times are
-estimates`.** Only 5 s clips have run on the GPU so far. A clip of another length is upscaled all the same, whole,
-and its times and memory floor come from a model of the 5 s runs
-([PERFORMANCE.md](PERFORMANCE.md#longer-clips-estimates)): it can take longer or shorter than shown. Its
-`regen/receipt.json` has its real times, memory and rows, and is worth a report.
+estimates`.** Every length and size offered has run on the GPU (5 s at every size; 6, 10 and 15 s at 1080p and 10 s
+at 2K), or a longer clip at that size has, so this note shows only where a run failed and its line was taken out
+(`UPSCALE_RAN` in `upscale/regen2k_job.py`). Such a clip is upscaled all the same, whole, and its times and memory
+floor come from the job's model of the runs ([PERFORMANCE.md](PERFORMANCE.md#longer-clips)): it can take longer or
+shorter than shown. Its `regen/receipt.json` has its real times, memory and rows, and is worth a report.
 
 **An upscale of a Keyframes or Reference clip sits at "Encoding the prompt" or fails there.** Such a clip's prompt is
 encoded first without its pictures (a transient Qwen worker, 9-18 s, 9.1-9.2 s in the Upscale's GPU runs, ~15 GiB), the
@@ -378,10 +379,11 @@ out). `the clip has no record of how it used your picture` or `the studio can't 
 the clip`: the clip's own record (a LightX2V Turbo clip's `turbo/receipt.json`, Sol-H3's `stage2/stage2_result.json`)
 does not say what the job needs. Where Keep my frames has not run on the GPU through the studio at that size or length
 (one end at 2K: a LightX2V Turbo clip's first or last frame alone, a Sol-H3 clip's first frame; every clip longer than
-5 s), the popover says `Keeping your frames has not been run on the GPU through the studio yet: its times are
-estimates`: it is offered all the same, and the time it adds there is an estimate (60 s for one end at 2K; on a longer
-clip the 5 s seconds per end, a little short: [PERFORMANCE.md](PERFORMANCE.md#longer-clips-estimates)). On a 12 or
-15 s clip it is offered at 1080p only, the one size those lengths have.
+5 s but a LightX2V Turbo clip's both ends at 1080p for 10 s), the popover says `Keeping your frames has not been run
+on the GPU through the studio yet: its times are estimates`: it is offered all the same, and the time it adds there is
+an estimate (60 s for one end at 2K). On a longer clip it adds the 5 s seconds per end, a little short: both ends at
+1080p for 10 s add about 45 s, not 32 ([PERFORMANCE.md](PERFORMANCE.md#longer-clips)). On a 12 or 15 s clip it is
+offered at 1080p only, the one size those lengths have.
 
 **`REFUSED - the experimental Upscale (LFSTUDIO_UPSCALE=1): no Python at LFSTUDIO_UPSCALE_PYTHON=...`** (or
 `missing weights: ...`, or `LFSTUDIO_UPSCALE_PKG: no open_h3/pipeline.py in ...`). The launcher checks the Upscale's
@@ -392,12 +394,12 @@ release needs ~100 GiB of GPU memory.
 **`not enough free memory for an upscale: N GiB available with the models closed, 110 GiB needed`** (115 GiB at 4K).
 The studio closed its own models, and something else still holds the memory (another app, a container). Close it and
 try again; `LFSTUDIO_UPSCALE_MIN_FREE_GIB` changes the floor, and 4K always needs 5 GiB more than it (measured in the
-job: ~101 GiB used at 2K, ~105 GiB at 4K). A clip longer than 5 s needs what its length and size need where that is
-more than the setting, by the memory model (an estimate until it runs: 111 GiB at 2K for 10 s with Keep my frames, 110
-without): `111 GiB needed (what a 2K 10 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=110)`. A lower
-setting does not take it below that; 0 turns the check off.
+job: ~101 GiB used at 2K, ~105 GiB at 4K). A clip longer than 5 s needs what its length and size need by the memory
+model where that is more than the setting: none at the default 110 GiB (2K at 10 s needs the most, 109). With a lower
+setting it says so: `109 GiB needed (what a 2K 10 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=100)`; the
+setting does not take it below that. 0 turns the check off.
 
-**`not enough free memory to start: N GiB available, 111 GiB needed for a 2K 10 s upscale`** (the job's own error, on
+**`not enough free memory to start: N GiB available, 110 GiB needed for a 2K 10 s upscale`** (the job's own error, on
 the card and in `worker.log`). The job checks the studio's floor again as it starts (job.json `min_free_gib`, less
 0.5 GiB), and refuses before it loads anything (exit status 2): the memory went down between the studio's check and
 the job's start. Close what took it, and try again.
@@ -409,9 +411,10 @@ job itself (in its one 4K run so far, a 16:9 clip, MemAvailable came down from 1
 upscale that starts with just the floor's 110 GiB free comes down below 5 GiB;
 [PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). At 4K, ~111 GiB or more free at the start
 avoids it. At 2K it comes down to about 16 GiB, and to 14.1 GiB with Keep my frames holding both ends (measured through
-the studio). A clip longer than 5 s has not run on the GPU: the memory model expects 14.7 GiB or more at the lowest
-(2K at 10 s, 14.1 GiB with Keep my frames holding both ends; 18.2 GiB or more at 1080p, 17.9 GiB with both ends), from
-a start at ~116.5 GiB free, an estimate. `worker.log` shows how far it got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the
+the studio). A 10 s clip at 2K came down to 16.7 GiB from 116.5 GiB free (its one run, through the studio), and the
+longer clips at 1080p to 20.4 GiB or more (15 s); the memory model expects 15.7 GiB at 2K for 10 s with both ends kept,
+and 18.2 GiB or more at 1080p (8 s with both ends), from a start at ~116.5 GiB free. `worker.log` shows how far it
+got. `LFSTUDIO_UPSCALE_GUARD_GIB` changes the
 floor; 0 turns it off.
 
 **It sits at "Upscaling · loading its models" for minutes.** With the fast load (`LFSTUDIO_UPSCALE_LOAD=fast`, the
@@ -419,7 +422,7 @@ default) the 62 GB DiT and 14 GB of LoRA weights should load in under a minute (
 clean runs); for a 5 s clip "reading the clip" before it takes ~2 min from the final clip, and the refine and decode
 after it ~7-22 min at 1080p and 2K and ~63-91 min at 4K, with 2 or 3 steps
 ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)); a longer clip takes longer at each
-(estimated: [PERFORMANCE.md](PERFORMANCE.md#longer-clips-estimates)). Minutes at loading mean the standard load
+([PERFORMANCE.md](PERFORMANCE.md#longer-clips)). Minutes at loading mean the standard load
 (`LFSTUDIO_UPSCALE_LOAD=standard`, NVIDIA's loaders through mmap: ~7.5 min, 455 s measured), or files the fast load
 could not read with O_DIRECT and read through mmap instead: `worker.log` in the upscale's `regen/` folder says
 `fast load: N files, M of them through mmap`, and its `receipt.json` has the same as `"load"`. All of them through mmap,
