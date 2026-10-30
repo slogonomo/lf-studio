@@ -485,8 +485,8 @@ const END_NAME={first:'First',last:'Last'};
 // A size the clip's length does not have (upOffer's "why"): greyed in the popover, its reason as its title, and as
 // the popover's first note when it is the studio's default size (the popover picks the first size offered then)
 function upRefresh(j){const u=j.upscalable||{},res=upVal('up_res'),str=upVal('up_strength'),row=$('uppinrow'),box=$('uppin');
-  const dflt=(state.upscale_defaults||{}).resolution,off=upOffer(j,dflt)||{};
-  const ends=state.upscale_pin&&Array.isArray(u.pin)?u.pin:[],notes=[off.why||'',upNotes(j,u,res)];
+  const later=(upOffer(j,(state.upscale_defaults||{}).resolution)||{}).why||'';     // its default size's reason
+  const ends=state.upscale_pin&&Array.isArray(u.pin)?u.pin:[],notes=[later,upNotes(j,u,res)];
   for(const [end,why] of Object.entries(u.pin_why||{}))notes.push(`${END_NAME[end]||end} frame not kept: ${why}`);
   setHidden(row,!ends.length);
   if(ends.length){const r=(u.pin_routes||{})[res],name=(UPSCALE[res]||{name:res}).name;
@@ -1026,12 +1026,12 @@ function update(d,j,queue,s,t){
       if(j.status==='encoding the prompt'&&j.phase_since&&!d.dataset.close)d.dataset.close=Math.max(0,j.phase_since-st0).toFixed(1);
       const e=m&&modelEta(m,j.model_opts||{},j.seconds||5),eta=(e&&e.s||240)+(j.status==='freeing memory'?CLOSE_S:+(d.dataset.close||0));
       setText(big,clock(el));setText(small,jobWhere(j)[1]);
-      const w=(eta?Math.min(97,el/eta*100):0).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
+      const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}
     else{bar.hidden=false;const t0=j.phase_since||j.started||j.created,el=t-t0,eta=loading?(j.load_eta||240):(ETA[j.seconds||5]||60);
       setText(big,clock(el));
       setText(small,loading?(j.status.startsWith('retry')?'Worker error - reloading the models':`Loading models, then your clip · last time ${fmtS(eta)}`)
                            :j.reshaped_from?`Generating · new format or length, a bit over ~${fmtS(eta)}`:`Generating · usually ~${fmtS(eta)}`);
-      const w=(eta?Math.min(97,el/eta*100):0).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}}
+      const w=Math.min(97,el/eta*100).toFixed(1)+'%',bi=bar.firstChild;if(bi.style.width!==w)bi.style.width=w;}}}
 function render(){const s=state.session,k=s.key,t=now();
   // a clip of a job model (LightX2V Turbo) running: the status names it, its settings and where it is (the studio's
   // models are closed for it, or being closed: nothing to unload). With more than one model on, the studio's own

@@ -1606,7 +1606,7 @@ PIN_ROUTES = {
 }
 # why an end of a Keyframes clip is not held, besides the job's own reasons (regen.PIN_WHY: the picture gone or
 # changed, the clip stopping short of the last one)
-PIN_SOL_LAST = "Sol-H3 clips stop {} before your last picture, so the Upscale can't hold it"   # sol_last: 3 frames at 5 s
+PIN_SOL_LAST = "Sol-H3 clips stop {} before your last picture, so the Upscale can't hold it"   # sol_last: 3 frames
 PIN_BEFORE = "the clip was made before 0.5.2, which did not hold your first frame"
 PIN_SETTING = "the clip was made with SOL_H3_STAGE2_KEYFRAME={}, which did not hold your first frame"
 PIN_NO_RECORD = "the clip has no record of how it used your picture"
@@ -1742,8 +1742,8 @@ def keyframe_record(model, orientation, path, mtime_ns, ends):
     picture's, turned by its EXIF, or None)}}, {end: why not}].
     Sol-H3: its first frame where Stage 2 held it (stage2_keyframe "pin", 0.5.2's default), stretched onto the canvas,
     the sha256 from its capture; never its last, which the clip stops a few frames before (3 at 5 s: Stage 2 keeps the
-    largest 8n+1 of the frames H3 makes, 121 of 124, and H3 anchors the last keyframe to the last of them): PIN_SOL_LAST,
-    which clip_keyframes words by the clip's frames (sol_last).
+    largest 8n+1 of the frames H3 makes, 121 of 124, and H3 anchors the last keyframe to the last of them):
+    PIN_SOL_LAST, which clip_keyframes words by the clip's frames (sol_last).
     LightX2V Turbo: its receipt's geometry, the fit of each picture (jobs/h3turbo_job.py keyframe_fit: a cover-crop must
     be the one the job's cover_crop computes for its size and canvas) and their sha256; a last keyframe only where the
     clip kept every frame made, so that it ends on that frame (it does since the model came).
