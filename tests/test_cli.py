@@ -872,6 +872,7 @@ class UpscaleTimes(unittest.TestCase):
         for text in (usage, tool):
             self.assertIn(longer, text)
             self.assertNotIn("estimate", text)
+        self.assertIn(f"longer clips take longer: {longer})", usage)
         self.assertEqual(sorted(regen.UPSCALE_RAN), sorted((s, res) for s, sized in regen.OFFER_ETA_S.items()
                                                            for res in sized))     # every length: run, or covered
         for text in (usage, cli.INSTRUCTIONS, tool, api):                   # 4K has run end to end (16:9)
