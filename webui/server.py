@@ -24,10 +24,10 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   5 to 15 s, not Sol-H3's 3 and 4 s clips made up to 0.5.0), 16:9 or 9:16, from its MP4, whole, in one pass of NVIDIA's
   refine, to 1080p, 2k (2560x1440, or 1440x2560 for 9:16; the default) or 4k with NVIDIA's Open-H3-Regenerate-2K
   (upscale/regen2k_job.py, run in its own environment; it upscales a 9:16 clip through NVIDIA's code with the shapes
-  turned, see its docstring), at the sizes the job offers for the clip's length (its offer_row: 1080p every length,
-  2K up to 10 s, 4K 5 s clips; /api/state "upscale_offers"; 6, 10 and 15 s at 1080p and 10 s at 2K have run on the
-  GPU, the other lengths follow the job's model of those runs). strength: faithful, balanced or full (upscale/regen2k_job.py STRENGTHS; default
-  LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
+  turned, see its docstring), at the sizes the job offers for the clip's length (its offer_row: 1080p every length, 2K
+  up to 10 s, 4K 5 s clips; /api/state "upscale_offers"; 6, 10 and 15 s at 1080p and 10 s at 2K have run on the GPU, the
+  other lengths follow the job's model of those runs). strength: faithful, balanced or full (upscale/regen2k_job.py
+  STRENGTHS; default LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
   LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). pin: auto (the default) or off, Keep my frames
   (experimental; PIN_ROUTES "ran": where it has run on the GPU): with auto, the clip's keyframes are held in the refine
   where its route offers it (PIN_ROUTES: LightX2V Turbo's Keyframes clips, either end or both, and Sol-H3's first frame
@@ -71,14 +71,13 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   expected times), "upscale_pin" (null with it off, else true: the studio takes "pin") and "upscale_offers" (null with
   it off, else UPSCALE_OFFERS: per length, {"<seconds>": {resolution: {"eta_s": [seconds before the refine, per refine
   step], "ran" (that length and size, or a longer clip at that size, upscaled on the GPU through the studio; else the
-  times are estimates)} or
-  {"why": why not offered}}}); with it on, every finished job in /api/state, /api/jobs and the API record has
-  "upscalable": {"ok": true, "clip_audio": bool} (with "text": "generation" or "encode" when it is not refined against
-  the clip's own conditioning; "video": "stretch" when its MP4 is not taken as it is at 1080p and 2K; "frames":
-  {resolution: frames kept} where they differ between sizes (124, and 121 at 4K); "pin": the ends it can hold [first,
-  last or both], with "pin_routes": {resolution: {"strengths", "ran" (on the GPU through the studio, at the clip's
-  length)}} at the sizes offered for its length;
-  "pin_why": {end: why not} for an end it has but can't hold) or {"ok": false, "why": "..."}.
+  times are estimates)} or {"why": why not offered}}}); with it on, every finished job in /api/state, /api/jobs and the
+  API record has "upscalable": {"ok": true, "clip_audio": bool} (with "text": "generation" or "encode" when it is not
+  refined against the clip's own conditioning; "video": "stretch" when its MP4 is not taken as it is at 1080p and 2K;
+  "frames": {resolution: frames kept} where they differ between sizes (124, and 121 at 4K); "pin": the ends it can hold
+  [first, last or both], with "pin_routes": {resolution: {"strengths", "ran" (on the GPU through the studio, at the
+  clip's length)}} at the sizes offered for its length; "pin_why": {end: why not} for an end it has but can't hold) or
+  {"ok": false, "why": "..."}.
 - The model of a clip ("model" in POST /api/generate, the form and JSON): sol-h3 (Sol-H3, NVIDIA's two-stage
   pipeline above; the default: a request without a model and a record without one mean sol-h3) or, experimental and on
   the DGX Spark only with LFSTUDIO_MODELS=sol-h3,lightx2v-turbo, lightx2v-turbo (LightX2V Turbo: the full MiniMax-H3 in
@@ -1961,11 +1960,12 @@ def upscalable(job):
     length gets, with their times, is not here: /api/state "upscale_offers" (upscale/regen2k_job.py offers_table), by
     length. It takes every finished clip of the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference
     clips, LightX2V Turbo's Text and Keyframes clips at either size), of every length the studio makes (not Sol-H3's
-    old 3 and 4 s ones: UPSCALE_LENGTH), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes turned), whole: not one whose
-    MP4 has frames the job has no case for, or not those of its length (UPSCALE_FRAMES), nor a Keyframes or Reference
-    clip with nothing left of its prompt without its pictures (or a text alone too long), nor one whose text must be
-    encoded while the studio has no t2va path manifest (the encode's). Looks at the clip's files: call it without
-    `lock`, with a copy of the job. Never raises for a record of another shape (with_upscalable)."""
+    old 3 and 4 s ones: UPSCALE_LENGTH), 16:9 or 9:16 (the job upscales 9:16 through NVIDIA's code with the shapes
+    turned), whole: not one whose MP4 has frames the job has no case for, or not those of its length (UPSCALE_FRAMES),
+    nor a Keyframes or Reference clip with nothing left of its prompt without its pictures (or a text alone too long),
+    nor one whose text must be encoded while the studio has no t2va path manifest (the encode's). Looks at the clip's
+    files: call it without `lock`, with a copy of the job. Never raises for a record of another shape
+    (with_upscalable)."""
     if is_upscale(job):
         return 400, "an upscale can't be upscaled again"
     model = job_model(job)

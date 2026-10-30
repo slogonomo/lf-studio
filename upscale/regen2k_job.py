@@ -82,9 +82,9 @@ What this wrapper changes, and why:
   5 s clip would not show), and run() checks the upscaled latent's shape before the refine. What is offered per length
   and size (OFFER_ETA_S: 1080p every length, 2K up to 10 s, 4K at 5 s; offer, offers_table) is the server's too:
   prepare refuses the rest with the reason, and a clip of any other count of frames is refused, never cut.
-- Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p,
-  both at 2K, and both ends of a 10 s clip at 1080p with the lean blocks). NVIDIA's refine is text to video: it redraws the clip's first and last frames like any other, away from
-  the pictures they were made from.
+- Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p, both
+  at 2K, and both ends of a 10 s clip at 1080p with the lean blocks). NVIDIA's refine is text to video: it redraws the
+  clip's first and last frames like any other, away from the pictures they were made from.
   With a pin, the clip's keyframes are held as H3 holds a keyframe, the bench wrapper's K1 refine for either end or
   both (refine_pinned): each picture fitted to the refine's grid as the clip's model fitted it to its canvas
   (keyframe_image: H3's cover-crop as a box in the picture, one LANCZOS step from it), encoded on encode_clip's VAE

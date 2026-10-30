@@ -2384,11 +2384,11 @@ class ModelCards(ModelPage):
 class ModelUpscale(ModelPage):
     """The Upscale of a LightX2V Turbo Keyframes clip at 576p with a last keyframe: the popover says what is done to it
     at each size (its text made with the clip, stretched to 768p; at 4K cut to its first 121 frames) and has Keep my
-    first and last frames, checked, off with the reason at 4K and at another strength than Balanced, at 2K as at
-    1080p; the request says pin auto or off; the upscale's card names the model and size of its clip and the frames kept.
-    One with a last keyframe alone has Keep my last frame, and only at a size where its route has not run on the GPU
-    through the studio (pin_routes "ran": 2K) the note that it has not. A Sol-H3 clip with both keyframes keeps its
-    first frame only, and the popover says why not its last."""
+    first and last frames, checked, off with the reason at 4K and at another strength than Balanced, at 2K as at 1080p;
+    the request says pin auto or off; the upscale's card names the model and size of its clip and the frames kept. One
+    with a last keyframe alone has Keep my last frame, and only at a size where its route has not run on the GPU through
+    the studio (pin_routes "ran": 2K) the note that it has not. A Sol-H3 clip with both keyframes keeps its first frame
+    only, and the popover says why not its last."""
 
     def notes(self):
         return self.page.inner_text("#upinput")
