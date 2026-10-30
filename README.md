@@ -164,14 +164,15 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   LightX2V Turbo clip at 576p is stretched to 768p first. One with a last keyframe keeps all its 124 frames at 1080p and
   2K, so the upscale ends on the frame anchored to your last keyframe and has the clip's whole 5.17 s of sound; at 4K
   it is cut to its first 121 frames until a 124-frame 4K run
-  ([#85](https://github.com/slogonomo/lf-studio/issues/85)). Keeping all 124 has not run on the GPU yet: it is the same
-  37 latent frames, so a Text clip's time is expected.
+  ([#85](https://github.com/slogonomo/lf-studio/issues/85)).
   Through the studio on one DGX Spark (2026-10-29, one clip of each kind), a Sol-H3 Keyframes clip (9:16), a Sol-H3
   Reference clip, a LightX2V Turbo 576p Text clip and a 768p one with first and last keyframes (then cut to 121 frames)
   each took 9.2-9.4 min to 1080p, the encode included, as a Text clip does (9.6 min); the Keyframes clip took 18.6 min
-  to 2K. LightX2V Turbo's 768p Text clips and its other Keyframes clips (576p, or without a last keyframe) have not been
-  upscaled through the studio yet (576p Keyframes clips have been, by hand in research runs): the popover says so for
-  them, and their times are a Text clip's
+  to 2K. Later that night LightX2V Turbo Keyframes clips with a last keyframe, kept whole (768p 16:9 and 9:16, 576p
+  stretched), took 9.3 min to 1080p with all 124 frames and the clip's whole sound, and the 768p 16:9 one 18.6 min to
+  2K; so did a 576p clip with a first frame. LightX2V Turbo's 768p Text clips have not been upscaled through the studio
+  yet: the popover says so, and their times are a Text clip's (its 768p Keyframes clips with a first frame alone are
+  taken as those with both, which have run)
   ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). NVIDIA's
   code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA file changed). It
   has as many tokens as 16:9 and took the same time at 1080p and 2K; **9:16 has not run at 4K yet**, and NVIDIA trained
@@ -186,23 +187,28 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   upscaled to 4K yet. While an upscale runs the studio's models are closed; the next clip loads them again, and with
   `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
-- **Keep my frames** (experimental, not run on the GPU yet). NVIDIA's refine redraws a Keyframes clip's first and
-  last frames like any other, away from your pictures. With the popover's box (on by default; the request's `pin`
-  `auto`), the job holds your keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already shows
-  them: each end only if the clip's own frame matches your picture at 28 dB or more (luma PSNR at 384p: 672×384, or
-  384×672 for 9:16), and only while the picture on disk is the one the clip was made from. An end that does not pass
-  is refined as without the box. With the box off (`pin` `off`) the refine is NVIDIA's as it is.
+- **Keep my frames** (experimental). NVIDIA's refine redraws a Keyframes clip's first and last frames like any other,
+  away from your pictures. With the popover's box (on by default; the request's `pin` `auto`), the job holds your
+  keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already shows them: each end only if the clip's
+  own frame matches your picture at 28 dB or more (luma PSNR at 384p: 672×384, or 384×672 for 9:16), and only while the
+  picture on disk is the one the clip was made from. An end that does not pass is refined as without the box. With the
+  box off (`pin` `off`) the refine is NVIDIA's as it is.
   - LightX2V Turbo's Keyframes clips offer their first frame, their last frame or both, as they have them.
   - Sol-H3's offer their first frame when Stage 2 held it (clips made since 0.5.2 with the default
     `SOL_H3_STAGE2_KEYFRAME=pin`), and never their last: the clip stops 3 frames before it.
   - Text and Reference clips have no frame to keep.
-  - Balanced at 1080p and 2K only for now. At 2K it holds the picture only partly (research runs with a first frame:
-    the face 3-5 dB closer to your picture, frame 0 about 1 dB, but details the refine made up stay), so the popover
-    says "only partly" there.
+  - Balanced at 1080p and 2K only for now (Faithful brought a first frame only about 1 dB closer in a test). At 2K
+    it holds the picture only partly (research runs with a first frame: the face 3-5 dB closer to your picture, frame
+    0 about 1 dB, but details the refine made up stay), so the popover says "only partly" there.
   - The popover says why an end is not offered; the upscale's card says which ends were kept, and why not.
-  - The job's pinned refine has not run on the GPU yet. A first frame held the same way has run in research runs at
-    1080p and 2K; a last frame has not run anywhere yet. So its cost is an estimate: about +10 s at 1080p and +60 s at
-    2K for one end, +30 s and +120 s for both, and up to about 1.3 GiB more GPU memory at the peak.
+  - It has run through the studio on one DGX Spark (the night of 2026-10-29 to 30) with a LightX2V Turbo clip's first
+    frame, last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same
+    clips upscaled without it, the frame held came 3.2-5.3 dB closer to your picture (luma PSNR; 2.5-5.5 dB on a face;
+    at 2K +5.0 and +4.7 dB, a clip without a face), with no flash there. A dialogue clip gained less, 2.3 dB at each end
+    (3 dB on the face), as its plain upscale was already close to the picture; its lip sync held. It costs about 16 s
+    per end at 1080p (32 s for both) and 83 s for both ends at 2K, and 0.4-0.7 GiB more GPU memory at the peak at 1080p,
+    1.3 GiB at 2K, where the lowest free memory came down to 14.1 GiB with both ends (16.0 GiB without). One end at 2K
+    has not run: the popover says so there, and its time (+60 s) is an estimate.
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the
