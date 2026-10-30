@@ -156,7 +156,7 @@ the POSTs to cancel, delete, undelete, load and unload. The CLI's `generate`, `w
 and the MCP tools `generate`, `wait`, `status` with an id and `fetch`, fail with a message that names the setting
 (CLI exit 2; for MCP a tool error with the same text): `the studio's API for programs is off (LFSTUDIO_API=0 in the
 studio's settings): it takes no clips, waits, clip status reads or downloads from lf-cli and agents. ...`. `status`
-without an id, which reads `/api/state`, and `cancel` still work. A 0.4 copy of `bin/sol-h3` sends no
+without an id, which reads `/api/state`, and `cancel` still work. A client older than 0.5 sends no
 `X-LFStudio-Client`: its `generate` still queues the clip, and only its wait gets the 403.
 
 **This is not access control.** The page's own form has taken scripted submits since the first release, and it
@@ -787,9 +787,10 @@ The studio answers errors as `{"error": "<text>"}` (some add `"job"`); spark-swi
 
 `bin/lf-cli` is one Python file: standard library only, Python 3.9 or later, and it reads no other file of this
 repo. On another machine, get it as in the [Quick start](#quick-start) (or copy it from a checkout). On the Spark,
-`bin/lf-studio <command> ...` runs it with the settings of the studio's env file. Up to 0.4 it was `bin/sol-h3`: until
-0.6 that name runs `bin/lf-cli` (with a note on stderr), and a 0.4 copy on another machine works with this studio. A
-new download from the 0.4 address gets only that shim, which says where to get `bin/lf-cli`.
+`bin/lf-studio <command> ...` runs it with the settings of the studio's env file. Up to 0.4 it was `bin/sol-h3`, which
+0.6 no longer has. Run under that name, or with a setting under its 0.4 name (`SOLH3_URL` and so on), it stops with
+exit 2 and a message that names each old name and its new one, before anything is sent
+([INSTALL.md](INSTALL.md#from-05-to-06)).
 
 ```
 lf-cli generate (--prompt TEXT | --prompt-file FILE|-) [--task t2va|fl2va|ref2va]
@@ -941,10 +942,10 @@ From the MCP process's environment (the host's server config):
 | `LFSTUDIO_MCP_MAX_WAIT_S` | 1800 | the cap on any `wait_s` |
 | `LFSTUDIO_MCP_OUT_ANYWHERE` | unset | `1` lets `out` point outside `LFSTUDIO_OUT_DIR` and the working directory |
 
-Until 0.6 each also works by its 0.4 name (`SOLH3_URL` and so on; the new name wins), with one warning on stderr, and
-with `LFSTUDIO_OUT_DIR` unset, `./sol-h3-clips` is the default while it exists and `./lf-clips` is missing or empty. A
-host registered with `sol-h3 mcp` keeps working through `bin/sol-h3` until 0.6; the server now calls itself
-`lf-studio` (`serverInfo`).
+The server calls itself `lf-studio` (`serverInfo`). A setting under its 0.4 name (`SOLH3_URL` and so on), or the 0.4
+clips folder `./sol-h3-clips` while `./lf-clips` is missing or empty and `LFSTUDIO_OUT_DIR` is unset, stops it before
+it reads anything: it exits with 2 and names each old name and its new one on stderr, nothing on stdout
+([INSTALL.md](INSTALL.md#from-05-to-06)). A host registered with `sol-h3 mcp` needs `lf-cli mcp`.
 
 ### Tools
 

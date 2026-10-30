@@ -353,8 +353,8 @@ Under `~/sol-h3` the RTX 5090 install also has `bin/` (uv, uvx, micromamba), `py
 load its libstdc++ at run time. `FORCE=1` keeps it; `FORCE=1 FORCE_TOOLCHAIN=1 install/50-stage2.sh` installs it
 again (the old one is moved to `cache/` first) and rebuilds the extensions against it.
 
-**An install made by hand.** Steps 40 and 50 count as done when the venv has the marker `.lf-studio-done` (until 0.6
-also 0.4's `.sol-h3-studio-done`). A venv without it whose `pip freeze` matches
+**An install made by hand.** Steps 40 and 50 count as done when the venv has the marker `.lf-studio-done`. A venv
+without it whose `pip freeze` matches
 `install/freeze/stage1-rtx5090-freeze.txt` or `stage2-rtx5090-freeze.txt` exactly (one built by hand to the same recipe)
 is adopted (the lines of certifi, Pillow, Gradio and MoviePy don't count): nothing is installed or rebuilt, apart from
 the update steps that every run of 40 and 50 ends with (pip and certifi, then Pillow; see
@@ -376,11 +376,10 @@ page on every request, so between the pull and the restart a reloaded page and t
 a page from before an update can show newer job states wrongly (a 0.2 page shows cancelled clips as still running).
 
 `install/10-sana.sh` keeps a copy of the patch it applied with the checkout (`lf-studio-applied.patch` in its git
-directory, so each clone and git worktree has its own; 0.4 called it `sol-h3-studio-applied.patch`, which it still finds
-until 0.6; versions up to 0.2 kept one in `$LFSTUDIO_HOME/applied.patch`). When the repo brings a new patch, it finds
-the earlier patch the checkout carries (that copy, the 0.2 location, or an earlier version of `patches/lf-studio.patch`
-from this repo's history, also under its 0.4 name `patches/sol-h3-studio.patch`), checks that the checkout holds it and
-nothing else, reverses it, checks out the new `patches/BASE_COMMIT` if that changed, and applies the new patch. If the
+directory, so each clone and git worktree has its own; versions up to 0.2 kept one in `$LFSTUDIO_HOME/applied.patch`).
+When the repo brings a new patch, it finds the earlier patch the checkout carries (that copy, the 0.2 location, or an
+earlier version of `patches/lf-studio.patch` from this repo's history), checks that the checkout holds it and nothing
+else, reverses it, checks out the new `patches/BASE_COMMIT` if that changed, and applies the new patch. If the
 checkout has other local changes it lists them and stops without changing anything; move them away, or move
 `$LFSTUDIO_SANA` away and run the script again for a fresh clone.
 
@@ -388,7 +387,7 @@ If spark-switchboard runs the studio, bring your copy in switchboard's `services
 to date when `integrations/spark-switchboard/lf-studio.toml` changes: for 0.3, add `"cancelled"` to its `idle_values`
 (the busy probe must count the new status as idle); for 0.4, set its `passive_paths` to `["/health", "/api/state",
 "/api/jobs", "/api/jobs/*", "/poster/*"]` (without it, a script that reads a clip's state or waits for it starts a
-stopped studio); for 0.5, see below. Or replace its contents with the new file, keep its file name, and set your
+stopped studio); for 0.6, see [From 0.5 to 0.6](#from-05-to-06). Or replace its contents with the new file, keep its file name, and set your
 checkout's path in `command` and `kill_command` (the file assumes `~/src/lf-studio`). Then `spark-switchboard check`,
 and restart switchboard. A config made from switchboard's own example (in its `examples/services/`) needs the same
 `passive_paths` while the example lists only `"/health"`.
@@ -403,6 +402,121 @@ start clean.
 On the RTX 5090 the same: `install/10-sana.sh` (with `LFSTUDIO_BACKEND=rtx5090` in the settings file) finds the earlier
 version of `patches/lf-studio-rtx5090.patch`, reverses it, moves to a new `patches/BASE_COMMIT_RTX5090` if that
 changed, and applies the new one. A new patch file is all an update of the 5090 patch needs.
+
+### From 0.5 to 0.6
+
+0.6 drops the names the studio had up to 0.4, when it was called Sol-H3 Studio. 0.5 still read them; 0.6 does not.
+So that nothing changes without a word, the launcher (`bin/lf-studio`, in every mode), the install steps, the bench
+scripts and `bin/lf-cli` stop before they start anything when they find one, with one message that names each old
+name and its new one, for example (the real message has full paths):
+
+```
+>>> STATUS: REFUSED - LF Studio 0.6 no longer reads the names it had up to 0.4. Rename each, then try again (docs/INSTALL.md, "From 0.5 to 0.6"):
+    SOLH3_PORT (environment) -> LFSTUDIO_PORT
+    ~/.config/sol-h3-studio -> ~/.config/lf-studio (the settings folder)
+    SOLH3_HOME (~/.config/sol-h3-studio/env line 3) -> LFSTUDIO_HOME
+```
+
+The launcher and the install steps exit with 2. Under spark-switchboard the message shows on its status page. `lf-cli`
+prints the same lines after `lf-cli:`, sends nothing and exits with 2; as an MCP server it writes nothing to stdout.
+Change what it names, with the studio stopped, then start it again. An install that already uses the new names
+needs nothing.
+
+**Settings.** Each `SOLH3_X` is now `LFSTUDIO_X`, in the settings file and wherever else you set it: a
+spark-switchboard service file's `env`, a systemd unit, scripts, agent configs. For a file, check it, then rename:
+
+```bash
+grep -n 'SOLH3_' ~/.config/lf-studio/env
+sed -i 's/\bSOLH3_/LFSTUDIO_/g' ~/.config/lf-studio/env
+```
+
+The `sed` line leaves the pipeline's `SOL_H3_*` switches alone. The settings that had a 0.4 name:
+
+| Up to 0.4 | Since 0.5 | Up to 0.4 | Since 0.5 |
+|---|---|---|---|
+| `SOLH3_ALLOWED_HOSTS` | `LFSTUDIO_ALLOWED_HOSTS` | `SOLH3_PATHS` | `LFSTUDIO_PATHS` |
+| `SOLH3_BACKEND` | `LFSTUDIO_BACKEND` | `SOLH3_PIDFILE` | `LFSTUDIO_PIDFILE` |
+| `SOLH3_BENCH_LOGS` | `LFSTUDIO_BENCH_LOGS` | `SOLH3_PORT` | `LFSTUDIO_PORT` |
+| `SOLH3_CHECKPOINTS` | `LFSTUDIO_CHECKPOINTS` | `SOLH3_PRELOAD` | `LFSTUDIO_PRELOAD` |
+| `SOLH3_DRY_RUN` | `LFSTUDIO_DRY_RUN` | `SOLH3_PROMPT_CACHE_FROM` | `LFSTUDIO_PROMPT_CACHE_FROM` |
+| `SOLH3_ENV` | `LFSTUDIO_ENV` | `SOLH3_PUBLISH_DIR` | `LFSTUDIO_PUBLISH_DIR` |
+| `SOLH3_GUARD_GIB` | `LFSTUDIO_GUARD_GIB` | `SOLH3_PYTHON` | `LFSTUDIO_PYTHON` |
+| `SOLH3_HOME` | `LFSTUDIO_HOME` | `SOLH3_RESHAPE` | `LFSTUDIO_RESHAPE` |
+| `SOLH3_HOST` | `LFSTUDIO_HOST` | `SOLH3_SANA` | `LFSTUDIO_SANA` |
+| `SOLH3_LOG` | `LFSTUDIO_LOG` | `SOLH3_SANA_COMMIT` | `LFSTUDIO_SANA_COMMIT` |
+| `SOLH3_MAX_QUEUED` | `LFSTUDIO_MAX_QUEUED` | `SOLH3_SANA_URL` | `LFSTUDIO_SANA_URL` |
+| `SOLH3_MCP_MAX_WAIT_S` | `LFSTUDIO_MCP_MAX_WAIT_S` | `SOLH3_START_TIMEOUT_S` | `LFSTUDIO_START_TIMEOUT_S` |
+| `SOLH3_MCP_OUT_ANYWHERE` | `LFSTUDIO_MCP_OUT_ANYWHERE` | `SOLH3_STATE_DIR` | `LFSTUDIO_STATE_DIR` |
+| `SOLH3_MCP_WAIT_S` | `LFSTUDIO_MCP_WAIT_S` | `SOLH3_STOP_WAIT_S` | `LFSTUDIO_STOP_WAIT_S` |
+| `SOLH3_MIN_FREE_GIB` | `LFSTUDIO_MIN_FREE_GIB` | `SOLH3_TASKS` | `LFSTUDIO_TASKS` |
+| `SOLH3_MIN_FREE_VRAM_GIB` | `LFSTUDIO_MIN_FREE_VRAM_GIB` | `SOLH3_TRASH_DAYS` | `LFSTUDIO_TRASH_DAYS` |
+| `SOLH3_OUT_DIR` | `LFSTUDIO_OUT_DIR` | `SOLH3_URL` | `LFSTUDIO_URL` |
+
+**The settings folder.** `~/.config/sol-h3-studio` counts while `~/.config/lf-studio/env` does not exist and no
+`LFSTUDIO_ENV` names a settings file. Move it, then rename its settings as above:
+
+```bash
+mv -T ~/.config/sol-h3-studio ~/.config/lf-studio
+```
+
+`mv -T` refuses when `~/.config/lf-studio` holds anything, and changes nothing; then move the files you need from the
+old folder into it. A link left at the old place by "From 0.4 to 0.5" can stay until nothing names it.
+
+**The state folder.** `~/.local/state/sol-h3-studio` counts while it has the clip history (`jobs.db`),
+`~/.local/state/lf-studio` has none, and no `LFSTUDIO_STATE_DIR` is set. Move it, or keep it where it is with
+`LFSTUDIO_STATE_DIR="$HOME/.local/state/sol-h3-studio"` in the settings file:
+
+```bash
+mv -T ~/.local/state/sol-h3-studio ~/.local/state/lf-studio
+```
+
+If a service file names its pidfile in the old folder, change it together with the move.
+
+**The launcher and the client.** `bin/sol-h3-studio` and `bin/sol-h3` are gone. Whatever still runs them fails with
+"No such file or directory", not with the message above:
+
+- spark-switchboard, with the studio stopped (Stop in switchboard): in your service file (keep its file name: it is
+  the service's name, which `delegate.sh` uses), set `command` to `["bash", "<checkout>/bin/lf-studio"]` and
+  `kill_command` to `["bash", "<checkout>/bin/lf-studio", "--kill"]`, and rename the keys in `env` to `LFSTUDIO_*`.
+  `pidfile` may stay; if you change it, give `LFSTUDIO_PIDFILE` the same path. Or replace the file's contents with
+  `integrations/spark-switchboard/lf-studio.toml` and set your checkout's path in `command` and `kill_command` (it
+  assumes `~/src/lf-studio`; a checkout cloned before 0.5 is at `~/src/sol-h3-studio` unless you moved it). Then
+  `spark-switchboard check`, and restart switchboard.
+- systemd: `systemctl --user disable --now sol-h3-studio`, then set up `integrations/systemd/lf-studio.service` as its
+  comment says, with your checkout's path in `ExecStart`.
+- NVIDIA Sync: the command `bash <checkout>/bin/lf-studio` ([nvidia-sync.md](nvidia-sync.md)).
+- MCP: register `lf-cli mcp` with `LFSTUDIO_URL` instead of `sol-h3 mcp` with `SOLH3_URL`, for example `claude mcp add
+  --scope user --transport stdio lf-studio -e LFSTUDIO_URL=http://<spark-host>:8190 -- python3 /path/to/lf-cli mcp`
+  ([API.md](API.md#mcp-server-lf-cli-mcp)), and remove the old entry (`sol-h3`; `sol_h3` in Hermes). On other
+  machines, download `bin/lf-cli` ([API.md](API.md#cli-binlf-cli)). The MCP server's clips folder `./sol-h3-clips`
+  counts while `./lf-clips` is missing or empty and no `LFSTUDIO_OUT_DIR` is set: move it to `./lf-clips`, or set
+  `LFSTUDIO_OUT_DIR=sol-h3-clips`.
+
+**The install's own files.** Two files that 0.4 wrote under its name stop the install steps and the bench scripts
+(not the studio):
+
+- A venv that only 0.4 marked as built (`.sol-h3-studio-done` and no `.lf-studio-done` in `~/sol-h3/envs/stage1` or
+  `stage2`). Steps 40 and 50 would build into it again. Rename the marker:
+  `mv ~/sol-h3/envs/stage1/.sol-h3-studio-done ~/sol-h3/envs/stage1/.lf-studio-done`, and the same for `stage2`.
+- A Sana checkout last patched by 0.4, whose copy of the applied patch has only its 0.4 name. Rename the copy and its
+  `.base` (if there is one), then run `install/10-sana.sh`:
+
+```bash
+d=$(git -C ~/sol-h3/Sana rev-parse --absolute-git-dir)
+mv "$d/sol-h3-studio-applied.patch" "$d/lf-studio-applied.patch"
+mv "$d/sol-h3-studio-applied.patch.base" "$d/lf-studio-applied.patch.base"
+```
+
+A checkout that 0.5 updated has both copies. 0.6 reads only the new one and no longer writes the 0.4 copy, which can go.
+
+Not 0.4 names, and unchanged: the data home `~/sol-h3`, the pipeline's `SOL_H3_*` switches, the Qwen image and its
+containers, the model `sol-h3`, and names you chose yourself, such as a service or a checkout folder.
+
+From 0.4: run the steps of [From 0.4 to 0.5](#from-04-to-05) (the patch, the Pillow update), together with this
+section.
+
+Back to 0.5, with the studio stopped: `git checkout v0.5.2`, then `install/10-sana.sh`. 0.5 reads the new names, so
+the renamed settings, folders and files stay as they are.
 
 ### After 0.5.2
 
@@ -478,60 +592,12 @@ as missing, next to what it listed before (flashinfer-python; on the RTX 5090 al
 New and optional: `LFSTUDIO_API`, on (`1`) by default as in 0.4; `0` turns the API for programs off and leaves the
 studio to its page ([API.md](API.md#turning-the-api-off)).
 
-Nothing else needs to change for a working install. Until 0.6:
-
-- `bin/sol-h3-studio` and `bin/sol-h3` run the new files with the same arguments (after a note on stderr), so NVIDIA
-  Sync apps, systemd units, spark-switchboard services, scripts and MCP registrations (`sol-h3 mcp`) keep working. A
-  copy of the 0.4 `bin/sol-h3` on another machine works with the new studio as it is; downloaded again from its 0.4
-  address, it is only the shim, which says where to get `bin/lf-cli`.
-- Every setting is also read by its 0.4 name, from the settings file and from the environment, with one warning that
-  lists the old names used. Where both names are set, the new one wins; the environment still wins over the file.
-- `~/.config/sol-h3-studio/env` is used while `~/.config/lf-studio/env` does not exist, `~/.local/state/sol-h3-studio`
-  while it has the clip history (`jobs.db`) and `~/.local/state/lf-studio` does not, and `~/.cache/sol-h3-studio` (the
-  compile cache when the runtime root is unset) and the MCP server's `./sol-h3-clips` while the new one is missing or
-  empty, each with a note naming both. Nothing is moved; a new install uses the new places.
-- Venvs that 0.4 marked as built (`.sol-h3-studio-done`) count as built, and the page takes over the settings it kept in
-  the browser (`solh3.*`).
-- `integrations/spark-switchboard/sol-h3-studio.toml` and `integrations/systemd/sol-h3-studio.service` stay for this
-  release as they were in 0.4, marked as deprecated.
-
-Change these when convenient, before 0.6:
-
-- The settings' names, in the settings file and wherever else you set them (agent configs, scripts): `SOLH3_X` becomes
-  `LFSTUDIO_X`. For the file: `sed -i 's/\bSOLH3_/LFSTUDIO_/g' <your settings file>`.
-- MCP: register the server under its new name, for example `claude mcp add --scope user --transport stdio lf-studio -e
-  LFSTUDIO_URL=http://<spark-host>:8190 -- python3 /path/to/lf-cli mcp` ([API.md](API.md#mcp-server-lf-cli-mcp)), and
-  remove the old entry (`sol-h3`; `sol_h3` in Hermes). On other machines, download `bin/lf-cli`
-  ([API.md](API.md#cli-binlf-cli)).
-- spark-switchboard, with the studio stopped (Stop in switchboard; one left running keeps its pid in the 0.4 pidfile,
-  so the restarted switchboard would not find it and would never stop it): replace your service file's contents with
-  `integrations/spark-switchboard/lf-studio.toml` (the command `bin/lf-studio`, `LFSTUDIO_*` in `env`, the pidfile
-  under `~/.local/state/lf-studio`) and set your checkout's path in `command` and `kill_command`. The file assumes
-  `~/src/lf-studio`; a checkout cloned before 0.5 is still at `~/src/sol-h3-studio` unless you moved it, so the
-  command becomes `~/src/sol-h3-studio/bin/lf-studio`. The file name is the service name, so a new name also changes
-  it for `delegate.sh` ([nvidia-sync.md](nvidia-sync.md)). Then `spark-switchboard check`, and restart switchboard.
-- NVIDIA Sync: the command `bash <checkout>/bin/lf-studio`. systemd: `systemctl --user disable --now sol-h3-studio`,
-  then set up `integrations/systemd/lf-studio.service` as its comment says, with your checkout's path in `ExecStart`
-  (it assumes `~/src/lf-studio`).
-- Optional: move the settings file and the state to the new places, with the studio stopped, and leave a link at each
-  old place for anything that still names it (the pidfile of a 0.4 service file). `mv -T` takes the place of an empty
-  new directory (the new spark-switchboard file leaves an empty `~/.local/state/lf-studio` behind) and refuses one that
-  holds anything, changing nothing; if it refuses, look at what the new directory holds (a `launcher.pid` left by a
-  killed launcher can go) before you run the line again:
-
-```bash
-mv -T ~/.config/sol-h3-studio ~/.config/lf-studio && ln -s ~/.config/lf-studio ~/.config/sol-h3-studio
-mv -T ~/.local/state/sol-h3-studio ~/.local/state/lf-studio && ln -s ~/.local/state/lf-studio ~/.local/state/sol-h3-studio
-```
+0.5 still read the names up to 0.4 (the settings `SOLH3_*`, the old folders and files, `bin/sol-h3-studio` and
+`bin/sol-h3`); 0.6 no longer does. Rename them as [From 0.5 to 0.6](#from-05-to-06) says.
 
 Leave `~/sol-h3` where it is: its venvs hold absolute paths. The repository is now github.com/slogonomo/lf-studio;
 GitHub forwards the old address, and `git remote set-url origin https://github.com/slogonomo/lf-studio` updates a
 checkout.
-
-Back to 0.4 (DGX Spark), with the studio stopped: `git checkout v0.4.0`, then `install/10-sana.sh`. Until 0.6, 0.5 keeps
-its copy of the patch also under 0.4's name (`sol-h3-studio-applied.patch`), so 0.4's script replaces the 0.5 patch with
-its own; it calls it "an earlier version". Then start the studio as before. Back to 0.5: `git checkout main`,
-`install/10-sana.sh`.
 
 ### Earlier versions
 
@@ -567,8 +633,8 @@ From 0.1 to 0.2: the first start imports the clip history (`jobs.json`) into `jo
 ## Uninstall
 
 Stop the studio, then remove `~/sol-h3` (or your `$LFSTUDIO_HOME`), `~/.config/lf-studio`,
-`~/.local/state/lf-studio` (an install from before 0.5 may still use `~/.config/sol-h3-studio` and
-`~/.local/state/sol-h3-studio`, or links there: remove those too) and the images: `docker rmi sol-h3-spark-qwen
+`~/.local/state/lf-studio` (and `~/.config/sol-h3-studio` and `~/.local/state/sol-h3-studio`, the folders of an
+install made before 0.5, or links there, if any are left) and the images: `docker rmi sol-h3-spark-qwen
 sol-h3-spark-qwen:base` (the RTX 5090 install has no images, and keeps uv's cache in `~/sol-h3/cache/uv`). The RTX
 5090 install also writes files derived from the weights next to `$LFSTUDIO_CHECKPOINTS`: `derived/` (the LTX block
 folder and the H3 snapshots, ~110 GB) and `scratch/` (empty between starts); remove them too, also when the

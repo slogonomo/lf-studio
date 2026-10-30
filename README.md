@@ -284,10 +284,9 @@ everything is the DGX Spark's, as above. Details and measurements: [docs/RTX5090
 [docs/INSTALL.md](docs/INSTALL.md#rtx-5090).
 
 To update: `git pull`, then `install/10-sana.sh`, then restart the studio ([details](docs/INSTALL.md#updating)).
-0.5 renames the launcher (`bin/lf-studio`), the client (`bin/lf-cli`), the settings (`LFSTUDIO_*`), the settings
-file (`~/.config/lf-studio/env`) and the state (`~/.local/state/lf-studio`). An install made with 0.4 keeps working
-with no action until 0.6; `install/10-sana.sh` brings the patch under its new name
-([From 0.4 to 0.5](docs/INSTALL.md#from-04-to-05)).
+0.6 no longer reads the names the studio had up to 0.4 (the settings `SOLH3_*`, `bin/sol-h3-studio`, `bin/sol-h3`,
+`~/.config/sol-h3-studio`), which 0.5 still did: an install that uses one stops before it starts and names each with
+its new name ([From 0.5 to 0.6](docs/INSTALL.md#from-05-to-06)).
 0.4 changes the patch: until `install/10-sana.sh` has applied it, the studio refuses to start with
 "SOL_H3_PROMPT_TOKENS=minimax (the default since 0.4) needs a newer patch than the one applied in ...".
 0.4 also answers only to known host names: if you open the studio by a name other than an IP address, `localhost`, a
