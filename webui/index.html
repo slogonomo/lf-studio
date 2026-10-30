@@ -501,8 +501,6 @@ const whole=(s,f)=>Number.isFinite(s=f(+s))?Math.max(0,s):0, mmss=n=>`${Math.flo
 const hms=n=>n<3600?mmss(n):`${Math.floor(n/3600)}:${mmss(n%3600).padStart(5,'0')}`;
 const fmtS=s=>{s=whole(s,Math.round);return s<90?`${s} s`:s<3600?`${mmss(s)} min`:hms(s);};
 const clock=s=>hms(whole(s,Math.floor));
-// until 0.6: settings this browser kept under solh3.* (up to 0.4) are copied once to lfstudio.*, where those are missing
-try{for(const k of Object.keys(localStorage))if(k.startsWith('solh3.')&&localStorage.getItem('lfstudio.'+k.slice(6))===null)localStorage.setItem('lfstudio.'+k.slice(6),localStorage.getItem(k));}catch(e){}
 const store={get(k,d){try{const v=localStorage.getItem('lfstudio.'+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem('lfstudio.'+k,v)}catch(e){}}};
 const val=n=>{const el=form.querySelector(`input[name="${n}"]:checked`);return el?el.value:''};
 const setRadio=(n,v)=>{const el=form.querySelector(`input[name="${n}"][value="${v}"]`);if(el)el.checked=true;return !!el;};

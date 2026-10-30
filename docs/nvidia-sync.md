@@ -14,10 +14,10 @@ Add a custom app in Sync with (field names can differ between Sync versions):
 | Port | 8190 |
 | Launch script / command | `bash ~/src/lf-studio/bin/lf-studio` |
 
-Adjust the path if the repo is elsewhere. An app set up for 0.4 (`bash ~/src/sol-h3-studio/bin/sol-h3-studio`) keeps
-working until 0.6 through the old name. Start the app in Sync, wait for "LF Studio ready", then open
-<http://localhost:8190> on the laptop. The launcher's `>>> STATUS:` lines show its progress: checks, start-up,
-refusals (memory, port), and the memory guard.
+Adjust the path if the repo is elsewhere. An app set up for 0.4 (`.../bin/sol-h3-studio`) needs the command
+`bash <checkout>/bin/lf-studio`: 0.6 no longer has the old name ([INSTALL.md](INSTALL.md#from-05-to-06)). Start the app
+in Sync, wait for "LF Studio ready", then open <http://localhost:8190> on the laptop. The launcher's `>>> STATUS:`
+lines show its progress: checks, start-up, refusals (memory, port, names up to 0.4), and the memory guard.
 
 How the launcher behaves under Sync:
 
@@ -44,8 +44,8 @@ switchboard's `delegate.sh` instead:
 | Port | 8190 |
 | Launch script / command | `bash ~/src/spark-switchboard/examples/launchers/delegate.sh lf-studio` |
 
-`lf-studio` is the service name (the file name of `integrations/spark-switchboard/lf-studio.toml` without `.toml`; a
-service set up for 0.4 is still called `sol-h3-studio`). `delegate.sh` asks switchboard to start the studio, shows
+`lf-studio` is the service name (the file name of your copy of `integrations/spark-switchboard/lf-studio.toml`
+without `.toml`; use your own if you named it otherwise). `delegate.sh` asks switchboard to start the studio, shows
 switchboard's progress as `>>> STATUS:` lines and stays in the foreground, so Sync keeps the port forwarded. When you
 close the app in Sync, it asks switchboard to stop the studio unless someone used it recently (`stop?if_idle=1`). It
 never starts the studio itself; if switchboard is not running, it says so and exits, and you use the standalone command

@@ -92,8 +92,6 @@ def package_info(package, sana, repo):
     gitdir = git("-C", str(sana), "rev-parse", "--absolute-git-dir")
     info["sana_head"] = git("-C", str(sana), "rev-parse", "HEAD")
     copy = Path(gitdir) / "lf-studio-applied.patch" if gitdir else None
-    if copy is not None and not copy.is_file():      # until 0.6: the copy's name up to 0.4
-        copy = copy.with_name("sol-h3-studio-applied.patch")
     if copy is not None and copy.is_file():
         info["patch_sha256"] = media_sha(copy)
         base = copy.with_name(copy.name + ".base")
