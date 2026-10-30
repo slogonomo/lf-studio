@@ -257,6 +257,7 @@ NVIDIA's merge, checked). The numbers come from four kinds of runs, kept apart h
   apart", below).
 
 The first tables have one run per resolution and orientation; the runs through the studio on 2026-10-29 add more.
+Every run here is of a 5 s clip: clips of other lengths ran on 2026-10-30 ([Longer clips](#longer-clips), below).
 
 **The job itself, fast load** (staging studio, with the job as it was just before it took 9:16 clips: its calls into
 NVIDIA's code for a 16:9 clip are unchanged since, which `tests/test_upscale.py` checks; one 16:9 clip (1344×768) to
@@ -409,9 +410,9 @@ start to the MP4 with the clip's sound, the encode included):
   the motion near it kept (the run's checks). The Sol-H3 clip is compared with its upscale of 2026-10-29 (the table
   above): +4.7 dB, +4.2 dB on the face. The dialogue clip gained less, +2.3 and +2.4 dB at its ends (+3.0 and +3.1 dB
   on the face): it is a static shot, and its plain upscale was already closer to the picture (30.0-30.1 dB at either
-  end, against 24.1-27.0 dB for the others). Its lip sync held (SyncNet LSE-C 8.94, 8.82 unpinned, offset 0). At 2K
-  the page still says "only partly" (the research runs with a first frame at 2K: frame 0 about 1 dB closer, the face
-  3-5 dB).
+  end, against 24.1-27.0 dB for the others). Its lip sync held (SyncNet LSE-C 8.94, 8.82 unpinned, offset 0). The
+  research runs with a first frame at 2K had brought frame 0 only about 1 dB closer (the face 3-5 dB); with these runs
+  2K is offered as 1080p is.
 - **Keep my frames, the cost:** +16.0 and +16.6 s with one end, +30.3 to +34.4 s with both at 1080p, +83.2 s with both
   at 2K: the pictures' encode (3.0-3.1 s per end at 1080p, 10.5 s for both at 2K) and longer steps (149-150 s with one
   end and 155-157 s with both, against 142-145 s; at 2K 414 s against 377 s). Peak allocated +0.4 GiB with one end and
@@ -432,13 +433,15 @@ Measured apart:
 | The upscale's prompt encode (Sol-H3 Keyframes and Reference clips; a LightX2V Turbo Keyframes clip without its own text) | 9.1-18 s in all, 1.1-1.8 s of it the encode; ~15 GiB while its Qwen worker lives | the times: ten runs of the same helper (`bench/h3turbo_encode.py`) for LightX2V Turbo clips on the GPU, 2026-10-28; the memory (15.1-15.4 GiB): the receipts of the studio's own Qwen encodes on the same machine |
 | The stretch of a 576p clip to 768p | 0.55-0.92 s | two clips, on the CPU |
 
-So the page shows the Text clip's times for every 5 s clip, plus 15 s in its progress bar for an upscale whose text is
-encoded first, and its popover says of the kinds not run through the studio yet (above) that this kind of clip has not
-been upscaled on the GPU through the studio yet. It goes by route (the model, where the text comes from, what is done
-to the MP4), not by size: a route run at one size counts at the others (so a 576p clip at 2K has no note), and a 768p
-Keyframes clip with a first frame alone counts as one with both. With Keep my frames the progress bar adds 16 s per
-end at 1080p and 83 s for both ends at 2K (measured), and 60 s for one end at 2K (an estimate: not run), where the
-popover says so.
+So the page shows the Text clip's times for every 5 s clip (and a longer clip its length's times, below), plus
+15 s in its progress bar for an upscale whose text is encoded first, and its popover says of the kinds not run through
+the studio yet (above) that this kind of clip has not been upscaled on the GPU through the studio yet. It goes by
+route (the model, where the text comes from, what is done to the MP4), not by size: a route run at one size counts at
+the others (so a 576p clip at 2K has no note), and a 768p Keyframes clip with a first frame alone counts as one with
+both. A clip of a length that has not run at that size, nor a longer one there, would get the length's note in its
+place, that its times are estimates (none does now). With Keep my frames the progress bar adds 16 s per end at 1080p
+and 83 s for both ends at 2K (measured), and 60 s for one end at 2K (an estimate: not run), where the popover says
+so; on a clip longer than 5 s they are a little short (below).
 
 **The job itself, standard load** (2026-10-28, before the fast load's runs, the same staging studio and 16:9 clip, an
 earlier version of the job too; 2K, `balanced`, audio `clip`):
@@ -495,14 +498,17 @@ runs above did (128-133 s).
   neither depends on the resolution. In all, with 2 steps (`faithful`, `balanced`) about 10 min at 1080p, 19 min at 2K
   and 1.1 h at 4K; with 3 (`full`) about 13 min, 26 min and 1.6 h. The popover shows the 2-step times with the
   studio's load (`/api/state` `upscale_load`; with the standard load ~19 min, ~28 min and ~1.2 h), the same for a
-  9:16 clip and for every other 5 s clip (15 s more in the progress bar when its text is encoded first). A run with
-  the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
+  9:16 clip and for every other 5 s clip (15 s more in the progress bar when its text is encoded first). These times
+  come from the job's table, per length (`OFFER_ETA_S` in `upscale/regen2k_job.py`; `/api/state` `upscale_offers`
+  carries it to the page, and `lf-cli`'s texts are checked against it): a longer clip gets its length's row
+  (below). A run with the preread (`LFSTUDIO_UPSCALE_PREREAD=1`, the standard load only: 8 parallel readers fill the
   page cache first) loaded in 539 s, against 445 s without; the files were cached already, so this says little about
   a cold start.
 - 4K: the stock block forward with only its FFN in 8 sequence chunks ran out of memory in the first step (the bench's
-  guard stopped it at 3 GiB of MemAvailable). At 4K the job runs every block with a memory-lean forward (everything but
-  the attention over the sequence in 16 chunks, q/k/v straight into SDPA's layout; bit-identical to the stock forward
-  on GB10, with 2.5x less activation memory; `lean_chunks` 16 in the receipt). **The studio's 4K path has run end to
+  guard stopped it at 3 GiB of MemAvailable). At 4K (and on longer clips from 10 s at 1080p and 6 s at 2K, below) the
+  job runs every block with a memory-lean forward (everything but the attention over the sequence in 16 chunks, q/k/v
+  straight into SDPA's layout; bit-identical to the stock forward on GB10, with 2.5x less activation memory; `forward`
+  `lean` and `lean_chunks` 16 in the receipt). **The studio's 4K path has run end to
   end once**, with a 16:9 clip (the first table): 66 min from the job's start to the MP4, 56 min of it the two refine
   steps, with the most memory of the three (94.46 GiB allocated at the peak, MemAvailable down to 11.1 GiB in the first
   step; the studio's guard stops a job below 5 GiB). The bench's 4K run (the same forward, the weights loaded with
@@ -511,13 +517,194 @@ runs above did (128-133 s).
 - The studio needs 110 GiB free to start an upscale, 115 GiB at 4K (`LFSTUDIO_UPSCALE_MIN_FREE_GIB`, plus 5 GiB at
   4K; 117.7 GiB were free on the idle box), and kills it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`). The job's
   16:9 runs above took ~101 GiB at 2K (MemAvailable 116.7 → 15.7 GiB) and ~105 GiB at 4K (116.4 → 11.1 GiB): a 4K
-  upscale that started with just 110 GiB free would come down to ~4.7 GiB, below the guard.
+  upscale that started with just 110 GiB free would come down to ~4.7 GiB, below the guard. A longer clip needs what
+  the memory model below gives where that is more (none does at 110 GiB: 2K at 10 s needs the most, 109; its run came
+  down from 116.5 to 16.7 GiB), and the job checks the floor again as it starts (job.json `min_free_gib`).
 - Quality, so far: at NVIDIA's settings (start noise 0.909, 3 steps: `full`) the result is much sharper but has a
   different-looking face. Lower start noise (0.7 and 0.5 with 2 steps) and refining
   against the clip's own audio instead of NVIDIA's silence are being measured; the defaults (`balanced`, `clip`)
   are provisional until then.
 - Not tried: NVIDIA's `sol_engine` forward (Sol-Attn sparse attention, MXFP8; NVIDIA lists ~150 GB for it) and its
   fast VAE decoder.
+
+### Longer clips
+
+The job takes a clip of any length the studio makes whole, in one pass of NVIDIA's refine, as it takes a 5 s one, at
+1080p (every length), 2K (up to 10 s) or 4K (5 s only). Its tables are in `upscale/regen2k_job.py`: `FRAME_CASES`,
+`OFFER_ETA_S`, `UPSCALE_RAN` and the memory model (`MODEL_GIB`, `ROW_BYTES`, `OVERHEAD_GIB`, `need_gib`). **6, 10 and
+15 s at 1080p and 10 s at 2K have run on the GPU** (below); 7, 8 and 12 s at 1080p and 6, 7 and 8 s at 2K have not,
+but a longer clip at their size has, and their times and memory follow the job's model of these runs, which held
+(steps within 1.4 %, the peak within 0.1 GiB).
+
+**What each length gives the refine.** H3 makes 17n+5 frames (124 at 5 s), with 5n+2 latent frames (T) and 40 audio
+latents a second (A). Sol-H3's clips, and LightX2V Turbo's without a last keyframe, keep the largest 8m+1 of them (121
+at 5 s); the job adds NVIDIA's 3 copies of the last frame, as NVIDIA's encode does at 5 s, so the VAE gives the T of
+the frames made. A LightX2V Turbo clip with a last keyframe keeps every frame made, and gets no copies. The refine's
+sequence has T × 2,040 video rows at 1080p (3,600 at 2K, 8,160 at 4K), 2 × A audio rows and the prompt's rows (about
+200; the table counts 200). The output has the clip's frames, and its whole sound.
+
+| Length | Frames kept (made) | T | A | Rows at 1080p | Rows at 2K |
+|---|---|---|---|---|---|
+| 5 s | 121 or 124 (124) | 37 | 207 | 76,094 | 133,814 |
+| 6 s | 153 or 158 (158) | 47 | 263 | 96,606 | 169,926 |
+| 7 s | 169 or 175 (175) | 52 | 292 | 106,864 | 187,984 |
+| 8 s | 185 or 192 (192) | 57 | 320 | 117,120 | 206,040 |
+| 10 s | 241 or 243 (243) | 72 | 405 | 147,890 | 260,210 |
+| 12 s | 289 or 294 (294) | 87 | 490 | 178,660 | 314,380 |
+| 15 s | 361 or 362 (362) | 107 | 603 | 219,686 | 386,606 |
+
+At 4K a 5 s clip has 302,534 rows. A clip of any other count of frames (Sol-H3's 3 and 4 s clips, made up to 0.5.0,
+73 and 105; a 14 s research clip, 345) is refused, never cut.
+
+**Measured** (a staging studio of this version on one DGX Spark, 2026-10-30, driven by `lf-cli`; one clip each, made
+in the studios before, the 6 s one in that window; nothing else loaded, MemAvailable 116.3-116.6 GiB with the page cache
+dropped at each job's start; the fast load, `balanced`, the clip's audio; the time from the job's start to the MP4
+with the clip's sound, the encode of its text included; the receipt's rows, with the prompt's real ones). In brackets
+the job's model at the run's own rows and start: the step model, the peak model, and the lowest MemAvailable by the
+overhead before and after its refit to these runs (below):
+
+| The clip | To | Frames, forward, rows | From the job's start to the MP4 | Refine, per step | Peak allocated | Lowest MemAvailable |
+|---|---|---|---|---|---|---|
+| Sol-H3 Text, 6 s 16:9, a static two-shot with three lines | 1080p | 153, stock, 96,632 | **759.7 s (12:40)** | 213.1, 211.8 s (215) | 84.78 GiB (84.76) | 23.5 GiB (22.3 / 23.5) |
+| Sol-H3 Keyframes, 10 s 16:9, a static two-shot with three lines (its text encoded first, 14.8 s) | 1080p | 241, lean, 148,077 | **1423.0 s (23:43)** | 454.6, 450.5 s (455) | 81.15 GiB (81.13) | 29.0 GiB (24.4 / 29.2) |
+| Sol-H3 Keyframes, 15 s 9:16, four lines (encoded first, 16.9 s) | 1080p (1080×1920) | 361, lean, 220,258 | **2587.0 s (43:07)** | 926.8, 930.3 s (937) | 87.37 GiB (87.33) | 20.4 GiB (17.9 / 20.7) |
+| The 10 s Keyframes clip | 2K | 241, lean, 260,397 | **3188.1 s (53:08)** | 1261.2, 1260.8 s (1279) | 90.83 GiB (90.78) | 16.7 GiB (14.7 / 16.3) |
+| LightX2V Turbo Keyframes, 576p 16:9 10 s, one picture first and last, stretched; both ends kept | 1080p | 243, lean, 152,050 | **1459.2 s (24:19)** | 474.4, 473.6 s (477) | 81.54 GiB (81.47) | 28.8 GiB (24.0 / 28.7) |
+
+- **Every one came out whole:** the clip's frames at its size, its whole sound (every AAC packet), the last second
+  clean (no spike in the frame-to-frame change over the last 24 frames, no drift from the clip and the detail kept to
+  the end), and its lip sync (SyncNet LSE-C over the whole clip, at the face the clip syncs best, the offset kept):
+  3.93 against the clip's 3.66 (6 s), 2.39 and 2.21 against 2.12 (10 s at 1080p and 2K), 2.56 against 2.24 (15 s) and
+  3.03 against 3.09 (the LightX2V Turbo clip). The validation's lip sync gate was two-sided, so the 15 s upscale,
+  0.32 above its clip, counted against it there; syncing better than the clip is not a failure. By eye the last seconds
+  of the 10 and 15 s Sol-H3 clips' upscales at 1080p are sharper than the clip to the last frame, with the same faces,
+  no drift or softening.
+- **Times:** the steps came within 1.4 % of the step model (at their own rows), so it holds past 5 s, and the stages
+  scale with the clip's frames: encoding the final clip 160 / 239 / 350 s at 6 / 10 / 15 s (245 s for the 243-frame
+  clip), the VAE decode 135 / 210 / 314 s at 1080p (362 s at 2K for 10 s), the load 21.7-22.1 s. Each run less its two
+  steps and its encode, plus ~40 s for closing the studio's models, gives the page's `base`: 375 s at 6 s, 543 s at
+  10 s and 753 s at 15 s at 1080p, 691 s at 2K for 10 s (the estimates before the runs: 372, 535, 763 and 708 s).
+- **Memory:** the peak model held within 0.1 GiB; the lowest MemAvailable came 1.2-4.9 GiB higher than the model said
+  before the runs (its overhead was too high for the lean forward), and the model's overhead is now refit to them
+  (below). The lowest of all was 16.7 GiB, at 2K for 10 s.
+- **The 5 s routes, bit for bit.** In the same windows a 768p LightX2V Turbo clip with both ends kept (124 frames) and
+  a 576p 9:16 one with its first frame kept (121, stretched) went to 1080p again, through this version's job: the
+  receipts' tensors (the clip's latent, the keyframes' latents, the condition rows, the refined latent), timesteps,
+  rows, sigmas and frames, and the MP4s' decoded frames and sound packets, are those of their runs of 2026-10-29/30
+  (the table above), bit for bit, in 591.1 and 578.0 s (590.4 and 575.4 s).
+
+**Time.** A refine step takes 6.457e-4 × S + 1.638e-8 × S² seconds for S rows: a fit to the 5 s steps of the bench
+and the job (within 5 % of them), and within 1.4 % of the long clips' steps above. Most of a long step is the attention
+(the S² term). The page's `base` + `step` per length (`OFFER_ETA_S`): measured where a run is (at 5 s the 16:9 runs
+above, rounded to 5 s; the long clips' table above); elsewhere the step by the step model and the base by a straight
+line in the frames H3 makes, fitted per size to the measured bases (1080p 86.1 s + 1.851 s a frame, within 8 s of its
+four; 2K 107.0 s + 2.403 s a frame). With the fast load (the standard load adds ~8 min):
+
+| Length | 1080p: base + step | 2 steps / 3 steps | 2K: base + step | 2 steps / 3 steps |
+|---|---|---|---|---|
+| 5 s | 315 + 150 s (measured) | 10 / 13 min | 405 + 380 s (measured) | 19 / 26 min |
+| 6 s | 375 + 212 s (measured) | 13 / 17 min | 487 + 583 s | 28 / 37 min |
+| 7 s | 410 + 256 s | 15 / 20 min | 528 + 700 s | 32 / 44 min |
+| 8 s | 441 + 300 s | 17 / 22 min | 568 + 828 s | 37 / 51 min |
+| 10 s | 543 + 453 s (measured) | 24 / 32 min | 691 + 1261 s (measured) | 54 / 75 min |
+| 12 s | 630 + 638 s | 32 / 42 min | not offered | |
+| 15 s | 753 + 929 s (measured) | 44 / 59 min | not offered | |
+
+4K: 625 + 1685 s at 5 s (measured), 67 / 95 min; not offered for other lengths.
+
+**Memory.** GPU memory allocated at the refine's peak = 68.4 GiB (the DiT, the upscaler and the video VAE kept for
+the decode) + S × 181,800 bytes with the stock block forward, or S × 92,300 bytes with the lean one: fitted to the 5 s
+runs (81.3 / 91.1 / 94.4 GiB at 1080p / 2K / 4K), within 0.1 GiB of every long clip's run. MemAvailable falls further
+than that (the allocator's reserve and the process) by a straight line in the clip's own rows (video and audio), per
+forward: stock 3.5 GiB + 5.0 GiB per 100,000 rows, lean 2.1 GiB + 2.8 GiB per 100,000. Fitted to the runs' start less
+their peak and lowest: stock 5.3 GiB at 45,124 rows (a 73-frame clip, an old 3 s one, run the same day), 6.2-8.1 at
+75,894 (5 s at 1080p, with the runs through the studio of 2026-10-29 and that night above), 8.3 at 96,406 (6 s),
+8.7-10.1 at 133,614 (5 s at 2K, the same); lean 6.0-6.4 at 147,690 (10 s at 1080p, with both ends kept too), 8.5 at
+219,486 (15 s), 9.0 at 260,010 (10 s at 2K), 10.8 at 302,334 (5 s at 4K). From each run's own start of 2026-10-30 the
+model's lowest MemAvailable is within 0.5 GiB of the measured one (`tests/test_upscale.py`), and from the earlier 5 s
+runs' up to 0.8 GiB higher and up to 1.4 GiB lower. Before the refit it had a step at 80,000 and 140,000 rows (7, 9.5
+and 11 GiB), too high for the lean forward by up to 4.9 GiB. The floor to start (`min_free_for`) is allocated + that
+overhead + the guard's 5 GiB + 3 GiB of margin, and never below `LFSTUDIO_UPSCALE_MIN_FREE_GIB` (110 GiB; 115 at 4K).
+Every 5 s clip keeps the floor it had, whatever the setting.
+
+**The forward, by rows.** Where the clip's own rows (video and audio: not the prompt's or Keep my frames') pass
+140,000, the job runs every block with the lean forward (16 chunks), as at 4K: at 1080p from 10 s, at 2K from 6 s.
+Every 5 s clip keeps the forward it ran with on the GPU: stock at 1080p and 2K (also with both ends kept, about
+141,000 rows at 2K), lean at 4K (`tests/test_upscale.py` checks it). The receipt has the refine's `rows` and its
+`forward`. The table gives the model's figures from 116.5 GiB free without Keep my frames, the measured ones in
+brackets. With both ends kept the model's peak is up to 1.2 GiB higher and its lowest MemAvailable as much lower:
+18.2 GiB at 1080p for 8 s and 15.7 GiB at 2K for 10 s, the lowest of each size past 5 s (14.0 GiB at 2K for 5 s,
+measured 14.1).
+
+| Size and length | Forward | Peak allocated | Lowest MemAvailable (no ends kept) | Floor to start |
+|---|---|---|---|---|
+| 1080p 5 s (ran) | stock | 81.3 GiB (81.26-81.30) | 27.9 GiB (27.4-29.2) | 110 GiB |
+| 1080p 6 s (ran) | stock | 84.8 GiB (84.78) | 23.4 GiB (23.5) | 110 GiB |
+| 1080p 7 s | stock | 86.5 GiB | 21.2 GiB | 110 GiB |
+| 1080p 8 s | stock | 88.2 GiB | 18.9 GiB | 110 GiB |
+| 1080p 10 s (ran) | lean | 81.1 GiB (81.15) | 29.2 GiB (29.0) | 110 GiB |
+| 1080p 12 s | lean | 83.8 GiB | 25.6 GiB | 110 GiB |
+| 1080p 15 s (ran, 9:16) | lean | 87.3 GiB (87.37) | 21.0 GiB (20.4) | 110 GiB |
+| 2K 5 s (ran) | stock | 91.1 GiB (91.06-91.09) | 15.3 GiB (15.7-16.8) | 110 GiB |
+| 2K 6 s | lean | 83.0 GiB | 26.6 GiB | 110 GiB |
+| 2K 7 s | lean | 84.6 GiB | 24.6 GiB | 110 GiB |
+| 2K 8 s | lean | 86.1 GiB | 22.5 GiB | 110 GiB |
+| 2K 10 s (ran) | lean | 90.8 GiB (90.83) | 16.4 GiB (16.7) | 110 GiB |
+| 4K 5 s (ran) | lean | 94.4 GiB (94.46) | 11.5 GiB (11.1) | 115 GiB |
+
+The most a clip longer than 5 s needs by the model is 109 GiB (2K at 10 s, with Keep my frames or without), so every
+one starts at the default 110 GiB, as a 5 s clip does (before the refit: 111 GiB at 2K for 10 s with Keep my
+frames).
+
+**Why 2K stops at 10 s and 4K at 5 s, for now.** By the same model a whole clip there would not fit, or only past
+anything measured: 2K at 12 s would allocate 95.4 GiB and come down to about 10.2 GiB free, below the lowest of any
+clean run (11.1 GiB, at 4K), and needs 115 GiB to start; 2K at 15 s would come down to about 2.0 GiB, below the
+guard's 5. 4K at 6 s would need 123 GiB free to start, and 4K at 15 s 179 GiB, where the idle box has 117.7 GiB.
+These take the clip in pieces (windows of the refine), which comes later.
+
+**Keep my frames on longer clips.** Each end adds 2,040 rows at 1080p and 3,600 at 2K, which cost more in a longer
+clip's steps. It has run once on a long clip, with the lean forward: both ends of the LightX2V Turbo 10 s clip at 1080p
+(the table above). Its steps took 474 s, where the step model gives 454 s for the same clip without them, so both ends
+added about 45 s with the pictures' encode (6.1 s): an estimate, as that clip was not upscaled without them. By the
+step model both ends add about 2.2 min of steps at 2K for 10 s (26 s and 74 s at 5 s, where the runs above measured
+30-34 s and 83 s in all). The page adds the 5 s seconds per end (`UP_PIN_S`), so its time for a long clip with Keep
+my frames is short by about 13 s at 1080p for 10 s and up to about a minute at 2K for 10 s; the popover says that
+Keep my frames has not run where its route has not run at that length and size.
+
+**Keep my frames' held ends at 10 s** (the run above, measured on the CPU from its MP4, its clip's and the pictures,
+fitted as the receipt says: the first stretched, the last cover-cropped): both ends held, and as close to the pictures
+as the 5 s pinned runs' best, with no flash at either end.
+
+| | Frame 0 | Frame 242 (the last) |
+|---|---|---|
+| The upscale against the picture, luma PSNR at 1080p (SSIM) | 31.89 dB (0.832) | 32.01 dB (0.831) |
+| The clip against the picture, at 1080p | 36.06 dB | 35.66 dB |
+| The upscale against the picture, at 384p (the job's check grid) | 32.88 dB | 33.00 dB |
+| The clip against the picture, at 384p (the job's own check: 36.69 and 36.97) | 37.75 dB | 37.16 dB |
+| The face (a 192 px box at 1080p): upscale / clip | 30.39 / 31.87 dB | 29.59 / 31.59 dB |
+
+- The 5 s pinned runs' ends came 27.4-31.9 dB from their pictures at 1080p (28.8-33.0 dB at 384p), so the 10 s ends
+  are at the top of that range.
+- The upscale gives up 3.6-4.2 dB to its clip at 1080p (4.2-4.9 dB at 384p), as the 5 s run built the same way (one
+  picture at both ends, stretched and cover-cropped, a still ending) gave up 4.9-5.1 dB at 384p; the other 5 s runs
+  gave up less. This clip's ends match the picture better than any of theirs. Every upscale comes out 2-4 luma levels
+  darker than its picture (this one the least, -2.0 and -1.9), with no shift in place (the low-pass PSNR is about
+  35.5-36 dB on every 16:9 run), and adds fine detail of its own.
+- No flash: the PSNR to the picture is flat into frame 0 (31.894, 31.876 and 31.863 dB at frames 0-2) and rises
+  smoothly into frame 242 (31.871, 31.967 and 32.014 at frames 240-242), and the change from frame to frame stays
+  within the 5 s runs' rules at both ends. The clip almost freezes on its last frames, where the upscale keeps a faint
+  shimmer, below its own average a few frames earlier, as a 5 s run did.
+- Not measured: how much the pin gains at 10 s, as this clip was not upscaled without it (at 5 s the same clips
+  without it were 3.2-5.3 dB further from the pictures at 1080p). The comparison across runs also mixes different clips
+  and pictures.
+
+**What has run where.** `UPSCALE_RAN` in the job lists the lengths and sizes upscaled on the GPU through the studio
+(5 s at 1080p, 2K and 4K; 6, 10 and 15 s at 1080p and 10 s at 2K) and those a longer run at their size covers (7, 8
+and 12 s at 1080p; 6, 7 and 8 s at 2K), one line each: every length and size offered, so the page shows no note on a
+clip's length now. A run that fails takes its line out, and the page then shows "Clips of this length have not been
+upscaled on the GPU through the studio yet: the times are estimates" there. Keep my frames has its own lines (the
+server's `PIN_ROUTES` `"ran"`: a size alone at 5 s, `"1080p/10"` for both ends of a LightX2V Turbo 10 s clip), and
+its popover note where its route has not run at the clip's length and size.
 
 ## Experimental LightX2V Turbo
 

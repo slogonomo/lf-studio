@@ -237,13 +237,17 @@ class Protocol(McpTest):
         self.assertEqual(r["tools"][0]["inputSchema"]["properties"]["seconds"],
                          {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went after 0.5.0
         upscale = r["tools"][5]["description"]
-        for words in ("Experimental", "5 s clips, 16:9 or 9:16", "of every mode and model",
-                      "Keyframes or Reference clip", "stretched to 768p", "keeps all its 124 frames (at 4K its "
-                      "first 121)", "pin (Keep my frames, experimental)",
-                      "~16 s more per end at 1080p, 83 s for both at 2K (one end at 2K not run yet: ~60 s, est.)",
-                      "2K is 1440x2560", "redraws faces",
+        for words in ("Experimental", "Clips of every length, 16:9 or 9:16", "of every mode and model",
+                      "1080p takes every length, 2K up to 10 s, 4K 5 s clips; another size is refused with the reason",
+                      "Keyframes or Reference clip", "stretched to 768p", "keeps all its frames (a 5 s one at 4K its "
+                      "first 121)", "pin (Keep my frames, experimental)", "at 1080p and 2K with balanced",
+                      "2K is 1440x2560", "redraws faces", "longer clips take longer (1080p 24 min at 10 s",
                       "closes the studio's models", "4K has run once, with a 16:9 clip; not yet with a 9:16 one"):
             self.assertIn(words, upscale)
+        self.assertNotIn("5 s clips, 16:9", upscale)
+        self.assertEqual(r["tools"][5]["inputSchema"]["properties"]["resolution"],
+                         {"type": "string", "enum": ["1080p", "2k", "4k"], "default": "2k",
+                          "description": "Default 2k; a 12 or 15 s clip needs 1080p"})
         self.assertNotIn("untested", upscale)
         self.assertNotIn("draft", upscale)                                       # from the clip's MP4 only
         self.assertEqual(set(r["tools"][5]["inputSchema"]["properties"]),
@@ -574,7 +578,7 @@ class Upscale(McpTest):
     def test_errors(self):
         ten = self.clip(seconds=10)
         m = self.mcp()
-        for args, words in (({"id": ten}, "Upscale takes 5 s clips for now: other lengths not yet"),
+        for args, words in (({"id": ten, "resolution": "4k"}, "4K for 10 s clips comes later: 1080p and 2K take them"),
                             ({"id": "f" * 32}, "no such clip"), ({"id": "nope"}, "not a clip id"),
                             ({"id": ten, "resolution": "8k"}, "resolution must be one of 1080p, 2k, 4k"),
                             ({"id": ten, "seed": -1}, "seed must be 0 or more"), ({}, "id is required"),

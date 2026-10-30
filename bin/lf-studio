@@ -356,8 +356,9 @@ if problems:
     # NVIDIA's package and the weights where they say, and the fast load's upscale/fastload.py (check_weights; exit 4),
     # and the prompt encode that encodes a Keyframes or Reference clip's text (LFSTUDIO_H3TURBO_ENCODE_SCRIPT, as the
     # server reads it; exit 4).
-    # NVIDIA's files that its 9:16 route is pinned to (nvidia_files) only get a note (exit 5): the job refuses a 9:16
-    # clip with other ones, but not a 16:9 one. The job runs nothing else here.
+    # NVIDIA's files that its 9:16 route is pinned to (nvidia_files) only get a note (exit 5) that says which clips the
+    # job refuses with them (check_package): a 9:16 clip or one of another length than 5 s with any of them other,
+    # a 124-frame clip or one that keeps your frames with another pipeline.py. The job runs nothing else here.
     if [[ "${LFSTUDIO_UPSCALE:-0}" == 1 ]]; then
         f=$("$LFSTUDIO_PYTHON" -I -B -c 'import importlib.util, os, sys
 from pathlib import Path
@@ -384,9 +385,12 @@ found = job.nvidia_files(settings["package"])
 differ = ["%s %s" % (rel, "missing" if found[rel] is None else "changed") for rel in found
           if found[rel] != job.NVIDIA_FILES[rel]]
 if differ:
+    refused = "9:16 clips and of clips of any length but 5 s"
+    if found["open_h3/pipeline.py"] != job.NVIDIA_FILES["open_h3/pipeline.py"]:
+        refused = "9:16 clips, of clips of any length but 5 s, of 124-frame clips and of clips that keep your frames"
     print("NVIDIA\x27s package (LFSTUDIO_UPSCALE_PKG) has other files than the Upscale\x27s 9:16 route was written "
-          "for (%s; see docs/TROUBLESHOOTING.md): upscales of 9:16 clips, of 124-frame clips and of clips that keep "
-          "your frames will be refused (other 16:9 clips are not checked against these files)" % ", ".join(differ))
+          "for (%s; see docs/TROUBLESHOOTING.md): upscales of %s will be refused (other 16:9 clips are not checked "
+          "against these files)" % (", ".join(differ), refused))
     sys.exit(5)' "$REPO/upscale/regen2k_job.py" "${LFSTUDIO_H3TURBO_ENCODE_SCRIPT:-$REPO/bench/h3turbo_encode.py}" 2>&1)
         rc=$?
         f=$(grep . <<<"$f" | tail -n 1)

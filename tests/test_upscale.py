@@ -1,13 +1,17 @@
-"""upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json (its pin too), the clip's and the
-weights' files (5 s MP4s made by ffmpeg, 16:9 and 9:16, 121 and 124 frames, and the lengths and sizes it refuses), the
-frames of a 5 s clip, the pin's fit against the LightX2V Turbo receipts' records and its grids, the shape table, the
-portrait entries for NVIDIA's dicts, the upscale route and the column crop, check_package, the text check on a
-stand-in, the command lines (NVIDIA's read of the clip among them) and the environment, the progress lines, the memory
-trace, the script's --check and its refusals, main's receipt when the GPU part finishes, fails or gets SIGTERM (a
-stand-in run()), and run() itself with a stand-in torch and a stand-in of NVIDIA's open_h3 that records its calls: for
-16:9 the same calls as before the job took 9:16 clips, for 9:16 the portrait route, with both loads (fast and standard;
-stand-ins for safetensors, diffusers and upscale/fastload.py record every load), a clip of 124 frames through the job's
-copies of NVIDIA's encode and decode, and the pin's ends through the pinned refine (stand-ins for its parts). No GPU,
+"""upscale/regen2k_job.py (the experimental Upscale's GPU job) on the CPU: job.json (its pin and memory floor too), the
+clip's and the weights' files (MP4s made by ffmpeg, 16:9 and 9:16, of every count of frames the studio's lengths keep,
+and the counts, sizes and rates it refuses), the frame cases against the patches' geometry and LightX2V Turbo's job at
+every length (the 3 copies, the audio of A x 800 samples), what is offered per length and size with its times, its
+block forward by rows and its memory floor, the pin's fit against the LightX2V Turbo receipts' records and its grids,
+the shape table, the portrait entries for NVIDIA's dicts, the upscale route and the column crop, check_package, the text
+check on a stand-in, the command lines (NVIDIA's read of the clip among them) and the environment, the progress lines,
+the memory trace, the script's --check and its refusals, main's receipt when the GPU part finishes, fails, gets SIGTERM
+(a stand-in run()) or starts with too little memory, the last release's job refusing what this one takes now, and run()
+itself with a stand-in torch and a stand-in of NVIDIA's open_h3 that records its calls: for 16:9 the same calls as
+before the job took 9:16 clips, for 9:16 the portrait route, with both loads (fast and standard; stand-ins for
+safetensors, diffusers and upscale/fastload.py record every load), a clip of 124 frames and clips of other lengths
+through the job's copies of NVIDIA's encode and decode (their audio and silence, the lean blocks by their rows; every
+5 s route with the forward it ran), and the pin's ends through the pinned refine (stand-ins for its parts). No GPU,
 no weights: NVIDIA's package is a stand-in (open_h3/sigmas.py, and for run() adapters, pipeline and upscaler), the
 weights are small files. upscale/fastload.py is checked against the patch's runtime/fastload.py. With NVIDIA's real
 package where LFSTUDIO_UPSCALE_PKG (or its default) names it, its pinned files, its entries and its encode command are
@@ -18,8 +22,10 @@ torch is importable and are skipped otherwise. python3 -m unittest tests.test_up
 With Pillow and numpy (the Regen-2K environment) the pin's check runs on ffmpeg-made clips. With torch, numpy,
 diffusers and imageio-ffmpeg (the Regen-2K environment) and NVIDIA's package (imported, run on the CPU) where
 LFSTUDIO_UPSCALE_PKG names it: the job's copies of NVIDIA's encode_video and decode (encode_clip, decode_released) with
-a stand-in VAE against NVIDIA's own, the pin's layout, and the pinned refine with a stand-in transformer against
-NVIDIA's Pipeline.refine and the bench wrapper's K1 refine (copied here). Run them with CUDA hidden and
+a stand-in VAE against NVIDIA's own (at other lengths too), diffusers' VAE chunks and frame rules, encode_audio with a
+small audio VAE of diffusers' against NVIDIA's silence, the pin's layout at every length, and the pinned refine with a
+stand-in transformer against NVIDIA's Pipeline.refine and the bench wrapper's K1 refine (copied here), a 10 s clip's
+too. Run them with CUDA hidden and
 LFSTUDIO_UPSCALE_PKG set:
     CUDA_VISIBLE_DEVICES= $LFSTUDIO_HOME/envs/regen2k/bin/python -I -m unittest discover -s tests -p test_upscale.py
 """
@@ -234,10 +240,21 @@ class JobTests(Fixture):
                              ("load", "Fast"), ("load", None), ("load", True), ("vae_batch", 0),
                              ("vae_batch", 257), ("vae_batch", "26"), ("version", 2), ("version", True),
                              ("meta", []), ("case", "relative/dir"), ("case", ""), ("case", 7), ("paths", []),
-                             ("paths", None)):
+                             ("paths", None), ("min_free_gib", -1), ("min_free_gib", "110"), ("min_free_gib", True),
+                             ("min_free_gib", nan), ("min_free_gib", float("inf"))):
             with self.subTest(field=field, value=value):
                 with self.assertRaisesRegex(JobError, field):
                     job_module.parse_job(self.job(**{field: value}), "/")
+
+    def test_the_memory_floor(self):
+        """min_free_gib, the floor the server checked (min_free_for): absent or null is no check, as 0 is."""
+        for value, want in ((DROP, None), (None, None), (0, 0.0), (111, 111.0), (110.5, 110.5)):
+            with self.subTest(value=value):
+                floor = job_module.parse_job(self.job(min_free_gib=value), "/")["min_free_gib"]
+                self.assertEqual(floor, want)
+                self.assertEqual(type(floor), type(want))
+        self.assertIn("min_free_gib", job_module.JOB_KEYS)
+        self.assertNotIn("min_free_gib", job_module.REQUIRED)
 
     def test_no_source(self):
         """job.json has no "source" any more (the draft, from the clip's Stage-1 latent, is gone): any value of it is
@@ -482,33 +499,179 @@ def nvidia_read_command(source, path, width, height, ffmpeg):
     return eval(compile(ast.Expression(call.args[0]), "pipeline.py", "eval"), names)
 
 
+def studio_lengths():
+    """The lengths the studio makes (webui/server.py DURATIONS), read from its source."""
+    import ast
+    source = (REPO / "webui" / "server.py").read_text()
+    return next(ast.literal_eval(node.value) for node in ast.parse(source).body if isinstance(node, ast.Assign)
+                and [getattr(t, "id", None) for t in node.targets] == ["DURATIONS"])
+
+
+def sol_geometries():
+    """Both patches' runtime/geometry.py (Sol-H3's frames per length; standard library), as namespaces."""
+    found = {}
+    for name, package, patch in (("spark", "Sol-H3-Spark", "lf-studio.patch"),
+                                 ("rtx5090", "Sol-H3-RTX5090", "lf-studio-rtx5090.patch")):
+        namespace = {}
+        exec(patch_new_file(f"models/minimax_h3/{package}/runtime/geometry.py", patch)[0], namespace)
+        found[name] = types.SimpleNamespace(**namespace)
+    return found
+
+
+def turbo_job():
+    """jobs/h3turbo_job.py, LightX2V Turbo's job (standard library outside its torch parts)."""
+    spec = importlib.util.spec_from_file_location("h3turbo_job_for_upscale", REPO / "jobs" / "h3turbo_job.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# every case: kept -> (seconds, made, pad, T, A), as the studio's clips have them (FrameTests derives it)
+CASES = {121: (5, 124, 3, 37, 207), 124: (5, 124, 0, 37, 207), 153: (6, 158, 3, 47, 263), 158: (6, 158, 0, 47, 263),
+         169: (7, 175, 3, 52, 292), 175: (7, 175, 0, 52, 292), 185: (8, 192, 3, 57, 320),
+         192: (8, 192, 0, 57, 320), 241: (10, 243, 3, 72, 405), 243: (10, 243, 0, 72, 405),
+         289: (12, 294, 3, 87, 490), 294: (12, 294, 0, 87, 490), 361: (15, 362, 3, 107, 603),
+         362: (15, 362, 0, 107, 603)}
+
+
+def case_of(kept):
+    """CASES' entry as frame_case gives it."""
+    seconds, made, pad, latents, audio = CASES[kept]
+    return {"kept": kept, "made": made, "pad": pad, "T": latents, "A": audio, "seconds": seconds}
+
+
 class FrameTests(unittest.TestCase):
-    """The frames of a 5 s clip (FRAME_CASES) and how the job reads its MP4 (clip_read_command), without torch."""
+    """The frames of a clip of each length (FRAME_CASES) against the patches' geometry and LightX2V Turbo's job, and
+    how the job reads its MP4 (clip_read_command), without torch."""
 
     def test_the_cases(self):
-        self.assertEqual(job_module.FRAME_CASES, {121: {"pad": 3}, 124: {"pad": 0}})
+        self.assertEqual(set(job_module.FRAME_CASES), set(CASES))
         self.assertEqual((job_module.NVIDIA_FRAMES, job_module.FPS), (121, "24/1"))
-        self.assertEqual(job_module.frame_case(121), {"kept": 121, "made": 124, "pad": 3, "T": 37})
-        self.assertEqual(job_module.frame_case(124), {"kept": 124, "made": 124, "pad": 0, "T": 37})
-        for kept in job_module.FRAME_CASES:                 # the shape NVIDIA's pipeline is written for, either way
+        self.assertEqual(job_module.frame_case(121), {"kept": 121, "made": 124, "pad": 3, "T": 37, "A": 207,
+                                                      "seconds": 5})
+        self.assertEqual(job_module.frame_case(124), {"kept": 124, "made": 124, "pad": 0, "T": 37, "A": 207,
+                                                      "seconds": 5})
+        for kept in CASES:
+            self.assertEqual(job_module.frame_case(kept), case_of(kept), kept)
+            self.assertEqual(job_module.FRAME_CASES[kept], {"seconds": CASES[kept][0], "pad": CASES[kept][2]})
+        for kept in (121, 124):                             # the shape NVIDIA's pipeline is written for, either way
             case = job_module.frame_case(kept)
-            self.assertEqual((case["kept"] + case["pad"], case["T"]), (124, job_module.NATIVE_SHAPE[1]))
-        with self.assertRaises(KeyError):
-            job_module.frame_case(122)
+            self.assertEqual((case["kept"] + case["pad"], case["T"], case["A"]),
+                             (124, job_module.NATIVE_SHAPE[1], job_module.NVIDIA_AUDIO_LATENTS))
+        for kept in (122, 120, 73, 105, 145, 193, 345, 0):  # Sol-H3's old 3 and 4 s, the stub's old 6 and 8 s, 14 s
+            with self.subTest(kept=kept), self.assertRaises(KeyError):
+                job_module.frame_case(kept)
+        with mock.patch.dict(job_module.FRAME_CASES, {153: {"seconds": 6, "pad": 0}}), \
+                self.assertRaisesRegex(ValueError, "153 frames and 0 copies are not 47 latent frames"):
+            job_module.frame_case(153)                      # the guard on the table
+
+    def test_every_length_the_studio_makes(self):
+        """FRAME_CASES has every count of frames the studio's clips keep, and no other: Sol-H3's (both patches'
+        runtime/geometry.py: its draft's frames, 24 fps snapped up to 17n+5, of which the largest 8m+1 are kept) at
+        every length the studio makes, LightX2V Turbo's (jobs/h3turbo_job.py: the same frames made, every one kept
+        with a last keyframe) at every length; each with its length, the frames made, T and A as those give them, and
+        its audio within pcm_limit. 9:16 has the same frames. Sol-H3's old 3 s clips (73 frames, made up to 0.5.0)
+        are not upscaled: their count is refused."""
+        lengths = studio_lengths()
+        self.assertEqual(lengths, (5, 6, 7, 8, 10, 12, 15))
+        found = {}
+        for name, geometry in sol_geometries().items():
+            for seconds in lengths:
+                made = geometry.draft_frames_for_seconds(seconds)
+                frames = geometry.frame_geometry(made)
+                kept = frames["output_frames"]
+                case = job_module.frame_case(kept)
+                self.assertEqual((case["seconds"], case["made"], case["T"]),
+                                 (seconds, made, frames["h3_latent_frames"]), (name, seconds))
+                self.assertLessEqual(frames["audio_samples"], job_module.pcm_limit(case))
+                self.assertEqual(case["pad"], 0 if kept == made else 3)
+                found.setdefault(kept, set()).add(f"sol-h3 {seconds}")
+        turbo = turbo_job()
+        self.assertLessEqual(set(lengths), set(range(turbo.MIN_SECONDS, turbo.MAX_SECONDS + 1)))
+        for seconds in lengths:
+            made = turbo.frames_for_seconds(seconds)
+            for keyframes in ([], ["first"], ["last"], ["first", "last"]):
+                kept = turbo.kept_frames(made, keyframes)
+                case = job_module.frame_case(kept)
+                self.assertEqual((case["seconds"], case["made"], case["T"], case["A"]),
+                                 (seconds, made, turbo.latent_frames(made), turbo.audio_latents(made)))
+                self.assertLessEqual(turbo.kept_samples(kept), job_module.pcm_limit(case))
+                self.assertEqual(kept == made, "last" in keyframes)
+                found.setdefault(kept, set()).add(f"lightx2v-turbo {seconds}")
+        self.assertEqual(set(found), set(job_module.FRAME_CASES))
+        for name, geometry in sol_geometries().items():                # Sol-H3's old 3 s: refused
+            kept = geometry.frame_geometry(geometry.draft_frames_for_seconds(3))["output_frames"]
+            self.assertEqual(kept, 73, name)
+            with self.assertRaises(KeyError):
+                job_module.frame_case(kept)
+        self.assertEqual(found[121], {"sol-h3 5", "lightx2v-turbo 5"})
+        self.assertEqual(found[362], {"lightx2v-turbo 15"})
+        self.assertEqual({case["seconds"] for case in map(job_module.frame_case, job_module.FRAME_CASES)},
+                         set(lengths))
 
     def test_h3s_frames(self):
-        """H3 makes 17n+5 frames (diffusers' align_num_frames), 5n+2 latent frames (video_latent_num_frames)."""
+        """H3 makes 17n+5 frames (diffusers' align_num_frames), 5n+2 latent frames (video_latent_num_frames); its
+        VAE's encode of any count pads it to whole chunks of 17 (encoded_latent_frames); 40 audio latents a
+        second."""
         for kept, made in ((121, 124), (124, 124), (122, 124), (125, 141), (73, 73), (241, 243), (361, 362),
-                           (153, 158)):
+                           (153, 158), (169, 175), (185, 192), (289, 294)):
             self.assertEqual(job_module.made_frames(kept), made, kept)
-        for frames, latents in ((124, 37), (73, 22), (158, 47), (243, 72), (362, 107), (5, 2)):
+        for frames, latents in ((124, 37), (73, 22), (158, 47), (175, 52), (192, 57), (243, 72), (294, 87),
+                                (362, 107), (5, 2)):
             self.assertEqual(job_module.latent_frames(frames), latents, frames)
+            self.assertEqual(job_module.encoded_latent_frames(frames), latents, frames)
         with self.assertRaisesRegex(ValueError, "121 frames are not 17n"):
             job_module.latent_frames(121)
+        for frames, latents in ((121, 37), (122, 37), (136, 37), (137, 42), (153, 42), (156, 47), (76, 22), (2, 2),
+                                (17, 2), (18, 7)):
+            self.assertEqual(job_module.encoded_latent_frames(frames), latents, frames)
+        for frames, audio in ((73, 122), (124, 207), (158, 263), (175, 292), (192, 320), (243, 405), (294, 490),
+                              (362, 603)):
+            self.assertEqual(job_module.audio_latents(frames), audio, frames)
+
+    def test_the_three_copies(self):
+        """NVIDIA's 3 copies of the last frame (121 + 3 = 124 at 5 s) give a clip that keeps fewer frames than H3
+        made the T of the frames made at every length; without them the VAE's chunks give 5 fewer at 6, 7, 8 and
+        12 s (153, 169, 185 and 289 frames are whole chunks of 17, or one frame past them). A clip that keeps every
+        frame made needs none."""
+        short = {}
+        for kept, (seconds, made, pad, latents, _) in CASES.items():
+            self.assertEqual(job_module.encoded_latent_frames(kept + pad), latents, kept)
+            if pad:
+                self.assertEqual((pad, job_module.encoded_latent_frames(kept + 3)), (3, latents))
+                short[seconds] = latents - job_module.encoded_latent_frames(kept)
+            self.assertEqual(job_module.encoded_latent_frames(made), latents, made)
+        self.assertEqual(short, {5: 0, 6: 5, 7: 5, 8: 5, 10: 0, 12: 5, 15: 0})
+
+    def test_a_clip_cut_off_reads_short(self):
+        """A 10 s MP4 cut off after its header (+faststart: its count of frames still in it) passes check_final, but
+        reads short at every count of frames but NVIDIA's own, the 3 copies of 241 too: the length check refuses it,
+        it is not filled with copies of its last frame. A whole clip reads its frames, the same as with tpad."""
+        tmp = Path(tempfile.mkdtemp(prefix="upscale-cut-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        whole, cut = tmp / "whole.mp4", tmp / "refined_1344x768_241f.mp4"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1344x768:r=24",
+                        "-frames:v", "241", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                        "-movflags", "+faststart", "-an", str(whole)], check=True)
+        data = whole.read_bytes()
+        cut.write_bytes(data[:len(data) * 6 // 10])
+        self.assertEqual(job_module.check_final(cut), ("landscape", 241))
+        frame = 1344 * 768 * 3
+
+        def read(mp4, *command):
+            return subprocess.run(job_module.clip_read_command(mp4, (1344, 768), *command), capture_output=True,
+                                  check=True).stdout
+        for kept, pad in ((241, 3), (243, 0)):
+            self.assertLess(len(read(cut, kept, pad)), 241 * frame, (kept, pad))
+        self.assertEqual(len(read(cut, 121, 3)), 121 * frame)                 # within the part that is there
+        tpad = job_module.clip_read_command(whole, (1344, 768), 121, 3)
+        tpad[tpad.index("-frames:v") + 1] = "241"
+        self.assertEqual(read(whole, 241, 3), subprocess.run(tpad, capture_output=True, check=True).stdout)
 
     def test_the_read_is_nvidias(self):
-        """121 frames with 3 copies: NVIDIA's encode_video command (pipeline.py:57-61), item for item; 124 with none:
-        the same without tpad, so a short MP4 reads short (and fails the length check) instead of being padded."""
+        """121 frames with 3 copies: NVIDIA's encode_video command (pipeline.py:57-61), item for item; every other
+        count (124, 241 with 3 copies, 362): the same without tpad, so a short MP4 reads short (and fails the length
+        check) instead of being padded."""
         nvidia = ["FFMPEG", "-v", "error", "-i", "/case/stage2/clip.mp4", "-vf",
                   "fps=24,scale=1344:768:force_original_aspect_ratio=increase:flags=bilinear,crop=1344:768,"
                   "tpad=stop_mode=clone:stop_duration=6", "-frames:v", "121", "-an", "-f", "rawvideo", "-pix_fmt",
@@ -519,6 +682,11 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(whole, nvidia[:6] + [nvidia[6].replace(",tpad=stop_mode=clone:stop_duration=6", ""),
                                               "-frames:v", "124"] + nvidia[9:])
         self.assertNotIn("tpad", " ".join(whole))
+        # a 10 s clip of 241 frames: the read of 124 with its frames named (encode_clip adds the 3 copies); 362 too
+        self.assertEqual(job_module.clip_read_command("/case/stage2/clip.mp4", (1344, 768), 241, 3, "FFMPEG"),
+                         whole[:8] + ["241"] + whole[9:])
+        self.assertEqual(job_module.clip_read_command("/case/stage2/clip.mp4", (1344, 768), 362, 0, "FFMPEG"),
+                         whole[:8] + ["362"] + whole[9:])
         portrait = job_module.clip_read_command("/c.mp4", (768, 1344), 121, 3, "FFMPEG")
         self.assertIn("scale=768:1344:force_original_aspect_ratio=increase:flags=bilinear,crop=768:1344,", portrait[6])
         package = nvidia_package()
@@ -586,10 +754,30 @@ class StudioSettingsTests(unittest.TestCase):
             "LFSTUDIO_UPSCALE_GUARD_GIB=inf: must be a number of GiB, 0 or more (see bin/env.example)"])
 
     def test_min_free_for(self):
-        """4K needs 5 GiB more than the floor (its job used ~105 GiB, 2K ~101); a floor of 0 stays off."""
+        """4K needs 5 GiB more than the floor (its job used ~105 GiB, 2K ~101); a floor of 0 stays off. A 5 s clip
+        (121 or 124 frames, with a pin or not) needs that at any floor; a longer one that or what its case needs
+        (need_gib), whichever is more: at the default 110 every length needs 110 (2K at 10 s needs 109, with a pin
+        too); below it, a case's own need (2K at 8 s 102, 103 with a pin)."""
         self.assertEqual([job_module.min_free_for(res, 110.0) for res in ("1080p", "2k", "4k")], [110.0, 110.0, 115.0])
         self.assertEqual(job_module.min_free_for("4k", 0.0), 0.0)
         self.assertEqual(job_module.min_free_for("4k", 100.0), 105.0)
+        for kept in (121, 124):
+            for ends in (0, 1, 2):
+                for floor in (110.0, 100.0, 90.0, 0.0):
+                    self.assertEqual([job_module.min_free_for(res, floor, kept, ends) for res in ("1080p", "2k", "4k")],
+                                     [floor, floor, floor + 5 if floor else 0.0], (kept, ends, floor))
+        for res, kept, ends, floor, want in (("2k", 241, 0, 110.0, 110.0), ("2k", 241, 1, 110.0, 110.0),
+                                             ("2k", 243, 2, 110.0, 110.0), ("2k", 241, 0, 100.0, 109.0),
+                                             ("2k", 241, 1, 100.0, 109.0), ("2k", 241, 1, 120.0, 120.0),
+                                             ("1080p", 361, 0, 100.0, 104.0), ("1080p", 361, 0, 90.0, 104.0),
+                                             ("1080p", 185, 2, 100.0, 107.0), ("2k", 153, 0, 110.0, 110.0),
+                                             ("2k", 185, 0, 90.0, 102.0), ("2k", 185, 1, 90.0, 103.0),
+                                             ("2k", 241, 1, 0.0, 0.0)):
+            with self.subTest(res=res, kept=kept, ends=ends, floor=floor):
+                self.assertEqual(job_module.min_free_for(res, floor, kept, ends), want)
+        for kept in (145, 73):                                      # Sol-H3's old 3 s too
+            with self.assertRaises(KeyError):
+                job_module.min_free_for("2k", 110.0, kept)
 
     def test_the_patch_switches_for_o_direct(self):
         """SPARK_FAST_SAFETENSORS and SPARK_DIRECT_IO, which the job inherits: anything but 1 turns fastload's O_DIRECT
@@ -613,6 +801,216 @@ class StudioSettingsTests(unittest.TestCase):
             _, problems = job_module.studio_settings({**load, "LFSTUDIO_UPSCALE_PREREAD": "1"})
             self.assertEqual(problems, ["LFSTUDIO_UPSCALE_PREREAD=1: only with LFSTUDIO_UPSCALE_LOAD=standard (the "
                                         "fast load reads the weight files past the page cache) (see bin/env.example)"])
+
+
+class OfferTests(unittest.TestCase):
+    """What the Upscale offers per length and size (OFFER_ETA_S, offer_row, offers_table, offer), the block forward a
+    clip's rows choose (lean_chunks_for) and the memory model (case_rows, need_gib), without torch."""
+
+    def test_the_table(self):
+        """1080p every length, 2K up to 10 s, 4K 5 s; every length and size offered has run on the GPU, or a longer
+        clip at that size has (UPSCALE_RAN: 6, 10 and 15 s at 1080p and 10 s at 2K ran; a run that fails takes its
+        line out); every size not offered says why, naming the sizes that take the clip."""
+        table = job_module.offers_table()
+        self.assertEqual(json.loads(json.dumps(table)), table)                 # as /api/state carries it
+        self.assertEqual(list(table), ["5", "6", "7", "8", "10", "12", "15"])
+        self.assertEqual(list(table), [str(s) for s in sorted({c[0] for c in CASES.values()})])
+        offered = {seconds: [size for size, row in sizes.items() if "eta_s" in row] for seconds, sizes in table.items()}
+        self.assertEqual(offered, {"5": ["1080p", "2k", "4k"], "6": ["1080p", "2k"],
+                                   "7": ["1080p", "2k"], "8": ["1080p", "2k"], "10": ["1080p", "2k"],
+                                   "12": ["1080p"], "15": ["1080p"]})
+        self.assertEqual(table["5"], {"1080p": {"eta_s": [315, 150], "ran": True},
+                                      "2k": {"eta_s": [405, 380], "ran": True},
+                                      "4k": {"eta_s": [625, 1685], "ran": True}})          # the page's times until now
+        self.assertEqual((table["10"]["1080p"], table["10"]["2k"], table["15"]["1080p"]),
+                         ({"eta_s": [543, 453], "ran": True}, {"eta_s": [691, 1261], "ran": True},
+                          {"eta_s": [753, 929], "ran": True}))
+        for seconds, sizes in table.items():
+            self.assertEqual(list(sizes), list(job_module.SIZES))
+            for size, row in sizes.items():
+                self.assertEqual(set(row), {"eta_s", "ran"} if size in offered[seconds] else {"why"})
+                if "eta_s" in row:
+                    self.assertTrue(row["ran"], (seconds, size))
+                    self.assertEqual(row["eta_s"], list(job_module.OFFER_ETA_S[int(seconds)][size]))
+        why = {(seconds, size): row["why"] for seconds, sizes in table.items() for size, row in sizes.items()
+               if "why" in row}
+        self.assertEqual(why, {
+            **{(s, "4k"): f"4K for {s} s clips comes later: 1080p and 2K take them" for s in ("6", "7", "8", "10")},
+            **{(s, "4k"): f"4K for {s} s clips comes later: 1080p takes them" for s in ("12", "15")},
+            **{(s, "2k"): f"2K for {s} s clips comes later: 1080p takes them" for s in ("12", "15")}})
+        ran = ((5, "1080p"), (5, "2k"), (5, "4k"), (6, "1080p"), (10, "1080p"), (15, "1080p"), (10, "2k"))
+        covered = ((7, "1080p"), (8, "1080p"), (12, "1080p"), (6, "2k"), (7, "2k"), (8, "2k"))     # the offer rule
+        self.assertEqual(sorted(job_module.UPSCALE_RAN), sorted(ran + covered))
+        for seconds, size in covered:              # a longer clip at the same size ran
+            self.assertTrue(any(s > seconds and z == size for s, z in ran), (seconds, size))
+        self.assertEqual({(int(seconds), size) for seconds, sizes in table.items() for size in sizes
+                          if "eta_s" in sizes[size]}, set(job_module.UPSCALE_RAN))
+        # one line each: a run that fails takes its line out, and its length shows the page's "not run" note
+        source = (REPO / "upscale" / "regen2k_job.py").read_text()
+        for seconds, size in ran + covered:
+            self.assertEqual(source.count(f'    ({seconds}, "{size}"),'), 1, (seconds, size))
+        without = tuple(row for row in job_module.UPSCALE_RAN if row != (10, "1080p"))
+        with mock.patch.object(job_module, "UPSCALE_RAN", without):
+            self.assertEqual(job_module.offers_table()["10"]["1080p"], {"eta_s": [543, 453], "ran": False})
+            self.assertTrue(job_module.offers_table()["10"]["2k"]["ran"])
+        for seconds in (3, 4):                                      # Sol-H3's old lengths
+            self.assertEqual([job_module.offer_row(seconds, size) for size in job_module.SIZES],
+                             [{"why": f"Upscale takes no {seconds} s clips"}] * 3)
+
+    def test_the_times(self):
+        """OFFER_ETA_S: the measured rows as their runs gave them (5 s at each size; 6, 10 and 15 s at 1080p and 10 s at
+        2K, 2026-10-30: each run's time from the job's start less its two steps and the encode of its text or
+        pictures, plus 40 s for closing the studio's models, and the mean of its steps, which came within 2 % of the
+        step model); the others fitted: the step by the step model at their case's rows with a prompt of TEXT_ROWS,
+        the base by a straight line in the frames H3 makes through the measured bases of that size (least squares)."""
+        measured = {(5, "1080p"): (315, 150), (5, "2k"): (405, 380), (5, "4k"): (625, 1685),
+                    (6, "1080p"): (375, 212), (10, "1080p"): (543, 453), (15, "1080p"): (753, 929),
+                    (10, "2k"): (691, 1261)}
+        runs = {(6, "1080p"): (759.7, (213.06, 211.75), 0), (10, "1080p"): (1423.0, (454.62, 450.45), 14.8),
+                (15, "1080p"): (2587.0, (926.84, 930.29), 16.9), (10, "2k"): (3188.1, (1261.15, 1260.82), 14.8)}
+
+        def model_step(seconds, size):
+            kept = next(k for k, (s, *_) in CASES.items() if s == seconds)
+            rows = job_module.case_rows(job_module.frame_case(kept), size)["sequence"]
+            return 6.457e-4 * rows + 1.638e-8 * rows ** 2
+        for key, (total, steps, encode) in runs.items():
+            self.assertEqual(measured[key], (round(total - sum(steps) - encode + 40), round(sum(steps) / 2)), key)
+            self.assertLess(abs(measured[key][1] / model_step(*key) - 1), 0.02, key)
+        made = {seconds: made for seconds, made, *_ in CASES.values()}
+        fitted = []
+        for size, sized in ((size, {s: row[size] for s, row in job_module.OFFER_ETA_S.items() if size in row})
+                            for size in job_module.SIZES):
+            points = [(made[s], base) for (s, z), (base, _) in measured.items() if z == size]
+            mx, my = (sum(v) / len(points) for v in zip(*points))
+            slope = (sum((x - mx) * (y - my) for x, y in points) / sum((x - mx) ** 2 for x, _ in points)
+                     if len(points) > 1 else 0)
+            for seconds, row in sized.items():
+                if (seconds, size) in measured:
+                    self.assertEqual(row, measured[(seconds, size)], (seconds, size))
+                else:
+                    fitted.append((seconds, size))
+                    self.assertEqual(row, (round(my + slope * (made[seconds] - mx)), round(model_step(seconds, size))),
+                                     (seconds, size))
+        self.assertEqual(fitted, [(7, "1080p"), (8, "1080p"), (12, "1080p"), (6, "2k"), (7, "2k"), (8, "2k")])
+
+    def test_every_count_of_a_length_has_its_row(self):
+        """offer() for each count of frames, size and pin: its length's row of offers_table, with the route, the
+        rows, the forward and the floor of that case; a size not offered, its reason alone."""
+        table = job_module.offers_table()
+        for kept, (seconds, *_) in CASES.items():
+            case = job_module.frame_case(kept)
+            for size in job_module.SIZES:
+                row = table[str(seconds)][size]
+                for ends in (0, 1, 2):
+                    offered = job_module.offer(kept, size, ends)
+                    if "why" in row:
+                        self.assertEqual(offered, row, (kept, size))
+                        continue
+                    lean = job_module.lean_chunks_for(case, size)
+                    self.assertEqual(offered, {
+                        "route": "whole", "seconds": seconds, "rows": job_module.case_rows(case, size, ends),
+                        "forward": "lean" if lean else "stock", "lean_chunks": lean,
+                        "floor_gib": job_module.min_free_for(size, job_module.MIN_FREE_GIB, kept, ends),
+                        "eta_s": row["eta_s"], "strengths": ["faithful", "balanced", "full"], "ran": row["ran"]},
+                        (kept, size, ends))
+        for kept in (145, 73, 105, 345):
+            with self.assertRaises(KeyError):
+                job_module.offer(kept, "1080p")
+
+    def test_the_forward_by_rows(self):
+        """lean_forward where the clip's own rows (video and audio) pass 140,000: every 5 s route runs as it runs
+        today (121 and 124 frames, with a pin or not: stock at 1080p and 2K, 16 chunks at 4K; 2K with both ends is
+        141,010 rows with the prompt and its condition rows, and stays stock); 1080p goes lean from 10 s, 2K from
+        6 s."""
+        self.assertEqual(job_module.ROWS_PER_FRAME, {"1080p": 2040, "2k": 3600, "4k": 8160})
+        self.assertEqual((job_module.LEAN_ROWS, job_module.LEAN_CHUNKS), (140_000, 16))
+        for kept in (121, 124):
+            case = job_module.frame_case(kept)
+            for size in job_module.SIZES:
+                self.assertEqual(job_module.lean_chunks_for(case, size), {"4k": 16}.get(size), (kept, size))
+                for ends in (0, 1, 2):
+                    self.assertEqual(job_module.offer(kept, size, ends)["lean_chunks"], {"4k": 16}.get(size))
+        self.assertEqual(job_module.case_rows(job_module.frame_case(121), "1080p"),
+                         {"video": 75480, "audio": 414, "text": 200, "condition": 0, "sequence": 76094})
+        self.assertEqual(job_module.case_rows(job_module.frame_case(124), "2k", 2, 196),
+                         {"video": 133200, "audio": 414, "text": 196, "condition": 7200, "sequence": 141010})
+        forwards = {}
+        for kept, (seconds, *_) in CASES.items():
+            for size in job_module.OFFER_ETA_S[seconds]:
+                forwards.setdefault(size, {})[seconds] = job_module.offer(kept, size)["forward"]
+        self.assertEqual(forwards, {
+            "1080p": {5: "stock", 6: "stock", 7: "stock", 8: "stock", 10: "lean", 12: "lean", 15: "lean"},
+            "2k": {5: "stock", 6: "lean", 7: "lean", 8: "lean", 10: "lean"}, "4k": {5: "lean"}})
+        own = {(size, kept): sum(job_module.case_rows(job_module.frame_case(kept), size)[k] for k in ("video", "audio"))
+               for size, kept in (("1080p", 185), ("1080p", 241), ("2k", 121), ("2k", 153), ("4k", 121))}
+        self.assertEqual(own, {("1080p", 185): 116920, ("1080p", 241): 147690, ("2k", 121): 133614,
+                               ("2k", 153): 169726, ("4k", 121): 302334})
+
+    def test_the_memory_model(self):
+        """The peak model reproduces the job's 5 s runs of 2026-10-28 (a 16:9 clip; allocated at the peak 81.29 / 91.08
+        / 94.46 GiB at 1080p / 2K / 4K) and their lowest MemAvailable from their start (27.4 GiB from ~116.5, 15.7 from
+        116.7, 11.1 from 116.4) within 0.6 GiB; the overhead is a straight line in the clip's own rows per
+        forward. The floors of the other lengths it gives stay within today's 110 GiB: 2K at 10 s needs the most, 109,
+        with Keep my frames or without."""
+        for size, allocated, start, low in (("1080p", 81.29, 116.5, 27.4), ("2k", 91.08, 116.7, 15.7),
+                                            ("4k", 94.46, 116.4, 11.1)):
+            case = job_module.frame_case(121)
+            rows = job_module.case_rows(case, size)
+            forward = "lean" if job_module.lean_chunks_for(case, size) else "stock"
+            self.assertAlmostEqual(job_module.peak_gib(rows, forward), allocated, delta=0.06)
+            lowest = start - job_module.peak_gib(rows, forward) - job_module.overhead_gib(rows, forward)
+            self.assertLess(abs(lowest - low), 0.6, size)
+        self.assertEqual(job_module.OVERHEAD_GIB, {"stock": (3.5, 5.0), "lean": (2.1, 2.8)})
+        self.assertEqual([round(job_module.overhead_gib({"video": own, "audio": 0}, forward), 2)
+                          for forward, own in (("stock", 0), ("stock", 100_000), ("lean", 0), ("lean", 100_000))],
+                         [3.5, 8.5, 2.1, 4.9])
+        need = {(size, seconds): tuple(job_module.need_gib(job_module.frame_case(kept), size, ends)
+                                       for ends in (0, 1, 2))
+                for kept, (seconds, *_) in CASES.items() if kept in (121, 153, 169, 185, 241, 289, 361)
+                for size in job_module.OFFER_ETA_S[seconds]}
+        self.assertEqual(need, {
+            ("1080p", 5): (97, 97, 98), ("1080p", 6): (102, 102, 102), ("1080p", 7): (104, 104, 105),
+            ("1080p", 8): (106, 106, 107), ("1080p", 10): (96, 96, 96), ("1080p", 12): (99, 100, 100),
+            ("1080p", 15): (104, 104, 104), ("2k", 5): (110, 110, 111), ("2k", 6): (98, 99, 99),
+            ("2k", 7): (100, 101, 101), ("2k", 8): (102, 103, 103), ("2k", 10): (109, 109, 109),
+            ("4k", 5): (113, 114, 115)})
+        floors = {(kept, size, ends): job_module.offer(kept, size, ends)["floor_gib"] for kept in CASES
+                  for size in job_module.SIZES for ends in (0, 1, 2) if "why" not in job_module.offer(kept, size)}
+        self.assertEqual({key: floor for key, floor in floors.items() if floor != (115 if key[1] == "4k" else 110)},
+                         {})
+
+    def test_the_long_clips_runs(self):
+        """The memory model against the job's runs through a staging studio on 2026-10-30, each from its own
+        MemAvailable at the start, with its receipt's rows (the prompt's real ones, a pin's condition rows) and block
+        forward: the peak allocated within 0.1 GiB of peak_gib, the lowest MemAvailable within 1.5 GiB of the model's
+        (start - peak_gib - overhead_gib; all of them within 0.5). The rows are the job's case_rows for those clips,
+        but for a 73-frame clip (Sol-H3's old 3 s, no longer offered), which measures the stock overhead at few rows."""
+        runs = {   # (kept, size, ends, the prompt's rows) or the receipt's rows; forward; start, peak, lowest (GiB)
+            "5 s at 1080p, both ends": ((124, "1080p", 2, 58), "stock", 116.58, 81.98, 27.53),
+            "5 s 9:16 at 1080p, a first end": ((121, "1080p", 1, 195), "stock", 116.54, 81.66, 27.39),
+            "3 s at 1080p": ({"video": 44880, "audio": 244, "text": 387, "condition": 0}, "stock", 116.6, 76.1, 35.17),
+            "6 s at 1080p": ((153, "1080p", 0, 226), "stock", 116.55, 84.78, 23.5),
+            "10 s at 1080p": ((241, "1080p", 0, 387), "lean", 116.52, 81.15, 28.99),
+            "10 s at 1080p, both ends": ((243, "1080p", 2, 280), "lean", 116.42, 81.54, 28.83),
+            "15 s 9:16 at 1080p": ((361, "1080p", 0, 772), "lean", 116.27, 87.37, 20.43),
+            "10 s at 2K": ((241, "2k", 0, 387), "lean", 116.45, 90.83, 16.67)}
+        sequences = {"5 s at 1080p, both ends": 80032, "5 s 9:16 at 1080p, a first end": 78129, "3 s at 1080p": 45511,
+                     "6 s at 1080p": 96632, "10 s at 1080p": 148077, "10 s at 1080p, both ends": 152050,
+                     "15 s 9:16 at 1080p": 220258, "10 s at 2K": 260397}            # the receipts'
+        off = {}
+        for name, (case, forward, start, peak, lowest) in runs.items():
+            if isinstance(case, tuple):
+                kept, size, ends, text = case
+                rows = job_module.case_rows(job_module.frame_case(kept), size, ends, text)
+                self.assertEqual("lean" if job_module.lean_chunks_for(job_module.frame_case(kept), size) else "stock",
+                                 forward, name)
+            else:
+                rows = dict(case, sequence=sum(case.values()))
+            self.assertEqual(rows["sequence"], sequences[name], name)
+            self.assertLess(abs(job_module.peak_gib(rows, forward) - peak), 0.1, name)
+            off[name] = start - job_module.peak_gib(rows, forward) - job_module.overhead_gib(rows, forward) - lowest
+            self.assertLess(abs(off[name]), 1.5, name)                     # the validation's gate
+        self.assertLess(max(map(abs, off.values())), 0.5, off)
 
 
 class TextTests(unittest.TestCase):
@@ -645,12 +1043,39 @@ class TextTests(unittest.TestCase):
             job_module.check_text(None)
 
     def test_audio_shapes(self):
-        self.assertEqual(job_module.AUDIO_SAMPLES, 165333)
+        """A clip's audio: stereo PCM up to its frames made at 32 kHz (165,333 samples at 5 s, NVIDIA's silence's
+        length; a LightX2V Turbo clip with a last keyframe has 266 more than A x 800 at 6 and 15 s)."""
+        five = job_module.frame_case(121)
+        self.assertEqual(job_module.pcm_limit(five), 165333)
         for samples in (161333, 165333, 1):
-            job_module.check_pcm_shape((1, 2, samples))
+            job_module.check_pcm_shape((1, 2, samples), five)
         for shape in ((1, 2, 165334), (1, 2, 0), (2, 161333), (1, 1, 161333), (1, 2, 161333, 1)):
-            with self.subTest(shape=shape), self.assertRaisesRegex(JobError, "not stereo PCM"):
-                job_module.check_pcm_shape(shape)
+            with self.subTest(shape=shape), self.assertRaisesRegex(JobError, "not stereo PCM of at most 165333"):
+                job_module.check_pcm_shape(shape, five)
+        for kept, taken, refused in ((158, 210666, 210668), (153, 204000, 210668), (361, 482667, 482668),
+                                     (362, 482666, 482668), (241, 321333, 324001)):
+            case = job_module.frame_case(kept)
+            job_module.check_pcm_shape((1, 2, taken), case)
+            with self.subTest(kept=kept), self.assertRaisesRegex(JobError, f"at most {refused - 1} samples"):
+                job_module.check_pcm_shape((1, 2, refused), case)
+
+    def test_the_audio_per_case(self):
+        """The refine's audio is A latents of 800 samples (audio_samples): the clip's padded with silence or cut to
+        it. NVIDIA's round(frames / 24 * 32000), padded by the VAE to whole latents, gives one latent more than H3's
+        at 6 and 15 s."""
+        turbo = turbo_job()
+        for kept in CASES:
+            case = job_module.frame_case(kept)
+            samples = job_module.audio_samples(case)
+            self.assertEqual(samples, case["A"] * 800)
+            self.assertEqual(samples // job_module.AUDIO_HOP, case["A"])
+            nvidia = -(-round(case["made"] / 24 * 32000) // 800)       # NVIDIA's silence's latents for those frames
+            self.assertEqual(nvidia - case["A"], 1 if case["seconds"] in (6, 15) else 0, kept)
+            over = turbo.kept_samples(kept) - samples                  # what the job cuts off (or pads, below 0)
+            self.assertEqual(over, 266 if kept in (158, 362) else min(0, over), kept)
+        self.assertEqual([job_module.audio_samples(job_module.frame_case(k)) for k in (121, 153, 361)],
+                         [165600, 210400, 482400])
+        self.assertEqual(job_module.NVIDIA_AUDIO_LATENTS, -(-round(124 / 24 * 32000) // 800))
 
 
 def nvidia_route(native, target, upscaled=(24, 37, 90, 160)):
@@ -691,6 +1116,14 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(port["sizes"], {"1080p": (1080, 1920), "2k": (1440, 2560), "4k": (2160, 3840)})
         self.assertEqual(job_module.output_size("portrait", "2k"), (1440, 2560))
         self.assertEqual(job_module.output_size("landscape", "4k"), (3840, 2160))
+        # the 768p latent per case: SHAPES' with its T (37 at 5 s, as NVIDIA's NATIVE_SHAPES)
+        for kept in CASES:
+            case = job_module.frame_case(kept)
+            self.assertEqual(job_module.native_shape("landscape", case), (24, case["T"], 48, 84))
+            self.assertEqual(job_module.native_shape("portrait", case), (24, case["T"], 84, 48))
+        for kept in (121, 124):
+            for orientation, shape in job_module.SHAPES.items():
+                self.assertEqual(job_module.native_shape(orientation, job_module.frame_case(kept)), shape["native"])
 
     def test_every_orientation_the_studio_makes(self):
         """The orientations of both patches (and the stub runtime's) are the job's SHAPES, so the server's
@@ -832,6 +1265,29 @@ class PackageTests(unittest.TestCase):
         self.assertIn("'open_h3/upscaler_node.py': None", self.refused())
         job_module.check_package(self.adapters, self.pipeline, "2k", "landscape")        # 16:9 does not check them
 
+    def test_another_length_reads_the_pinned_files(self):
+        """A clip of another length than 5 s (its T not 37), either orientation, is refused with any pinned file other:
+        NVIDIA's upscaler.py and upscaler_node.py must keep its T, where NVIDIA's target has 37. A 16:9 clip of 5 s
+        through the job's copies (`own`) needs NVIDIA's pipeline.py alone."""
+        (self.tmp / "open_h3" / "upscaler.py").write_text("# another version\n")
+        for latents in (22, 47, 72, 107):
+            for orientation in job_module.SHAPES:
+                with self.subTest(latents=latents, orientation=orientation):
+                    self.assertIn("'open_h3/upscaler.py'", self.refused_case("1080p", orientation, latents))
+        job_module.check_package(self.adapters, self.pipeline, "2k", "landscape", own=True)
+        job_module.check_package(self.adapters, self.pipeline, "2k", "landscape", own=True, latents=37)
+        (self.tmp / "open_h3" / "upscaler.py").write_text("# open_h3/upscaler.py\n")
+        job_module.check_package(self.adapters, self.pipeline, "2k", "landscape", own=True, latents=72)
+        (self.tmp / "open_h3" / "upscaler_node.py").unlink()
+        self.assertIn("'open_h3/upscaler_node.py': None", self.refused_case("2k", "landscape", 72))
+        (self.tmp / "open_h3" / "pipeline.py").write_text("# another version\n")
+        self.assertIn("'open_h3/pipeline.py'", self.refused_case("2k", "landscape", 37))
+
+    def refused_case(self, resolution, orientation, latents):
+        with self.assertRaisesRegex(JobError, "not the one this wrapper was written for") as caught:
+            job_module.check_package(self.adapters, self.pipeline, resolution, orientation, own=True, latents=latents)
+        return str(caught.exception)
+
     def test_add_portrait_entries(self):
         job_module.add_portrait_entries(self.pipeline)
         self.assertEqual(self.pipeline.INPUT_SIZES, {"768p": (1344, 768), "576p": (1024, 576),
@@ -906,20 +1362,25 @@ class InputTests(Fixture):
         with self.assertRaisesRegex(JobError, "no clip directory"):
             job_module.case_inputs(job_module.parse_job(self.job(case=str(self.tmp / "nope")), "/"))
 
-    def test_5s_clips_of_either_orientation_pass(self):
-        """1344x768 (16:9) and 768x1344 (9:16), 121 frames at 24 fps (NVIDIA's length) or 124 (every frame H3 makes:
-        a LightX2V Turbo clip with a last keyframe); check_final says which. Any other size, length or rate is
-        refused with what it is."""
+    def test_clips_of_either_orientation_pass(self):
+        """1344x768 (16:9) and 768x1344 (9:16) at 24 fps, 121 frames (NVIDIA's length) or 124 (every frame H3 makes:
+        a LightX2V Turbo clip with a last keyframe) at 5 s, or the frames of another length the studio makes
+        (LengthTests has each); check_final says which. Any other size, count of frames or rate is refused with what
+        it is, never cut."""
         self.assertEqual(job_module.check_final(self.case / "stage2" / "refined_1344x768_121f.mp4"),
                          ("landscape", 121))
         self.assertEqual(job_module.check_final(self.portrait), ("portrait", 121))
         self.assertEqual(job_module.check_final(self.final124), ("landscape", 124))
         self.assertEqual(job_module.check_final(make_mp4(self.tmp / "whole9x16.mp4", width=768, height=1344,
                                                          frames=124, audio=False)), ("portrait", 124))
-        for name, kwargs, message in (("ten.mp4", {"frames": 241}, "1344x768, 241 frames"),
-                                      ("ten9x16.mp4", {"frames": 241, "width": 768, "height": 1344},
-                                       "768x1344, 241 frames"),
-                                      ("three.mp4", {"frames": 73, "width": 768, "height": 1344}, "73 frames"),
+        self.assertEqual(job_module.check_final(make_mp4(self.tmp / "ten9x16.mp4", width=768, height=1344,
+                                                         frames=241, audio=False)), ("portrait", 241))
+        counts = "121, 124, 153, 158, 169, 175, 185, 192, 241, 243, 289, 294, 361 or 362"
+        for name, kwargs, message in (("three.mp4", {"frames": 73}, "1344x768, 73 frames"),      # Sol-H3's old 3 s
+                                      ("four.mp4", {"frames": 105}, "1344x768, 105 frames"),
+                                      ("six9x16.mp4", {"frames": 145, "width": 768, "height": 1344},
+                                       "768x1344, 145 frames"),
+                                      ("fourteen.mp4", {"frames": 345}, "345 frames"),
                                       ("122.mp4", {"frames": 122}, "122 frames"),
                                       ("120.mp4", {"frames": 120}, "120 frames"),
                                       ("fps.mp4", {"fps": 25}, "25/1"),
@@ -928,8 +1389,8 @@ class InputTests(Fixture):
                                       ("576p124.mp4", {"width": 1024, "height": 576, "frames": 124}, "1024x576"),
                                       ("1080p9x16.mp4", {"width": 1080, "height": 1920}, "1080x1920")):
             with self.subTest(name=name), self.assertRaisesRegex(
-                    JobError, message + r".*: not a 5 s 16:9 or 9:16 clip \(1344x768 or 768x1344, 121 or 124 frames "
-                                        r"at 24 fps\)$"):
+                    JobError, message + r".*: not a clip the Upscale takes \(1344x768 or 768x1344 at 24 fps, with the "
+                                        rf"frames of a length the studio makes: {counts}\); it never cuts a clip$"):
                 job_module.check_final(make_mp4(self.tmp / name, audio=False, **kwargs))
         (self.tmp / "text.mp4").write_text("not a video")
         with self.assertRaisesRegex(JobError, "ffprobe cannot read"):
@@ -991,14 +1452,32 @@ class InputTests(Fixture):
         job = dict(job_module.parse_job(self.job(steps=3, start_sigma=None), "/"), orientation="landscape",
                    frames=five)
         self.assertEqual(job_module.plan(job, schedules, grid),
-                         {"orientation": "landscape", "size": [2560, 1440],
-                          "frames": {"kept": 121, "made": 124, "pad": 3, "T": 37}, "steps": 3,
-                          "sigmas": [0.9, 0.8, 0.6, 0.0], "lean_chunks": None})
+                         {"orientation": "landscape", "size": [2560, 1440], "frames": case_of(121), "steps": 3,
+                          "sigmas": [0.9, 0.8, 0.6, 0.0], "lean_chunks": None, "offer": {
+                              "route": "whole", "seconds": 5, "rows": {"video": 133200, "audio": 414, "text": 200,
+                                                                       "condition": 0, "sequence": 133814},
+                              "forward": "stock", "lean_chunks": None, "floor_gib": 110, "eta_s": [405, 380],
+                              "strengths": ["faithful", "balanced", "full"], "ran": True}})
         job = dict(job_module.parse_job(self.job(resolution="4k", steps=2, start_sigma=0.5), "/"),
                    orientation="landscape", frames=job_module.frame_case(124))
         planned = job_module.plan(job, schedules, grid)
         self.assertEqual((planned["sigmas"], planned["size"], planned["lean_chunks"], planned["frames"]),
-                         ([0.5, 0.25, 0.0], [3840, 2160], 16, {"kept": 124, "made": 124, "pad": 0, "T": 37}))
+                         ([0.5, 0.25, 0.0], [3840, 2160], 16, case_of(124)))
+        self.assertEqual((planned["offer"]["forward"], planned["offer"]["floor_gib"]), ("lean", 115))
+        # a 10 s clip at 2K: lean_forward by its rows; its floor the setting's, with the pin's ends too (its case: 109)
+        for kept, ends, floor in ((241, (), 110), (243, ("first",), 110), (241, ("first", "last"), 110)):
+            job = dict(job_module.parse_job(self.job(**({"pin": pin(*ends)} if ends else {})), "/"),
+                       orientation="portrait", frames=job_module.frame_case(kept))
+            planned = job_module.plan(job, schedules, grid)
+            self.assertEqual((planned["frames"], planned["lean_chunks"], planned["size"]), (case_of(kept), 16,
+                                                                                           [1440, 2560]))
+            self.assertEqual({k: planned["offer"][k] for k in ("seconds", "forward", "floor_gib", "eta_s", "ran")},
+                             {"seconds": 10, "forward": "lean", "floor_gib": floor, "eta_s": [691, 1261],
+                              "ran": True}, (kept, ends))
+            self.assertEqual(planned["offer"]["rows"], job_module.case_rows(job["frames"], "2k", len(ends)))
+        with self.assertRaisesRegex(JobError, r"^2K for 15 s clips comes later: 1080p takes them$"):
+            job_module.plan(dict(job_module.parse_job(self.job(), "/"), orientation="landscape",
+                                 frames=job_module.frame_case(361)), schedules, grid)
         for resolution, size, lean in (("1080p", [1080, 1920], None), ("2k", [1440, 2560], None),
                                        ("4k", [2160, 3840], 16)):         # 9:16: the same tokens, the same forward
             job = dict(job_module.parse_job(self.job(resolution=resolution), "/"), orientation="portrait",
@@ -1192,7 +1671,7 @@ class PinCheckTests(Fixture):
         self.assertEqual((planned["pin"]["first"]["used"], planned["pin"]["first"]["frame"],
                           planned["pin"]["last"]["used"], planned["pin"]["last"]["frame"]), (True, 0, False, 123))
         self.assertRegex(planned["pin"]["last"]["why"], r"^the clip's frame 123 is \d+\.\d dB from your picture")
-        self.assertEqual(planned["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37})
+        self.assertEqual(planned["frames"], case_of(124))
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])
 
 
@@ -1327,7 +1806,7 @@ class ScriptTests(Fixture):
         shutil.copy(self.portrait, self.case / "stage2" / "refined_768x1344_121f.mp4")
         planned = json.loads(self.script("--job", str(self.write_job()), "--check", check=True).stdout)
         self.assertEqual((planned["orientation"], planned["job"]["orientation"], planned["size"], planned["frames"]),
-                         ("portrait", "portrait", [1440, 2560], {"kept": 121, "made": 124, "pad": 3, "T": 37}))
+                         ("portrait", "portrait", [1440, 2560], case_of(121)))
         planned = json.loads(self.script("--job", str(self.write_job(resolution="1080p")), "--check",
                                           check=True).stdout)
         self.assertEqual(planned["size"], [1080, 1920])
@@ -1339,7 +1818,7 @@ class ScriptTests(Fixture):
         planned = json.loads(self.script("--job", str(self.write_job(resolution="1080p")), "--check",
                                           check=True).stdout)
         self.assertEqual((planned["orientation"], planned["size"], planned["frames"]),
-                         ("landscape", [1920, 1080], {"kept": 124, "made": 124, "pad": 0, "T": 37}))
+                         ("landscape", [1920, 1080], case_of(124)))
 
     def test_a_pin_without_pillow_is_refused(self):
         """The pin's check needs Pillow and numpy, which the Regen-2K environment has: elsewhere a job with a pin is
@@ -1352,16 +1831,24 @@ class ScriptTests(Fixture):
                              "both)"))
 
     def test_check_refuses(self):
-        make_mp4(self.case / "stage2" / "refined_768x1344_241f.mp4", width=768, height=1344, frames=241)
+        """A clip of frames no length has (145: what the stub runtime once made at 6 s) and a size its length is not
+        offered at (4K for a 10 s clip): exit 2 with the reason, nothing written."""
+        make_mp4(self.case / "stage2" / "refined_768x1344_145f.mp4", width=768, height=1344, frames=145)
         (self.case / "stage2" / "refined_1344x768_121f.mp4").unlink()
         result = self.script("--job", str(self.write_job()), "--check")
         self.assertEqual(result.returncode, 2)
-        self.assertRegex(result.stdout.splitlines()[-1], r"^\[lf-studio\] error refined_768x1344_241f\.mp4 is "
-                                                         r"768x1344, 241 frames .* not a 5 s 16:9 or 9:16 clip")
+        self.assertRegex(result.stdout.splitlines()[-1], r"^\[lf-studio\] error refined_768x1344_145f\.mp4 is "
+                                                         r"768x1344, 145 frames .* not a clip the Upscale takes")
+        self.assertFalse((self.out / "receipt.json").exists())
+        (self.case / "stage2" / "refined_768x1344_145f.mp4").unlink()
+        make_mp4(self.case / "stage2" / "refined_1344x768_241f.mp4", frames=241)
+        result = self.script("--job", str(self.write_job(resolution="4k")), "--check")
+        self.assertEqual((result.returncode, result.stdout.splitlines()[-1]),
+                         (2, "[lf-studio] error 4K for 10 s clips comes later: 1080p and 2K take them"))
         self.assertFalse((self.out / "receipt.json").exists())
         (self.package / "open_h3" / "sigmas.py").unlink()
         make_mp4(self.case / "stage2" / "refined_1344x768_121f.mp4")
-        (self.case / "stage2" / "refined_768x1344_241f.mp4").unlink()
+        (self.case / "stage2" / "refined_1344x768_241f.mp4").unlink()
         result = self.script("--job", str(self.write_job()), "--check")
         self.assertEqual(result.returncode, 2)
         self.assertIn("cannot import open_h3.sigmas", result.stdout)
@@ -1403,15 +1890,15 @@ class ScriptTests(Fixture):
 
 
 class MainTests(Fixture):
-    """main() around a stand-in run(): the receipt for done, failed and SIGTERM."""
+    """main() around a stand-in run(): the receipt for done, failed, SIGTERM and too little memory to start."""
 
-    def main(self, run):
+    def main(self, run, **changes):
         handler = signal.getsignal(signal.SIGTERM)
         self.addCleanup(signal.signal, signal.SIGTERM, handler)
         stdout = io.StringIO()
         with mock.patch.object(job_module, "run", run), mock.patch.object(job_module, "apply_environment") as env, \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
-            status = job_module.main(["--job", str(self.write_job())])
+            status = job_module.main(["--job", str(self.write_job(**changes))])
         env.assert_called_once_with(os.environ)
         self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
         receipt = json.loads((self.out / "receipt.json").read_text())
@@ -1429,7 +1916,7 @@ class MainTests(Fixture):
             (job["output"] / "video_noaudio.mp4").write_bytes(b"video")
         status, receipt = self.main(run)
         self.assertEqual((status, receipt["state"], receipt["exit_status"]), (0, "done", 0))
-        self.assertEqual(receipt["frames"], {"kept": 121, "made": 124, "pad": 3, "T": 37})     # always, from the MP4
+        self.assertEqual(receipt["frames"], case_of(121))                                       # always, from the MP4
         self.assertNotIn("pin", receipt)                                                        # only with one
         self.assertEqual(receipt["peak_allocated_gib"], 91.2)
         self.assertIn("refine 1/2", receipt["lowest_mem_available_gib"])
@@ -1452,6 +1939,41 @@ class MainTests(Fixture):
             raise JobError("the conditioning has 254 non-text rows (fl2va/ref2va): it needs a text-only encode")
         status, receipt = self.main(run)
         self.assertEqual((status, receipt["state"]), (2, "failed"))
+
+    def test_too_little_memory_to_start(self):
+        """job.json's min_free_gib, the floor the server checked: with less MemAvailable than that at the job's
+        start, less 0.5 GiB for what its own start takes, it is refused (exit 2) before run(), with a receipt; at that
+        or more it runs. Absent or 0: no check, MemAvailable not read; where it can't be read, the job starts."""
+        ran = []
+
+        def run(job, files, receipt, trace):
+            ran.append(job["min_free_gib"])
+        for available, floor, refused in ((109.4, 110, True), (109.5, 110, False), (115.0, 110, False),
+                                          (110.4, 111, True), (114.5, 115, False)):
+            with self.subTest(available=available, floor=floor), \
+                    mock.patch.object(job_module, "meminfo", return_value={"MemAvailable": available}):
+                ran.clear()
+                status, receipt = self.main(run, min_free_gib=floor)
+                self.assertEqual((status, ran), (2, []) if refused else (0, [float(floor)]))
+                self.assertEqual(receipt["job"]["min_free_gib"], float(floor))
+                if refused:
+                    self.assertEqual((receipt["state"], receipt["error"]), (
+                        "failed", f"not enough free memory to start: {available:.1f} GiB available, {floor} GiB "
+                                  "needed for a 2K 5 s upscale"))
+                    self.assertEqual(receipt["frames"], case_of(121))           # the clip checked first
+                    self.assertNotIn("inputs_sha256", receipt)
+        for changes in ({}, {"min_free_gib": 0}, {"min_free_gib": None}):
+            with self.subTest(**{k: str(v) for k, v in changes.items()}), \
+                    mock.patch.object(job_module, "meminfo", return_value={"MemAvailable": 1.0}):
+                ran.clear()
+                self.assertEqual(self.main(run, **changes)[0], 0)              # 1 GiB available: not checked
+                self.assertEqual(ran, [None if changes.get("min_free_gib") is None else 0.0])
+        for broken in ({"side_effect": OSError("no /proc")}, {"return_value": {}}):
+            with mock.patch.object(job_module, "meminfo", **broken):
+                ran.clear()
+                self.assertEqual(self.main(run, min_free_gib=110)[0], 0)
+                self.assertEqual(ran, [110.0])
+        self.assertEqual(job_module.check_start_memory({"min_free_gib": None}), None)
 
     def test_sigterm_is_a_cancel(self):
         def run(job, files, receipt, trace):
@@ -1507,6 +2029,95 @@ class ParentTests(Fixture):
         self.assertEqual(job_module.parse_line(result.stdout.splitlines()[-1]),
                          ("error", f"the studio's server (pid {os.getpid() + 1}) is gone; not starting"))
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])        # nothing written
+
+
+class LengthTests(Fixture):
+    """Clips of every length the studio makes (ffmpeg-made MP4s of each count of frames in FRAME_CASES, 16:9, and of
+    four of them 9:16): check_final takes each, and --check plans each at every size, or refuses the size with the
+    reason where its length is not offered at it (exit 2); nothing written."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.clips = {(kept, "landscape"): make_mp4(cls.media / f"landscape{kept}.mp4", frames=kept, audio=False)
+                     for kept in CASES}
+        cls.clips.update({(kept, "portrait"): make_mp4(cls.media / f"portrait{kept}.mp4", width=768, height=1344,
+                                                       frames=kept, audio=False) for kept in (153, 158, 241, 362)})
+
+    def use(self, kept, orientation):
+        for mp4 in (self.case / "stage2").glob("refined_*.mp4"):
+            mp4.unlink()
+        width, height = job_module.SHAPES[orientation]["input"]
+        shutil.copy(self.clips[(kept, orientation)], self.case / "stage2" / f"refined_{width}x{height}_{kept}f.mp4")
+
+    def test_check_final_takes_every_count(self):
+        for (kept, orientation), mp4 in self.clips.items():
+            self.assertEqual(job_module.check_final(mp4), (orientation, kept))
+
+    def test_check_of_every_count(self):
+        table = job_module.offers_table()
+        for kept, orientation in self.clips:
+            self.use(kept, orientation)
+            for size in job_module.SIZES:
+                with self.subTest(kept=kept, orientation=orientation, size=size):
+                    result = self.script("--job", str(self.write_job(resolution=size)), "--check")
+                    row = table[str(CASES[kept][0])][size]
+                    if "why" in row:
+                        self.assertEqual((result.returncode, result.stdout.splitlines()[-1]),
+                                         (2, f"[lf-studio] error {row['why']}"))
+                        continue
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    planned = json.loads(result.stdout)
+                    self.assertEqual((planned["orientation"], planned["size"], planned["frames"]),
+                                     (orientation, list(job_module.output_size(orientation, size)), case_of(kept)))
+                    self.assertEqual(planned["offer"], job_module.offer(kept, size))
+                    self.assertEqual((planned["lean_chunks"], planned["offer"]["eta_s"]),
+                                     (planned["offer"]["lean_chunks"], row["eta_s"]))
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class OlderJobTests(Fixture):
+    """The job of the last release (v0.5.2's, from git; skipped where this copy's history has not got it) given what
+    this one takes now: a 10 s clip and job.json's min_free_gib. It refuses both (exit 2) before anything loads, with
+    a receipt, and cuts nothing: so job.json stays version 1."""
+
+    def setUp(self):
+        super().setUp()
+        found = subprocess.run(["git", "-C", str(REPO), "show", "v0.5.2:upscale/regen2k_job.py"], capture_output=True,
+                               timeout=60)
+        if found.returncode or not found.stdout:
+            self.skipTest("v0.5.2 is not in this copy's git history")
+        self.older = self.tmp / "older" / "regen2k_job.py"
+        self.older.parent.mkdir()
+        self.older.write_bytes(found.stdout)
+
+    def older_job(self, *args):
+        return subprocess.run([sys.executable, "-I", "-B", str(self.older), *args], capture_output=True, text=True,
+                              timeout=120)
+
+    def test_a_long_clip_is_refused(self):
+        (self.case / "stage2" / "refined_1344x768_121f.mp4").unlink()
+        make_mp4(self.case / "stage2" / "refined_1344x768_241f.mp4", frames=241)
+        path = self.write_job(resolution="1080p")
+        for args in (("--check",), ()):
+            result = self.older_job("--job", str(path), *args)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertRegex(result.stdout.splitlines()[-1], r"^\[lf-studio\] error refined_1344x768_241f\.mp4 is "
+                                                             r"1344x768, 241 frames at 24/1 fps: not a 5 s 16:9 or "
+                                                             r"9:16 clip")
+        receipt = json.loads((self.out / "receipt.json").read_text())
+        self.assertEqual((receipt["state"], receipt["exit_status"]), ("failed", 2))
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json", "receipt.json"])
+        (self.out / "receipt.json").unlink()
+        planned = json.loads(self.script("--job", str(path), "--check", check=True).stdout)     # this job takes it
+        self.assertEqual(planned["frames"], case_of(241))
+
+    def test_the_memory_floor_is_refused(self):
+        result = self.older_job("--job", str(self.write_job(min_free_gib=110)))
+        self.assertEqual((result.returncode, result.stdout.splitlines()[-1]),
+                         (2, "[lf-studio] error unknown field(s): min_free_gib"))
+        self.assertEqual(json.loads((self.out / "receipt.json").read_text())["state"], "failed")
 
 
 NARROWED = []                           # each StandInTensor.narrow: (shape, dim, start, length)
@@ -1773,22 +2384,22 @@ class RunTests(Fixture):
                                 "text_token_tags": StandInTensor(41, values=[1] * 41)},
             "stage1_direct_tensors.pt": {"audio": StandInTensor(1, 2, 161333)}}
 
-    def run_job(self, fallback=(), seams=None, **changes):
+    def run_job(self, fallback=(), seams=None, audio_latents=None, **changes):
         """main() on job.json with `changes`; the loads go into self.loads, the stand-in modules into self.modules.
-        `seams`: {name: stand-in} for the job's own functions."""
+        `seams`: {name: stand-in} for the job's own functions. encode_audio gives the latents of its samples (or
+        `audio_latents`), tagged "clip", or "zeros" for a silence."""
         handler = signal.getsignal(signal.SIGTERM)
         self.addCleanup(signal.signal, signal.SIGTERM, handler)
         fake = stand_in_torch(self.loaded)
         stdout = io.StringIO()
-        clip_audio = StandInTensor(2, 32, 207, tag="clip")
         self.loads = []
         self.modules = stand_in_loaders(self.loads)
         NARROWED.clear()
 
-        def encode_audio(base, pcm, torch):            # the audio VAE as the job's encode_audio loads it
+        def encode_audio(base, pcm, samples, torch):   # the audio VAE as the job's encode_audio loads it; A latents
             self.modules["diffusers"].AutoencoderKLMiniMaxH3Audio.from_pretrained(
                 base, subfolder="audio_vae", torch_dtype=torch.float32, local_files_only=True).cuda().eval()
-            return clip_audio
+            return StandInTensor(2, 32, audio_latents or samples // 800, tag="zeros" if pcm is None else "clip")
         with contextlib.ExitStack() as stack:
             for name, value in (seams or {}).items():
                 stack.enter_context(mock.patch.object(job_module, name, value))
@@ -1865,7 +2476,7 @@ class RunTests(Fixture):
         self.assertEqual(calls[9], ("decode", True, True, {}))      # the DiT and the upscaler freed, the VAE kept
         self.assertEqual(calls[10], ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (121, 1440, 2560, 3)))
         self.assertEqual(encode_audio.call_args.args[0], self.base)
-        self.assertEqual(encode_audio.call_args.args[1].shape, (2, 161333))
+        self.assertEqual((encode_audio.call_args.args[1].shape, encode_audio.call_args.args[2]), ((2, 161333), 165600))
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json", "receipt.json", "video_noaudio.mp4"])
         self.assertEqual(receipt["output"], {"file": "video_noaudio.mp4", "size": [2560, 1440], "frames": 121,
                                              "bytes": 3})
@@ -1877,6 +2488,8 @@ class RunTests(Fixture):
         self.assertEqual(receipt["peak_allocated_gib"], 81.0)
         self.assertEqual((receipt["merge"]["weights"], receipt["lean_chunks"], receipt["text_rows"]), (0, None, 41))
         lean.assert_not_called()                                    # the stock block forward below 4K
+        self.assertEqual((receipt["forward"], receipt["rows"]), ("stock", {"video": 133200, "audio": 414, "text": 41,
+                                                                           "condition": 0, "sequence": 133655}))
         self.assertEqual((receipt["prompt"], receipt["versions"]["gpu"], receipt["versions"]["torch"]),
                          ("a test", "stand-in GPU", "0.0+stand-in"))
         self.assertEqual(receipt["allocated_before_decode_gib"], 5.0)
@@ -1936,6 +2549,8 @@ class RunTests(Fixture):
                 self.assertEqual(self.dicts, nvidia_dicts)
                 self.assertEqual(NARROWED, [])
                 self.assertEqual(receipt["lean_chunks"], 16 if resolution == "4k" else None)
+                self.assertEqual(receipt["forward"], "lean" if resolution == "4k" else "stock")
+                self.assertEqual(self.lean.call_count, 1 if resolution == "4k" else 0)
 
     def portrait_clip(self, pin=True):
         """The clip a 9:16 one; with `pin`, NVIDIA_FILES pinned to the stand-in package's files."""
@@ -1962,17 +2577,18 @@ class RunTests(Fixture):
         if pin:
             self.pin_stand_ins()
 
-    def own_seams(self):
+    def own_seams(self, latents=None):
         """encode_clip and decode_released as stand-ins that record their calls (self.encoded, self.decoded): the
-        video VAE loaded as NVIDIA's encode_video loads it, the latent of the clip's shape; frames at the computed
-        grid."""
+        video VAE loaded as NVIDIA's encode_video loads it, the latent of the clip's shape (its T by the VAE's chunks,
+        or `latents`); frames at the computed grid."""
         self.encoded, self.decoded = [], []
 
         def encode_clip(base, mp4, size, kept, pad, seed, torch, keyframes=(), encode_seed=None, **kwargs):
             self.modules["diffusers"].AutoencoderKLMiniMaxH3.from_pretrained(
                 base, subfolder="vae", torch_dtype=torch.float32, local_files_only=True).cuda().eval()
             self.encoded.append((Path(mp4).name, size, kept, pad, seed, [a for a, _ in keyframes], encode_seed))
-            native = job_module.SHAPES["landscape" if size[0] > size[1] else "portrait"]["native"]
+            native = list(job_module.SHAPES["landscape" if size[0] > size[1] else "portrait"]["native"])
+            native[1] = latents or job_module.encoded_latent_frames(kept + pad)
             return torch.Tensor(*native, tag="final"), {a: torch.Tensor(1, 24, 1, 1, 1, tag=a) for a, _ in keyframes}, \
                 1.5
 
@@ -2068,11 +2684,212 @@ class RunTests(Fixture):
                     self.assertEqual(self.loads, self.expected_loads(fast=True))
                     self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding",
                                               "saving"])
-                    self.assertEqual(receipt["frames"], {"kept": 124, "made": 124, "pad": 0, "T": 37})
+                    self.assertEqual(receipt["frames"], case_of(124))
                     self.assertEqual(receipt["output"], {"file": "video_noaudio.mp4", "size": [width, height],
                                                          "frames": 124, "bytes": 3})
                     self.assertIn("encode_video", receipt["times_s"])
                     self.assertEqual(encode_audio.call_args.args[1].shape, (2, 161333))
+
+    def long_clip(self, kept, orientation="landscape", pin=True):
+        """The clip one of `kept` frames (FRAME_CASES: another length), its Stage-1 audio the samples the studio
+        keeps for it (LightX2V Turbo's kept_samples, 266 past A x 800 for 158 and 362); with `pin`, NVIDIA_FILES
+        pinned to the stand-ins (the copies run). Returns the samples."""
+        for mp4 in (self.case / "stage2").glob("refined_*.mp4"):
+            mp4.unlink()
+        width, height = job_module.SHAPES[orientation]["input"]
+        source = self.media / f"{orientation}{kept}.mp4"
+        if not source.exists():
+            make_mp4(source, width=width, height=height, frames=kept, audio=False)
+        shutil.copy(source, self.case / "stage2" / f"refined_{width}x{height}_{kept}f.mp4")
+        samples = int(kept / 24 * 32000)
+        self.loaded["stage1_direct_tensors.pt"] = {"audio": StandInTensor(1, 2, samples)}
+        if pin:
+            self.pin_stand_ins()
+        return samples
+
+    def test_a_long_clip(self):
+        """A clip of another length (10 and 15 s, 16:9 and 9:16, 1080p and 2K): encode_clip reads its frames with
+        NVIDIA's 3 copies (T 72, 107), its audio is padded to A x 800 samples (A 405, 603) and replaces NVIDIA's 5 s
+        silence, NVIDIA's upscaler and refine take the latent of that T as for 5 s, every block runs lean_forward (16
+        chunks, by the clip's rows), decode_released keeps the clip's frames, then NVIDIA's centre rows (and for 9:16
+        the job's centre columns), and the output has them all; the receipt has its frames, rows and forward."""
+        pipeline = {"fwd": "standard", "hyperflow": None, "vae_batch": 26, "steps": 2, "start_sigma": 0.7,
+                    "vae": "standard"}
+        for orientation, kept, resolution in (("landscape", 241, "1080p"), ("portrait", 241, "1080p"),
+                                              ("landscape", 361, "1080p"), ("portrait", 361, "1080p"),
+                                              ("landscape", 241, "2k"), ("portrait", 241, "2k")):
+            with self.subTest(orientation=orientation, kept=kept, resolution=resolution):
+                samples = self.long_clip(kept, orientation)
+                case = job_module.frame_case(kept)
+                status, receipt, calls, phases, encode_audio = self.run_job(seams=self.own_seams(),
+                                                                            resolution=resolution)
+                self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                 receipt.get("error"))
+                shape, landscape = job_module.SHAPES[orientation], orientation == "landscape"
+                width, height = shape["sizes"][resolution]
+                native = job_module.native_shape(orientation, case)
+                target = (LANDSCAPE_TARGETS if landscape else PORTRAIT_TARGETS)[resolution]
+                low = (24, case["T"]) + target[2:]
+                self.assertEqual(calls, [
+                    ("Pipeline", dict(pipeline, resolution=shape["resolutions"][resolution])),
+                    ("load_model", "upscaler", "bf16")] +
+                    ([("upscale", native, "final")] if landscape else []) + [
+                    ("upscaler.upscale", native, target),           # NVIDIA's target grid: its T is not read
+                    ("set_stage", "refine"),
+                    ("refine", low, (41, 5120), 1234, "clip", 1.0),
+                    ("on_step", "refine", 0), ("on_step", "refine", 1),
+                    ("encode_mp4", ".video_noaudio.mp4.partial.mp4", (kept, height, width, 3))])
+                self.assertEqual(self.encoded, [(f"refined_{shape['input'][0]}x{shape['input'][1]}_{kept}f.mp4",
+                                                 shape["input"], kept, 3, 42, [], None)])
+                self.assertEqual(self.decoded, [(low, kept, "cuda")])
+                computed = (target[2] * 16, target[3] * 16)
+                self.assertEqual(NARROWED, [((kept, *computed, 3), 1, (computed[0] - height) // 2, height)] if landscape
+                                 else [((kept, *computed, 3), 1, 0, computed[0]),
+                                       ((kept, *computed, 3), 2, (computed[1] - width) // 2, width)])
+                self.assertEqual((encode_audio.call_args.args[1].shape, encode_audio.call_args.args[2]),
+                                 ((2, samples), case["A"] * 800))
+                self.assertEqual((self.lean.call_count, self.lean.call_args.args[1]), (1, 16))
+                self.assertEqual(self.loads, self.expected_loads(fast=True))
+                self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
+                self.assertEqual((receipt["frames"], receipt["forward"], receipt["lean_chunks"]),
+                                 (case_of(kept), "lean", 16))
+                self.assertEqual(receipt["rows"], job_module.case_rows(case, resolution, 0, 41))
+                self.assertEqual(receipt["output"], {"file": "video_noaudio.mp4", "size": [width, height],
+                                                     "frames": kept, "bytes": 3})
+
+    def test_a_long_silence(self):
+        """Without the clip's audio a clip of another length gets a silence of its own length (A x 800 samples:
+        324,000, 405 latents at 10 s), encoded before the DiT loads, in place of NVIDIA's 5 s one; a 5 s clip keeps
+        NVIDIA's (test_silence_at_4k)."""
+        self.long_clip(241)
+        status, receipt, calls, phases, encode_audio = self.run_job(seams=self.own_seams(), audio="silence",
+                                                                    resolution="1080p")
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.assertEqual(encode_audio.call_args.args[1:3], (None, 324000))
+        self.assertEqual(next(c for c in calls if c[0] == "refine")[4], "zeros")
+        self.assertEqual(self.loads, self.expected_loads(fast=True))         # its audio VAE before the DiT
+        self.assertIn("encode_audio", receipt["times_s"])
+        self.assertEqual(set(receipt["inputs_sha256"]), {"conditioning", "final"})
+
+    def test_a_turbo_clip_with_its_last_frame_at_6_s(self):
+        """158 frames at 6 s (a LightX2V Turbo clip with a last keyframe): read whole, no copies; its 210,666 samples
+        of audio go to encode_audio, which cuts them to 263 latents' 210,400; stock at 1080p (96,406 rows of its
+        own), lean_forward at 2K (169,726)."""
+        samples = self.long_clip(158)
+        self.assertEqual(samples, 210666)
+        for resolution, lean in (("1080p", None), ("2k", 16)):
+            with self.subTest(resolution=resolution):
+                status, receipt, calls, _, encode_audio = self.run_job(seams=self.own_seams(), resolution=resolution)
+                self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                 receipt.get("error"))
+                self.assertEqual(self.encoded, [("refined_1344x768_158f.mp4", (1344, 768), 158, 0, 42, [], None)])
+                self.assertEqual((encode_audio.call_args.args[1].shape, encode_audio.call_args.args[2]),
+                                 ((2, 210666), 210400))
+                self.assertEqual((receipt["lean_chunks"], receipt["forward"], self.lean.call_count),
+                                 (lean, "lean" if lean else "stock", 1 if lean else 0))
+                self.assertEqual((receipt["frames"], receipt["output"]["frames"]), (case_of(158), 158))
+
+    def test_a_pinned_long_clip(self):
+        """Keep my frames on a 10 s clip at 1080p (243 frames with both ends: a LightX2V Turbo clip with a last
+        keyframe; 241 with its first: Sol-H3's): the lean blocks, by the clip's rows, under refine_pinned with the
+        frames H3 made (243), R condition rows per end held."""
+        self.pin_stand_ins()
+        for kept, ends in ((243, ("first", "last")), (241, ("first",))):
+            with self.subTest(kept=kept):
+                self.long_clip(kept, pin=False)
+                status, receipt, calls, _, _ = self.run_job(
+                    seams=self.pin_seams({end: (True, 33.5) for end in ends}), resolution="1080p", pin=pin(*ends))
+                self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                 receipt.get("error"))
+                case = job_module.frame_case(kept)
+                self.assertEqual(self.encoded, [(f"refined_1344x768_{kept}f.mp4", (1344, 768), kept, case["pad"], 42,
+                                                 list(ends), 42)])
+                self.assertEqual(self.pinned, [((24, 72, 68, 120), 1234, [(end, end) for end in ends], 243, 0.999,
+                                                42)])
+                self.assertNotIn("refine", [c[0] for c in calls])
+                self.assertEqual((self.lean.call_count, self.lean.call_args.args[1], receipt["forward"]),
+                                 (1, 16, "lean"))
+                self.assertEqual(receipt["rows"], job_module.case_rows(case, "1080p", len(ends), 41))
+                self.assertEqual(receipt["rows"]["condition"], 2040 * len(ends))
+                self.assertEqual(self.decoded, [((24, 72, 68, 120), kept, "cuda")])
+                self.assertEqual(receipt["output"]["frames"], kept)
+
+    def test_every_5s_route_keeps_its_forward(self):
+        """Every 5 s route runs the block forward it ran on the GPU: the stock one at 1080p and 2K, 121 or 124 frames,
+        also with both ends held (2K: 140,855 rows, more than 140,000, but the clip's own are 133,614); lean_forward
+        in 16 chunks at 4K."""
+        self.pin_stand_ins()
+        self.whole_clip(pin=False)
+        for resolution, ends in (("1080p", ()), ("2k", ()), ("1080p", ("first", "last")), ("2k", ("first", "last")),
+                                 ("4k", ())):
+            with self.subTest(resolution=resolution, ends=ends):
+                seams = self.pin_seams({end: (True, 34.0) for end in ends}) if ends else self.own_seams()
+                status, receipt, calls, _, _ = self.run_job(seams=seams, resolution=resolution,
+                                                            **({"pin": pin(*ends)} if ends else {}))
+                self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
+                                 receipt.get("error"))
+                if resolution == "4k":
+                    self.assertEqual((self.lean.call_count, receipt["forward"], receipt["lean_chunks"]),
+                                     (1, "lean", 16))
+                    continue
+                self.lean.assert_not_called()
+                self.assertEqual((receipt["forward"], receipt["lean_chunks"]), ("stock", None))
+                per_frame = job_module.ROWS_PER_FRAME[resolution]
+                self.assertEqual(receipt["rows"]["sequence"], 37 * per_frame + 414 + 41 + len(ends) * per_frame)
+        self.assertEqual(receipt["rows"]["sequence"], 302334 + 41)
+
+    def test_sizes_its_length_has_not_are_refused_before_anything_loads(self):
+        """A size the clip's length is not offered at (2K and 4K at 15 s, 4K at 10 s): refused with the reason (exit
+        2) before anything loads."""
+        for kept, resolution, why in ((361, "2k", "2K for 15 s clips comes later: 1080p takes them"),
+                                      (361, "4k", "4K for 15 s clips comes later: 1080p takes them"),
+                                      (241, "4k", "4K for 10 s clips comes later: 1080p and 2K take them")):
+            with self.subTest(kept=kept, resolution=resolution):
+                self.long_clip(kept, pin=False)
+                status, receipt, calls, phases, _ = self.run_job(seams=self.own_seams(), resolution=resolution)
+                self.assertEqual((status, receipt["state"], receipt["error"]), (2, "failed", why))
+                self.assertEqual((calls, phases, self.loads, self.encoded), ([], [], [], []))
+                self.assertEqual(receipt["frames"], case_of(kept))
+
+    def test_a_latent_of_another_length_fails(self):
+        """The clip's latent and audio latent must have its case's T and A: a 10 s clip encoded to 37 latent frames,
+        or its audio to NVIDIA's 207 latents, fails before the refine."""
+        self.long_clip(241)
+        status, receipt, calls, _, _ = self.run_job(seams=self.own_seams(latents=37), resolution="1080p")
+        self.assertEqual((status, receipt["error"]),
+                         (1, "RuntimeError: the 768p latent is (24, 37, 48, 84), not (24, 72, 48, 84)"))
+        self.assertNotIn("refine", [c[0] for c in calls])
+        status, receipt, calls, _, _ = self.run_job(seams=self.own_seams(), audio_latents=207, resolution="1080p")
+        self.assertEqual((status, receipt["error"]),
+                         (1, "RuntimeError: the audio latent is (2, 32, 207), not (2, 32, 405) for 243 frames made"))
+        self.assertNotIn("refine", [c[0] for c in calls])
+
+    def test_a_long_clip_needs_nvidias_upscaler_pinned(self):
+        """A clip of another length goes through NVIDIA's upscaler, which must keep its T: with another
+        upscaler_node.py it is refused before anything loads; a 124-frame clip (5 s, T 37) is not."""
+        self.pin_stand_ins()
+        (self.package / "open_h3" / "upscaler_node.py").write_text("# another version\n")
+        self.whole_clip(pin=False)
+        status, receipt, _, _, _ = self.run_job(seams=self.own_seams(), resolution="1080p")
+        self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
+        self.long_clip(241, pin=False)
+        status, receipt, calls, phases, _ = self.run_job(seams=self.own_seams(), resolution="1080p")
+        self.assertEqual((status, receipt["state"]), (2, "failed"), receipt.get("traceback"))
+        self.assertRegex(receipt["error"], r"^NVIDIA's package is not the one this wrapper was written for "
+                                           r"\(6e4a440\): \{'open_h3/upscaler_node\.py': '[0-9a-f]{64}'\}$")
+        self.assertEqual((calls, phases, self.loads, self.encoded), ([], [], [], []))
+
+    def test_an_upscale_that_loses_the_clips_t_fails(self):
+        """NVIDIA's upscaler keeps the latent's T. One that gave its target's 37 instead (here a stand-in) would cut a
+        10 s clip: the job fails after the upscale, before the refine."""
+        (self.package / "open_h3" / "upscaler.py").write_text(STAND_IN_UPSCALER.replace(
+            "torch.Tensor(*native.shape[:2], *target_shape[2:])", "torch.Tensor(native.shape[0], *target_shape[1:])"))
+        self.long_clip(241)
+        status, receipt, calls, _, _ = self.run_job(seams=self.own_seams(), resolution="1080p")
+        self.assertEqual((status, receipt["error"]),
+                         (1, "RuntimeError: the upscaled latent is (24, 37, 68, 120), not (24, 72, 68, 120)"))
+        self.assertIn(("upscaler.upscale", (24, 72, 48, 84), (24, 37, 68, 120)), calls)
+        self.assertNotIn("refine", [c[0] for c in calls])
 
     def pin_seams(self, ends, changed=()):
         """The pin's parts as stand-ins on top of own_seams: check_pin answering `ends` ({anchor: (used, dB)}),
@@ -2228,7 +3045,7 @@ class RunTests(Fixture):
         self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or receipt.get("error"))
         self.assertEqual((self.encoded, self.decoded), ([], []))
         self.assertEqual(([c[0] for c in calls][0], [c[0] for c in calls][-2]), ("encode_video", "decode"))
-        self.assertEqual(receipt["frames"], {"kept": 121, "made": 124, "pad": 3, "T": 37})
+        self.assertEqual(receipt["frames"], case_of(121))
 
     def test_the_copies_need_nvidias_pipeline_pinned(self):
         """encode_clip and decode_released copy NVIDIA's pipeline.py: with another one (here the stand-in, not
@@ -2555,10 +3372,16 @@ class TorchTests(unittest.TestCase):
         cond["text_token_tags"][3] = 0
         with self.assertRaisesRegex(JobError, "non-text"):
             job_module.text_input(cond, torch)
-        pcm = job_module.pcm_input({"audio": torch.zeros(1, 2, 161333)}, torch)
+        five = job_module.frame_case(121)
+        pcm = job_module.pcm_input({"audio": torch.zeros(1, 2, 161333)}, torch, five)
         self.assertEqual(tuple(pcm.shape), (2, 161333))
         with self.assertRaisesRegex(JobError, "no audio"):
-            job_module.pcm_input({"latent": torch.zeros(1)}, torch)
+            job_module.pcm_input({"latent": torch.zeros(1)}, torch, five)
+        ten = job_module.frame_case(243)                    # a 10 s clip's audio: up to its 324,000 samples
+        self.assertEqual(tuple(job_module.pcm_input({"audio": torch.zeros(1, 2, 324000)}, torch, ten).shape),
+                         (2, 324000))
+        with self.assertRaisesRegex(JobError, "at most 165333 samples"):
+            job_module.pcm_input({"audio": torch.zeros(1, 2, 324000)}, torch, five)
 
     def test_the_column_crop_is_nvidias_row_crop_turned(self):
         """keep_columns on decoded frames is NVIDIA's decode crop (pipeline.py:265-266) of the frames turned, and
@@ -2646,11 +3469,12 @@ def frame_groups(frames):
 
 def stand_in_vae(record):
     """A class standing in for diffusers' AutoencoderKLMiniMaxH3, small and deterministic (its weights from a fixed
-    seed), so NVIDIA's code and the job's copies of it run on the CPU and can be compared. encode: each latent frame
-    the mean of its pixel frames (H3's grouping) over 16x16 blocks, its 3 channels mixed into 24; the posterior's
-    sample adds noise from the generator it is given. decode: each latent frame back over its pixel frames (each a
-    little different), 16x16 blocks, 24 channels mixed into 3. `record` gets ("load", kwargs), ("tiling", kwargs),
-    ("encode", its input) and ("decode", its input)."""
+    seed), so NVIDIA's code and the job's copies of it run on the CPU and can be compared. encode: as diffusers'
+    _encode, the frames padded to whole chunks of 17 with copies of the last one (a single frame alone), each latent
+    frame the mean of its pixel frames (H3's grouping) over 16x16 blocks, its 3 channels mixed into 24, the last 3
+    dropped; the posterior's sample adds noise from the generator it is given. decode: each latent frame back over
+    its pixel frames (each a little different), 16x16 blocks, 24 channels mixed into 3. `record` gets ("load",
+    kwargs), ("tiling", kwargs), ("encode", its input) and ("decode", its input)."""
     class Posterior:
         def __init__(self, mean):
             self.mean = mean
@@ -2681,7 +3505,11 @@ def stand_in_vae(record):
 
         def encode(self, x, return_dict=True):
             record.append(("encode", x.detach().clone()))
-            frames = torch.stack([x[:, :, group].mean(2) for group in frame_groups(x.shape[2])], 2)
+            groups = [[0]]
+            if x.shape[2] > 1:
+                x = torch.cat([x, x[:, :, -1:].repeat(1, 1, -x.shape[2] % 17, 1, 1)], 2)
+                groups = frame_groups(x.shape[2])[:-3]
+            frames = torch.stack([x[:, :, group].mean(2) for group in groups], 2)
             pooled = torch.nn.functional.avg_pool3d(frames.float(), (1, 16, 16))
             return (Posterior(torch.einsum("oc,bcthw->bothw", self.mix.float(), pooled)),)
 
@@ -2716,6 +3544,7 @@ class OwnCopyTests(unittest.TestCase):
         cls.media = Path(tempfile.mkdtemp(prefix="upscale-own-"))
         cls.five = moving_mp4(cls.media / "five.mp4", 121)
         cls.whole = moving_mp4(cls.media / "whole.mp4", 124)
+        cls.six, cls.six_whole = moving_mp4(cls.media / "six.mp4", 153), moving_mp4(cls.media / "six158.mp4", 158)
 
     @classmethod
     def tearDownClass(cls):
@@ -2780,6 +3609,26 @@ class OwnCopyTests(unittest.TestCase):
         self.assertTrue(torch.equal(self.record[-1][1][:, :, :121], pixels[:, :, :121]))
         self.assertTrue(torch.equal(self.record[-1][1][:, :, 123], pixels[:, :, 120]))
 
+    def test_long_clips(self):
+        """A 6 s clip of 153 frames: its frames and NVIDIA's 3 copies of frame 152 (156 into the VAE, padded by it to
+        170) give the 47 latent frames of the 158 H3 made; without the copies the VAE's chunks give 42. One of 158
+        (every frame made) reads them all, no copies: 47."""
+        got, _, _ = self.encode(self.six, 153, 3)
+        self.assertEqual(tuple(got.shape), (24, 47, 2, 4))
+        pixels = self.record[-1][1]
+        self.assertEqual(tuple(pixels.shape), (1, 3, 156, 32, 64))
+        mean = torch.tensor(job_module.PIXEL_MEAN).view(1, 3, 1, 1, 1)
+        std = torch.tensor(job_module.PIXEL_STD).view(1, 3, 1, 1, 1)
+        read = self.read(self.six, 153).permute(3, 0, 1, 2)[None].float() / 255.0
+        self.assertTrue(torch.equal(pixels[:, :, :153], (read - mean) / std))
+        for copy in (153, 154, 155):
+            self.assertTrue(torch.equal(pixels[:, :, copy], pixels[:, :, 152]), copy)
+        self.assertEqual(tuple(self.encode(self.six, 153, 0)[0].shape), (24, 42, 2, 4))
+        got, _, _ = self.encode(self.six_whole, 158, 0)
+        self.assertEqual((tuple(got.shape), tuple(self.record[-1][1].shape)), ((24, 47, 2, 4), (1, 3, 158, 32, 64)))
+        with self.assertRaisesRegex(ValueError, r"could not decode .*six\.mp4 into 158 frames at 64x32"):
+            self.encode(self.six, 158, 0)
+
     def test_a_short_clip_fails_the_length_check(self):
         """Without tpad a 121-frame MP4 read for 124 frames reads short: refused, not padded."""
         with self.assertRaisesRegex(ValueError, r"could not decode .*five\.mp4 into 124 frames at 64x32"):
@@ -2829,6 +3678,146 @@ class OwnCopyTests(unittest.TestCase):
         full = job_module.decode_released(pipe.vae, latents, 124, torch, "cpu")
         self.assertTrue(torch.equal(got, full[:, 4:28]))                   # the centre 24 of 32 rows
         self.assertFalse(torch.equal(got[123], got[120]))
+        # a 10 s clip: 72 latent frames decode to the 243 frames made, 241 kept (and 243 for a clip that keeps them)
+        latents = torch.randn(24, 72, 2, 4, generator=torch.Generator().manual_seed(6))
+        with nvidia_open_h3(), nvidia_on_the_cpu(self.vae):
+            pipe.fast_vae = None
+            ten = job_module.decode(pipe, latents, 241, torch, device="cpu")
+            whole = job_module.decode_released(pipe.vae, latents, 243, torch, "cpu")
+            nvidia = pipe._decode_released(latents)
+        self.assertEqual((tuple(ten.shape), tuple(whole.shape), tuple(nvidia.shape)),
+                         ((241, 24, 64, 3), (243, 32, 64, 3), (121, 32, 64, 3)))
+        self.assertTrue(torch.equal(ten, whole[:241, 4:28]))
+        self.assertTrue(torch.equal(whole[:121], nvidia))                 # NVIDIA's arithmetic, its first 121
+        self.assertEqual(tuple(self.record[-1][1].shape), (1, 24, 72, 2, 4))
+
+
+@unittest.skipUnless(torch is not None and has_modules("numpy", "diffusers"),
+                     "needs torch, numpy and diffusers (the Regen-2K environment; CPU is enough)")
+class DiffusersRuleTests(unittest.TestCase):
+    """The rules the frame cases rest on, in diffusers 0.40's own code on the CPU: the video VAE's chunks
+    (AutoencoderKLMiniMaxH3._encode on a stand-in of the model) and H3's frame rules; encode_audio with a small audio
+    VAE of diffusers' (random weights) against the job's audio before it took other lengths and NVIDIA's silence."""
+
+    def test_the_vae_chunk_rule(self):
+        """diffusers' _encode with a stand-in for its chunk encoder (5 latent frames per chunk of 17): every count of
+        frames from 2 to 380 gives encoded_latent_frames'; a clip's kept frames with NVIDIA's 3 copies of the last and
+        with copies up to the frames made are the same input to the chunks (the VAE repeats the last frame to the
+        chunk itself); video_latent_num_frames and audio_latent_num_frames give every case's T and A."""
+        import inspect
+        from diffusers import AutoencoderKLMiniMaxH3
+        from diffusers.modular_pipelines.minimax_h3.modular_pipeline import (audio_latent_num_frames,
+                                                                             video_latent_num_frames)
+        defaults = inspect.signature(AutoencoderKLMiniMaxH3.__init__).parameters
+        self.assertEqual((defaults["clip_length"].default, defaults["token_drop"].default), (17, 3))
+        chunks = []
+
+        def encode_clip(x):
+            chunks.append(x)
+            return torch.zeros(1, 1, 5, 1, 1)
+        vae = types.SimpleNamespace(config=types.SimpleNamespace(clip_length=17, token_drop=3),
+                                    _encode_clip=encode_clip)
+        for frames in range(2, 381):
+            self.assertEqual(AutoencoderKLMiniMaxH3._encode(vae, torch.zeros(1, 1, frames, 1, 1)).shape[2],
+                             job_module.encoded_latent_frames(frames), frames)
+        for kept, (seconds, made, pad, latents, audio) in CASES.items():
+            clip = torch.arange(kept, dtype=torch.float32).view(1, 1, kept, 1, 1)
+            inputs = []
+            for copies in sorted({3, made - kept}):
+                chunks.clear()
+                x = torch.cat([clip, clip[:, :, -1:].repeat(1, 1, copies, 1, 1)], 2)
+                self.assertEqual(AutoencoderKLMiniMaxH3._encode(vae, x).shape[2], latents, (kept, copies))
+                inputs.append(torch.cat(chunks, 2))
+            self.assertTrue(all(torch.equal(inputs[0], other) for other in inputs[1:]), kept)
+            self.assertEqual((video_latent_num_frames(made, 17, 5), audio_latent_num_frames(made)), (latents, audio))
+
+    @staticmethod
+    def audio_vae():
+        """diffusers' AutoencoderKLMiniMaxH3Audio, small (its weights random from a fixed seed), staying on the CPU."""
+        from diffusers import AutoencoderKLMiniMaxH3Audio
+        torch.manual_seed(0)
+        vae = AutoencoderKLMiniMaxH3Audio(encoder_dim=2, latent_dim=32, latent_channels=32, num_attention_heads=2,
+                                          decoder_dim=128, latents_mean=[0.01 * i for i in range(32)],
+                                          latents_std=[1 + 0.02 * i for i in range(32)]).eval()
+        vae.cuda = lambda: vae
+        return vae
+
+    @staticmethod
+    def normalized(vae, x):
+        """The latent of `x` (2, 1, samples) as encode_audio and NVIDIA's encode_silence normalize it."""
+        with torch.inference_mode():
+            audio = vae.encode(x, return_dict=False)[0].mode().float()
+            mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1)
+            std = torch.tensor(vae.config.latents_std).view(1, -1, 1)
+            return ((audio - mean) / std).to(torch.bfloat16)
+
+    @contextlib.contextmanager
+    def on_the_cpu(self, vae):
+        """encode_audio and NVIDIA's encode_silence on the CPU with `vae` as diffusers' AutoencoderKLMiniMaxH3Audio:
+        its from_pretrained gives `vae` (its arguments go into the list yielded), torch.zeros(device="cuda") is made
+        on the CPU and Tensor.cuda() is the tensor itself."""
+        import diffusers
+        loads, zeros = [], torch.zeros
+
+        class AudioVAE:
+            @classmethod
+            def from_pretrained(cls, path, **kwargs):
+                loads.append(kwargs)
+                return vae
+
+        def on_cpu(*args, **kwargs):
+            if kwargs.get("device") == "cuda":
+                kwargs["device"] = "cpu"
+            return zeros(*args, **kwargs)
+        with mock.patch.object(diffusers, "AutoencoderKLMiniMaxH3Audio", AudioVAE), \
+                mock.patch.object(torch, "zeros", on_cpu), \
+                mock.patch.object(torch.Tensor, "cuda", lambda self, *args, **kwargs: self):
+            yield loads
+
+    def test_the_audio_at_5_s_is_as_before(self):
+        """encode_audio at 5 s (165,600 samples): with the clip's audio, the latent of the job before it took other
+        lengths bit for bit (the PCM in front of 165,333 zeros, which the VAE pads to whole latents itself); its
+        silence is NVIDIA's encode_silence's (where LFSTUDIO_UPSCALE_PKG names NVIDIA's package)."""
+        vae = self.audio_vae()
+        pcm = torch.randn(2, 161333, generator=torch.Generator().manual_seed(3)) * 0.1
+        with self.on_the_cpu(vae) as loads:
+            got = job_module.encode_audio(Path("/base"), pcm, 165600, torch)
+            silence = job_module.encode_audio(Path("/base"), None, 165600, torch)
+        self.assertEqual((tuple(got.shape), got.dtype, tuple(silence.shape)), ((2, 32, 207), torch.bfloat16,
+                                                                                (2, 32, 207)))
+        before = torch.zeros(2, 1, 165333)
+        before[:, 0, :161333] = pcm
+        self.assertTrue(torch.equal(got, self.normalized(vae, before)))
+        self.assertTrue(torch.equal(silence, self.normalized(vae, torch.zeros(2, 1, 165333))))
+        self.assertEqual(loads, [{"subfolder": "audio_vae", "torch_dtype": torch.float32,
+                                  "local_files_only": True}] * 2)
+        if not nvidia_modules():
+            self.skipTest("NVIDIA's Open-H3-Regenerate-2K is not installed (LFSTUDIO_UPSCALE_PKG)")
+        with nvidia_open_h3() as pipeline, self.on_the_cpu(vae):
+            self.assertTrue(torch.equal(silence, pipeline.encode_silence(Path("/base"))))
+
+    def test_the_audio_of_other_lengths(self):
+        """Another length: the clip's audio padded with silence to A x 800 samples, A latents, or cut to them (a
+        LightX2V Turbo clip with a last keyframe at 6 and 15 s has 266 samples more); a silence of that length.
+        NVIDIA's length for those frames would give one latent more at 6 and 15 s."""
+        vae = self.audio_vae()
+        draw = torch.Generator().manual_seed(4)
+        for kept in (153, 158, 361, 362):
+            with self.subTest(kept=kept):
+                case = job_module.frame_case(kept)
+                samples, n = job_module.audio_samples(case), int(kept / 24 * 32000)
+                pcm = torch.randn(2, n, generator=draw) * 0.1
+                with self.on_the_cpu(vae):
+                    got = job_module.encode_audio(Path("/base"), pcm, samples, torch)
+                    silence = job_module.encode_audio(Path("/base"), None, samples, torch)
+                self.assertEqual((tuple(got.shape), tuple(silence.shape)), ((2, 32, case["A"]),) * 2)
+                want = torch.zeros(2, 1, samples)
+                want[:, 0, :min(n, samples)] = pcm[:, :samples]
+                self.assertTrue(torch.equal(got, self.normalized(vae, want)))
+                self.assertTrue(torch.equal(silence, self.normalized(vae, torch.zeros(2, 1, samples))))
+                self.assertEqual(n > samples, kept in (158, 362))
+                nvidia = self.normalized(vae, torch.zeros(2, 1, round(case["made"] / 24 * 32000)))
+                self.assertEqual(nvidia.shape[-1] - case["A"], 1 if case["seconds"] in (6, 15) else 0)
 
 
 class StandInTransformer:
@@ -2966,11 +3955,36 @@ class PinLayoutTests(unittest.TestCase):
         layout, t2va = job_module.pin_layout(self.tags, h3_geometry(37, 68, 120), ())
         self.assertIs(layout, t2va)
 
+    def test_every_case_layout(self):
+        """NVIDIA's t2va layout (build_t2va_layout) of every case, its geometry valid: the prompt's rows, 2 A audio
+        rows and T R video rows, as case_rows counts them (also at 1080p for a 10 s clip, 147,690 rows of its own);
+        with both ends R more per end. R of each size's computed grid, either way round, is ROWS_PER_FRAME's."""
+        from open_h3.geometry import build_t2va_layout
+        for size, rows in job_module.ROWS_PER_FRAME.items():
+            for orientation in job_module.SHAPES:
+                width, height = job_module.computed_grid(orientation, size)
+                self.assertEqual(h3_geometry(37, height // 16, width // 16).rows_per_video_frame, rows)
+        for kept in CASES:
+            case = job_module.frame_case(kept)
+            geometry = h3_geometry(case["T"], 4, 6, case["A"])
+            geometry.validate()
+            self.assertEqual(build_t2va_layout(self.tags, geometry).sequence_length,
+                             196 + 2 * case["A"] + 6 * case["T"])
+            layout, _, facts = self.layout(("first", "last"), geometry, case["made"])
+            self.assertEqual((layout.sequence_length, facts["condition_rows"]),
+                             (196 + 2 * case["A"] + 6 * case["T"] + 2 * 6, 2 * 6))
+        ten = job_module.frame_case(241)
+        layout = build_t2va_layout(self.tags, h3_geometry(72, 68, 120, 405))
+        self.assertEqual(layout.sequence_length, job_module.case_rows(ten, "1080p", 0, 196)["sequence"])
+        self.assertEqual(layout.sequence_length - 196, 147690)
+
     def test_the_last_block_at_other_lengths(self):
-        """The last block at (5/3)(made - 1) after the text for the other lengths H3 makes (158, 243, 362 frames;
-        diffusers sums the spans with numpy, as the reference does: these are its values)."""
+        """The last block at (5/3)(made - 1) after the text for every length the Upscale takes (124 to 362 frames
+        made; diffusers sums the spans with numpy, as the reference does: these are its values)."""
         for made, frames, time in ((124, 37, 400.99999999999994), (158, 47, 457.66666666666663),
-                                   (243, 72, 599.3333333333334), (362, 107, 797.6666666666665)):
+                                   (175, 52, 486.00000000000006), (192, 57, 514.3333333333334),
+                                   (243, 72, 599.3333333333334), (294, 87, 684.3333333333334),
+                                   (362, 107, 797.6666666666665)):
             with self.subTest(made=made):
                 layout, t2va, facts = self.layout(("first", "last"), h3_geometry(frames, 4, 6), made)
                 self.assertEqual(float(layout.position_ids[layout.video_indices[6], 0]), time)
@@ -3091,6 +4105,39 @@ class PinRefineTests(unittest.TestCase):
         self.assertEqual(both.model.calls[0]["valid_rows"], 5 + 414 + 37 * rows + 2 * rows)
         last, _ = job_module.refine_pinned(self.pipe(), self.low, self.text, 1234, [("last", self.last)], 124)
         self.assertFalse(torch.equal(last, got))
+
+    def test_both_ends_of_a_long_clip(self):
+        """A 10 s clip (72 latent frames, 405 audio latents, 243 frames made) with both ends: the last block at the
+        last frame made (403.3 after the text), the condition rows never written and only the rows after them
+        stepped, as at 5 s; NVIDIA's refine with no keyframe, bit for bit."""
+        draw = torch.Generator().manual_seed(12)
+        rows, low = 6, torch.randn(24, 72, 4, 6, generator=draw)
+        audio = torch.randn(2, 32, 405, generator=draw).to(torch.bfloat16)
+        pipes = []
+        for poison in (0, 2 * rows):
+            pipe = self.pipe(poison)
+            pipe.audio = audio
+            pipes.append(pipe)
+        got, facts = job_module.refine_pinned(pipes[0], low, self.text, 1234, [("first", self.first),
+                                                                                ("last", self.last)], 243)
+        again, _ = job_module.refine_pinned(pipes[1], low, self.text, 1234, [("first", self.first),
+                                                                              ("last", self.last)], 243)
+        self.assertEqual(tuple(got.shape), (24, 72, 4, 6))
+        self.assertTrue(torch.equal(got, again))
+        self.assertTrue(bool(torch.isfinite(again).all()))
+        self.assertEqual((facts["blocks"], facts["made"], facts["condition_rows"], facts["sequence_rows"]),
+                         ([{"anchor": "first", "time": 0.0}, {"anchor": "last", "time": 403.3333}], 243, 2 * rows,
+                          5 + 2 * 405 + 72 * rows + 2 * rows))
+        for call in pipes[0].model.calls:
+            self.assertTrue(torch.equal(call["hidden"][:, :2 * rows], pipes[0].model.calls[0]["hidden"][:, :2 * rows]))
+            self.assertTrue(bool((call["times"][:2 * rows] == torch.tensor(0.999)).all()))
+        nvidia, mine = self.pipe(), self.pipe()
+        nvidia.audio = mine.audio = audio
+        want = self.pipeline.Pipeline.refine(nvidia, low, self.text, 1234)
+        self.assertTrue(torch.equal(job_module.refine_pinned(mine, low, self.text, 1234, [], 243)[0], want))
+        self.same_calls(nvidia, mine)
+        with self.assertRaisesRegex(ValueError, r"^241 frames are not 17n\+5$"):     # the frames made, not kept
+            job_module.refine_pinned(self.pipe(), low, self.text, 1234, [("first", self.first)], 241)
 
     def test_a_latent_of_another_grid_is_refused(self):
         with self.assertRaisesRegex(ValueError, r"the last keyframe's latent is \(1, 24, 1, 8, 6\), the refine's "
