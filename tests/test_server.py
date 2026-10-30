@@ -3798,8 +3798,9 @@ class ServerParts(unittest.TestCase):
         values = {name: server_value(name) for name in ("PIN_SOL_LAST", "PIN_BEFORE", "PIN_SETTING", "PIN_NO_RECORD",
                                                         "PIN_FIT", "IMAGE_SHA_MAX")}
         found = dict(values, regen=regen, functools=functools, json=json, re=re, Path=Path, threading=threading,
-                     SOL_H3="sol-h3", TURBO=TURBO, IMAGE_SHA={}, image_lock=threading.Lock())
-        for name in ("read_record", "_size_pair", "_sha", "keyframe_record", "image_state", "file_sha256"):
+                     SOL_H3="sol-h3", TURBO=TURBO, IMAGE_SHA={}, image_lock=threading.Lock(), log=lambda *a: None)
+        for name in ("read_record", "_dict", "_count", "_size_pair", "_sha", "keyframe_record", "image_state",
+                     "file_sha256"):
             found[name] = server_function(name, **found)
         found.update(names)
         for name in ("keyframe_record", "image_state"):              # with the stand-ins in their globals
@@ -3844,6 +3845,61 @@ class ServerParts(unittest.TestCase):
         self.assertEqual(read({})[1], {"first": no_record, "last": no_record})
         self.assertEqual(json.loads(parts["keyframe_record"](TURBO, "landscape", str(tmp / "none"), None,
                                                              ("first",))), [{}, {"first": no_record}])
+
+    def test_records_of_another_shape(self):
+        """A record that is JSON of another shape (hand-edited, or not the studio's) never makes keyframe_record or
+        read_record raise (with_upscalable asks on every /api/state, /api/jobs and record): a value of another type
+        where the studio writes a dict, frames that are not numbers, JSON nested too deep; each end gets its reason."""
+        logged = []
+        parts, sha = self.keep_parts(log=logged.append), {"first_frame": "1" * 64, "last_frame": "2" * 64}
+        tmp = Path(tempfile.mkdtemp(prefix="lf-studio-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        image = {"size": [1344, 768], "fit": "stretch"}
+        turbo = {"images": {"first": image, "last": image}, "inputs_sha256": sha,
+                 "geometry": {"width": 1024, "height": 576, "frames": 124, "keep_frames": 124}}
+        sol = {"stage2_keyframe": "pin", "capture": {"input_sha256": sha}}
+
+        def read(model, record, ends=("first", "last")):
+            path = tmp / f"record{len(list(tmp.iterdir()))}.json"
+            path.write_text(record if isinstance(record, str) else json.dumps(record))
+            return json.loads(parts["keyframe_record"](model, "landscape", str(path), path.stat().st_mtime_ns, ends))
+        no_record, sol_last = "the clip has no record of how it used your picture", parts["PIN_SOL_LAST"]
+        self.assertEqual(sorted(read(TURBO, turbo)[0]), ["first", "last"])
+        self.assertEqual(sorted(read("sol-h3", sol)[0]), ["first"])
+        for change, why in (({"images": [1]}, {"first": no_record, "last": no_record}),
+                            ({"images": "first"}, {"first": no_record, "last": no_record}),
+                            ({"images": {"first": "a.png", "last": image}}, {"first": no_record}),
+                            ({"images": {"first": image, "last": [image]}}, {"last": no_record}),
+                            ({"geometry": [1024, 576]}, {"first": no_record, "last": no_record}),
+                            ({"inputs_sha256": ["1" * 64]}, {"first": no_record, "last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], frames="124")}, {"last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], keep_frames="121")}, {"last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], keep_frames=None)}, {"last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], keep_frames=125)}, {"last": no_record}),
+                            ({"geometry": dict(turbo["geometry"], keep_frames=121)},
+                             {"last": "the clip stops 3 frames before your last picture"})):
+            with self.subTest(change):
+                found, got = read(TURBO, dict(turbo, **change))
+                self.assertEqual((got, sorted(found)), (why, [e for e in ("first", "last") if e not in why]))
+        for change in ({"capture": ["x"]}, {"capture": {"input_sha256": "1" * 64}},
+                       {"capture": {"input_sha256": ["1" * 64]}}):
+            with self.subTest(change):
+                self.assertEqual(read("sol-h3", dict(sol, **change)), [{}, {"first": no_record, "last": sol_last}])
+        for deep in ("[" * 100000 + "]" * 100000, '{"a":' * 100000 + "1" + "}" * 100000):
+            path = tmp / "deep.json"
+            path.write_text(deep)
+            self.assertIsNone(parts["read_record"](path))
+            self.assertEqual(read(TURBO, deep), [{}, {"first": no_record, "last": no_record}])
+        self.assertEqual(logged, [])
+        # an error the checks above do not foresee is logged, and every end gets a reason
+        broken = self.keep_parts(log=logged.append, _sha=lambda value: 1 / 0)
+        path = tmp / "record.json"
+        for model, record, why in ((TURBO, turbo, {"first": no_record, "last": no_record}),
+                                   ("sol-h3", sol, {"first": no_record, "last": sol_last})):
+            path.write_text(json.dumps(record))
+            self.assertEqual(json.loads(broken["keyframe_record"](model, "landscape", str(path), 1, ("first", "last"))),
+                             [{}, why])
+        self.assertEqual([line.split(": ")[1] for line in logged], ["ZeroDivisionError", "ZeroDivisionError"])
 
     def test_image_state(self):
         """image_state never hashes a picture without hash_now (/api/state): a file there and not empty is taken as
@@ -5186,7 +5242,9 @@ class TurboPin(TurboTest):
 
     def test_the_clips_record(self):
         """The clip's receipt decides: a cover-crop it records that the job's rule does not give, no record of the
-        pictures, or no receipt at all, turn the end off with the reason."""
+        pictures, or no receipt at all, turn the end off with the reason; so does a receipt of another shape (a list
+        where the job writes a dict, frames that are not a number), while /api/state, /api/jobs and the clip's record
+        answer as ever."""
         parent = self.keyframes_clip({"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}, seed=6)
         path = Path(parent["output"]).parent / "receipt.json"
         receipt = json.loads(path.read_text())
@@ -5199,6 +5257,8 @@ class TurboPin(TurboTest):
                             ({"geometry": dict(receipt["geometry"], keep_frames=121)},
                              {"last": "the clip stops 3 frames before your last picture"}),
                             ({"images": {}}, {"first": no_record, "last": no_record}),
+                            ({"images": [1]}, {"first": no_record, "last": no_record}),
+                            ({"geometry": dict(receipt["geometry"], frames="124")}, {"last": no_record}),
                             (None, {"first": no_record, "last": no_record}))):
             with self.subTest(change):
                 path.unlink()
@@ -5208,6 +5268,12 @@ class TurboPin(TurboTest):
                 u = self.studio.job(parent["id"])["upscalable"]
                 self.assertEqual(u["pin_why"], why)
                 self.assertEqual(u.get("pin"), [e for e in ("first", "last") if e not in why] or None)
+                for query in (f"/api/jobs/{parent['id']}", "/api/jobs?limit=5"):
+                    code, _, data = self.studio.request("GET", query)
+                    self.assertEqual(code, 200, query)
+                    record = json.loads(data)
+                    record = record if "id" in record else next(j for j in record["jobs"] if j["id"] == parent["id"])
+                    self.assertEqual(record["upscalable"]["pin_why"], why)
 
 
 class TurboLoad(TurboTest):

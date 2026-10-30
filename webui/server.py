@@ -1670,9 +1670,19 @@ def read_record(path):
     dict, or None."""
     try:
         data = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):      # RecursionError: JSON nested too deep
         return None
     return data if isinstance(data, dict) else None
+
+
+def _dict(value):
+    """A record's nested value where a dict is wanted, or an empty one."""
+    return value if isinstance(value, dict) else {}
+
+
+def _count(value):
+    """A number of frames, or None."""
+    return value if type(value) is int and value > 0 else None
 
 
 def _size_pair(value):
@@ -1697,42 +1707,48 @@ def keyframe_record(model, orientation, path, mtime_ns, ends):
     frames H3 makes, and H3 anchors the last keyframe to the last of them).
     LightX2V Turbo: its receipt's geometry, the fit of each picture (jobs/h3turbo_job.py keyframe_fit: a cover-crop must
     be the one the job's cover_crop computes for its size and canvas) and their sha256; a last keyframe only where the
-    clip kept every frame made, so that it ends on that frame (it does since the model came)."""
+    clip kept every frame made, so that it ends on that frame (it does since the model came).
+    A record of another shape (hand-edited, or not the studio's) gives its reasons, never an error: with_upscalable
+    asks on every /api/state, /api/jobs and record."""
     record = read_record(path) if mtime_ns is not None else None
     found, why = {}, {}
-    for end in ends:
-        if model == SOL_H3 and end == "last":
-            why[end] = PIN_SOL_LAST
-        elif record is None:
-            why[end] = PIN_NO_RECORD
-        elif model == SOL_H3:
-            mode = record.get("stage2_keyframe")
-            sha = _sha(((record.get("capture") or {}).get("input_sha256") or {}).get("first_frame"))
-            if mode is None:
-                why[end] = PIN_BEFORE
-            elif mode != "pin":
-                why[end] = PIN_SETTING.format(record.get("stage2_keyframe_setting") or mode)
-            elif sha is None:
+    try:
+        for end in ends:
+            if model == SOL_H3 and end == "last":
+                why[end] = PIN_SOL_LAST
+            elif record is None:
                 why[end] = PIN_NO_RECORD
+            elif model == SOL_H3:
+                mode = record.get("stage2_keyframe")
+                sha = _sha(_dict(_dict(record.get("capture")).get("input_sha256")).get("first_frame"))
+                if mode is None:
+                    why[end] = PIN_BEFORE
+                elif mode != "pin":
+                    why[end] = PIN_SETTING.format(record.get("stage2_keyframe_setting") or mode)
+                elif sha is None:
+                    why[end] = PIN_NO_RECORD
+                else:
+                    found[end] = {"sha256": sha, "fit": "stretch",
+                                  "canvas": list(regen.SHAPES[orientation]["input"]), "size": None}
             else:
-                found[end] = {"sha256": sha, "fit": "stretch", "canvas": list(regen.SHAPES[orientation]["input"]),
-                              "size": None}
-        else:
-            image = (record.get("images") or {}).get(end) or {}
-            geometry = record.get("geometry") or {}
-            sha = _sha((record.get("inputs_sha256") or {}).get(f"{end}_frame"))
-            canvas = _size_pair([geometry.get("width"), geometry.get("height")])
-            size, fit = _size_pair(image.get("size")), image.get("fit")
-            if sha is None or canvas is None or fit not in regen.FITS:
-                why[end] = PIN_NO_RECORD
-            elif end == "last" and geometry.get("keep_frames") != geometry.get("frames"):
-                why[end] = regen.PIN_WHY["past_end"].format(n=(geometry.get("frames") or 0) -
-                                                              (geometry.get("keep_frames") or 0))
-            elif fit == "cover-crop" and (size is None or [list(v) for v in regen.cover_crop(size, canvas)]
-                                          != [image.get("resized"), image.get("crop")]):
-                why[end] = PIN_FIT
-            else:
-                found[end] = {"sha256": sha, "fit": fit, "canvas": canvas, "size": size}
+                image, geometry = _dict(_dict(record.get("images")).get(end)), _dict(record.get("geometry"))
+                sha = _sha(_dict(record.get("inputs_sha256")).get(f"{end}_frame"))
+                canvas = _size_pair([geometry.get("width"), geometry.get("height")])
+                size, fit = _size_pair(image.get("size")), image.get("fit")
+                made, kept = _count(geometry.get("frames")), _count(geometry.get("keep_frames"))
+                if (sha is None or canvas is None or fit not in regen.FITS
+                        or end == "last" and (made is None or kept is None or kept > made)):
+                    why[end] = PIN_NO_RECORD
+                elif end == "last" and kept < made:
+                    why[end] = regen.PIN_WHY["past_end"].format(n=made - kept)
+                elif fit == "cover-crop" and (size is None or [list(v) for v in regen.cover_crop(size, canvas)]
+                                              != [image.get("resized"), image.get("crop")]):
+                    why[end] = PIN_FIT
+                else:
+                    found[end] = {"sha256": sha, "fit": fit, "canvas": canvas, "size": size}
+    except Exception as error:      # never a reason for /api/state, /api/jobs or a record to fail (with_upscalable)
+        log(f"Keep my frames can't read {path}: {type(error).__name__}: {str(error)[:200]}")
+        found, why = {}, {end: PIN_SOL_LAST if model == SOL_H3 and end == "last" else PIN_NO_RECORD for end in ends}
     return json.dumps([found, why])
 
 
