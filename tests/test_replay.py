@@ -396,14 +396,14 @@ class PlanTests(Fixture):
         self.assertEqual(info["repo_patch_sha256"], media.sha256(REPO / "patches" / "lf-studio.patch"))
         self.assertEqual(info["stage2_code_files"], 1)
 
-    def test_package_info_reads_the_old_applied_copy(self):
-        """Until 0.6: a checkout last patched by 0.4 keeps its copy as sol-h3-studio-applied.patch."""
+    def test_package_info_reads_the_applied_copy(self):
+        """install/10-sana.sh's copy of the applied patch, and the commit it was applied at."""
         subprocess.run(["git", "init", "-q", str(self.sana)], check=True)
-        old, new = self.sana / ".git/sol-h3-studio-applied.patch", self.sana / ".git/lf-studio-applied.patch"
-        old.write_text("the 0.4 copy\n")
-        self.assertEqual(plan.package_info(self.pkg, self.sana, REPO)["patch_sha256"], media.sha256(old))
-        new.write_text("the 0.5 copy\n")
-        self.assertEqual(plan.package_info(self.pkg, self.sana, REPO)["patch_sha256"], media.sha256(new))
+        copy = self.sana / ".git/lf-studio-applied.patch"
+        copy.write_text("the applied patch\n")
+        copy.with_name(copy.name + ".base").write_text("a" * 40 + "\n")
+        info = plan.package_info(self.pkg, self.sana, REPO)
+        self.assertEqual((info["patch_sha256"], info["patch_base"]), (media.sha256(copy), "a" * 40))
 
 
 class ScriptTests(Fixture):
