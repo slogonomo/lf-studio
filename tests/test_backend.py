@@ -62,6 +62,8 @@ def fake_bin(directory):
 
 
 def clean_env(**settings):
+    """This process's environment without the settings and test hooks (SOLH3_*: a stray 0.4 name stops the launcher
+    and the install steps), plus the given ones."""
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("SOL_H3_", "LFSTUDIO_", "SOLH3_", "FAKE_", "SPARK_", "PIP_", "UV_", "FORCE"))}
     env.update(PYTHONDONTWRITEBYTECODE="1")
@@ -891,20 +893,45 @@ class InstallDryRun(unittest.TestCase):
             self.assertIn(f"+ touch {done}", text)
 
     def test_marked_venv_gets_the_update_steps(self):
-        """A venv with the done marker (also 0.4's) gets pip, certifi and Pillow, and is not built into."""
+        """A venv with the done marker gets pip, certifi and Pillow, and is not built into."""
         for stage, script in (("stage1", "40-stage1.sh"), ("stage2", "50-stage2.sh")):
             self.fake_venv(stage, "")
-            for marker in (".lf-studio-done", ".sol-h3-studio-done"):
-                with self.subTest(stage=stage, marker=marker):
-                    done = self.d / f"home/sol-h3/envs/{stage}/{marker}"
-                    done.touch()
-                    code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090")
-                    self.assertEqual(code, 0, text)
-                    self.assertIn(f"{stage.capitalize()} env already built", text)
-                    self.assert_pip_update(text, stage)
-                    for build in ("venv --seed", "install -U setuptools wheel", "torch==", "ltx-kernels-build"):
-                        self.assertNotIn(build, text)
-                    done.unlink()
+            with self.subTest(stage=stage):
+                (self.d / f"home/sol-h3/envs/{stage}/.lf-studio-done").touch()
+                code, text = self.run_script(script, LFSTUDIO_BACKEND="rtx5090")
+                self.assertEqual(code, 0, text)
+                self.assertIn(f"{stage.capitalize()} env already built", text)
+                self.assert_pip_update(text, stage)
+                for build in ("venv --seed", "install -U setuptools wheel", "torch==", "ltx-kernels-build"):
+                    self.assertNotIn(build, text)
+
+    def test_torchaudio_relaxed_under_any_comment(self):
+        """50-stage2.sh's torchaudio fix counts the relaxed check as relaxed whatever comment is above it (earlier
+        versions wrote another). The venv's python is a stand-in that runs this Python with a site directory of its
+        own."""
+        purelib = self.d / "home/sol-h3/envs/stage2/lib/site-packages"
+        python = self.d / "home/sol-h3/envs/stage2/bin/python"
+        python.parent.mkdir(parents=True)
+        python.write_text(f'#!/bin/bash\nexec {sys.executable} -I -c "import sys, sysconfig; '
+                          f"sysconfig.get_paths = lambda *a, **k: {{'purelib': '{purelib}'}}; "
+                          f'exec(sys.stdin.read())" "$@"\n')
+        python.chmod(0o755)
+        utils = purelib / "torchaudio/_extension/utils.py"
+        utils.parent.mkdir(parents=True)
+        relaxed = "        if ta_version.split('.')[0] != t_version.split('.')[0]:\n            raise RuntimeError\n"
+        for comment in ("        # lf-studio: only a CUDA major mismatch is fatal\n",
+                        "        # an earlier version's comment\n"):
+            with self.subTest(comment=comment):
+                utils.write_text("def check(ta_version, t_version):\n" + comment + relaxed)
+                code, text = self.run_script("50-stage2.sh", "--torchaudio-fix-only")
+                self.assertEqual(code, 0, text)
+                self.assertIn(f"already relaxed: {utils}", text)
+        utils.write_text("def check(ta_version, t_version):\n        if ta_version != t_version:\n"
+                         "            raise RuntimeError\n")
+        code, text = self.run_script("50-stage2.sh", "--torchaudio-fix-only")
+        self.assertEqual(code, 0, text)
+        self.assertIn(f"relaxing {utils} (backup utils.py.orig)", text)
+        self.assertFalse(utils.with_name("utils.py.orig").exists())         # a dry run
 
     def test_torchaudio_fix_only_installs_nothing(self):
         self.fake_venv("stage2", "")
@@ -950,35 +977,10 @@ class InstallDryRun(unittest.TestCase):
         self.assertEqual(code, 0, text)                                     # nothing detected: spark, as before
         self.assertIn("LFSTUDIO_BACKEND=spark", text)
 
-    def test_sana_old_applied_copy(self):
-        """Until 0.6: a checkout last patched by 0.4 keeps its copy of the patch as sol-h3-studio-applied.patch.
-        10-sana.sh finds the earlier patch there, replaces it and keeps the new copy under the new name."""
-        sana = self.d / "home/sol-h3/Sana"
-        git = ["git", "-C", str(sana), "-c", "user.name=test", "-c", "user.email=test@example.invalid"]
-        subprocess.run(["git", "init", "-q", str(sana)], check=True)
-        (sana / "infer.py").write_text("print('upstream')\n")
-        subprocess.run(git + ["add", "infer.py"], check=True)
-        subprocess.run(git + ["commit", "-qm", "base"], check=True)
-        head = subprocess.run(git + ["rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        (sana / "infer.py").write_text("# Modified by sol-h3-studio\nprint('patched')\n")
-        old = sana / ".git/sol-h3-studio-applied.patch"
-        old.write_text(subprocess.run(git + ["diff"], capture_output=True, text=True, check=True).stdout)
-        (sana / ".git/sol-h3-studio-applied.patch.base").write_text(head + "\n")
-        code, text = self.run_script("10-sana.sh", LFSTUDIO_SANA_COMMIT=head)
-        self.assertEqual(code, 0, text)
-        self.assertIn(f"the checkout carries an earlier version of the patch ({old}); replacing it", text)
-        self.assertIn(f"+ git -C {sana} apply -R {old}\n+ git -C {sana} apply {REPO}/patches/lf-studio.patch", text)
-        self.assertIn(f"+ cp {REPO}/patches/lf-studio.patch {sana}/.git/lf-studio-applied.patch", text)
-        # until 0.6 the copy is also kept under the 0.4 name, so 0.4's install/10-sana.sh can go back
-        self.assertIn(f"+ cp {REPO}/patches/lf-studio.patch {old}\n", text)
-        self.assertIn(f"+ git -C {sana} rev-parse HEAD > {old}.base", text)
-        self.assertNotIn("warn", text.lower())
-
     def test_sana_patch_in_history(self):
         """A checkout that carries an earlier version of the patch and no copy of it (patched by hand, docs/PATCH.md):
-        10-sana.sh finds that version in this repo's history, under the patch's name and, until 0.6, under its 0.4
-        name patches/sol-h3-studio.patch. The repo here is a copy of install/ and patches/BASE_COMMIT* with a history
-        of three made-up patch versions: 0.4's, renamed to lf-studio.patch in the next commit, then changed again."""
+        10-sana.sh finds that version in this repo's history. The repo here is a copy of install/ and
+        patches/BASE_COMMIT* with a history of three made-up versions of patches/lf-studio.patch."""
         repo = self.d / "repo"
         shutil.copytree(REPO / "install", repo / "install", ignore=shutil.ignore_patterns("__pycache__"))
         (repo / "patches").mkdir()
@@ -998,9 +1000,9 @@ class InstallDryRun(unittest.TestCase):
         git(sana, "commit", "-qm", "base")
         head = git(sana, "rev-parse", "HEAD").strip()
         versions = []                                  # (file name, patched infer.py, commit in repo)
-        for name, patched in (("sol-h3-studio.patch", "# Modified by sol-h3-studio\nprint('0.4')\n"),
-                              ("lf-studio.patch", "# Modified by lf-studio\nprint('0.5 draft')\n"),
-                              ("lf-studio.patch", "# Modified by lf-studio\nprint('0.5')\n")):
+        for name, patched in (("lf-studio.patch", "# Modified by lf-studio\nprint('first')\n"),
+                              ("lf-studio.patch", "# Modified by lf-studio\nprint('second')\n"),
+                              ("lf-studio.patch", "# Modified by lf-studio\nprint('third')\n")):
             (sana / "infer.py").write_text(patched)
             for old in (repo / "patches").glob("*.patch"):
                 old.unlink()

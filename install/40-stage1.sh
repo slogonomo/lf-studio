@@ -14,12 +14,12 @@
 # fastvideo-kernel (Sol-H3-RTX5090 does not use it; its PyPI wheel bundles its own libcuda) and no CUDA toolkit.
 # Pins: install/constraints/stage1-rtx5090-constraints.txt. ~25 min measured on a workstation with one RTX 5090,
 # most of it downloads at ~9 MB/s; ~8 GB.
-# Idempotent: skipped when $ENVS/stage1/.lf-studio-done (until 0.6 also .sol-h3-studio-done, its name up to 0.4) exists
-# (FORCE=1 rebuilds into the same venv). On the RTX 5090 a venv without that marker whose pip freeze is
-# install/freeze/stage1-rtx5090-freeze.txt (one built by hand to the same recipe) is adopted: nothing is installed, and
-# the marker is written once the import check passes. Every run (built, adopted or skipped) then removes Gradio and
-# MoviePy and brings Pillow to 13.0.0 (pillow_update in common.sh, #69), after pip 26.2.2 and certifi >= 2026.10.19
-# (pip_update in common.sh), which a new venv also gets before anything else is installed.
+# Idempotent: skipped when $ENVS/stage1/.lf-studio-done exists (FORCE=1 rebuilds into the same venv). On the RTX 5090
+# a venv without that marker whose pip freeze is install/freeze/stage1-rtx5090-freeze.txt (one built by hand to the
+# same recipe) is adopted: nothing is installed, and the marker is written once the import check passes. Every run
+# (built, adopted or skipped) then removes Gradio and MoviePy and brings Pillow to 13.0.0 (pillow_update in common.sh,
+# #69), after pip 26.2.2 and certifi >= 2026.10.19 (pip_update in common.sh), which a new venv also gets before
+# anything else is installed.
 # A venv without the marker (one built before the markers, or by hand) is built into again, so to update an existing
 # install use --pillow-only: only the update steps (pip and certifi, then Pillow) on the existing $ENVS/stage1 venv,
 # nothing else (docs/INSTALL.md, "From 0.4 to 0.5").
@@ -55,7 +55,7 @@ TORCH_IDX=https://download.pytorch.org/whl/cu130
 DONE="$V/.lf-studio-done"
 ADOPT=0
 
-if [[ (-f "$DONE" || -f "$V/.sol-h3-studio-done") && "$FORCE" != 1 ]]; then    # (the 0.4 marker: until 0.6)
+if [[ -f "$DONE" && "$FORCE" != 1 ]]; then
     say "Stage1 env already built ($V); FORCE=1 to rebuild"
 elif [[ "$LFSTUDIO_BACKEND" == rtx5090 && "$FORCE" != 1 ]] &&
         freeze_matches "$V/bin/python" "$INSTALL_DIR/freeze/stage1-rtx5090-freeze.txt"; then

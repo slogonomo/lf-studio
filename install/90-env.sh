@@ -8,11 +8,7 @@
 # an NVIDIA GB10 = spark, an RTX 5090 = rtx5090), rather than write a value the install did not use. On the RTX 5090
 # the launcher's memory floors are left to its defaults (docs/RTX5090.md), and the Qwen image keys are left out.
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh" "$@"
-if [[ -z "${LFSTUDIO_STATE_DIR:-}" ]]; then
-    LFSTUDIO_STATE_DIR=$HOME/.local/state/lf-studio
-    old_path LFSTUDIO_STATE_DIR "$HOME/.local/state/sol-h3-studio" jobs.db   # until 0.6: 0.4's, if it has the history
-fi
-export LFSTUDIO_STATE_DIR
+export LFSTUDIO_STATE_DIR=${LFSTUDIO_STATE_DIR:-$HOME/.local/state/lf-studio}
 detected=$(detect_backend)
 if [[ "$LFSTUDIO_BACKEND_SET" != 1 && -n "$detected" && "$detected" != "$LFSTUDIO_BACKEND" ]]; then
     die "this machine looks like LFSTUDIO_BACKEND=$detected, but LFSTUDIO_BACKEND is not set (so the install used $LFSTUDIO_BACKEND).
