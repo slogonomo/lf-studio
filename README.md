@@ -165,16 +165,17 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   |---|---|---|---|
   | 5 s | yes | yes | yes |
   | 6, 7, 8 and 10 s | yes | yes | later |
-  | 12 and 15 s | yes | yes, not run yet | later |
+  | 12 and 15 s | yes | yes | later |
 
   The popover greys out 4K for longer clips, with the reason (`4K for 12 s clips comes later: 1080p and 2K take
   them`): there the whole clip would not fit in memory, or only past anything measured, so it needs the clip in
-  pieces, which comes later. **2K at 12 and 15 s has not run on the GPU yet**: the popover says so, and its times and
-  memory are estimates. These clips have more tokens than anything run so far (314,380 and 386,606, against 302,534
-  at 4K for 5 s), so the job runs a leaner block forward for them, `lean2` (the transformer's fp32 video embeddings
-  cast to bf16 and freed once used: on the CPU the same result as the lean forward, bit for bit). By the job's memory
-  model a 2K 15 s upscale needs 115 GiB free to start (116 with Keep my frames) and comes down to about 10 GiB free;
-  2K at 12 s needs the usual 110 GiB.
+  pieces, which comes later. 2K at 12 and 15 s have more tokens than any other size and length (314,380 and 386,606,
+  against 302,534 at 4K for 5 s), so the job runs a leaner block forward for them, `lean2` (the transformer's fp32
+  video embeddings cast to bf16 and freed once used: on the CPU the same result as the lean forward, bit for bit).
+  **2K at 15 s has run**: through the studio on one DGX Spark (2026-10-31) a 15 s 9:16 Sol-H3 clip took 1 h 45 min,
+  with all its frames, its whole sound and its lip sync, 94.1 GiB on the GPU at its peak, the free memory down to
+  12.6 GiB from 116.6. It needs 113 GiB free to start (114 with Keep my frames holding both ends); 2K at 12 s, which
+  that run covers, needs the usual 110 GiB.
   Sol-H3's 3 and 4 s clips (made up to 0.5.0) are refused, never cut: their button is disabled, with the reason.
   NVIDIA's pipeline is written for 5 s: the job takes other lengths through it with their own frames and sound (no
   NVIDIA file changed), and NVIDIA has not validated them. The job refines against text alone: a Keyframes or Reference
@@ -206,20 +207,21 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   upscaled to 4K yet. While an upscale runs the studio's models are closed; the next clip loads them again, and with
   `LFSTUDIO_PRELOAD=1` (the default) the studio warms them up again as soon as the upscale is done.
   Numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k).
-- **Longer clips have run too.** Through the studio on one DGX Spark (2026-10-30, one clip each, 2 steps, the fast
-  load) a 6 s clip took 12.7 min to 1080p, a 10 s clip 23.7 min, a 15 s 9:16 clip 43.1 min, and the 10 s clip 53.1 min
-  to 2K, each with all its frames and its whole sound, a clean last second and its lip sync; the 10 and 15 s ones at
-  1080p, by eye, sharper than the clip to the last frame, with the same faces. The other lengths offered (7, 8 and 12 s
-  at 1080p; 6, 7 and 8 s at 2K) have not run, but a longer clip at their size has, and the job's model of the runs held
-  there (steps within 1.4 %, peak memory within 0.1 GiB): their times follow it, and the popover gives no note. With
-  2 steps the popover expects, closing the studio's models included: at 1080p about 13 min for 6 s, 15 min for 7 s,
-  17 min for 8 s, 24 min for 10 s, 32 min for 12 s and 44 min for 15 s; at 2K about 28 min for 6 s, 32 min for 7 s,
-  37 min for 8 s and 54 min for 10 s, and (not run, estimated) about 1.2 h for 12 s and 1.8 h for 15 s
+- **Longer clips have run too.** Through the studio on one DGX Spark (2026-10-30, one clip each, 2 steps, the fast load)
+  a 6 s clip took 12.7 min to 1080p, a 10 s clip 23.7 min, a 15 s 9:16 clip 43.1 min, and the 10 s clip 53.1 min to 2K,
+  each with all its frames and its whole sound, a clean last second and its lip sync; the 10 and 15 s ones at 1080p, by
+  eye, sharper than the clip to the last frame, with the same faces. On 2026-10-31 the 15 s clip took 1 h 45 min to 2K,
+  with the same checks passed. The other lengths offered (7, 8 and 12 s at 1080p; 6, 7, 8 and 12 s at 2K) have not run,
+  but a longer clip at their size has, and the job's model of the runs held there (steps within 1.4 %, peak memory
+  within 0.12 GiB): their times follow it, and the popover gives no note. With 2 steps the popover expects, closing the
+  studio's models included: at 1080p about 13 min for 6 s, 15 min for 7 s, 17 min for 8 s, 24 min for 10 s, 32 min for
+  12 s and 44 min for 15 s; at 2K about 28 min for 6 s, 32 min for 7 s, 37 min for 8 s, 54 min for 10 s, 1.2 h for 12 s
+  (an estimate from the model) and 1.8 h for 15 s (its run took 1 h 45 min)
   ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips)). From 10 s at 1080p and 6 s at 2K the job runs the
   memory-lean block forward of its 4K run (bit-identical to the stock forward on GB10), so up to 10 s no peak passes
   what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept; 90.8 measured at 2K for 10 s); at 2K for 12
-  and 15 s `lean2` keeps it at about 89 and 94 GiB by the model. Every length up to 12 s needs the 110 GiB free a 5 s
-  clip needs to start; at 2K for 10 s the free memory came down to 16.7 GiB.
+  and 15 s `lean2` keeps it at about 89 GiB by the model and 94.1 measured at 15 s. Every length up to 12 s needs the
+  110 GiB free a 5 s clip needs to start; at 2K the free memory came down to 16.7 GiB for 10 s and 12.6 GiB for 15 s.
 - **Keep my frames** (experimental). NVIDIA's refine redraws a Keyframes clip's first and last frames like any other,
   away from your pictures. With the popover's box (on by default; the request's `pin` `auto`), the job holds your
   keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already shows them: each end only if the clip's
@@ -238,18 +240,28 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     9:16 and 16:9, 5 s, a first frame; a research runner, its 2K step started from a saved 1080p result) frame 0 came
     2.0-2.1 dB closer to the picture than the plain 2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no
     flash and the motion kept; in the same research one pinned refine at 2K had brought it only about 1 dB closer
-    (through the studio, both ends of a clip without a face came 4.7-5.0 dB closer that way). It has not run through
-    the studio yet, so the popover says so at 2K, and its time is the job's model: about 19 min at 5 s (as without
-    the box), 49-50 min at 10 s, and about 67-68 min at 12 s and 94-95 min at 15 s (against 74 and 106 min without
-    the box; 2K at those lengths has not run at all). Its 2K step at 12 and 15 s runs `lean2`, as 2K without the box
-    does there, and needs 116 GiB free at 15 s, 1 GiB more than without the box (its 2K step's pictures add rows).
-  - On clips longer than 5 s it is offered at the sizes their length has. It has run
-    with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30), with the lean block forward: both ends held,
-    31.9 and 32.0 dB from your pictures (luma PSNR at 1080p), as close as the best 5 s pinned run, with no flash at
-    either end. The other long routes and sizes have not run: the popover says so. The time it adds on a long clip is
-    the 5 s one, so a little short: both ends at 1080p for 10 s add about 45 s (an estimate from that run, which had
-    no unpinned twin) where the progress bar counts 32 s. At 2K the time is the cascade's own, its rows counted at
-    each length (below).
+    (through the studio, both ends of a clip without a face came 4.7-5.0 dB closer that way). Through the studio
+    (2026-10-31, LightX2V Turbo Keyframes clips) it has run with a first frame at 5 s in 18 min, and with both ends of
+    a 10 s clip in 50 min and of a 15 s clip in 1 h 35 min: every end held, with no flash and the clip's lip sync.
+    **It holds your pictures a little less closely than 1080p does**: each end came out about 1.5-2 dB further from its
+    picture (luma PSNR at the job's 384p check grid), as the 2K step adds fine detail and a little contrast over the
+    whole clip. It holds them closer than 2K without the box: at 5 s frame 0 came 2 dB closer to the picture than the
+    plain 2K, and 1.5 dB closer than one pinned refine at 2K, the route it replaced. If matching your pictures matters
+    most, use 1080p. The popover has no note for a LightX2V Turbo clip's first frame alone at 5 s. For both ends, and
+    at the other lengths, it still says that keeping your frames has not run there until the maintainer has looked at
+    the long runs: they held every end about as closely as the 5 s run, but the bar set for them, within 1 dB of
+    1080p, is one that neither they nor the 5 s run meet. Its time is the job's model, which those runs came within a
+    minute of: about 19 min at 5 s (as without the box), 49-50 min at 10 s, 67-68 min at 12 s and 94-95 min at 15 s
+    (against 74 and 106 min without the box). Its 2K step at 12 and 15 s runs `lean2`, as 2K without the box does
+    there, and needs 113 GiB free at 15 s with one end, 114 with both (its 2K step's pictures add rows); the 15 s run
+    came down to 11.8 GiB free from 116.8.
+  - On clips longer than 5 s it is offered at the sizes their length has. It has run with both ends of a LightX2V
+    Turbo 10 s clip at 1080p (2026-10-30), with the lean block forward: both ends held, 31.9 and 32.0 dB from your
+    pictures (luma PSNR at 1080p), as close as the best 5 s pinned run, with no flash at either end; and at 2K
+    through the cascade (above). The other long routes and sizes have not run: the popover says so. The time it adds
+    on a long clip is the 5 s one, so a little short: both ends at 1080p for 10 s add about 45 s (an estimate from
+    that run, which had no unpinned twin) where the progress bar counts 32 s. At 2K the time is the cascade's own, its
+    rows counted at each length (above).
   - The popover says why an end is not offered; the upscale's card says which ends were kept, and why not.
   - It has run through the studio on one DGX Spark (the night of 2026-10-29 to 30) with a LightX2V Turbo clip's first
     frame, last frame and both at 1080p, both at 2K too (then in one pinned refine at 2K, the route the cascade above
@@ -258,16 +270,16 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     at 2K +5.0 and +4.7 dB, a clip without a face), with no flash there. A dialogue clip gained less, 2.3-2.4 dB at each
     end (3 dB on the face), as its plain upscale was already close to the picture; its lip sync held. It costs about
     16 s per end at 1080p (32 s for both) and 0.4-0.7 GiB more GPU memory at the peak. The one pinned refine at 2K took
-    1.3 GiB more, and the lowest free memory came down to 14.1 GiB with both ends (16.0 GiB without); the cascade's 2K
-    step has the same rows, so it should take the same (not measured yet).
+    1.3 GiB more, and the lowest free memory came down to 14.1 GiB with both ends (16.0 GiB without); the cascade
+    with one end at 5 s took 91.7 GiB at its peak (its 2K step), as one pinned refine at 2K did with one end in the
+    research runs, and came down to 17.2 GiB free.
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the
   clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
   defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
 
-Not yet: a run of 2K for 12 and 15 s clips, 4K for clips longer than 5 s (the clip in pieces), and NVIDIA's faster
-Sol-Attn forward. Setup:
+Not yet: 4K for clips longer than 5 s (the clip in pieces), and NVIDIA's faster Sol-Attn forward. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
 

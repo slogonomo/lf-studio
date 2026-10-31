@@ -314,10 +314,10 @@ GUARD_GIB = 5
 # 2K), 10.8 at 302,334 (5 s at 4K). From each 2026-10-30 run's own start the model's lowest MemAvailable is within
 # 0.5 GiB of the measured one (tests/test_upscale.py has them); from the earlier 5 s runs' it is up to 0.8 GiB higher
 # and up to 1.4 GiB lower. On 2026-10-31's runs, stock and lean (the cascade's stages too), the peak held within
-# 0.11 GiB and the model's lowest MemAvailable came 0.5-2.4 GiB lower than the measured one. A clip of another length
-# needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start (need_gib; min_free_for) where that is more than the floor: at the
-# default 110 GiB only 2K at 15 s does, 113 (114 with both ends kept); the others need 109 at most (2K at 10 s, and at
-# 12 s with an end kept or both).
+# 0.11 GiB and the model's lowest MemAvailable came up to 2.4 GiB lower than the measured one (0.4 GiB higher in the
+# 15 s cascade's 1080p refine, 20.9 against 20.5). A clip of another length needs both, GUARD_GIB and FLOOR_MARGIN_GIB
+# to start (need_gib; min_free_for) where that is more than the floor: at the default 110 GiB only 2K at 15 s does, 113
+# (114 with both ends kept); the others need 109 at most (2K at 10 s, and at 12 s with an end kept or both).
 # lean2, from its two runs (2026-10-31, 2K 15 s: whole, 387,178 rows, and the cascade's 2K step with both ends,
 # 393,911): 94.05 and 94.46 GiB allocated at the peak, 71,135 and 71,036 bytes a row, so 71,100 (the model 0.01 GiB
 # under the one, 0.02 over the other; lean's 92,300 less the 21,504 bytes a video row of the fp32 video embeds lean2

@@ -33,26 +33,28 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   endpoint; `install/65-regen2k.sh` (optional) builds its environment from the hashed lock
   `install/freeze/regen2k-lock.txt` and fetches its weights (`install/regen2k_weights.py`); `--env-only` builds the
   environment alone. What has run on the GPU through the studio is listed three times: per length and size in the job's
-  `UPSCALE_RAN` (`upscale_offers` `"ran"`; 6, 10 and 15 s at 1080p and 10 s at 2K ran, and the other lengths offered are
-  there by the offer rule, a longer clip at their size having run, but 2K at 12 and 15 s, which has not run and runs the
-  `lean2` forward past every case that has, `LEAN2_ROWS`; one line each), per clip route (at 5 s) in the page's
+  `UPSCALE_RAN` (`upscale_offers` `"ran"`; 6, 10 and 15 s at 1080p and 10 and 15 s at 2K ran, and the other lengths
+  offered are there by the offer rule, a longer clip at their size having run; 2K at 12 and 15 s run the `lean2`
+  forward, past every case that ran lean, `LEAN2_ROWS`; one line each), per clip route (at 5 s) in the page's
   `UP_RAN`, per Keep my frames route, size and length in `PIN_ROUTES`' `"ran"` (a size alone at 5 s,
-  `"<size>/<seconds>"` at another length, `"1080p/10"` so far; one line per route, so a route that fails its GPU run
-  goes out with its line; `PIN_SIZES` holds the sizes; no 2K line since Keep my frames at 2K went through the cascade,
-  below). The rest shows the page's "not run on the GPU" note. Keep my frames at 2K is the job's cascade (`route_for`,
-  `CASCADE_FROM`, `CASCADE_SIGMA`: the pinned refine at 1080p as a 1080p upscale runs it, NVIDIA's latent upscaler to
-  the 2K grid, one step from 0.4 at 2K with the pin; receipt `"route"` and `"cascade"`): no request field, the server
-  sends the pin as at 1080p (the record's `"route"`, upscalable's `pin_routes` `"route"`); its time is
-  `cascade_eta_s` (`upscale_offers` `"cascade_eta_s"`, which the page's `upEta` and the 2K label take with the box
-  ticked), its floor the larger refine's (`route_need_gib`).
+  `"<size>/<seconds>"` at another length: `"1080p/10"` for both ends, and `"2k"`, the cascade below, for a LightX2V
+  Turbo clip's first frame; both ends at 2K ran for 10 and 15 s too but have no line until the owner has looked at
+  them, docs/PERFORMANCE.md; one line per route, so a route that fails its GPU run goes out with its line;
+  `PIN_SIZES` holds the sizes). The rest shows the page's "not run on the GPU" note. Keep my frames at 2K is the job's
+  cascade (`route_for`, `CASCADE_FROM`, `CASCADE_SIGMA`: the pinned refine at 1080p as a 1080p upscale runs it,
+  NVIDIA's latent upscaler to the 2K grid, one step from 0.4 at 2K with the pin; receipt `"route"` and `"cascade"`): no
+  request field, the server sends the pin as at 1080p (the record's `"route"`, upscalable's `pin_routes` `"route"`); its
+  time is `cascade_eta_s` (`upscale_offers` `"cascade_eta_s"`, which the page's `upEta` and the 2K label take with the
+  box ticked), its floor the larger refine's (`route_need_gib`).
   `OFFER_ETA_S` has the measured times where a run is and the others fitted to them, the memory model (`peak_gib`,
   `overhead_gib`, `need_gib`) is fitted to the runs (each 2026-10-30 run's lowest MemAvailable within 0.5 GiB,
-  `tests/test_upscale.py`; `lean2`'s `ROW_BYTES` and `OVERHEAD_GIB` are estimates until it runs), and the docs say
-  which lengths ran and which follow the model
+  `tests/test_upscale.py`; `lean2`'s `ROW_BYTES` and `OVERHEAD_GIB` to its two runs of 2026-10-31, its overhead flat at
+  the higher), and the docs say which lengths ran and which follow the model
   ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips), the README): change them when a run lands. The page's
   `UP_PIN_S` holds the seconds Keep my frames adds at 5 s at 1080p; the page adds them at every length (a little short
   on a longer clip, as the docs say). Change it when a 5 s run lands, not for a longer one. At 2K the time is the
-  job's model of the cascade (`STEP_MODEL`, `CASCADE_UPSCALE_S`, `PIN_ENCODE_S`): change them when its runs land.
+  job's model of the cascade (`STEP_MODEL`, `CASCADE_UPSCALE_S`, `PIN_ENCODE_S`, which its runs of 2026-10-31 held):
+  change them when a run does not hold them.
 - `install/66-h3turbo.sh` (optional) sets up the experimental LightX2V Turbo model: it checks the base model (refusing
   one without the VAE's weights), uses the Upscale's environment (or runs `65-regen2k.sh --env-only`; it never touches
   a venv itself), fetches LightX2V's turbo LoRA files at a pinned revision (`install/h3turbo_weights.py`, standard
@@ -141,10 +143,11 @@ every frame of a long one, qwen-text/ or an encode, the model turned off), `Turb
 clips (each set of ends, job.json `pin`, the links, source.json, the record's result, where no end is sent, a picture
 gone or changed before and after the request, the clip's receipt, also one of another shape; at 2K the cascade: the
 record's `route` before and after, job.json as at 1080p, the stand-in's cascade receipt and 3 steps, `whole` where no
-end is held), `ServerParts` also the
+end is held, the floor of both ends at 15 s), `ServerParts` also the
 receipts' records (`keyframe_record`, also of another shape: never an error), the picture hash cache (`image_state`:
 never a hash for `/api/state`), `PIN_ROUTES` as it is and changed by one line (a route out, a route's `"ran"` sizes and
-lengths, 2K out; no 2K `"ran"`, the cascade's `"route"` at 2K), the seam between the models' `"upscale"` tables and the
+lengths, 2K out; `"2k"` in a LightX2V Turbo first frame's `"ran"` alone, both ends at 2K 10 and 15 s with the note, the
+cascade's `"route"` at 2K), the seam between the models' `"upscale"` tables and the
 job's frame cases and offers (every model, task, length and set of keyframes; the stub runtime's frames too),
 `upscale_frames`, `sol_last`, `offer_refusal` and the stand-in job's refusals, `tests/test_api.py` its API record, the
 `Upscale*` classes in `tests/test_cli.py` and `tests/test_mcp.py` the client (a size refused for a clip's length with
@@ -155,7 +158,7 @@ its `cascade_eta_s`; also `--pin` and the MCP `pin`; that pin goes only to a stu
 the reason on clips it can't take; `UpscaleEveryClipPage` and `ModelUpscale` the notes per clip kind, the note that a
 route has not run on the GPU through the studio (on the routes the page's `UP_RAN` leaves out), and the one that a
 length has not (its offer's `"ran"`), a long clip's times and the sizes its length does not have greyed with the reason
-(and the popover of a 12 s clip, at 2K with its "not run" note and at 1080p without; `UpscaleOldClipPage` a 3 s
+(and the popover of a 12 s clip, with no note at either size, both covered by a 15 s run; `UpscaleOldClipPage` a 3 s
 clip's Upscale disabled with the reason), the encode's phase and time, the text an upscale used and its clip's model;
 in cards too narrow for the names, Upscale and Delete show icons, so the buttons keep one row; `OneRowUpscaleOff`
 checks that row with the Upscale off), the popover
@@ -246,14 +249,15 @@ MP4s made by ffmpeg of every count of frames the studio's lengths keep, and the 
 the frames of each length (`FRAME_CASES`, derived from both patches' `runtime/geometry.py` and `jobs/h3turbo_job.py`
 at every length: the 3 copies of the last frame, the audio of A × 800 samples), what is offered per length and size
 (`OFFER_ETA_S`, `offers_table`, `offer`: 1080p and 2K every length, 4K at 5 s, the reasons; the measured times and the
-others fitted to them; `UPSCALE_RAN`, one line each, 2K at 12 and 15 s not in it; the cascade's time, `cascade_eta_s`,
-by the step model), the block forward by rows (`forward_for`, `lean_chunks_for`: every case that ran keeps its forward,
-`lean2` only past them) and the memory model and floor (`case_rows`, `peak_gib`, `overhead_gib`, `need_gib`,
-`route_need_gib`, `min_free_for`; against the job's runs of every length; at 2K 15 s a floor of 115 GiB, 116 with a pin,
-and none above 116), the route per size, pin and length (`route_for`, `plan`: only a pinned 2K cascades), the shape
-table (with every orientation the patches make), the portrait entries for NVIDIA's dicts, the upscale route and
-`check_package` (every pinned file for a 9:16 clip and for a clip of another length), the text check on stand-in
-tensors, the command lines (NVIDIA's read of the clip, the others without its tpad: a clip cut off after its header
+others fitted to them; `UPSCALE_RAN`, one line each, every length and size offered; the cascade's time,
+`cascade_eta_s`, by the step model, against its runs' stages), the block forward by rows (`forward_for`,
+`lean_chunks_for`: every case that ran keeps its forward, `lean2` only past them) and the memory model and floor
+(`case_rows`, `peak_gib`, `overhead_gib`, `need_gib`, `route_need_gib`, `min_free_for`; against the job's runs of every
+length, `lean2`'s two too; at 2K 15 s a floor of 113 GiB, 114 with both ends, and none above 116), the route per size,
+pin and length (`route_for`, `plan`: only a pinned 2K cascades), the shape table (with every orientation the patches
+make), the portrait entries for NVIDIA's dicts, the upscale route and `check_package` (every pinned file for a 9:16
+clip and for a clip of another length), the text check on stand-in tensors, the command lines (NVIDIA's read of the
+clip, the others without its tpad: a clip cut off after its header
 reads short; the mux run with ffmpeg) and the environment, the progress lines, the memory trace, `--check` (of every
 count of frames, at every size: a size its length has not got refused with the reason), the receipt when a job is done,
 fails, is refused, starts with too little memory or gets SIGTERM, `--parent` (the job dies with the server), v0.5.2's
