@@ -165,13 +165,16 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   |---|---|---|---|
   | 5 s | yes | yes | yes |
   | 6, 7, 8 and 10 s | yes | yes | later |
-  | 12 and 15 s | yes | later | later |
+  | 12 and 15 s | yes | yes, not run yet | later |
 
-  The popover greys out the other sizes, with the reason (`2K for 12 s clips comes later: 1080p takes them`). There
-  the whole clip would not fit in memory, or only past anything measured (by the memory model below: 2K at 12 s would
-  come down to about 10 GiB free, below the lowest of any clean run, 11.1 GiB at 4K; 2K at 15 s and 4K from 6 s would
-  need 123 GiB or more free to start, where the idle box has 117.7 GiB). They need the clip in pieces, which comes
-  later.
+  The popover greys out 4K for longer clips, with the reason (`4K for 12 s clips comes later: 1080p and 2K take
+  them`): there the whole clip would not fit in memory, or only past anything measured, so it needs the clip in
+  pieces, which comes later. **2K at 12 and 15 s has not run on the GPU yet**: the popover says so, and its times and
+  memory are estimates. These clips have more tokens than anything run so far (314,380 and 386,606, against 302,534
+  at 4K for 5 s), so the job runs a leaner block forward for them, `lean2` (the transformer's fp32 video embeddings
+  cast to bf16 and freed once used: on the CPU the same result as the lean forward, bit for bit). By the job's memory
+  model a 2K 15 s upscale needs 115 GiB free to start (116 with Keep my frames) and comes down to about 10 GiB free;
+  2K at 12 s needs the usual 110 GiB.
   Sol-H3's 3 and 4 s clips (made up to 0.5.0) are refused, never cut: their button is disabled, with the reason.
   NVIDIA's pipeline is written for 5 s: the job takes other lengths through it with their own frames and sound (no
   NVIDIA file changed), and NVIDIA has not validated them. The job refines against text alone: a Keyframes or Reference
@@ -211,10 +214,12 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   there (steps within 1.4 %, peak memory within 0.1 GiB): their times follow it, and the popover gives no note. With
   2 steps the popover expects, closing the studio's models included: at 1080p about 13 min for 6 s, 15 min for 7 s,
   17 min for 8 s, 24 min for 10 s, 32 min for 12 s and 44 min for 15 s; at 2K about 28 min for 6 s, 32 min for 7 s,
-  37 min for 8 s and 54 min for 10 s ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips)). From 10 s at 1080p and
-  6 s at 2K the job runs the memory-lean block forward of its 4K run (bit-identical to the stock forward on GB10), so no
-  peak passes what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept; 90.8 measured at 2K for 10 s).
-  Every length needs the 110 GiB free a 5 s clip needs to start; at 2K for 10 s the free memory came down to 16.7 GiB.
+  37 min for 8 s and 54 min for 10 s, and (not run, estimated) about 1.2 h for 12 s and 1.8 h for 15 s
+  ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips)). From 10 s at 1080p and 6 s at 2K the job runs the
+  memory-lean block forward of its 4K run (bit-identical to the stock forward on GB10), so up to 10 s no peak passes
+  what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept; 90.8 measured at 2K for 10 s); at 2K for 12
+  and 15 s `lean2` keeps it at about 89 and 94 GiB by the model. Every length up to 12 s needs the 110 GiB free a 5 s
+  clip needs to start; at 2K for 10 s the free memory came down to 16.7 GiB.
 - **Keep my frames** (experimental). NVIDIA's refine redraws a Keyframes clip's first and last frames like any other,
   away from your pictures. With the popover's box (on by default; the request's `pin` `auto`), the job holds your
   keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already shows them: each end only if the clip's
@@ -226,7 +231,7 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     `SOL_H3_STAGE2_KEYFRAME=pin`), and never their last: the clip stops a few frames before it (3 at 5 s).
   - Text and Reference clips have no frame to keep.
   - Balanced at 1080p and 2K only for now (Faithful brought a first frame only about 1 dB closer in a test).
-  - On clips longer than 5 s it is offered at the sizes their length has (1080p alone at 12 and 15 s). It has run
+  - On clips longer than 5 s it is offered at the sizes their length has. It has run
     with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30), with the lean block forward: both ends held,
     31.9 and 32.0 dB from your pictures (luma PSNR at 1080p), as close as the best 5 s pinned run, with no flash at
     either end. The other long routes and sizes have not run: the popover says so. The time it adds on a long clip is
@@ -248,7 +253,7 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   clip's own audio (the default) or NVIDIA's silence works better for lip sync, is still being measured. The
   defaults are provisional (`LFSTUDIO_UPSCALE_STRENGTH`, `LFSTUDIO_UPSCALE_AUDIO`).
 
-Not yet: 2K for 12 and 15 s clips and 4K for clips longer than 5 s (the clip in pieces), and NVIDIA's faster
+Not yet: a run of 2K for 12 and 15 s clips, 4K for clips longer than 5 s (the clip in pieces), and NVIDIA's faster
 Sol-Attn forward. Setup:
 [docs/INSTALL.md](docs/INSTALL.md#experimental-upscale); problems:
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#upscale-experimental).
