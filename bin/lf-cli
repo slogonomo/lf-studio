@@ -22,7 +22,9 @@ One file, standard library only, Python 3.9 or later: copy it to any machine tha
                                 Turbo), 16:9 or 9:16, whole, to 1080p (any length), 2K (up to 10 s) or 4K (5 s), on a
                                 studio with LFSTUDIO_UPSCALE=1 (about 10 min (1080p, 5 s) to 1.6 h (4K, full) in all,
                                 4K over an hour, with a ~22 s load; ~8 min more with LFSTUDIO_UPSCALE_LOAD=standard;
-                                longer clips take longer: 1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s)
+                                longer clips take longer: 1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s);
+                                --pin auto at 2K is made at 1080p first, then brought to 2K: about 19 min at 5 s, as
+                                without it, 49-50 min at 10 s (by the job's model: not run through a studio yet)
   lf-cli guide                  the prompt guide for H3
   lf-cli mcp                    an MCP server on stdin/stdout (Claude Code, Hermes, Codex, ...)
   common options, before or after the command: --url URL  --json  --quiet
@@ -1893,7 +1895,8 @@ TOOLS = [
          "pictures (encoded first, ~15 s), a LightX2V Turbo clip at 576p is stretched to 768p first and one with a "
          "last keyframe keeps all its frames (a 5 s one at 4K its first 121). pin (Keep my frames, experimental): "
          "auto, the default, holds a Keyframes clip's own keyframes in the refine where the clip already shows them (a "
-         "LightX2V Turbo clip's first and last frames, a Sol-H3 clip's first frame), at 1080p and 2K with balanced; "
+         "LightX2V Turbo clip's first and last frames, a Sol-H3 clip's first frame), at 1080p and 2K with balanced "
+         "(at 2K made at 1080p first, then brought to 2K: about 19 min at 5 s, 49-50 min at 10 s, not yet run); "
          "off never does; the result says which ends were kept. It runs after the clips queued, closes the studio's "
          "models while it runs (the next clip, or the studio's warm-up, loads them again) and takes long: on a DGX "
          "Spark about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps for a 5 s clip (4K has run once, with "
@@ -2630,7 +2633,8 @@ def parser():
     u.add_argument("--seed", type=int, metavar="N", help="the refine's seed (default: the clip's)")
     u.add_argument("--pin", choices=UPSCALE_PIN,
                    help="keep my frames (experimental): auto (the default) holds the clip's keyframes where it already "
-                        "shows them (1080p and 2K, balanced); off: never")
+                        "shows them (1080p and 2K, balanced; at 2K made at 1080p first, then brought to 2K); off: "
+                        "never")
     u.add_argument("--wait", action="store_true", help="wait for the upscale and save the MP4 (into the current "
                                                        "directory unless --out)")
     u.add_argument("--out", metavar="PATH", help="the MP4 file, or a directory for it (implies --wait)")

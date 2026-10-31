@@ -546,7 +546,17 @@ clip offers (`upscalable` `pin`):
 
 It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet: `faithful` held a
 first frame only about 1 dB closer in a test), at the sizes the clip's length has (1080p alone at 12 and 15 s). Where
-the job's forward is lean (1080p from 10 s, 2K from 6 s) it runs with the lean blocks. On a clip longer than 5 s it
+the job's forward is lean (1080p from 10 s, 2K from 6 s) it runs with the lean blocks.
+At 2K the clip is made at 1080p first, then brought to 2K (the job's route `cascade`; the record's `route`): the
+pinned refine at 1080p, exactly as a 1080p upscale with `pin` runs it, then NVIDIA's latent upscaler from that refined
+latent to the 2K grid, then one step from start noise 0.4 at 2K with the pictures held again, then the 2K decode. There
+is no field for it: a 2K request with an end held takes it. In research runs a refine at 2K held a first frame much
+less than one at 1080p (frame 0 about 1 dB closer, against 4 dB), so the picture is made where the pin holds and the
+2K step adds the detail. Research runs (a research runner on one DGX Spark, 2026-10-29: two LightX2V Turbo 5 s clips
+with a first frame, the 2K step from a saved 1080p result) gave frame 0 2.0-2.1 dB closer to the picture than the plain
+2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no flash and the motion kept. It has not run through the
+studio yet (the page says so at 2K). By the job's model it takes about 19 min for a 5 s clip and 49-50 min at 10 s
+(`upscale_offers` `cascade_eta_s`, below), and needs the free memory of its larger refine. On a clip longer than 5 s it
 has run with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30: both held, 31.9 and 32.0 dB from the
 pictures at 1080p, no flash at either end); elsewhere on long clips it has not run on the GPU, and the page says so.
 An end the clip offers but the request does not send has its reason in the record's
@@ -555,15 +565,15 @@ An end the clip offers but the request does not send has its reason in the recor
 `your picture changed since the clip was made`, `your picture does not open`, `the clip stops N frames before your last
 picture`).
 Through the studio on one DGX Spark (the night of 2026-10-29 to 30) it has run with a LightX2V Turbo clip's first frame,
-last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same clips upscaled
+last frame and both at 1080p, both at 2K too (in one pinned refine at 2K, the route the cascade replaces), and a Sol-H3
+clip's first frame at 1080p. Against the same clips upscaled
 with `pin` `off`, every end sent was held, and the frame held came 3.2-5.3 dB closer to the picture (luma PSNR at the
 output size; 2.5-5.5 dB on a face; +5.0 and +4.7 dB at 2K), with no flash there; a dialogue clip, a static shot whose
 plain upscale was already close to the picture, gained 2.3-2.4 dB at each end (3 dB on the face), its lip sync
 unchanged.
-The cost: +16 s per end at 1080p (+32 s for both) and +83 s for both ends at 2K (each picture's encode on the VAE
-already loaded, 3 s at 1080p, and 2.7 % more rows per end), 0.4-0.7 GiB more GPU memory at the peak at 1080p and 1.3 GiB
-at 2K, where the lowest MemAvailable came down to 14.1 GiB with both ends (16.0 GiB without). One end at 2K has not run:
-the page notes it there, and estimates +60 s
+The cost at 1080p: +16 s per end (+32 s for both: each picture's encode on the VAE already loaded, 3 s, and 2.7 % more
+rows per end), 0.4-0.7 GiB more GPU memory at the peak. The one pinned refine at 2K took +83 s for both ends and 1.3 GiB
+more, the lowest MemAvailable 14.1 GiB (16.0 GiB without); the cascade's 2K step has the same rows
 ([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). On a long clip an end's rows cost more:
 both ends of the 10 s clip at 1080p added about 45 s (an estimate: that run had no unpinned twin), where the page
 counts the 5 s 32 s.
@@ -587,7 +597,9 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   `standard`, from `LFSTUDIO_UPSCALE_LOAD`; `parent_model` the clip's model and `parent_opts` its options, when it
   has them; `video` what is done to its MP4 at its size (`clip`: nothing, else `stretch`, `trim` (to 121 frames, at
   4K) or `stretch+trim`); `frames` the frames it keeps (its MP4's: 121 at 5 s, 241 at 10 s, 361 at 15 s; 124, 243 or
-  362 for a LightX2V Turbo clip with a last keyframe; 121 of a 5 s clip's 124 at 4K); for a clip with keyframes `pin`:
+  362 for a LightX2V Turbo clip with a last keyframe; 121 of a 5 s clip's 124 at 4K); `route` its route: `cascade` for
+  2K with an end of `pin` sent (made at 1080p first, above), else `whole`, and once done its job's (`whole` where the
+  job's check held no end); for a clip with keyframes `pin`:
   `{"asked":
   "auto" | "off", "ends": [the ends sent to the job], "why": {end: why not sent}}` and, once done, `"result": {end:
   {"used", "agreement_db", "why"}}` (the job's check: held or not, and why); `text` the text it is refined
@@ -596,7 +608,8 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   once encoded). It waits while any clip is queued, even one queued after it, since it closes the studio's models. It
   runs as `status` `freeing memory` (`phase` `unloading`: the models close), for a text encoded first `encoding the
   prompt` (`phase` `encoding`), and then `upscaling` (`phase` `upscaling`, with `upscale_phase` from the job:
-  `encoding`, `loading`, `refine 1/2`, ..., `decoding`, `saving`, `adding the sound`). The next clip loads the models
+  `encoding`, `loading`, `refine 1/2`, ..., `decoding`, `saving`, `adding the sound`; the cascade's are `refine 1/3` to
+  `refine 3/3`, the last its 2K step). The next clip loads the models
   again; with `LFSTUDIO_PRELOAD=1` (the default) the studio warms up the last clip's settings again as soon as the
   upscale is done and nothing is queued.
 - 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `pin must be auto or off`, `unknown key "steps"
@@ -631,12 +644,12 @@ files are in a directory of their own (its input folder too, whose links keep th
 moves only them; a clip can't be deleted while an upscale of it is
 queued or running (409). It fails, without a retry, below its floor of free memory once the models are closed:
 `LFSTUDIO_UPSCALE_MIN_FREE_GIB` for a 5 s clip (default 110; 5 GiB more at 4K), and for a longer clip what its length,
-size and Keep my frames need by the job's memory model where that is more (none at the default; 109 GiB at most, 2K at
-10 s; with the setting at 100: `not enough free memory for an upscale: ... 109 GiB needed (what a 2K 10 s upscale
-needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=100)`). Its job gets that floor (job.json `min_free_gib`) and checks it
-again as it starts. It also fails when the memory guard kills it (`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s); `error`
-says why (the job's own error line when it has one). A finished upscale also has `phases_s`, `peak_gib` and
-`low_mem_gib` from its job.
+size and Keep my frames need by the job's memory model where that is more (the cascade: its larger refine's; none at
+the default; 109 GiB at most, 2K at 10 s; with the setting at 100: `not enough free memory for an upscale: ... 109 GiB
+needed (what a 2K 10 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=100)`). Its job gets that floor (job.json
+`min_free_gib`) and checks it again as it starts. It also fails when the memory guard kills it
+(`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s); `error` says why (the job's own error line when it has one). A finished
+upscale also has `phases_s`, `peak_gib` and `low_mem_gib` from its job.
 
 With the Upscale on, `/api/state` has `"upscale": true`, `"upscale_defaults"`, what a request without those keys
 gets (`{"resolution": "2k", "strength": <LFSTUDIO_UPSCALE_STRENGTH>, "audio": <LFSTUDIO_UPSCALE_AUDIO>}`; `null`
@@ -646,9 +659,11 @@ with the Upscale off), `"upscale_load"`, how its jobs load their weights (`fast`
 length and size (`null` with the Upscale off):
 
 ```json
-{"5":  {"1080p": {"eta_s": [315, 150], "ran": true}, "2k": {"eta_s": [405, 380], "ran": true},
+{"5":  {"1080p": {"eta_s": [315, 150], "ran": true},
+        "2k": {"eta_s": [405, 380], "ran": true, "cascade_eta_s": [1129, 1169]},
         "4k": {"eta_s": [625, 1685], "ran": true}},
- "10": {"1080p": {"eta_s": [543, 453], "ran": true}, "2k": {"eta_s": [691, 1261], "ran": true},
+ "10": {"1080p": {"eta_s": [543, 453], "ran": true},
+        "2k": {"eta_s": [691, 1261], "ran": true, "cascade_eta_s": [2931, 2996]},
         "4k": {"why": "4K for 10 s clips comes later: 1080p and 2K take them"}},
  "12": {"1080p": {"eta_s": [630, 638], "ran": true},
         "2k": {"why": "2K for 12 s clips comes later: 1080p takes them"}, "4k": {"why": "..."}}, ...}
@@ -658,7 +673,10 @@ for every length a model's Upscale takes (`"5"` to `"15"`): `eta_s` is the secon
 models, the job's start, reading the clip, the fast load, the decode and the MP4) and per refine step (an upscale
 takes `base + steps × step`, ~8 min more with the standard load, ~15 s more for a text encoded first; measured, or
 from the job's model of the runs), `ran` whether that length and size has been upscaled on the GPU through the studio,
-or a longer clip at that size has (else its times are estimates; every size offered has, for now), `why` the reason a
+or a longer clip at that size has (else its times are estimates; every size offered has, for now), `cascade_eta_s` at
+2K the time in all with Keep my frames holding one end and both (the cascade, made at 1080p first: 2K's base, 2 steps
+at 1080p and one at 2K, each with the pictures' rows, NVIDIA's upscaler and the pictures' encode; the job's model, not
+run through the studio yet: about 19 min for a 5 s clip and 49-50 min at 10 s), `why` the reason a
 size is not offered for that length (a request for it gets 400 with it). The page's popover takes its times, its
 greyed sizes and its notes from it, and an upscale's expected time by its clip's length. And every finished job in
 `/api/state`, `/api/jobs` and the API record has `upscalable`: `{"ok": true, "clip_audio": <has its audio>}` or
@@ -670,7 +688,8 @@ its MP4 at 1080p and 2K when it is not taken as it is (`stretch` from 576p); `"f
 where they differ between the sizes (a 5 s clip with a last keyframe: `{"1080p": 124, "2k": 124, "4k": 121}`; no key
 for a longer one, which keeps them all, nor for Sol-H3's); `"pin"`, the ends it can keep (`["first"]`, `["last"]` or
 `["first", "last"]`), with `"pin_routes"`, where: `{resolution: {"strengths", "ran" (on the GPU through the studio,
-at the clip's length)}}` for each size it is offered at (`1080p` and `2k` for now, those the clip's length has); and
+at the clip's length), "route" (`cascade` at 2K: made at 1080p first; else `whole`)}}` for each size it is offered at
+(`1080p` and `2k` for now, those the clip's length has; at 2K `ran` is false for now); and
 `"pin_why"`, `{end: why not}` for an end it has but can't keep (`Sol-H3 clips stop 3 frames before your last picture, so
 the Upscale can't hold it`, a few frames by its length: 7 at
 8 s; `the clip was made before 0.5.2, which did not hold your first frame`,
@@ -918,7 +937,9 @@ in the studio's job; ~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standar
 longer (1080p 24 min at 10 s and 44 min at 15 s, 2K 54 min at 10 s, from their runs), so `--timeout` and a later
 `wait` are the usual way.
 `--pin auto|off` is Keep my frames
-([Upscale](#upscale-experimental-post-apiupscale)): it goes only to a studio whose `/api/state` has `"upscale_pin":
+([Upscale](#upscale-experimental-post-apiupscale); at 2K made at 1080p first, then brought to 2K: about 19 min for a
+5 s clip and 49-50 min at 10 s by the job's model, not run through a studio yet): it goes only to a studio whose
+`/api/state` has `"upscale_pin":
 true` (an older studio never keeps them, so the request goes without it); when spark-switchboard has the studio
 stopped, `/api/state` can't be read without starting it, so the request goes with `pin`, and again without it if the
 studio answers `unknown key "pin"`. `status` shows it as `2k upscale of <clip id8>, balanced, ...` (`2k upscale of

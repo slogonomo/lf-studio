@@ -370,7 +370,7 @@ textarea:focus,.seedrow input:focus{outline:2px solid color-mix(in srgb,var(--ac
     <label class="opt"><input type="radio" name="up_strength" value="balanced"><span>Balanced<small>Start noise 0.7, 2 steps</small></span></label>
     <label class="opt"><input type="radio" name="up_strength" value="full"><span>Full re-generate<small>NVIDIA's setting, one step more: sharpest, but it redraws faces into a different-looking person</small></span></label>
   </div>
-  <label class="opt" id="uppinrow" hidden><input type="checkbox" id="uppin" checked><span><span id="uppinlabel">Keep my first frame</span><small id="uppinnote"></small></span></label>
+  <label class="opt" id="uppinrow" hidden><input type="checkbox" id="uppin" checked><span><span id="uppinlabel">Keep my first frame</span><small id="uppinnote"></small><small id="uppincascade" hidden></small></span></label>
   <p class="note" id="upportrait" hidden>9:16 comes out upright (2K: 1440×2560). NVIDIA trained its refiner on 16:9 video</p>
   <p class="note" id="upinput" hidden></p>
   <p class="note">Unloads the models while it runs</p>
@@ -441,17 +441,20 @@ const upSizes=j=>Object.keys(UPSCALE).filter(res=>(upOffer(j,res)||{}).eta_s);  
 const upTime=s=>s<3600?`~${Math.round(s/60)} min`:`~${(s/3600).toFixed(1)} h`;
 // +15 s for an upscale whose text is encoded first (the clip's prompt without its pictures: ~9-18 s with its Qwen
 // worker's start, measured with LightX2V Turbo's prompt encode; 9.1-9.2 s in the studio's upscales). Keep my frames:
-// UP_PIN_S, the seconds one end and both ends add at 1080p and 2K, measured through the studio against the same clips
-// unpinned (2026-10-29/30: +16-17 s with one end and +30-34 s with both at 1080p, +83 s with both at 2K: each picture's
-// encode, ~3 s at 1080p, and steps ~6 s longer per end at 1080p, ~37 s with both at 2K); one end at 2K has not run,
-// so its 60 s is an estimate (docs/PERFORMANCE.md). On a clip longer than 5 s its longer steps cost more per end,
-// which these leave out: both ends of a 10 s clip at 1080p add about 45 s in all, 13 s more than here (an estimate:
-// that run's pinned steps against the step model's unpinned ones, as it had no unpinned twin), and at 2K for 10 s the
-// model gives about a minute more with both ends (docs/PERFORMANCE.md; UP_PIN_UNRUN says so where the pin's route has
-// not run at the clip's length)
-const UP_PIN_S={"1080p":[16,32],"2k":[60,83]};
+// UP_PIN_S, the seconds one end and both ends add at 1080p, measured through the studio against the same clips
+// unpinned (2026-10-29/30: +16-17 s with one end and +30-34 s with both: each picture's encode, ~3 s, and steps ~6 s
+// longer per end; docs/PERFORMANCE.md). On a clip longer than 5 s its longer steps cost more per end, which these
+// leave out: both ends of a 10 s clip at 1080p add about 45 s in all, 13 s more than here (an estimate: that run's
+// pinned steps against the step model's unpinned ones, as it had no unpinned twin; UP_PIN_UNRUN says so where the
+// pin's route has not run at the clip's length). At 2K Keep my frames goes through the job's cascade (an upscale's
+// record "route", upscalable pin_routes "route": made at 1080p first, then one step at 2K), whose time in all is the
+// offer's own, cascade_eta_s, with one end or both (upCascade: the job's model of it, not run through the studio yet)
+const UP_PIN_S={"1080p":[16,32]};
 const upPinS=j=>{const n=j.pin&&Array.isArray(j.pin.ends)?j.pin.ends.length:0;return n?(UP_PIN_S[j.resolution]||[0,0])[n-1]||0:0;};
+const upCascade=j=>{const n=j.pin&&Array.isArray(j.pin.ends)?j.pin.ends.length:0;
+  return j.route==='cascade'&&n?((upOffer(j,j.resolution)||{}).cascade_eta_s||[])[n-1]||0:0;};
 const upEta=j=>{const e=(upOffer(j,j.resolution)||{}).eta_s;if(!e)return 0;      // 0: no expected time
+  const c=upCascade(j);if(c)return c+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0);
   return e[0]+(j.steps||2)*e[1]+(j.load==='standard'?500:0)+(j.text&&j.text.source==='encode'?15:0)+upPinS(j);};
 // What the Upscale does with a clip besides its MP4 at a size (/api/state upscalable: "text", where its text alone
 // comes from; "video", what is done to the MP4 at 1080p and 2K; "frames", the frames kept per size where they differ:
@@ -483,8 +486,10 @@ const upNotes=(j,u,res)=>{u=u||{};const n=[],own=u.text==='encode'||u.text==='ge
 // Keep my frames (/api/state "upscale_pin"; upscalable "pin", the ends the clip can hold, "pin_routes", where, and
 // "pin_why", why not for its other ends): a box, checked, named after the ends; off with the reason at a size or
 // strength its route does not have. Where it has not run on the GPU through the studio, UP_PIN_UNRUN: its times
-// (UP_PIN_S) are estimates
+// (UP_PIN_S, the cascade's) are estimates. At a size it goes through the cascade (pin_routes "route"), the box's second
+// line says so (UP_CASCADE), and with the box ticked that size shows the cascade's time (upTimes)
 const UP_PIN_UNRUN='Keeping your frames has not been run on the GPU through the studio yet: its times are estimates';
+const UP_CASCADE=name=>`Made at 1080p first, then brought to ${name}`;
 const pinLabel=ends=>ends.length>1?'Keep my first and last frames':`Keep my ${ends[0]} frame`;
 const END_NAME={first:'First',last:'Last'};
 // A size the clip's length does not have (upOffer's "why"): greyed in the popover, its reason as its title, and as
@@ -498,8 +503,17 @@ function upRefresh(j){const u=j.upscalable||{},res=upVal('up_res'),str=upVal('up
     const off=!r?`Not at ${name} yet`:!r.strengths.includes(str)?`With ${r.strengths.map(s=>STRENGTH[s]||s).join(' or ')} only, for now`:'';
     setText($('uppinlabel'),pinLabel(ends));setDisabled(box,!!off);row.classList.toggle('off',!!off);setAttr(row,'title',off||null);
     setText($('uppinnote'),off||'Kept where the clip already shows your picture');
+    setText($('uppincascade'),UP_CASCADE(name));setHidden($('uppincascade'),!!off||r.route!=='cascade');
     if(!off&&!r.ran)notes.push(UP_PIN_UNRUN);}
-  const text=notes.filter(Boolean).join('. ');setText($('upinput'),text);setHidden($('upinput'),!text);}
+  const text=notes.filter(Boolean).join('. ');setText($('upinput'),text);setHidden($('upinput'),!text);upTimes(j);}
+// each size the clip's length has: its time in all for 2 steps (upEta) with the studio's load; with Keep my frames
+// ticked, at a size where it goes through the cascade (pin_routes "route") with this strength, the cascade's time
+// with the clip's ends
+function upTimes(j){const u=j.upscalable||{},str=upVal('up_strength'),ends=state.upscale_pin&&Array.isArray(u.pin)?u.pin:[];
+  pop.querySelectorAll('input[name="up_res"]').forEach(i=>{if(!(upOffer(j,i.value)||{}).eta_s)return;
+    const r=(u.pin_routes||{})[i.value],held=ends.length&&$('uppin').checked&&r&&r.route==='cascade'&&r.strengths.includes(str);
+    setText(pop.querySelector(`label[for="${i.id}"] small`),upTime(upEta({seconds:j.seconds,resolution:i.value,steps:2,
+      load:state.upscale_load,...(held?{route:'cascade',pin:{ends}}:{})})));});}
 // an upscale's card: the text it used, when not the clip's own prompt
 const upText=j=>j.text&&j.text.prompt?(j.task==='ref2va'?'prompt without its references':'prompt without its keyframe line'):'';
 const STRENGTH={faithful:'Faithful',balanced:'Balanced',full:'Full re-generate'};
@@ -1132,7 +1146,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!pop.hidden){e.prev
   closeUpscale(pop.contains(document.activeElement)||document.activeElement===up.btn);}});   // keyboard: back to the button
 document.addEventListener('pointerdown',e=>{if(!pop.hidden&&!pop.contains(e.target)&&!(up.btn&&up.btn.contains(e.target)))closeUpscale(false);});
 addEventListener('resize',placeUpscale);
-pop.addEventListener('change',e=>{const j=known.get(up.id);if(j&&/^up_(res|strength)$/.test(e.target.name||'')){upRefresh(j);placeUpscale();}});
+pop.addEventListener('change',e=>{const j=known.get(up.id);if(j&&/^up_(res|strength)$/.test(e.target.name||'')){upRefresh(j);placeUpscale();}
+  else if(j&&e.target.id==='uppin')upTimes(j);});           // Keep my frames ticked or not: the cascade's time
 $('upgo').onclick=async e=>{if(e.detail>1)return;const id=up.id,j=known.get(id),go=$('upgo');if(!j)return;
   const body={id,resolution:upVal('up_res'),strength:upVal('up_strength')};
   if(j.upscalable&&j.upscalable.clip_audio===false)body.audio='silence';   // the clip has no Stage-1 audio to use

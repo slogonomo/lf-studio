@@ -226,22 +226,33 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     `SOL_H3_STAGE2_KEYFRAME=pin`), and never their last: the clip stops a few frames before it (3 at 5 s).
   - Text and Reference clips have no frame to keep.
   - Balanced at 1080p and 2K only for now (Faithful brought a first frame only about 1 dB closer in a test).
+  - At 2K the clip is made at 1080p first, then brought to 2K: the 1080p refine with your pictures held, exactly as a
+    1080p upscale with the box runs it, then NVIDIA's latent upscaler to the 2K grid and one short refine step there
+    (from start noise 0.4) with your pictures held again. A refine at 2K holds the pictures much less than one at
+    1080p, and the 2K step only adds detail. In research runs on one DGX Spark (2026-10-29: two LightX2V Turbo clips,
+    9:16 and 16:9, 5 s, a first frame; a research runner, its 2K step started from a saved 1080p result) frame 0 came
+    2.0-2.1 dB closer to the picture than the plain 2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no
+    flash and the motion kept; in the same research one pinned refine at 2K had brought it only about 1 dB closer
+    (through the studio, both ends of a clip without a face came 4.7-5.0 dB closer that way). It has not run through
+    the studio yet, so the popover says so at 2K, and its time is the job's model: about 19 min at 5 s (as without
+    the box) and 49-50 min at 10 s.
   - On clips longer than 5 s it is offered at the sizes their length has (1080p alone at 12 and 15 s). It has run
     with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30), with the lean block forward: both ends held,
     31.9 and 32.0 dB from your pictures (luma PSNR at 1080p), as close as the best 5 s pinned run, with no flash at
     either end. The other long routes and sizes have not run: the popover says so. The time it adds on a long clip is
     the 5 s one, so a little short: both ends at 1080p for 10 s add about 45 s (an estimate from that run, which had
-    no unpinned twin) where the progress bar counts 32 s, and at 2K for 10 s up to about a minute more (estimated:
-    an end's rows cost more in a longer clip's steps).
+    no unpinned twin) where the progress bar counts 32 s. At 2K the time is the cascade's own, its rows counted at
+    each length (below).
   - The popover says why an end is not offered; the upscale's card says which ends were kept, and why not.
   - It has run through the studio on one DGX Spark (the night of 2026-10-29 to 30) with a LightX2V Turbo clip's first
-    frame, last frame and both at 1080p, both at 2K too, and a Sol-H3 clip's first frame at 1080p. Against the same
+    frame, last frame and both at 1080p, both at 2K too (then in one pinned refine at 2K, the route the cascade above
+    replaces), and a Sol-H3 clip's first frame at 1080p. Against the same
     clips upscaled without it, the frame held came 3.2-5.3 dB closer to your picture (luma PSNR; 2.5-5.5 dB on a face;
     at 2K +5.0 and +4.7 dB, a clip without a face), with no flash there. A dialogue clip gained less, 2.3-2.4 dB at each
     end (3 dB on the face), as its plain upscale was already close to the picture; its lip sync held. It costs about
-    16 s per end at 1080p (32 s for both) and 83 s for both ends at 2K, and 0.4-0.7 GiB more GPU memory at the peak at
-    1080p, 1.3 GiB at 2K, where the lowest free memory came down to 14.1 GiB with both ends (16.0 GiB without). One end
-    at 2K has not run: the popover says so there, and its time (+60 s) is an estimate.
+    16 s per end at 1080p (32 s for both) and 0.4-0.7 GiB more GPU memory at the peak. The one pinned refine at 2K took
+    1.3 GiB more, and the lowest free memory came down to 14.1 GiB with both ends (16.0 GiB without); the cascade's 2K
+    step has the same rows, so it should take the same (not measured yet).
 - **At full strength it changes faces.** NVIDIA's setting ("Full re-generate": start noise 0.909, 3 steps) gives a
   much sharper picture but redraws faces into a different-looking person.
   "Balanced" (0.7, 2 steps, the default) and "Faithful" (0.5, 2 steps) redraw less; how they look, and whether the

@@ -5,6 +5,7 @@ python3 -m unittest tests.test_cli -v      (or with the rest: python3 -m unittes
 
 The stubs and fake servers of this file and of test_mcp.py listen on ports 18820-18839.
 """
+import argparse
 import ast
 import importlib.machinery
 import importlib.util
@@ -829,6 +830,7 @@ class UpscaleTimes(unittest.TestCase):
         page = (REPO / "webui" / "index.html").read_text()
         standard = int(re.search(r"j\.load==='standard'\?(\d+):0", page).group(1))
         self.assertIn("return e[0]+(j.steps||2)*e[1]+(j.load==='standard'?", page)        # nothing else counts
+        self.assertIn("if(c)return c+(j.load==='standard'?", page)    # but the cascade's own (Keep my frames at 2K)
         spec = importlib.util.spec_from_file_location("regen2k_job_times", REPO / "upscale" / "regen2k_job.py")
         regen = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(regen)
@@ -878,6 +880,29 @@ class UpscaleTimes(unittest.TestCase):
         for text in (usage, cli.INSTRUCTIONS, tool, api):                   # 4K has run end to end (16:9)
             self.assertNotIn("untested", text)
             self.assertNotIn("not yet run end to end", text)
+
+    def test_keep_my_frames_at_2k(self):
+        """Keep my frames at 2K goes through the job's cascade (made at 1080p first): its time in all is the job's
+        cascade_eta_s (upscale_offers "cascade_eta_s", which the page's upEta takes for an upscale with route
+        "cascade"): about 19 min for a 5 s clip with one end or both, as the unpinned 2K, and 49-50 min at 10 s;
+        the usage, the --pin help, the MCP tool and docs/API.md say so, and that it has not run through a studio."""
+        _, regen, eta, _ = self.model()
+        five, ten = ([regen.cascade_eta_s(seconds, ends) for ends in (1, 2)] for seconds in (5, 10))
+        self.assertEqual(([round(s / 60) for s in five], round(eta(5, "2k", 2) / 60), [round(s / 60) for s in ten]),
+                         ([19, 19], 19, [49, 50]))
+        cli = load_cli()
+        usage = " ".join(cli.__doc__.split())
+        self.assertIn("--pin auto at 2K is made at 1080p first, then brought to 2K: about 19 min at 5 s, as without "
+                      "it, 49-50 min at 10 s (by the job's model: not run through a studio yet)", usage)
+        tool = next(t for t in cli.TOOLS if t["name"] == "upscale")["description"]
+        self.assertIn("(at 2K made at 1080p first, then brought to 2K: about 19 min at 5 s, 49-50 min at 10 s, not "
+                      "yet run)", tool)
+        sub = next(a for a in cli.parser()._actions if isinstance(a, argparse._SubParsersAction))
+        pin = next(a for a in sub.choices["upscale"]._actions if "--pin" in a.option_strings)
+        self.assertIn("at 2K made at 1080p first, then brought to 2K", pin.help)
+        api = " ".join((REPO / "docs" / "API.md").read_text().split())
+        self.assertIn("made at 1080p first, then brought to 2K", api)
+        self.assertIn("about 19 min for a 5 s clip and 49-50 min at 10 s", api)
 
     def test_the_popover_has_no_times_of_its_own(self):
         """The popover's sizes have no times in the page's markup, nor the page a table of them: openUpscale writes
