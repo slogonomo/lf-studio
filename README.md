@@ -191,8 +191,9 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   stretched), took 9.3 min to 1080p with all 124 frames and the clip's whole sound, and the 768p 16:9 one 18.6 min to
   2K, and a 576p clip with a first frame (121 frames) took 9.3 min to 1080p. LightX2V Turbo's 768p Text clips have not
   been upscaled through the studio yet: the popover says so, and their times are a Text clip's. Nor have its 576p clips
-  at 2K (run at 1080p only) or its 768p Keyframes clips with a first frame alone; the popover counts them with those
-  that have (the 576p clips at 1080p, the 768p ones with both keyframes) and gives no note
+  at 2K without Keep my frames (with it, three went to 2K on 2026-10-31: below) or its 768p Keyframes clips with a
+  first frame alone; the popover counts them with those that have (the 576p clips at 1080p, the 768p ones with both
+  keyframes) and gives no note
   ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). NVIDIA's
   code is written for 16:9: the studio takes a 9:16 clip through it with the shapes turned (no NVIDIA file changed). It
   has as many tokens as 16:9 and took the same time at 1080p and 2K; **9:16 has not run at 4K yet**, and NVIDIA trained

@@ -355,9 +355,9 @@ The other stages, at 1080p (2K): encoding the final clip 128.3-128.6 s (128.3 s)
   process, Qwen container or GPU memory left, and no job started.
 - **Not run through the studio:** LightX2V Turbo's 768p Text clips (linked as they are), its Keyframes clips at 768p
   without a last keyframe (linked, as those with one, which have run: below), one whose text is encoded at upscale time
-  (a Keyframes clip without `qwen-text/`), its 576p clips at 2K (run at 1080p only; at 2K apart, in research runs:
-  below), and 4K of any clip but a 16:9 Text clip (no 9:16 clip and no 124-frame clip has run at 4K). Expected: a Text
-  clip's times, plus the encode where there is one.
+  (a Keyframes clip without `qwen-text/`), its 576p clips at 2K without Keep my frames (run at 1080p, and at 2K with it,
+  through the cascade, on 2026-10-31: below), and 4K of any clip but a 16:9 Text clip (no 9:16 clip and no 124-frame
+  clip has run at 4K). Expected: a Text clip's times, plus the encode where there is one.
 
 **Keep my frames** (`pin`). The pinned refine adds one block of condition rows per end held, as MiniMax-H3 holds a
 keyframe: +2,040 rows at 1080p and +3,600 at 2K per end (+2.7 %; 78,130 and 137,410 rows with one end, 80,170 and
