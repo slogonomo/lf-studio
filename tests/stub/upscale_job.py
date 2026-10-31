@@ -9,8 +9,8 @@ process group, with its output in worker.log. It reads job.json, prints the real
 spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (a small ffmpeg testsrc2 pattern with
 the clip's frames, at 24 fps, no audio, as the real job's MP4 has none; upright when the clip's MP4,
 <case>/stage2/refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json, with the real job's
-"frames" (frame_case), "rows" (case_rows), "forward" and "lean_chunks" (lean_chunks_for) and, for a job.json with a
-"pin", its "pin": per keyframe its picture checked by its sha256 as
+"frames" (frame_case), "rows" (case_rows), "forward" (forward_for) and "lean_chunks" (lean_chunks_for) and, for a
+job.json with a "pin", its "pin": per keyframe its picture checked by its sha256 as
 the real job checks it (PIN_WHY: gone, changed; a last end of a clip that keeps fewer frames than made: past_end),
 else held at 33.0 dB (STUB_UPSCALE_PIN_DB sets others: "last=25.4", below the 28 needed, is not held: far). SIGTERM
 (Cancel) ends it at once, like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status
@@ -191,9 +191,9 @@ def main(argv):
         return 2
     regen = real_job()
     receipt["frames"] = frames = regen.frame_case(kept)
-    lean = regen.lean_chunks_for(frames, job["resolution"])
     receipt.update(rows=regen.case_rows(frames, job["resolution"], len((job.get("pin") or {}).get("keyframes", ()))),
-                   forward="lean" if lean else "stock", lean_chunks=lean)
+                   forward=regen.forward_for(frames, job["resolution"]),
+                   lean_chunks=regen.lean_chunks_for(frames, job["resolution"]))
     if "pin" in job:
         receipt["pin"] = check_pin(job["pin"], frames)
     started, status = time.time(), 0

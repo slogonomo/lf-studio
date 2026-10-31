@@ -946,6 +946,34 @@ class OfferTests(unittest.TestCase):
         self.assertEqual(own, {("1080p", 185): 116920, ("1080p", 241): 147690, ("2k", 121): 133614,
                                ("2k", 153): 169726, ("4k", 121): 302334})
 
+    def test_lean2_only_past_every_case_that_ran(self):
+        """lean2 where the clip's own rows pass LEAN2_ROWS, the most of any case run on the GPU (4K at 5 s, 302,334):
+        every case that ran keeps the forward it ran with (the 5 s runs and the long clips' of 2026-10-30, with a pin
+        too: forward_for does not count its rows), and of the lengths and sizes the studio makes only 2K at 12 and
+        15 s (314,180 and 386,406) and 4K past 5 s (not offered) go lean2; lean2 runs the lean blocks (16 chunks)."""
+        self.assertEqual((job_module.LEAN2_ROWS, job_module.FORWARDS), (302_334, ("stock", "lean", "lean2")))
+        ran = {(121, "1080p"): "stock", (124, "1080p"): "stock", (121, "2k"): "stock", (124, "2k"): "stock",
+               (121, "4k"): "lean", (153, "1080p"): "stock", (241, "1080p"): "lean", (243, "1080p"): "lean",
+               (361, "1080p"): "lean", (241, "2k"): "lean"}
+        for (kept, size), forward in ran.items():
+            case = job_module.frame_case(kept)
+            self.assertEqual(job_module.forward_for(case, size), forward, (kept, size))
+            own = sum(job_module.case_rows(case, size)[k] for k in ("video", "audio"))
+            self.assertLessEqual(own, job_module.LEAN2_ROWS, (kept, size))
+        self.assertEqual(max(sum(job_module.case_rows(job_module.frame_case(kept), size)[k] for k in ("video", "audio"))
+                             for kept, size in ran), job_module.LEAN2_ROWS)
+        lean2 = {}
+        for kept, (seconds, *_) in CASES.items():
+            for size in job_module.SIZES:
+                case = job_module.frame_case(kept)
+                forward = job_module.forward_for(case, size)
+                self.assertEqual(job_module.lean_chunks_for(case, size), None if forward == "stock" else 16)
+                if forward == "lean2":
+                    lean2.setdefault(size, set()).add(seconds)
+        self.assertEqual(lean2, {"2k": {12, 15}, "4k": {6, 7, 8, 10, 12, 15}})
+        self.assertEqual([sum(job_module.case_rows(job_module.frame_case(kept), "2k")[k] for k in ("video", "audio"))
+                          for kept in (289, 361)], [314180, 386406])
+
     def test_the_memory_model(self):
         """The peak model reproduces the job's 5 s runs of 2026-10-28 (a 16:9 clip; allocated at the peak 81.29 / 91.08
         / 94.46 GiB at 1080p / 2K / 4K) and their lowest MemAvailable from their start (27.4 GiB from ~116.5, 15.7 from
@@ -960,7 +988,7 @@ class OfferTests(unittest.TestCase):
             self.assertAlmostEqual(job_module.peak_gib(rows, forward), allocated, delta=0.06)
             lowest = start - job_module.peak_gib(rows, forward) - job_module.overhead_gib(rows, forward)
             self.assertLess(abs(lowest - low), 0.6, size)
-        self.assertEqual(job_module.OVERHEAD_GIB, {"stock": (3.5, 5.0), "lean": (2.1, 2.8)})
+        self.assertEqual(job_module.OVERHEAD_GIB, {"stock": (3.5, 5.0), "lean": (2.1, 2.8), "lean2": (2.1, 2.8)})
         self.assertEqual([round(job_module.overhead_gib({"video": own, "audio": 0}, forward), 2)
                           for forward, own in (("stock", 0), ("stock", 100_000), ("lean", 0), ("lean", 100_000))],
                          [3.5, 8.5, 2.1, 4.9])
@@ -978,6 +1006,31 @@ class OfferTests(unittest.TestCase):
                   for size in job_module.SIZES for ends in (0, 1, 2) if "why" not in job_module.offer(kept, size)}
         self.assertEqual({key: floor for key, floor in floors.items() if floor != (115 if key[1] == "4k" else 110)},
                          {})
+
+    def test_lean2s_memory(self):
+        """lean2's model, an estimate until its first run: lean's bytes a row less the fp32 video embeds diffusers'
+        forward keeps (5,376 x 4 = 21,504 bytes a video row: the lengths study's L2, 93.9 GiB at 2K 15 s), lean's
+        overhead line. 2K at 12 s then needs 109 GiB to start, as 2K at 10 s; 2K at 15 s 115, 116 with an end or both
+        kept: the most the box gives (117.7 idle, 116.3-116.6 at the long runs' starts), so its lowest MemAvailable
+        from 116.5 is ~9.7 GiB (~9.2 with both ends), against the guard's 5. The lean forward there would need 123."""
+        self.assertEqual(job_module.ROW_BYTES, {"stock": 181_800, "lean": 92_300, "lean2": 70_796})
+        need, low = {}, {}
+        for kept in (289, 294, 361, 362):
+            case = job_module.frame_case(kept)
+            for ends in (0, 1, 2):
+                rows = job_module.case_rows(case, "2k", ends)
+                need[(kept, ends)] = job_module.need_gib(case, "2k", ends)
+                low[(kept, ends)] = round(116.5 - job_module.peak_gib(rows, "lean2")
+                                          - job_module.overhead_gib(rows, "lean2"), 1)
+        self.assertEqual(need, {(kept, ends): 109 if kept < 300 else (115, 116, 116)[ends]
+                                for kept in (289, 294, 361, 362) for ends in (0, 1, 2)})
+        self.assertEqual({key: value for key, value in low.items() if key[0] in (289, 361)},
+                         {(289, 0): 16.5, (289, 1): 16.2, (289, 2): 16.0, (361, 0): 9.7, (361, 1): 9.5, (361, 2): 9.2})
+        fifteen = job_module.case_rows(job_module.frame_case(361), "2k")
+        self.assertEqual(round(job_module.peak_gib(fifteen, "lean2"), 1), 93.9)
+        self.assertEqual(round(job_module.peak_gib(fifteen, "lean"), 1), 101.6)
+        self.assertEqual(math.ceil(job_module.peak_gib(fifteen, "lean") + job_module.overhead_gib(fifteen, "lean")
+                                   + job_module.GUARD_GIB + job_module.FLOOR_MARGIN_GIB), 123)
 
     def test_the_long_clips_runs(self):
         """The memory model against the job's runs through a staging studio on 2026-10-30, each from its own
@@ -2411,6 +2464,7 @@ class RunTests(Fixture):
             encode_audio = stack.enter_context(mock.patch.object(job_module, "encode_audio",
                                                                  side_effect=encode_audio))
             lean = stack.enter_context(mock.patch.object(job_module, "install_lean_blocks", return_value=3))
+            lean2 = stack.enter_context(mock.patch.object(job_module, "install_lean2", return_value=(None, None)))
             stack.enter_context(contextlib.redirect_stdout(stdout))
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             status = job_module.main(["--job", str(self.write_job(**changes))])
@@ -2419,7 +2473,7 @@ class RunTests(Fixture):
             self.dicts = {name: dict(getattr(pipeline, name)) for name in ("INPUT_SIZES", "NATIVE_SHAPES",
                                                                            "RESOLUTIONS")} if pipeline else None
         phases = [p[1] for p in map(job_module.parse_line, stdout.getvalue().splitlines()) if p and p[0] == "phase"]
-        self.lean, self.stdout, self.emptied = lean, stdout.getvalue(), fake.emptied
+        self.lean, self.lean2, self.stdout, self.emptied = lean, lean2, stdout.getvalue(), fake.emptied
         return status, json.loads((self.out / "receipt.json").read_text()), calls, phases, encode_audio
 
     def expected_loads(self, fast, audio=True, fallback=()):
@@ -2749,6 +2803,7 @@ class RunTests(Fixture):
                 self.assertEqual((encode_audio.call_args.args[1].shape, encode_audio.call_args.args[2]),
                                  ((2, samples), case["A"] * 800))
                 self.assertEqual((self.lean.call_count, self.lean.call_args.args[1]), (1, 16))
+                self.lean2.assert_not_called()                     # every one of them ran lean on the GPU
                 self.assertEqual(self.loads, self.expected_loads(fast=True))
                 self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
                 self.assertEqual((receipt["frames"], receipt["forward"], receipt["lean_chunks"]),
@@ -2828,6 +2883,7 @@ class RunTests(Fixture):
                                                             **({"pin": pin(*ends)} if ends else {}))
                 self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
                                  receipt.get("error"))
+                self.lean2.assert_not_called()
                 if resolution == "4k":
                     self.assertEqual((self.lean.call_count, receipt["forward"], receipt["lean_chunks"]),
                                      (1, "lean", 16))
@@ -4145,6 +4201,123 @@ class PinRefineTests(unittest.TestCase):
             job_module.refine_pinned(self.pipe(), self.low, self.text, 1234, [("first", self.first),
                                                                               ("last", torch.zeros(1, 24, 1, 8, 6))],
                                      124)
+
+
+
+# a tiny MiniMax-H3 transformer of diffusers' own class (random weights), for lean2 (Lean2Tests)
+TINY_DIT = dict(num_attention_heads=2, attention_head_dim=32, hidden_size=64, num_layers=2, num_refiner_layers=1,
+                ffn_dim=128, text_dim=16, freq_dim=32, time_embed_hidden_dim=64, time_embed_dim=32, rope_freq_dim=4)
+
+
+@unittest.skipUnless(torch is not None and has_modules("numpy", "diffusers"),
+                     "needs torch, numpy and diffusers (the Regen-2K environment; CPU is enough)")
+class Lean2Tests(unittest.TestCase):
+    """install_lean2 on a tiny random-weight MiniMax-H3 transformer of diffusers 0.40.0's own class, loaded as the job
+    loads the real one (torch_dtype bf16: proj_in in fp32, _keep_in_fp32_modules, the block stack in bf16), on the CPU,
+    through NVIDIA's Pipeline.refine and the job's refine_pinned (with both ends) where LFSTUDIO_UPSCALE_PKG names
+    NVIDIA's package: lean2 gives the lean blocks' refined latent bit for bit, and lean2's embeds on the stock blocks
+    the stock one; in every step the embeds come out of proj_in in bf16, as the sequence is, and are empty once the
+    first block runs; a sequence of another dtype is refused. diffusers' forward reads the embeds only where it
+    scatters them, before its block loop (its source, so a diffusers that reads them later fails here)."""
+
+    def setUp(self):
+        if not nvidia_modules():
+            self.skipTest("NVIDIA's Open-H3-Regenerate-2K is not installed (LFSTUDIO_UPSCALE_PKG)")
+        from diffusers import MiniMaxH3Transformer3DModel
+        stack = contextlib.ExitStack()
+        self.pipeline = stack.enter_context(nvidia_open_h3())
+        self.addCleanup(stack.close)
+        self.root = Path(tempfile.mkdtemp(prefix="lean2-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        torch.manual_seed(5)
+        MiniMaxH3Transformer3DModel(**TINY_DIT).save_pretrained(self.root)
+        draw = torch.Generator().manual_seed(13)
+        self.low = torch.randn(24, 37, 4, 6, generator=draw)                # R = 2 x 3 = 6 rows a frame
+        self.text = {"prompt_embeds": torch.randn(5, 16, generator=draw).to(torch.bfloat16),
+                     "text_token_tags": torch.ones(5, dtype=torch.long)}
+        self.audio = torch.randn(2, 32, 207, generator=draw).to(torch.bfloat16)
+        self.ends = [(end, torch.randn(1, 24, 1, 4, 6, generator=draw)) for end in ("first", "last")]
+        self.sigmas = sys.modules["open_h3.sigmas"].shifted_grid(0.7, 2)  # balanced: 2 steps from 0.7
+
+    def model(self, forward):
+        """The tiny transformer as the job loads the DiT, with the block forward `forward` installed by the job's own
+        functions (lean_forward's cuDNN pin left out: the CPU has no cuDNN), and a record of its embeds."""
+        from diffusers import MiniMaxH3Transformer3DModel
+        model = MiniMaxH3Transformer3DModel.from_pretrained(self.root, torch_dtype=torch.bfloat16).eval()
+        model.requires_grad_(False)
+        self.assertEqual((model.proj_in.weight.dtype, model.context_embedder.weight.dtype),
+                         (torch.float32, torch.bfloat16))
+        if forward in ("lean", "lean2"):
+            with mock.patch("torch.nn.attention.sdpa_kernel", lambda *backends: contextlib.nullcontext()):
+                self.assertEqual(job_module.install_lean_blocks(model, 4), 2)
+        if forward in ("lean2", "stock+lean2"):
+            handles = job_module.install_lean2(model)
+            self.assertEqual(len(handles), 2)
+        model.embeds = []                                 # (dtype, shape) out of proj_in, and empty at block 0
+
+        def out(module, args, output):                    # after lean2's cast: what the forward gets
+            model.embeds.append({"dtype": output.dtype, "shape": tuple(output.shape), "tensor": output})
+
+        def first(module, args):                          # after lean2's release
+            for embed in model.embeds:
+                if "tensor" in embed:
+                    embed["at_block_0"] = embed.pop("tensor").numel()
+        model.proj_in.register_forward_hook(out)
+        model.transformer_blocks[0].register_forward_pre_hook(first)
+        return model
+
+    def pipe(self, forward):
+        """NVIDIA's Pipeline without its __init__ (no weights): on the CPU, the tiny transformer."""
+        pipe = object.__new__(self.pipeline.Pipeline)
+        pipe.device, pipe.sigmas, pipe.audio = torch.device("cpu"), list(self.sigmas), self.audio
+        pipe.model, pipe.fwd = self.model(forward), types.SimpleNamespace(plan=None, graphs=None)
+        return pipe
+
+    def refine(self, forward, ends=()):
+        pipe = self.pipe(forward)
+        with torch.inference_mode():
+            if ends:
+                result = job_module.refine_pinned(pipe, self.low, self.text, 1234, list(ends), 124)[0]
+            else:
+                result = self.pipeline.Pipeline.refine(pipe, self.low, self.text, 1234)
+        return result, pipe.model.embeds
+
+    def test_lean2_is_lean_bit_for_bit(self):
+        for ends in ((), self.ends):
+            with self.subTest(ends=len(ends)):
+                lean, lean_embeds = self.refine("lean", ends)
+                lean2, embeds = self.refine("lean2", ends)
+                self.assertTrue(torch.equal(lean2, lean), f"max diff {(lean2 - lean).abs().max()}")
+                self.assertEqual(lean2.dtype, torch.float32)
+                rows = (37 + len(ends)) * 6
+                self.assertEqual([{k: e[k] for k in ("dtype", "shape")} for e in lean_embeds],
+                                 [{"dtype": torch.float32, "shape": (1, rows, 64)}] * 2)    # diffusers' own: fp32
+                self.assertEqual(embeds, [{"dtype": torch.bfloat16, "shape": (1, rows, 64), "at_block_0": 0}] * 2)
+                self.assertTrue(all(e["at_block_0"] == rows * 64 for e in lean_embeds))     # kept by the forward
+                stock, _ = self.refine("stock", ends)
+                both, _ = self.refine("stock+lean2", ends)                # lean2's embeds alone, on stock blocks
+                self.assertTrue(torch.equal(both, stock))
+                self.assertFalse(torch.equal(stock, torch.zeros_like(stock)))
+
+    def test_another_dtype_is_refused(self):
+        model = self.model("lean2")
+        with torch.inference_mode(), self.assertRaisesRegex(
+                RuntimeError, r"^lean2: the sequence is torch.float32, the video embeds were cast to torch.bfloat16$"):
+            model.transformer_blocks[0](torch.zeros(1, 3, 64), torch.zeros(4, 32), torch.zeros(3, dtype=torch.long),
+                                        None)
+
+    def test_diffusers_reads_the_embeds_only_where_it_scatters_them(self):
+        import inspect
+        from diffusers import MiniMaxH3Transformer3DModel
+        source = inspect.getsource(MiniMaxH3Transformer3DModel.forward)
+        lines = [line.strip() for line in source.splitlines() if "video_embeds" in line]
+        self.assertEqual(lines, [
+            "video_embeds = self.proj_in(hidden_states.to(get_parameter_dtype(self.proj_in)))",
+            "hidden_states = hidden_states.index_copy(1, video_indices, video_embeds.to(text_embeds.dtype))"])
+        self.assertEqual(source.count("self.proj_in("), 1)
+        self.assertLess(source.index("video_embeds.to(text_embeds.dtype)"),
+                        source.index("for block in self.transformer_blocks:"))
+        self.assertIn("hidden_states = text_embeds.new_zeros(", source)      # the sequence: the text stream's dtype
 
 
 if __name__ == "__main__":
