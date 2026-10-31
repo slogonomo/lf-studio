@@ -1564,8 +1564,8 @@ UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
 # One line per route, so a route that fails its GPU run goes with its line. Not at 4K (never run there); Balanced only
 # (Faithful held a first frame only ~1 dB closer). At 2K it goes through the job's cascade (regen.route_for: made at
 # 1080p first, then one step at 2K; upscalable's pin_routes "route"), which has not run through the studio yet: the
-# single-pass pinned 2K that ran there on 2026-10-30 ("2k" of first+last) is gone, and with it its line. On a long
-# clip each refine runs with the job's lean blocks where its own rows make it lean (1080p from 10 s, 2K from 6 s:
+# single-pass pinned 2K that ran there on 2026-10-29/30 ("2k" of first+last) is gone, and with it its line. On a
+# long clip each refine runs with the job's lean blocks where its own rows make it lean (1080p from 10 s, 2K from 6 s:
 # regen.lean_chunks_for), as it ran at 1080p 10 s; at the other lengths and sizes the note says it has not run.
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
