@@ -198,20 +198,20 @@ def main(argv):
         receipt["pin"] = check_pin(job["pin"], frames)
     held = sum(bool((receipt.get("pin") or {}).get(end, {}).get("used")) for end in regen.ANCHORS)
     receipt["route"] = route = regen.route_for(job["resolution"], held)
-    lean = regen.lean_chunks_for(frames, job["resolution"])
-    receipt.update(rows=regen.case_rows(frames, job["resolution"], held), forward="lean" if lean else "stock",
-                   lean_chunks=lean)
+    receipt.update(rows=regen.case_rows(frames, job["resolution"], held),
+                   forward=regen.forward_for(frames, job["resolution"]),
+                   lean_chunks=regen.lean_chunks_for(frames, job["resolution"]))
     steps = job["steps"] + (regen.CASCADE_STEPS if route == "cascade" else 0)
     if route == "cascade":
         first, to = regen.CASCADE_FROM[job["resolution"]], job["resolution"]
-        below = regen.lean_chunks_for(frames, first)
 
         def grid(size):
             height, width = (regen.NVIDIA_ENTRIES["RESOLUTIONS"][size][i] // 16 for i in (0, 1))
             return [24, frames["T"]] + ([height, width] if receipt["orientation"] == "landscape" else [width, height])
         receipt["cascade"] = {"from": first, f"steps_{first}": job["steps"], f"latent_{first}": grid(first),
                               f"rows_{first}": regen.case_rows(frames, first, held),
-                              f"forward_{first}": "lean" if below else "stock", f"lean_chunks_{first}": below,
+                              f"forward_{first}": regen.forward_for(frames, first),
+                              f"lean_chunks_{first}": regen.lean_chunks_for(frames, first),
                               f"sigma_{to}": regen.CASCADE_SIGMA, f"steps_{to}": regen.CASCADE_STEPS,
                               f"latent_{to}": grid(to), "times_s": {}}
     started, status = time.time(), 0

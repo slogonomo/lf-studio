@@ -835,7 +835,8 @@ class OfferTests(unittest.TestCase):
                           {"eta_s": [691, 1261], "ran": True, "cascade_eta_s": [2931, 2996]},
                           {"eta_s": [753, 929], "ran": True}))
         self.assertEqual((table["12"]["2k"], table["15"]["2k"]),
-                         ({"eta_s": [814, 1822], "ran": False}, {"eta_s": [977, 2698], "ran": False}))
+                         ({"eta_s": [814, 1822], "ran": False, "cascade_eta_s": [3998, 4073]},
+                          {"eta_s": [977, 2698], "ran": False, "cascade_eta_s": [5636, 5725]}))
         for seconds, sizes in table.items():
             self.assertEqual(list(sizes), list(job_module.SIZES))
             for size, row in sizes.items():          # 2K's Keep my frames through the cascade: its time with 1, 2 ends
@@ -919,7 +920,8 @@ class OfferTests(unittest.TestCase):
         each picture's encode at both grids (3 s at 1080p, 5 s at 2K). At 5 s about 19 min with one end and 19.5
         with both: about the unpinned 2K's 19.4, and 1.3 min less than the single-pass pinned 2K it replaces (both
         ends: 405 + 2 x 417 + 10 = 1249 s by the same model; measured 1202 s through the studio); at 10 s 49-50 min,
-        against 53.5 unpinned. The same for every count of frames of a length (the rows are the frames made's)."""
+        against 53.5 unpinned; at 12 and 15 s (2K's fitted step there, lean2's) 67-68 and 94-95 min, against 74 and
+        106 unpinned. The same for every count of frames of a length (the rows are the frames made's)."""
         self.assertEqual((job_module.STEP_MODEL, job_module.CASCADE_UPSCALE_S, job_module.PIN_ENCODE_S),
                          ((6.457e-4, 1.638e-8), 5, {"1080p": 3, "2k": 5}))
         self.assertEqual((job_module.CASCADE_FROM, job_module.CASCADE_SIGMA, job_module.CASCADE_STEPS),
@@ -940,8 +942,9 @@ class OfferTests(unittest.TestCase):
                 want = base + 2 * (low + extra("1080p")) + top + extra("2k") + 5 * case["T"] / 37 + ends * 8
                 self.assertEqual(job_module.cascade_eta_s(seconds, ends), round(want), (kept, ends))
                 self.assertEqual(job_module.step_s(1000), model(1000))
-        self.assertEqual({s: [job_module.cascade_eta_s(s, ends) for ends in (1, 2)] for s in (5, 6, 7, 8, 10)},
-                         {5: [1129, 1169], 6: [1547, 1594], 7: [1797, 1847], 8: [2057, 2111], 10: [2931, 2996]})
+        self.assertEqual({s: [job_module.cascade_eta_s(s, ends) for ends in (1, 2)] for s in (5, 6, 7, 8, 10, 12, 15)},
+                         {5: [1129, 1169], 6: [1547, 1594], 7: [1797, 1847], 8: [2057, 2111], 10: [2931, 2996],
+                          12: [3998, 4073], 15: [5636, 5725]})
         # the step model's extra for the condition rows at 5 s, as measured through the studio (2026-10-29/30): ~6.5 s
         # a step per end at 1080p, ~37 s a step with both ends at 2K
         five = job_module.frame_case(124)
@@ -974,9 +977,9 @@ class OfferTests(unittest.TestCase):
                         "floor_gib": job_module.min_free_for(size, job_module.MIN_FREE_GIB, kept, ends),
                         "eta_s": row["eta_s"], "strengths": ["faithful", "balanced", "full"], "ran": row["ran"]}
                     if cascade:
-                        below = job_module.lean_chunks_for(case, "1080p")
                         want["cascade"] = {"from": "1080p", "rows_1080p": job_module.case_rows(case, "1080p", ends),
-                                           "forward_1080p": "lean" if below else "stock", "lean_chunks_1080p": below,
+                                           "forward_1080p": job_module.forward_for(case, "1080p"),
+                                           "lean_chunks_1080p": job_module.lean_chunks_for(case, "1080p"),
                                            "sigma_2k": 0.4, "steps_2k": 1, "eta_s": row["cascade_eta_s"][ends - 1]}
                     self.assertEqual(offered, want, (kept, size, ends))
         for kept in (145, 73, 105, 345):
@@ -1636,9 +1639,10 @@ class InputTests(Fixture):
         with self.assertRaisesRegex(JobError, r"^4K for 15 s clips comes later: 1080p and 2K take them$"):
             job_module.plan(dict(job_module.parse_job(self.job(resolution="4k"), "/"), orientation="landscape",
                                  frames=job_module.frame_case(361)), schedules, grid)
-        # 2K at 12 and 15 s: lean2 by its rows, not run yet; at 15 s the case's own floor, past the setting's 110
+        # 2K at 12 and 15 s: lean2 by its rows, not run yet; at 15 s the case's own floor, past the setting's 110;
+        # with Keep my frames the cascade, its 1080p stage lean and its 2K step lean2 (the floor its 2K step's)
         for kept, ends, forward_floor in ((289, (), 110), (362, (), 115), (361, ("first",), 116),
-                                          (362, ("first", "last"), 116)):
+                                          (362, ("first", "last"), 116), (289, ("first", "last"), 110)):
             job = dict(job_module.parse_job(self.job(**({"pin": pin(*ends)} if ends else {})), "/"),
                        orientation="landscape", frames=job_module.frame_case(kept))
             planned = job_module.plan(job, schedules, grid)
@@ -1647,6 +1651,12 @@ class InputTests(Fixture):
                                                                  "eta_s", "ran")},
                              {"seconds": seconds, "forward": "lean2", "lean_chunks": 16, "floor_gib": forward_floor,
                               "eta_s": list(job_module.OFFER_ETA_S[seconds]["2k"]), "ran": False}, (kept, ends))
+            self.assertEqual(planned["offer"]["route"], "cascade" if ends else "whole")
+            if ends:
+                self.assertEqual({k: planned["offer"]["cascade"][k]
+                                  for k in ("forward_1080p", "lean_chunks_1080p", "eta_s")},
+                                 {"forward_1080p": "lean", "lean_chunks_1080p": 16,
+                                  "eta_s": job_module.cascade_eta_s(seconds, len(ends))}, (kept, ends))
         for resolution, size, lean in (("1080p", [1080, 1920], None), ("2k", [1440, 2560], None),
                                        ("4k", [2160, 3840], 16)):         # 9:16: the same tokens, the same forward
             job = dict(job_module.parse_job(self.job(resolution=resolution), "/"), orientation="portrait",
@@ -2931,35 +2941,33 @@ class RunTests(Fixture):
                                                      "frames": kept, "bytes": 3})
 
     def test_2k_at_12_and_15_s_runs_lean2(self):
-        """2K at 12 and 15 s (289 and 362 frames, 16:9 and 9:16; with both ends of a 15 s LightX2V Turbo clip too):
-        the lean blocks (16 chunks), then lean2's video embeds on the same DiT, before the refine; the receipt's
-        forward "lean2", its rows and frames the case's, the output every frame; NVIDIA's decode arithmetic as for
-        every other length (decode_released)."""
+        """2K at 12 and 15 s (289 and 362 frames, 16:9 and 9:16): the lean blocks (16 chunks), then lean2's video
+        embeds on the same DiT, before the refine; the receipt's forward "lean2", its rows and frames the case's, the
+        output every frame; NVIDIA's decode arithmetic as for every other length (decode_released). With Keep my
+        frames, through the cascade (test_the_cascade: lean at 1080p, then lean2 for the 2K step); with ends sent
+        that the check does not keep, one pass at 2K, as here."""
         self.pin_stand_ins()
         for orientation, kept, ends in (("landscape", 289, ()), ("portrait", 361, ()), ("landscape", 362, ()),
                                         ("landscape", 362, ("first", "last"))):
             with self.subTest(orientation=orientation, kept=kept, ends=ends):
                 self.long_clip(kept, orientation, pin=False)
                 case = job_module.frame_case(kept)
-                seams = self.pin_seams({end: (True, 33.0) for end in ends}) if ends else self.own_seams()
+                seams = self.pin_seams({end: (False, 20.0) for end in ends}) if ends else self.own_seams()
                 status, receipt, calls, phases, _ = self.run_job(seams=seams, resolution="2k",
                                                                  **({"pin": pin(*ends)} if ends else {}))
                 self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
                                  receipt.get("error"))
+                self.assertEqual((receipt["route"], "cascade" in receipt), ("whole", False))
                 self.assertEqual((self.lean.call_count, self.lean.call_args.args[1]), (1, 16))
                 self.assertEqual(self.lean2.call_count, 1)
                 self.assertIs(self.lean2.call_args.args[0], self.lean.call_args.args[0])      # the same DiT
                 self.assertEqual((receipt["forward"], receipt["lean_chunks"], receipt["frames"]),
                                  ("lean2", 16, case_of(kept)))
-                self.assertEqual(receipt["rows"], job_module.case_rows(case, "2k", len(ends), 41))
+                self.assertEqual(receipt["rows"], job_module.case_rows(case, "2k", 0, 41))     # no end held
                 low = (24, case["T"]) + (LANDSCAPE_TARGETS if orientation == "landscape" else PORTRAIT_TARGETS)[
                     "2k"][2:]
                 self.assertEqual(self.decoded, [(low, kept, "cuda")])
-                if ends:
-                    self.assertEqual(len(self.pinned), 1)
-                    self.assertNotIn("refine", [c[0] for c in calls])
-                else:
-                    self.assertIn(("refine", low, (41, 5120), 1234, "clip", 1.0), calls)
+                self.assertIn(("refine", low, (41, 5120), 1234, "clip", 1.0), calls)
                 self.assertEqual(phases, ["encoding", "loading", "refine 1/2", "refine 2/2", "decoding", "saving"])
                 self.assertEqual(receipt["output"]["frames"], kept)
 
@@ -3101,9 +3109,9 @@ class RunTests(Fixture):
     def pin_seams(self, ends, changed=()):
         """The pin's parts as stand-ins on top of own_seams: check_pin answering `ends` ({anchor: (used, dB)}),
         pin_pixels the pictures of the ends used (those in `changed` turned off, as a picture changed since the
-        check), refine_pinned recording its calls (self.pinned) and stepping as NVIDIA's refine does, tensor_sha256
-        the tensor's tag."""
-        seams, self.pinned, self.grids, self.pinned_at = self.own_seams(), [], [], []
+        check), refine_pinned recording its calls (self.pinned; self.lean2_at: how many times install_lean2 had been
+        called by then) and stepping as NVIDIA's refine does, tensor_sha256 the tensor's tag."""
+        seams, self.pinned, self.grids, self.pinned_at, self.lean2_at = self.own_seams(), [], [], [], []
 
         def check_pin(job, final, ffmpeg=None):
             return {anchor: {"used": used, "agreement_db": db, "frame": 0 if anchor == "first" else
@@ -3126,6 +3134,7 @@ class RunTests(Fixture):
             self.pinned.append((low.shape, seed, [(anchor, latent.tag) for anchor, latent in keyframes], made,
                                 noise_aug, noise_seed))
             self.pinned_at.append((list(pipe.sigmas), pipe.target_shape, pipe.keep_rows))
+            self.lean2_at.append(job_module.install_lean2.call_count)
             for index in range(len(pipe.sigmas) - 1):
                 pipe.on_step("refine", index)
             return StandInTensor(*low.shape, tag="refined"), {
@@ -3187,18 +3196,21 @@ class RunTests(Fixture):
                 self.assertNotIn("cascade", receipt)
 
     def test_the_cascade(self):
-        """Keep my frames at 2K goes through the cascade (route_for), 16:9 and 9:16, 121 and 124 frames, 6 and 10 s,
-        either end or both. Its first refine is the 1080p upscale with Keep my frames of the same clip, call for call:
-        NVIDIA's Pipeline built at 1080p with the job's steps and start_sigma, NVIDIA's upscale from 768p, set_stage,
-        refine_pinned with the pictures at the 1080p grid, the job's seed, sigmas and pin seeds, the block forward by
-        the 1080p rows. Then NVIDIA's upscaler from that refined latent to the 2K grid (the Pipeline's target and kept
-        rows as NVIDIA's own sets them at 2K), and refine_pinned once more, with the same pictures at the 2K grid
-        (encoded on the same VAE), at [0.4, 0.0] (one step from CASCADE_SIGMA), the same seeds and the forward by the
-        2K rows; then the 2K decode and MP4 as without a pin. The phase lines count its 3 steps; the receipt has its
-        route, the cascade's stages (sigmas, latents, rows, forward, seconds, steps) and the pin at 2K."""
+        """Keep my frames at 2K goes through the cascade (route_for), 16:9 and 9:16, 121 and 124 frames, 6, 10, 12 and
+        15 s, either end or both. Its first refine is the 1080p upscale with Keep my frames of the same clip, call for
+        call: NVIDIA's Pipeline built at 1080p with the job's steps and start_sigma, NVIDIA's upscale from 768p,
+        set_stage, refine_pinned with the pictures at the 1080p grid, the job's seed, sigmas and pin seeds, the block
+        forward by the 1080p rows. Then NVIDIA's upscaler from that refined latent to the 2K grid (the Pipeline's target
+        and kept rows as NVIDIA's own sets them at 2K), and refine_pinned once more, with the same pictures at the 2K
+        grid (encoded on the same VAE), at [0.4, 0.0] (one step from CASCADE_SIGMA), the same seeds and the forward by
+        the 2K rows (at 12 and 15 s lean at 1080p, then lean2's embeds put on the same DiT for the 2K step alone); then
+        the 2K decode and MP4 as without a pin. The phase lines count its 3 steps; the receipt has its route, the
+        cascade's stages (sigmas, latents, rows, forward, seconds, steps) and the pin at 2K."""
         for orientation, kept, ends in (("landscape", 121, ("first",)), ("landscape", 124, ("first", "last")),
                                         ("portrait", 124, ("first", "last")), ("portrait", 121, ("first",)),
-                                        ("landscape", 153, ("first",)), ("landscape", 243, ("first", "last"))):
+                                        ("landscape", 153, ("first",)), ("landscape", 243, ("first", "last")),
+                                        ("landscape", 289, ("first",)), ("portrait", 361, ("first",)),
+                                        ("landscape", 362, ("first", "last"))):
             with self.subTest(orientation=orientation, kept=kept, ends=ends):
                 self.long_clip(kept, orientation)
                 case = job_module.frame_case(kept)
@@ -3206,7 +3218,7 @@ class RunTests(Fixture):
                     seams=self.pin_seams({end: (True, 33.5) for end in ends}), resolution="1080p", pin=pin(*ends))
                 self.assertEqual((status, alone["route"]), (0, "whole"), alone.get("error"))
                 one = {"pinned": self.pinned, "at": self.pinned_at, "grids": self.grids, "encoded": self.encoded,
-                       "lean": self.lean.call_args_list}
+                       "lean": self.lean.call_args_list, "lean2": self.lean2.call_count}
                 status, receipt, calls, phases, _ = self.run_job(seams=self.pin_seams({end: (True, 33.5)
                                                                                       for end in ends}), pin=pin(*ends))
                 self.assertEqual((status, receipt["state"]), (0, "done"), receipt.get("traceback") or
@@ -3251,7 +3263,7 @@ class RunTests(Fixture):
                                                          "refine_2k": times["refine_2k"]})
                 self.assertEqual([len(record.pop(key)) for key in ("steps_s_1080p", "steps_s_2k")], [2, 1])
                 self.assertEqual(len(receipt["steps_s"]), 3)
-                lean = job_module.lean_chunks_for(case, "1080p")
+                lean, forward = job_module.lean_chunks_for(case, "1080p"), job_module.forward_for(case, "1080p")
                 self.assertEqual(record.pop("pin_1080p"), {
                     "grid": list(job_module.computed_grid(orientation, "1080p")),
                     "latents": {end: {"shape": [1, 24, 1, 1, 1], "sha256": f"sha of ('1080p', '{end}')"}
@@ -3262,22 +3274,29 @@ class RunTests(Fixture):
                 self.assertEqual(record, {
                     "from": "1080p", "steps_1080p": 2, "sigmas_1080p": [0.7, 0.35, 0.0], "latent_1080p": list(low),
                     "rows_1080p": job_module.case_rows(case, "1080p", len(ends), 41),
-                    "forward_1080p": "lean" if lean else "stock", "lean_chunks_1080p": lean,
+                    "forward_1080p": forward, "lean_chunks_1080p": lean,
                     "upscale_route_2k": [list(grid[2:])], "low_2k_sha256": "sha of None", "sigma_2k": 0.4,
                     "steps_2k": 1, "sigmas_2k": [0.4, 0.0], "latent_2k": list(top)})
                 self.assertEqual({k: alone[k] for k in ("rows", "forward", "lean_chunks", "upscale_route")},
                                  {"rows": job_module.case_rows(case, "1080p", len(ends), 41),
-                                  "forward": "lean" if lean else "stock", "lean_chunks": lean,
+                                  "forward": forward, "lean_chunks": lean,
                                   "upscale_route": [list(low[2:])]})
-                chunks = job_module.lean_chunks_for(case, "2k")
+                chunks, top_forward = job_module.lean_chunks_for(case, "2k"), job_module.forward_for(case, "2k")
                 self.assertEqual((receipt["rows"], receipt["forward"], receipt["lean_chunks"]),
-                                 (job_module.case_rows(case, "2k", len(ends), 41), "lean" if chunks else "stock",
-                                  chunks))
+                                 (job_module.case_rows(case, "2k", len(ends), 41), top_forward, chunks))
                 self.assertEqual((receipt["sigmas"], receipt["steps"], receipt["upscale_route"]),
                                  ([0.7, 0.35, 0.0], 2, [list(low[2:])]))
-                # the forward per stage: installed once where it first goes lean (6 s: at 2K, 10 s: at 1080p)
+                # the forward per stage: installed once where it first goes lean (6 s: at 2K, 10 s and longer: at
+                # 1080p), and lean2's embeds (12 and 15 s) once, on the same DiT, after the 1080p refine
                 self.assertEqual([call.args[1] for call in self.lean.call_args_list], [16] if chunks else [])
                 self.assertEqual([call.args[1] for call in one["lean"]], [16] if lean else [])
+                self.assertEqual((forward, top_forward), {6: ("stock", "lean"), 12: ("lean", "lean2"),
+                                                          15: ("lean", "lean2")}.get(case["seconds"], (forward,
+                                                                                                      forward)))
+                lean2 = top_forward == "lean2"
+                self.assertEqual((self.lean2.call_count, one["lean2"], self.lean2_at), (int(lean2), 0, [0, int(lean2)]))
+                if lean2:
+                    self.assertIs(self.lean2.call_args.args[0], self.lean.call_args.args[0])
                 record = receipt["pin"]
                 self.assertEqual((record["grid"], record["refined_sha256"], record["timesteps"], record["encode_s"]),
                                  (list(job_module.computed_grid(orientation, "2k")), "sha of refined",
@@ -3294,15 +3313,23 @@ class RunTests(Fixture):
         # (refine_pinned draws NVIDIA's noise at its latent's shape; PinRefineTests checks it)
 
     def test_set_forward(self):
-        """The cascade's second refine takes the forward of its own rows: lean_forward installed (install_lean_blocks),
-        or with None the stock forward again (a lean one taken off the blocks)."""
+        """The cascade's second refine takes the forward of its own rows (forward_for): "lean" after "stock"
+        installs lean_forward (install_lean_blocks, 16 chunks); "lean2" after "lean" adds lean2's hooks alone
+        (install_lean2), after "stock" both; "stock" takes a lean forward off the blocks again; lean2's hooks of the
+        refine before come off first. It returns lean2's new hooks (none for the others)."""
         blocks = [types.SimpleNamespace(forward="lean") for _ in range(3)] + [types.SimpleNamespace()]
         model = types.SimpleNamespace(transformer_blocks=blocks)
-        self.assertEqual(job_module.set_forward(model, None), 4)
-        self.assertEqual([vars(block) for block in blocks], [{}] * 4)
-        with mock.patch.object(job_module, "install_lean_blocks", return_value=4) as install:
-            self.assertEqual(job_module.set_forward(model, 16), 4)
-        install.assert_called_once_with(model, 16)
+        removed = []
+        hooks = [types.SimpleNamespace(remove=lambda n=n: removed.append(n)) for n in (1, 2)]
+        self.assertEqual(job_module.set_forward(model, "stock", "lean2", hooks), ())
+        self.assertEqual(([vars(block) for block in blocks], removed), ([{}] * 4, [1, 2]))
+        for forward, before, lean, lean2 in (("lean", "stock", [16], 0), ("lean2", "lean", [], 1),
+                                             ("lean2", "stock", [16], 1), ("lean", "lean2", [], 0)):
+            with mock.patch.object(job_module, "install_lean_blocks", return_value=4) as install, \
+                    mock.patch.object(job_module, "install_lean2", return_value=("h1", "h2")) as hook:
+                self.assertEqual(job_module.set_forward(model, forward, before), ("h1", "h2") if lean2 else ())
+            self.assertEqual(([call.args for call in install.call_args_list], hook.call_count),
+                             ([(model, n) for n in lean], lean2), (forward, before))
 
     def test_ends_the_check_does_not_keep(self):
         """An end check_pin did not keep is not held (at 2K): none kept, a 121-frame clip runs NVIDIA's encode, refine

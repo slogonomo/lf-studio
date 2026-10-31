@@ -665,8 +665,8 @@ def min_free_for(resolution, floor, kept=NVIDIA_FRAMES, ends=0):
     """The MemAvailable an upscale of a clip that keeps `kept` frames, at this resolution and with `ends` ends of a pin,
     needs to start. A 5 s clip: the floor (LFSTUDIO_UPSCALE_MIN_FREE_GIB), plus FLOOR_4K_EXTRA_GIB at 4K (see
     MIN_FREE_GIB), as measured, whatever the floor is set to. Another length: that, or what its case needs by the
-    memory model where that is more (route_need_gib: each stage of its route; none at the default 110 GiB). A floor
-    of 0 (no check) stays 0."""
+    memory model where that is more (route_need_gib: each stage of its route; at the default 110 GiB only 2K at
+    15 s, 115, 116 with an end or both kept). A floor of 0 (no check) stays 0."""
     if floor <= 0:
         return floor
     floor = floor + FLOOR_4K_EXTRA_GIB if resolution == "4k" else floor
@@ -1486,14 +1486,20 @@ def lean_forward(block, hidden_states, temb, adaln_indices, rotary_emb, attentio
     return result
 
 
-def set_forward(model, chunks):
-    """The transformer blocks' forward for the next refine of the cascade, where its stages' rows differ: lean_forward
-    in `chunks` pieces (install_lean_blocks), or with None the stock one again (the lean one taken off)."""
-    if chunks:
-        return install_lean_blocks(model, chunks)
-    for block in model.transformer_blocks:
-        vars(block).pop("forward", None)
-    return len(model.transformer_blocks)
+def set_forward(model, forward, before, hooks=()):
+    """The transformer blocks' forward for the next refine of the cascade, where its stages' rows differ: `forward`
+    (FORWARDS, forward_for) after `before`, the refine before's. lean2's hooks of that refine (`hooks`,
+    install_lean2's handles) come off first; "stock" takes the lean blocks off, "lean" and "lean2" install them
+    (install_lean_blocks, LEAN_CHUNKS) where the blocks were stock, and "lean2" its hooks on top. Returns the
+    handles of the hooks it installs (none but for lean2)."""
+    for hook in hooks:
+        hook.remove()
+    if forward == "stock":
+        for block in model.transformer_blocks:
+            vars(block).pop("forward", None)
+    elif before == "stock":
+        install_lean_blocks(model, LEAN_CHUNKS)
+    return install_lean2(model) if forward == "lean2" else ()
 
 
 def install_lean_blocks(model, chunks):
@@ -2082,8 +2088,7 @@ def run(job, files, receipt, trace):
     receipt["forward"] = forward_for(case, first)
     if receipt["lean_chunks"]:
         install_lean_blocks(pipe.model, receipt["lean_chunks"])
-    if receipt["forward"] == "lean2":
-        install_lean2(pipe.model)
+    hooks = install_lean2(pipe.model) if receipt["forward"] == "lean2" else ()
     if audio is not None:                             # else NVIDIA's silence (5 s)
         pipe.audio = audio.to(pipe.device)
     if tuple(pipe.audio.shape) != (2, AUDIO_CHANNELS, case["A"]):
@@ -2165,10 +2170,10 @@ def run(job, files, receipt, trace):
             raise RuntimeError(f"the latent upscaled from {first} is {tuple(low.shape)}, not {want}")
         record.update({f"upscale_route_{to}": [list(grid[2:]) for grid in hop],
                        f"low_{to}_sha256": tensor_sha256(low)})
-        chunks = lean_chunks_for(case, to)            # the block forward by the 2K step's own rows
-        if chunks != receipt["lean_chunks"]:
-            set_forward(pipe.model, chunks)
-        receipt["lean_chunks"], receipt["forward"] = chunks, "lean" if chunks else "stock"
+        forward = forward_for(case, to)               # the block forward by the 2K step's own rows
+        if forward != receipt["forward"]:             # 6 to 8 s: stock -> lean; 12 and 15 s: lean -> lean2
+            hooks = set_forward(pipe.model, forward, receipt["forward"], hooks)
+        receipt["lean_chunks"], receipt["forward"] = lean_chunks_for(case, to), forward
         receipt["rows"] = case_rows(case, to, len(keyframes), receipt["text_rows"])
         marks.clear()
         done[0] = steps
