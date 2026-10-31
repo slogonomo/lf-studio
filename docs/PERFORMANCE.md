@@ -667,41 +667,6 @@ starts at the default 110 GiB, as a 5 s clip does (before the refit: 111 GiB at 
 116.3-116.6 GiB free (117.7 on the idle box), which leaves it 0.3-1.6 GiB; a studio with less free refuses it with the
 reason, before anything starts.
 
-#### 2K at 12 and 15 s: not run yet
-
-By the lean forward's model these would not fit, or only past anything measured: 2K at 12 s would allocate 95.4 GiB
-and come down to about 10 GiB free, and 2K at 15 s would allocate 101.6 GiB and need 123 GiB free to start. So the job
-runs lean2 there (`install_lean2`), a 21,504-byte-a-row saving at the peak (6.3 GiB at 12 s, 7.7 GiB at 15 s):
-
-- diffusers' MiniMax-H3 transformer projects the video rows with `proj_in`, which is fp32 in the checkpoint, keeps
-  that fp32 output (5,376 × 4 bytes a row) in a local through its whole block loop, and puts a bf16 copy of it into the
-  sequence. In the lean forward's itemized peak (92,288 bytes a row at 4K, against 92,278 measured) those embeddings
-  are 21,504 bytes a video row.
-- lean2 casts `proj_in`'s output to bf16 as it comes out, the cast diffusers' forward does itself, and empties it once
-  the first block starts (the sequence has it; nothing reads it again). The cast alone would still keep a bf16 copy,
-  10,752 bytes a row. No file of diffusers or NVIDIA changes: a hook on `proj_in` and one on the first block.
-- On the CPU it gives the lean forward's result **bit for bit** (`tests/test_upscale.py` `Lean2Tests`: a tiny
-  random-weight MiniMax-H3 transformer of diffusers' own class, loaded as the job loads the real one, through
-  NVIDIA's `Pipeline.refine` and the job's pinned refine with both ends; the stock blocks with lean2's embeddings
-  give the stock result bit for bit too).
-- Its peak (`ROW_BYTES` `"lean2"`, 70,796 bytes a row) and overhead (lean's line) are estimates until it runs: 89.1
-  and 93.9 GiB at 12 and 15 s; the lowest MemAvailable from 116.5 GiB free about 16.5 and
-  9.7 GiB (9.2 with both ends at 15 s), against the guard's 5 GiB. At 15 s that is below the lowest of any clean run
-  (11.1 GiB, at 4K for 5 s).
-- **What has never run on GB10:** attention over 314,380 and 386,606 rows (cuDNN's SDPA; the longest so far is
-  302,534 rows, at 4K for 5 s, where q, k and v had 2.17e9 elements each, past 2³¹; 2.77e9 at 2K for 15 s), the
-  memory model past 302,334 rows of a clip's own, and the refiner on a 12 or 15 s clip at 2K (NVIDIA's page shows a
-  15 s clip regenerated at 2K in one run; its released code is 5 s only).
-- **The decode** stays NVIDIA's at every length. With the DiT freed it takes about 3 × the fp32 pixels of the clip
-  (its `.float()`, `*std+mean`, `clamp` and `*255` over the whole clip) above the ~5 GiB left: 35.0 GiB allocated at 2K
-  for 10 s (3.0 ×, its lowest MemAvailable then 75.2 GiB), 30.3 GiB at 1080p for 15 s, 13.6 GiB at 5 s. That gives
-  about 41 GiB at 2K for 12 s and 50 GiB for 15 s, far under the refine's peak, so no streamed decode is needed there
-  (by the same rule 4K at 10 s would need about 73 GiB).
-
-The page shows its note on these ("Clips of this length have not been upscaled on the GPU through the studio yet: the
-times are estimates"): their offers' `"ran"` is false until a run lands. A 2K 15 s run that holds the model would
-bring 12 s in by the offer rule, a longer clip at the same size having run.
-
 **4K past 5 s** is not offered: past the memory measured here, it takes the clip in pieces (windows of the refine),
 which comes later.
 
@@ -749,6 +714,41 @@ estimates". A run that lands adds its line; a run that fails takes its line out,
 there too. Keep my frames has its own lines (the
 server's `PIN_ROUTES` `"ran"`: a size alone at 5 s, `"1080p/10"` for both ends of a LightX2V Turbo 10 s clip), and
 its popover note where its route has not run at the clip's length and size.
+
+#### 2K at 12 and 15 s: not run yet
+
+By the lean forward's model these would not fit, or only past anything measured: 2K at 12 s would allocate 95.4 GiB
+and come down to about 10 GiB free, and 2K at 15 s would allocate 101.6 GiB and need 123 GiB free to start. So the job
+runs lean2 there (`install_lean2`), a 21,504-byte-a-row saving at the peak (6.3 GiB at 12 s, 7.7 GiB at 15 s):
+
+- diffusers' MiniMax-H3 transformer projects the video rows with `proj_in`, which is fp32 in the checkpoint, keeps
+  that fp32 output (5,376 × 4 bytes a row) in a local through its whole block loop, and puts a bf16 copy of it into the
+  sequence. In the lean forward's itemized peak (92,288 bytes a row at 4K, against 92,278 measured) those embeddings
+  are 21,504 bytes a video row.
+- lean2 casts `proj_in`'s output to bf16 as it comes out, the cast diffusers' forward does itself, and empties it once
+  the first block starts (the sequence has it; nothing reads it again). The cast alone would still keep a bf16 copy,
+  10,752 bytes a row. No file of diffusers or NVIDIA changes: a hook on `proj_in` and one on the first block.
+- On the CPU it gives the lean forward's result **bit for bit** (`tests/test_upscale.py` `Lean2Tests`: a tiny
+  random-weight MiniMax-H3 transformer of diffusers' own class, loaded as the job loads the real one, through
+  NVIDIA's `Pipeline.refine` and the job's pinned refine with both ends; the stock blocks with lean2's embeddings
+  give the stock result bit for bit too).
+- Its peak (`ROW_BYTES` `"lean2"`, 70,796 bytes a row) and overhead (lean's line) are estimates until it runs: 89.1
+  and 93.9 GiB at 12 and 15 s; the lowest MemAvailable from 116.5 GiB free about 16.5 and 9.7 GiB (9.2 with both
+  ends at 15 s), against the guard's 5 GiB. At 15 s that is below the lowest of any clean run
+  (11.1 GiB, at 4K for 5 s).
+- **What has never run on GB10:** attention over 314,380 and 386,606 rows (cuDNN's SDPA; the longest so far is
+  302,534 rows, at 4K for 5 s, where q, k and v had 2.17e9 elements each, past 2³¹; 2.77e9 at 2K for 15 s), the
+  memory model past 302,334 rows of a clip's own, and the refiner on a 12 or 15 s clip at 2K (NVIDIA's page shows a
+  15 s clip regenerated at 2K in one run; its released code is 5 s only).
+- **The decode** stays NVIDIA's at every length. With the DiT freed it takes about 3 × the fp32 pixels of the clip
+  (its `.float()`, `*std+mean`, `clamp` and `*255` over the whole clip) above the ~5 GiB left: 35.0 GiB allocated at 2K
+  for 10 s (3.0 ×, its lowest MemAvailable then 75.2 GiB), 30.3 GiB at 1080p for 15 s, 13.6 GiB at 5 s. That gives
+  about 41 GiB at 2K for 12 s and 50 GiB for 15 s, far under the refine's peak, so no streamed decode is needed there
+  (by the same rule 4K at 10 s would need about 73 GiB).
+
+The page shows its note on these ("Clips of this length have not been upscaled on the GPU through the studio yet: the
+times are estimates"): their offers' `"ran"` is false until a run lands. A 2K 15 s run that holds the model would
+bring 12 s in by the offer rule, a longer clip at the same size having run.
 
 ## Experimental LightX2V Turbo
 
