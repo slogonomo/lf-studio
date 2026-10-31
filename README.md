@@ -242,7 +242,7 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     the studio yet, so the popover says so at 2K, and its time is the job's model: about 19 min at 5 s (as without
     the box), 49-50 min at 10 s, and about 67-68 min at 12 s and 94-95 min at 15 s (against 74 and 106 min without
     the box; 2K at those lengths has not run at all). Its 2K step at 12 and 15 s runs `lean2`, as 2K without the box
-    does there, and needs the same free memory (116 GiB at 15 s).
+    does there, and needs 116 GiB free at 15 s, 1 GiB more than without the box (its 2K step's pictures add rows).
   - On clips longer than 5 s it is offered at the sizes their length has. It has run
     with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30), with the lean block forward: both ends held,
     31.9 and 32.0 dB from your pictures (luma PSNR at 1080p), as close as the best 5 s pinned run, with no flash at
