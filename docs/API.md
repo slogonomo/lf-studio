@@ -680,7 +680,8 @@ length and size (`null` with the Upscale off):
  "10": {"1080p": {"eta_s": [543, 453], "ran": true},
         "2k": {"eta_s": [691, 1261], "ran": true, "cascade_eta_s": [2931, 2996]},
         "4k": {"why": "4K for 10 s clips comes later: 1080p and 2K take them"}},
- "12": {"1080p": {"eta_s": [630, 638], "ran": true}, "2k": {"eta_s": [821, 1822], "ran": true},
+ "12": {"1080p": {"eta_s": [630, 638], "ran": true},
+        "2k": {"eta_s": [821, 1822], "ran": true, "cascade_eta_s": [4005, 4080]},
         "4k": {"why": "4K for 12 s clips comes later: 1080p and 2K take them"}}, ...}
 ```
 

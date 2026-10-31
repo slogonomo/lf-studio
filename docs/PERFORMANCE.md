@@ -613,7 +613,7 @@ for the lowest MemAvailable from the run's own start, `lean2`'s before / after i
 | LightX2V Turbo Keyframes, 576p 9:16, a first frame (121 frames, stretched; the cascade's research clip), held | 2K, the cascade | 121, stock, 78,129; stock, 137,409 | **1071.8 s (17:52)** (1129) | 150.6, 149.8 s (150.4); 395.2 s (398.0) | 81.66; 91.69 GiB (81.63; 91.67) | 28.5; 17.2 GiB (27.7; 14.8) |
 | LightX2V Turbo Keyframes, 576p 16:9 10 s, both ends held (the 1080p run's clip above) | 2K, the cascade | 243, lean, 152,050; lean, 267,490 | **2979.4 s (49:39)** (2996) | 476.9, 473.6 s (476.9); 1332.0 s (1344.7) | 81.54; 91.43 GiB (81.47; 91.39) | 29.3; 17.7 GiB (28.8; 15.7) |
 | Sol-H3 Keyframes, 15 s 9:16 (the 1080p run's clip above; its text encoded first, 16.3 s) | 2K (1440×2560) | 361, lean2, 387,178 | **6326.2 s (1 h 45 min)** (6388) | 2680.7, 2678.4 s (2705.5) | 94.05 GiB (93.93 / 94.04) | 12.6 GiB (9.8 / 12.0) |
-| LightX2V Turbo Keyframes, 576p 16:9 15 s, the 10 s clip's two pictures and prompt with a fourth line (362 frames, stretched), both ends held | 2K, the cascade | 362, lean, 223,871; lean2, 393,911 | **5673.6 s (1 h 35 min)** (5725) | 959.9, 961.1 s (965.5); 2771.7 s (2796.0) | 87.75; 94.46 GiB (87.64; 94.37 / 94.48) | 20.5; 11.8 GiB (20.9; 9.5 / 11.7) |
+| LightX2V Turbo Keyframes, 576p 16:9 15 s, the 10 s clip's picture at both ends and its prompt with a fourth line (362 frames, stretched), both ends held | 2K, the cascade | 362, lean, 223,871; lean2, 393,911 | **5673.6 s (1 h 35 min)** (5725) | 959.9, 961.1 s (965.5); 2771.7 s (2796.0) | 87.75; 94.46 GiB (87.64; 94.37 / 94.48) | 20.5; 11.8 GiB (20.9; 9.5 / 11.7) |
 
 - **Every one came out whole:** the clip's frames at its size, its whole sound, the last second clean, and its lip
   sync where the clip has speech: 2.47 against the clip's 2.24 for the 15 s clip at 2K (2.56 at 1080p), 3.12 against
@@ -864,9 +864,9 @@ unpinned clip's):
 
 **Through the studio** (2026-10-31; the runs' times, steps and memory are in [Longer clips](#longer-clips)): a first
 frame at 5 s on the research runs' 9:16 clip, at their seed; both ends at 10 s on the 10 s clip of the 1080p run of
-2026-10-30, at its seed; both ends at 15 s on a LightX2V Turbo 15 s clip made in that window with the same two pictures.
-Every end asked was held (the job's check: 31.2 dB at 5 s, 36.4-37.0 dB at 10 and 15 s), with no flash at either end,
-every frame, the clip's whole sound, the last second clean, and the lip sync kept where the clip speaks.
+2026-10-30, at its seed; both ends at 15 s on a LightX2V Turbo 15 s clip made in that window with the same picture first
+and last. Every end asked was held (the job's check: 31.2 dB at 5 s, 36.4-37.0 dB at 10 and 15 s), with no flash at
+either end, every frame, the clip's whole sound, the last second clean, and the lip sync kept where the clip speaks.
 
 - **5 s, against its research arm:** within 0.3 dB (frame 0 against the picture 26.04 dB at 2K, the arm's 26.03; the
   face 25.18 and 25.09; the two upscales a mean 44.9 dB apart), not bit for bit: its input is the studio's, the arm's
