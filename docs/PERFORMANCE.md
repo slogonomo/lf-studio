@@ -519,8 +519,9 @@ runs above did (128-133 s).
   4K; 117.7 GiB were free on the idle box), and kills it below 5 GiB for 3 s (`LFSTUDIO_UPSCALE_GUARD_GIB`). The job's
   16:9 runs above took ~101 GiB at 2K (MemAvailable 116.7 → 15.7 GiB) and ~105 GiB at 4K (116.4 → 11.1 GiB): a 4K
   upscale that started with just 110 GiB free would come down to ~4.7 GiB, below the guard. A longer clip needs what
-  the memory model below gives where that is more (none does at 110 GiB: 2K at 10 s needs the most, 109; its run came
-  down from 116.5 to 16.7 GiB), and the job checks the floor again as it starts (job.json `min_free_gib`).
+  the memory model below gives where that is more (at 110 GiB only 2K at 15 s does: 115 GiB, 116 with Keep my frames,
+  an estimate; the others 109 at most, 2K at 10 s, whose run came down from 116.5 to 16.7 GiB), and the job checks the
+  floor again as it starts (job.json `min_free_gib`).
 - Quality, so far: at NVIDIA's settings (start noise 0.909, 3 steps: `full`) the result is much sharper but has a
   different-looking face. Lower start noise (0.7 and 0.5 with 2 steps) and refining
   against the clip's own audio instead of NVIDIA's silence are being measured; the defaults (`balanced`, `clip`)
