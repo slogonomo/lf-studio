@@ -897,19 +897,24 @@ class UpscaleTimes(unittest.TestCase):
     def test_keep_my_frames_at_2k(self):
         """Keep my frames at 2K goes through the job's cascade (made at 1080p first): its time in all is the job's
         cascade_eta_s (upscale_offers "cascade_eta_s", which the page's upEta takes for an upscale with route
-        "cascade"): about 19 min for a 5 s clip with one end or both, as the unpinned 2K, and 49-50 min at 10 s;
-        the usage, the --pin help, the MCP tool and docs/API.md say so, and that it has not run through a studio."""
+        "cascade"): about 19 min for a 5 s clip with one end or both, as the unpinned 2K, 49-50 min at 10 s, 67-68 and
+        94-95 min at 12 and 15 s (against 74 and 106 without it); the usage, the --pin help, the MCP tool (about as
+        long as without it: its description has no room for more) and docs/API.md say so, and that it has not run
+        through a studio."""
         _, regen, eta, _ = self.model()
-        five, ten = ([regen.cascade_eta_s(seconds, ends) for ends in (1, 2)] for seconds in (5, 10))
+        five, ten, twelve, fifteen = ([regen.cascade_eta_s(seconds, ends) for ends in (1, 2)]
+                                      for seconds in (5, 10, 12, 15))
         self.assertEqual(([round(s / 60) for s in five], round(eta(5, "2k", 2) / 60), [round(s / 60) for s in ten]),
                          ([19, 19], 19, [49, 50]))
+        self.assertEqual(([round(s / 60) for s in twelve + fifteen], [round(eta(s, "2k", 2) / 60) for s in (12, 15)]),
+                         ([67, 68, 94, 95], [74, 106]))
         cli = load_cli()
         usage = " ".join(cli.__doc__.split())
         self.assertIn("--pin auto at 2K is made at 1080p first, then brought to 2K: about 19 min at 5 s, as without "
-                      "it, 49-50 min at 10 s (by the job's model: not run through a studio yet)", usage)
+                      "it, 49-50 min at 10 s, 67-68 and 94-95 min at 12 and 15 s (by the job's model: not run through "
+                      "a studio yet)", usage)
         tool = next(t for t in cli.TOOLS if t["name"] == "upscale")["description"]
-        self.assertIn("(at 2K made at 1080p first, then brought to 2K: about 19 min at 5 s, 49-50 min at 10 s, not "
-                      "yet run)", tool)
+        self.assertIn("(at 2K made at 1080p first, not yet run: about as long as without it)", tool)
         sub = next(a for a in cli.parser()._actions if isinstance(a, argparse._SubParsersAction))
         pin = next(a for a in sub.choices["upscale"]._actions if "--pin" in a.option_strings)
         self.assertIn("at 2K made at 1080p first, then brought to 2K", pin.help)

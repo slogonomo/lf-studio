@@ -238,8 +238,8 @@ class Protocol(McpTest):
                          {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went after 0.5.0
         upscale = r["tools"][5]["description"]
         for words in ("Experimental", "Clips of every length, 16:9 or 9:16", "of every mode and model",
-                      "1080p and 2K take every length (2K at 12 and 15 s has not run on the GPU yet), 4K 5 s clips; "
-                      "another size is refused with the reason",
+                      "1080p and 2K take every length, 4K 5 s clips; another size is refused with the reason",
+                      "2K at 12 and 15 s, not run yet",
                       "Keyframes or Reference clip", "stretched to 768p", "keeps all its frames (a 5 s one at 4K its "
                       "first 121)", "pin (Keep my frames, experimental)", "at 1080p and 2K with balanced",
                       "2K is 1440x2560", "redraws faces", "longer clips take longer (1080p 24 min at 10 s",
