@@ -232,7 +232,8 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     1080p, and the 2K step only adds detail. In research runs on one DGX Spark (2026-10-29: two LightX2V Turbo clips,
     9:16 and 16:9, 5 s, a first frame; a research runner, its 2K step started from a saved 1080p result) frame 0 came
     2.0-2.1 dB closer to the picture than the plain 2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no
-    flash and the motion kept; one pinned refine at 2K had brought it only about 1 dB closer. It has not run through
+    flash and the motion kept; in the same research one pinned refine at 2K had brought it only about 1 dB closer
+    (through the studio, both ends of a clip without a face came 4.7-5.0 dB closer that way). It has not run through
     the studio yet, so the popover says so at 2K, and its time is the job's model: about 19 min at 5 s (as without
     the box) and 49-50 min at 10 s.
   - On clips longer than 5 s it is offered at the sizes their length has (1080p alone at 12 and 15 s). It has run

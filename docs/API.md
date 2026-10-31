@@ -550,12 +550,12 @@ the job's forward is lean (1080p from 10 s, 2K from 6 s) it runs with the lean b
 At 2K the clip is made at 1080p first, then brought to 2K (the job's route `cascade`; the record's `route`): the
 pinned refine at 1080p, exactly as a 1080p upscale with `pin` runs it, then NVIDIA's latent upscaler from that refined
 latent to the 2K grid, then one step from start noise 0.4 at 2K with the pictures held again, then the 2K decode. There
-is no field for it: a 2K request with an end held takes it. A refine at 2K holds the pictures much less than one at
-1080p (frame 0 about 1 dB closer, against 4 dB), so the picture is made where the pin holds and the 2K step adds the
-detail. Research runs (a research runner on one DGX Spark, 2026-10-29: two LightX2V Turbo 5 s clips with a first
-frame, the 2K step from a saved 1080p result) gave frame 0 2.0-2.1 dB closer to the picture than the plain 2K (the face
-3.4-4.8 dB), with 2.2-2.5 times its fine detail, no flash and the motion kept. It has not run through the studio yet
-(the page says so at 2K). By the job's model it takes about 19 min for a 5 s clip and 49-50 min at 10 s
+is no field for it: a 2K request with an end held takes it. In research runs a refine at 2K held a first frame much
+less than one at 1080p (frame 0 about 1 dB closer, against 4 dB), so the picture is made where the pin holds and the
+2K step adds the detail. Research runs (a research runner on one DGX Spark, 2026-10-29: two LightX2V Turbo 5 s clips
+with a first frame, the 2K step from a saved 1080p result) gave frame 0 2.0-2.1 dB closer to the picture than the plain
+2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no flash and the motion kept. It has not run through the
+studio yet (the page says so at 2K). By the job's model it takes about 19 min for a 5 s clip and 49-50 min at 10 s
 (`upscale_offers` `cascade_eta_s`, below), and needs the free memory of its larger refine. On a clip longer than 5 s it
 has run with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30: both held, 31.9 and 32.0 dB from the
 pictures at 1080p, no flash at either end); elsewhere on long clips it has not run on the GPU, and the page says so.

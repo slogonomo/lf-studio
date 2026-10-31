@@ -713,10 +713,11 @@ not run at the clip's length and size.
 **Why.** A pinned refine at 2K holds the picture far less than one at 1080p. In research runs (2026-10-28, a research
 wrapper on this job, LightX2V Turbo 576p clips with a first frame; luma PSNR of frame 0 against the picture at a
 288 px short side) the pin brought frame 0 from 25.5 to 29.6 dB at 1080p (+4.1), but only from 25.2 to 26.4 and from
-27.1 to 28.5 dB at 2K (+1.2, +1.4). Yet the 1080p pinned frame 0 alone, resized to 2K (LANCZOS), was closer to the
-picture at full size (27.85 dB) than the unpinned 2K (23.98) and the pinned 2K (24.97), and the band above 1080p held
-almost none of the 2K output's error. So the picture can be made at 1080p, where the pin holds, and a short pass at
-2K only has to add detail.
+27.1 to 28.5 dB at 2K (+1.2, +1.4); through the studio, both ends of a clip without a face came 4.7-5.0 dB closer in
+one pinned refine at 2K (above), so how much it falls short varies by clip. Yet the 1080p pinned frame 0 alone,
+resized to 2K (LANCZOS), was closer to the picture at full size (27.85 dB) than the unpinned 2K (23.98) and the pinned
+2K (24.97), and the band above 1080p held almost none of the 2K output's error. So the picture can be made at 1080p,
+where the pin holds, and a short pass at 2K only has to add detail.
 
 **The route** (`upscale/regen2k_job.py` `route_for`, `run`; the receipt's `"route": "cascade"` and its `"cascade"`).
 Keep my frames at 2K with an end held runs:
