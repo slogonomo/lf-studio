@@ -32,11 +32,13 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   (experimental; PIN_ROUTES "ran": where it has run on the GPU): with auto, the clip's keyframes are held in the refine
   where its route offers it (PIN_ROUTES: LightX2V Turbo's Keyframes clips, either end or both, and Sol-H3's first frame
   on a clip made with the Stage-2 pin; 1080p and 2K, balanced) and the clip shows each picture already (the job's own
-  check, before anything loads: 28 dB at 384p, the sha256 the clip was made from); off, or no end held: NVIDIA's
+  check, before anything loads: 28 dB at 384p, the sha256 the clip was made from); at 2K through the job's cascade
+  (made at 1080p first, then one step at 2K; not run through the studio yet); off, or no end held: NVIDIA's
   refine. The upscale is a job of its own (kind "upscale", parent = the clip; task, format, length, prompt and seed
   copied from it; "load" = LFSTUDIO_UPSCALE_LOAD; "parent_model" and "parent_opts", the clip's model and options;
   "video", what is done to its MP4 (upscale_sources); "frames", the frames it keeps (its MP4's: 121 at 5 s, 241 at
-  10 s; 121 of a 5 s clip's 124 at 4K); for a clip with keyframes "pin":
+  10 s; 121 of a 5 s clip's 124 at 4K); "route", "cascade" for 2K with an end of a pin sent, else "whole" (the job's
+  route_for; once done the job's own, "whole" where its check held no end); for a clip with keyframes "pin":
   {"asked": auto or off, "ends" (held if the job's check passes), "why" ({end: why not sent}) and, once done, "result"
   ({end: {"used", "agreement_db", "why"}}, the job's receipt)};
   "text", what it is refined against: {"source": "clip"}, the clip's own conditioning, or {"source": "generation" (a
@@ -71,12 +73,14 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   expected times), "upscale_pin" (null with it off, else true: the studio takes "pin") and "upscale_offers" (null with
   it off, else UPSCALE_OFFERS: per length, {"<seconds>": {resolution: {"eta_s": [seconds before the refine, per refine
   step], "ran" (that length and size, or a longer clip at that size, upscaled on the GPU through the studio; else the
-  times are estimates)} or {"why": why not offered}}}); with it on, every finished job in /api/state, /api/jobs and the
+  times are estimates), at 2K "cascade_eta_s" ([seconds in all with Keep my frames holding one end, both ends: the
+  cascade's])} or {"why": why not offered}}}); with it on, every finished job in /api/state, /api/jobs and the
   API record has "upscalable": {"ok": true, "clip_audio": bool} (with "text": "generation" or "encode" when it is not
   refined against the clip's own conditioning; "video": "stretch" when its MP4 is not taken as it is at 1080p and 2K;
   "frames": {resolution: frames kept} where they differ between sizes (124, and 121 at 4K); "pin": the ends it can hold
   [first, last or both], with "pin_routes": {resolution: {"strengths", "ran" (on the GPU through the studio, at the
-  clip's length)}} at the sizes offered for its length; "pin_why": {end: why not} for an end it has but can't hold) or
+  clip's length), "route" ("cascade" at 2K, else "whole")}} at the sizes offered for its length; "pin_why": {end: why
+  not} for an end it has but can't hold) or
   {"ok": false, "why": "..."}.
 - The model of a clip ("model" in POST /api/generate, the form and JSON): sol-h3 (Sol-H3, NVIDIA's two-stage
   pipeline above; the default: a request without a model and a record without one mean sol-h3) or, experimental and on
@@ -1558,15 +1562,17 @@ UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
 # run on the GPU through the studio ("ran", 2026-10-29/30; the page notes the others): a size alone is a 5 s clip at
 # that size, "<size>/<seconds>" a clip of that length ("1080p/10": both ends of a LightX2V Turbo 10 s clip, 2026-10-30).
 # One line per route, so a route that fails its GPU run goes with its line. Not at 4K (never run there); Balanced only
-# (Faithful held a first frame only ~1 dB closer). On a long clip the pin runs with the job's lean blocks where its
-# forward is lean (1080p from 10 s, 2K from 6 s: regen.lean_chunks_for), as it ran at 1080p 10 s; at the other
-# lengths and sizes the note says it has not run.
+# (Faithful held a first frame only ~1 dB closer). At 2K it goes through the job's cascade (regen.route_for: made at
+# 1080p first, then one step at 2K; upscalable's pin_routes "route"), which has not run through the studio yet: the
+# single-pass pinned 2K that ran there on 2026-10-30 ("2k" of first+last) is gone, and with it its line. On a long
+# clip each refine runs with the job's lean blocks where its own rows make it lean (1080p from 10 s, 2K from 6 s:
+# regen.lean_chunks_for), as it ran at 1080p 10 s; at the other lengths and sizes the note says it has not run.
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
 PIN_ROUTES = {
     (TURBO, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
     (TURBO, "last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
-    (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "2k", "1080p/10")},
+    (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "1080p/10")},
     (SOL_H3, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
 }
 # why an end of a Keyframes clip is not held, besides the job's own reasons (regen.PIN_WHY: the picture gone or
@@ -1919,7 +1925,8 @@ def upscalable(job):
     video: upscale_sources' at 1080p and 2K, each only when it is not "clip" (so a Sol-H3 Text clip's answer is as
     before the Upscale took every clip); frames: {resolution: the frames kept} where they differ between the sizes (a
     5 s clip with a last keyframe: 124, but 121 at 4K); pin: the ends it can hold (pin_offer) and pin_routes, where:
-    {resolution: {"strengths", "ran" (at the clip's length)}} at the sizes its route and its length have;
+    {resolution: {"strengths", "ran" (at the clip's length), "route" (the job's route_for with those ends: "cascade"
+    at 2K, made at 1080p first, else "whole")}} at the sizes its route and its length have;
     pin_why: {end: why not} for the others (the pictures are not hashed here: image_state). Which sizes a clip's
     length gets, with their times, is not here: /api/state "upscale_offers" (upscale/regen2k_job.py offers_table), by
     length. It takes every finished clip of the models' "upscale" tables (Sol-H3's Text, Keyframes and Reference
@@ -1971,8 +1978,8 @@ def upscalable(job):
         offered = [size for size in regen.SIZES if size in route["sizes"]
                    and "why" not in regen.offer_row(seconds, size)]
         answer["pin"] = ends
-        answer["pin_routes"] = {size: {"strengths": list(route["strengths"]), "ran": pin_ran(route, size, seconds)}
-                                for size in offered}
+        answer["pin_routes"] = {size: {"strengths": list(route["strengths"]), "ran": pin_ran(route, size, seconds),
+                                       "route": regen.route_for(size, len(ends))} for size in offered}
     if why:
         answer["pin_why"] = why
     return 200, answer
@@ -2082,6 +2089,7 @@ def submit_upscale(raw):
     plan = pin_plan(parent, sources, resolution, strength, pin)
     if plan:
         job["pin"] = plan
+    job["route"] = regen.route_for(resolution, len(plan["ends"]) if plan else 0)    # the cascade: 2K with a pin
     with lock:
         full = queue_full()
         now = find_job(jid)
@@ -2342,6 +2350,7 @@ def run_upscale(job):
             {"ends": [], "why": {}}
         job["pin"] = {"asked": job["pin"]["asked"], "ends": [e for e in plan["ends"] if e in job["pin"]["ends"]],
                       "why": plan["why"]}
+    job["route"] = regen.route_for(job["resolution"], len((job.get("pin") or {}).get("ends", ())))
     floor = regen.min_free_for(job["resolution"], UPSCALE_CONF["min_free_gib"], sources["frames"]["kept"],
                                len((job.get("pin") or {}).get("ends", ())))      # by its case, size and pin
     upscale_floor(job, floor)              # before anything of its own: a start that can't make it starts nothing
@@ -2396,6 +2405,8 @@ def run_upscale(job):
         receipt = json.loads((out / regen.RECEIPT).read_text())
         job.update(phases_s=receipt.get("times_s"), peak_gib=receipt.get("peak_allocated_gib"),
                    low_mem_gib=(receipt.get("lowest_mem_available_gib") or {}).get("all"))
+        if receipt.get("route") in ("whole", "cascade"):     # the route the job took: whole when its check held no end
+            job["route"] = receipt["route"]
         pinned = receipt.get("pin")
         if job.get("pin") and isinstance(pinned, dict):      # each end's result: held or not, and why
             job["pin"]["result"] = {end: {key: pinned[end].get(key) for key in ("used", "agreement_db", "why")}
