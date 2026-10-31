@@ -1803,7 +1803,7 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "balanced"])
         text = self.page.inner_text("#uppop")
         for words in ("1080p\n~17 min", "2K\n~34 min", "4K\nlater"):     # 2K with Keep my frames: the cascade's
-            self.assertIn(words, text)                                     # 2057 s; 1080p as without it
+            self.assertIn(words, text)                                     # 2059 s; 1080p as without it
         self.assertEqual((self.page.inner_text("#uppincascade"), self.page.is_visible("#uppincascade")),
                          ("Made at 1080p first, then brought to 2K", True))
         self.page.click("#uppinrow")                                         # unticked: 2K's own time
@@ -2524,7 +2524,8 @@ class ModelUpscale(ModelPage):
 
     def test_a_first_keyframe_alone(self):
         """Keep my first frame, with no note at 2K: its cascade ran through the studio at 5 s (2026-10-31; the
-        server's PIN_ROUTES "ran" has "2k"), as at 1080p; its line that it is made at 1080p first, and its time."""
+        server's PIN_ROUTES "ran" has "2k"), as at 1080p; its line that it is made at 1080p first, and its time: the
+        cascade's, ~19 min as 2K's without the box at 5 s, so told apart with the standard load (~8 min more)."""
         prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second "
                   "mark.\nA dancer turns slowly.")
         first = {"first_frame": [("a.png", png())]}
@@ -2541,6 +2542,14 @@ class ModelUpscale(ModelPage):
         self.assertEqual((self.page.inner_text("#uppincascade"), self.page.is_visible("#uppincascade")),
                          ("Made at 1080p first, then brought to 2K", True))
         self.assertIn("2K\n~19 min", self.page.inner_text("#uppop"))    # the cascade with one end: 1129 s
+        # with the standard load (one evaluate: no poll in between): ticked, unticked (2K's own, 405 + 2 x 380 s) and
+        # ticked again; then the studio's load, ticked
+        seen = self.page.evaluate("""() => {const j = known.get(up.id), box = document.getElementById('uppin'),
+            load = state.upscale_load, small = document.querySelector('#uppop label[for="up-2k"] small'), seen = [];
+            state.upscale_load = 'standard';
+            for (const ticked of [true, false, true]) {box.checked = ticked; upTimes(j); seen.push(small.textContent);}
+            state.upscale_load = load; upTimes(j); seen.push(small.textContent); return seen;}""")
+        self.assertEqual(seen, ["~27 min", "~28 min", "~27 min", "~19 min"])       # 1629 and 1665 s, then 1129 s
         self.page.click('#uppop label[for="up-1080p"]')
         self.assertEqual(self.notes(), common)                                        # and at 1080p
         self.page.keyboard.press("Escape")
