@@ -786,7 +786,7 @@ runs lean2 there (`install_lean2`), a 21,504-byte-a-row saving at the peak (6.3 
   LightX2V Turbo 15 s clip, 393,911 rows): every frame, the whole sound, the last second clean and the lip sync, the
   steps 1 % under the step model. NVIDIA's page shows a 15 s clip regenerated at 2K in one run; its released code is
   5 s only.
-- **Its memory, from those runs:** 94.05 and 94.46 GiB allocated at the peak, 71,135 and 71,036 bytes a row above
+- **Its memory, from those runs:** 94.05 and 94.46 GiB allocated at the peak, 71,134 and 71,036 bytes a row above
   `MODEL_GIB`, where the estimate (lean's 92,300 less the 21,504 of the embeddings) had 70,796, 0.12 and 0.09 GiB
   under: `ROW_BYTES` `"lean2"` is 71,100, 0.01 GiB under the one and 0.02 over the other. Their overhead (the start
   less the peak and the lowest MemAvailable) was 9.9 and 10.5 GiB at 386,406 rows of the clip's own, 2.4-3.0 GiB under

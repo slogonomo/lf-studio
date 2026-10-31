@@ -319,7 +319,7 @@ GUARD_GIB = 5
 # to start (need_gib; min_free_for) where that is more than the floor: at the default 110 GiB only 2K at 15 s does, 113
 # (114 with both ends kept); the others need 109 at most (2K at 10 s, and at 12 s with an end kept or both).
 # lean2, from its two runs (2026-10-31, 2K 15 s: whole, 387,178 rows, and the cascade's 2K step with both ends,
-# 393,911): 94.05 and 94.46 GiB allocated at the peak, 71,135 and 71,036 bytes a row, so 71,100 (the model 0.01 GiB
+# 393,911): 94.05 and 94.46 GiB allocated at the peak, 71,134 and 71,036 bytes a row, so 71,100 (the model 0.01 GiB
 # under the one, 0.02 over the other; lean's 92,300 less the 21,504 bytes a video row of the fp32 video embeds lean2
 # frees gave 70,796, ~0.1 GiB under both). Its overhead was 9.9 and 10.5 GiB at 386,406 own rows, 2.4-3.0 below the
 # lean line's 12.9 there: flat at the higher, rounded up, at 12 s's fewer rows too (not run there: no less than 15 s's).

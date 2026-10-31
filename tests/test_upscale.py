@@ -1120,7 +1120,7 @@ class OfferTests(unittest.TestCase):
 
     def test_lean2s_memory(self):
         """lean2's model, fitted to its two runs (2026-10-31, 2K 15 s: whole, and the cascade's 2K step with both ends,
-        each from its receipt's own rows and MemAvailable at its start): 71,100 bytes a row, between the 71,135 and
+        each from its receipt's own rows and MemAvailable at its start): 71,100 bytes a row, between the 71,134 and
         71,036 they measured (lean's bytes less the fp32 video embeds diffusers' forward keeps, 5,376 x 4 = 21,504 a
         video row, gave 70,796), so the peak within 0.05 GiB of each; a flat overhead, the higher of theirs (9.9 and
         10.5 GiB) rounded up, at 12 s's fewer rows too, so the model's lowest MemAvailable is no higher than either
