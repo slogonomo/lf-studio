@@ -30,12 +30,13 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   so, "ran" false). strength: faithful, balanced or full (upscale/regen2k_job.py
   STRENGTHS; default LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
   LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). pin: auto (the default) or off, Keep my frames
-  (experimental; PIN_ROUTES "ran": where it has run on the GPU): with auto, the clip's keyframes are held in the refine
-  where its route offers it (PIN_ROUTES: LightX2V Turbo's Keyframes clips, either end or both, and Sol-H3's first frame
-  on a clip made with the Stage-2 pin; 1080p and 2K, balanced) and the clip shows each picture already (the job's own
-  check, before anything loads: 28 dB at 384p, the sha256 the clip was made from); at 2K through the job's cascade
-  (made at 1080p first, then one step at 2K; run through the studio on 2026-10-31); off, or no end held: NVIDIA's
-  refine. The upscale is a job of its own (kind "upscale", parent = the clip; task, format, length, prompt and seed
+  (experimental; PIN_ROUTES "ran": where it has run on the GPU and the page has no note, its comment says which): with
+  auto, the clip's keyframes are held in the refine where its route offers it (PIN_ROUTES: LightX2V Turbo's Keyframes
+  clips, either end or both, and Sol-H3's first frame on a clip made with the Stage-2 pin; 1080p and 2K, balanced) and
+  the clip shows each picture already (the job's own check, before anything loads: 28 dB at 384p, the sha256 the clip
+  was made from); at 2K through the job's cascade (made at 1080p first, then one step at 2K; run through the studio on
+  2026-10-31); off, or no end held: NVIDIA's refine.
+  The upscale is a job of its own (kind "upscale", parent = the clip; task, format, length, prompt and seed
   copied from it; "load" = LFSTUDIO_UPSCALE_LOAD; "parent_model" and "parent_opts", the clip's model and options;
   "video", what is done to its MP4 (upscale_sources); "frames", the frames it keeps (its MP4's: 121 at 5 s, 241 at
   10 s; 121 of a 5 s clip's 124 at 4K); "route", "cascade" for 2K with an end of a pin sent, else "whole" (the job's
