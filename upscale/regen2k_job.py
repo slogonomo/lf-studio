@@ -83,8 +83,9 @@ What this wrapper changes, and why:
   and size (OFFER_ETA_S: 1080p every length, 2K up to 10 s, 4K at 5 s; offer, offers_table) is the server's too:
   prepare refuses the rest with the reason, and a clip of any other count of frames is refused, never cut.
 - Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p, both
-  at 2K, and both ends of a 10 s clip at 1080p with the lean blocks). NVIDIA's refine is text to video: it redraws the
-  clip's first and last frames like any other, away from the pictures they were made from.
+  at 2K in one pinned refine there, which the cascade below replaces, and both ends of a 10 s clip at 1080p with the
+  lean blocks). NVIDIA's refine is text to video: it redraws the clip's first and last frames like any other, away from
+  the pictures they were made from.
   With a pin, the clip's keyframes are held as H3 holds a keyframe, the bench wrapper's K1 refine for either end or
   both (refine_pinned): each picture fitted to the refine's grid as the clip's model fitted it to its canvas
   (keyframe_image: H3's cover-crop as a box in the picture, one LANCZOS step from it), encoded on encode_clip's VAE
@@ -134,16 +135,17 @@ same number of tokens); at 2K, cleanly, on 2026-10-29 (a Keyframes clip, through
 day the studio also took that clip, a Sol-H3 Reference clip, a LightX2V Turbo 576p Text clip (stretched) and a 768p
 one with a last keyframe (cut to 121 frames) through this job to 1080p: 553.6-566.8 s each, as a Text clip. That
 night it took LightX2V Turbo clips with a last keyframe whole (124 frames) to 1080p in 557.8-560.1 s and to 2K in
-1118.9 s, as a Text clip; a pin added 16-17 s with one end and 30-34 s with both at 1080p, 83 s with both at 2K (the
-pictures' encode and longer steps; peak allocated +0.4 / +0.7 GiB at 1080p, +1.3 GiB at 2K, where the lowest
-MemAvailable was 14.1 GiB). On 2026-10-30 it took clips of other lengths whole, through the studio (one run each,
-from 116.3-116.6 GiB free, the times with a 15-17 s encode of the text but for the 6 s Text clip and the LightX2V Turbo
-clip (its own text; 6.1 s for its pictures)): 6 s at 1080p (153 frames, the stock forward) in 759.7 s, steps of
-213+212 s, peak allocated 84.78 GiB, lowest MemAvailable 23.5 GiB; 10 s at 1080p (241, lean) in 1423.0 s, steps of
-455+450 s, 81.15 GiB, 29.0 GiB, and a LightX2V Turbo 10 s clip (243) with both ends kept in 1459.2 s, steps of
-474+474 s, 81.54 GiB, 28.8 GiB; 15 s 9:16 at 1080p (361, lean) in 2587.0 s, steps of 927+930 s, 87.37 GiB, 20.4 GiB;
-10 s at 2K (241, lean) in 3188.1 s, steps of 1261+1261 s, 90.83 GiB, 16.7 GiB. The other lengths follow the model of
-these runs (OFFER_ETA_S, MODEL_GIB, need_gib). The bench wrapper it is derived from: docs/PERFORMANCE.md.
+1118.9 s, as a Text clip; a pin added 16-17 s with one end and 30-34 s with both at 1080p, 83 s with both in one
+pinned refine at 2K (the pictures' encode and longer steps; peak allocated +0.4 / +0.7 GiB at 1080p, +1.3 GiB at 2K,
+where the lowest MemAvailable was 14.1 GiB; at 2K Keep my frames is the cascade now, not run through the studio yet). On
+2026-10-30 it took clips of other lengths whole, through the studio (one run each, from 116.3-116.6 GiB free, the times
+with a 15-17 s encode of the text but for the 6 s Text clip and the LightX2V Turbo clip (its own text; 6.1 s for its
+pictures)): 6 s at 1080p (153 frames, the stock forward) in 759.7 s, steps of 213+212 s, peak allocated 84.78 GiB,
+lowest MemAvailable 23.5 GiB; 10 s at 1080p (241, lean) in 1423.0 s, steps of 455+450 s, 81.15 GiB, 29.0 GiB, and a
+LightX2V Turbo 10 s clip (243) with both ends kept in 1459.2 s, steps of 474+474 s, 81.54 GiB, 28.8 GiB; 15 s 9:16 at
+1080p (361, lean) in 2587.0 s, steps of 927+930 s, 87.37 GiB, 20.4 GiB; 10 s at 2K (241, lean) in 3188.1 s, steps of
+1261+1261 s, 90.83 GiB, 16.7 GiB. The other lengths follow the model of these runs (OFFER_ETA_S, MODEL_GIB, need_gib).
+The bench wrapper it is derived from: docs/PERFORMANCE.md.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
 cancelled; the clip's orientation and "frames" (from its MP4: kept, made by H3, pad, T, A and its seconds; frame_case),

@@ -1759,6 +1759,8 @@ class PinCheckTests(Fixture):
                           planned["pin"]["last"]["used"], planned["pin"]["last"]["frame"]), (True, 0, False, 123))
         self.assertRegex(planned["pin"]["last"]["why"], r"^the clip's frame 123 is \d+\.\d dB from your picture")
         self.assertEqual(planned["frames"], case_of(124))
+        self.assertEqual((planned["route"], planned["cascade"]["sigmas_1080p"], planned["cascade"]["sigmas_2k"]),
+                         ("cascade", [0.7, 0.35, 0.0], [0.4, 0.0]))          # 2K with its first end held
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["job.json"])
 
 
