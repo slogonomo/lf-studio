@@ -24,9 +24,10 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   5 to 15 s, not Sol-H3's 3 and 4 s clips made up to 0.5.0), 16:9 or 9:16, from its MP4, whole, in one pass of NVIDIA's
   refine, to 1080p, 2k (2560x1440, or 1440x2560 for 9:16; the default) or 4k with NVIDIA's Open-H3-Regenerate-2K
   (upscale/regen2k_job.py, run in its own environment; it upscales a 9:16 clip through NVIDIA's code with the shapes
-  turned, see its docstring), at the sizes the job offers for the clip's length (its offer_row: 1080p every length, 2K
-  up to 10 s, 4K 5 s clips; /api/state "upscale_offers"; 6, 10 and 15 s at 1080p and 10 s at 2K have run on the GPU, the
-  other lengths follow the job's model of those runs). strength: faithful, balanced or full (upscale/regen2k_job.py
+  turned, see its docstring), at the sizes the job offers for the clip's length (its offer_row: 1080p and 2K every
+  length, 4K 5 s clips; /api/state "upscale_offers"; 6, 10 and 15 s at 1080p and 10 s at 2K have run on the GPU, the
+  other lengths follow the job's model of those runs; 2K at 12 and 15 s, past anything run, have not: their offers say
+  so, "ran" false). strength: faithful, balanced or full (upscale/regen2k_job.py
   STRENGTHS; default LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
   LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). pin: auto (the default) or off, Keep my frames
   (experimental; PIN_ROUTES "ran": where it has run on the GPU): with auto, the clip's keyframes are held in the refine
@@ -44,8 +45,9 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   without its pictures (upscale_text), with "rows" and "encode_s" once encoded) in the same queue, where it waits while
   any clip is queued. It frees the memory first (status "freeing memory": the session is closed), refuses to start
   below its floor of MemAvailable (the job's min_free_for: LFSTUDIO_UPSCALE_MIN_FREE_GIB for a 5 s clip, 5 GiB more at
-  4K; a longer clip what its case needs where that is more: none at the default, 109 GiB at most; job.json
-  "min_free_gib", which the job checks again as it starts), then, in one pipeline_call so that Cancel stops each step:
+  4K; a longer clip what its case needs where that is more: at the default only 2K at 15 s, 115 GiB, 116 with Keep
+  my frames; job.json "min_free_gib", which the job checks again as it starts), then, in one pipeline_call so that
+  Cancel stops each step:
   builds its input folder (build_input: <case>/input/, the clip's MP4, audio and text alone, linked; a LightX2V Turbo
   clip at 576p stretched to 768p, every frame; one with a last keyframe (every frame made: 124 at 5 s) whole, a 5 s
   one cut to its first 121 at 4K; the pictures of the ends sent, linked into keyframe/; source.json), for a clip
@@ -62,8 +64,8 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   Answers: 200 {"id", "job"}, 400 for a bad field (any other key too, "source" among them: there is no draft source any
   more), a clip it does not take (a length no model's table has, UPSCALE_LENGTH; an MP4 whose frames are not its
   length's, UPSCALE_FRAMES; a Keyframes or Reference clip with nothing left of its prompt without its pictures) or a
-  size the job does not offer for its length (its reason, which names the sizes that take it: "2K for 12 s clips comes
-  later: 1080p takes them"), 404 for an unknown clip (and for everything with the Upscale off), 409 for a clip
+  size the job does not offer for its length (its reason, which names the sizes that take it: "4K for 12 s clips comes
+  later: 1080p and 2K take them"), 404 for an unknown clip (and for everything with the Upscale off), 409 for a clip
   that is not done, being moved, or without the files needed (its session directory; for audio clip its audio: Sol-H3's
   Stage-1 audio, LightX2V Turbo's turbo/audio.pt), 429 when the queue is full. /api/state has "upscale" (on or off),
   "upscale_defaults" (null with it off, else what a request without those keys gets: {"resolution", "strength",
@@ -1559,8 +1561,8 @@ UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
 # that size, "<size>/<seconds>" a clip of that length ("1080p/10": both ends of a LightX2V Turbo 10 s clip, 2026-10-30).
 # One line per route, so a route that fails its GPU run goes with its line. Not at 4K (never run there); Balanced only
 # (Faithful held a first frame only ~1 dB closer). On a long clip the pin runs with the job's lean blocks where its
-# forward is lean (1080p from 10 s, 2K from 6 s: regen.lean_chunks_for), as it ran at 1080p 10 s; at the other
-# lengths and sizes the note says it has not run.
+# forward is lean (1080p from 10 s, 2K from 6 s, with lean2's embeds at 2K 12 and 15 s: regen.forward_for), as it ran
+# at 1080p 10 s; at the other lengths and sizes the note says it has not run.
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
 PIN_ROUTES = {

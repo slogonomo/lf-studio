@@ -33,11 +33,10 @@ except ImportError:
 UP_UNRUN = "This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's"
 UP_PIN_UNRUN = "Keeping your frames has not been run on the GPU through the studio yet: its times are estimates"
 # and on a clip of a length and size that has not been upscaled on the GPU through the studio, nor a longer one at
-# that size (/api/state upscale_offers "ran": false: none now, but a run that fails takes its line out), in UP_UNRUN's
-# place (UP_LEN_UNRUN)
+# that size (/api/state upscale_offers "ran": false: 2K at 12 and 15 s now, and a run that fails takes its line out),
+# in UP_UNRUN's place (UP_LEN_UNRUN)
 UP_LEN_UNRUN = "Clips of this length have not been upscaled on the GPU through the studio yet: the times are estimates"
 FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
-LATER_2K = "2K for {} s clips comes later: 1080p takes them"
 LATER_4K = "4K for {} s clips comes later: 1080p and 2K take them"
 SOL_LAST = "Last frame not kept: Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it"
 
@@ -1597,15 +1596,15 @@ class UpscalePage(UpscaleCards, PageTest):
                          ["1920×1080", "2560×1440", "3840×2160"])
         # the progress bar's expected seconds (docs/PERFORMANCE.md; /api/state upscale_offers by the record's length, 5 s
         # without one): the fast load, ~8 min more with the standard load (the record's "load"); a record of an older
-        # studio's upscale from the draft counts as any other; 10 s and 15 s from their runs; none for a size a length
-        # does not have
+        # studio's upscale from the draft counts as any other; 10 s and 15 s from their runs, 2K at 15 s from the job's
+        # model (not run); none for a size a length does not have
         self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, load: 'fast'},
             {resolution: '2k', steps: 3}, {resolution: '1080p', steps: 2},
             {resolution: '2k', steps: 2, load: 'standard'}, {resolution: '4k', steps: 2},
             {resolution: '1080p', steps: 2, source: 'draft'}, {resolution: '1080p', steps: 2, seconds: 10},
             {resolution: '2k', steps: 2, seconds: 10}, {resolution: '1080p', steps: 3, seconds: 15},
-            {resolution: '2k', steps: 2, seconds: 15}].map(upEta)"""),
-                         [1165, 1545, 615, 1665, 3995, 615, 1449, 3213, 3540, 0])
+            {resolution: '2k', steps: 2, seconds: 15}, {resolution: '4k', steps: 2, seconds: 15}].map(upEta)"""),
+                         [1165, 1545, 615, 1665, 3995, 615, 1449, 3213, 3540, 6373, 0])
         # its times are upEta's for 2 steps with the studio's load (/api/state upscale_load), and follow it each time
         # it opens (one evaluate: no poll in between)
         self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
@@ -1830,31 +1829,42 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.page.click(f"{card} .cancel")
         self.page.wait_for_selector(f'{card}[data-status="cancelled"]', timeout=20000)
 
-    def test_a_clip_whose_length_has_no_2k(self):
-        """A 12 s clip: 2K (the studio's default) and 4K greyed with the reason, 1080p picked, its time from the job's
-        model (covered by the 15 s run: no note); the request asks for 1080p; the upscale's card has its expected time
+    def test_a_12_s_clip_at_2k(self):
+        """A 12 s clip: 1080p and 2K (the studio's default, picked), 4K greyed with the reason; 2K's time from the job's
+        model and its note: that length has not run at 2K on the GPU (its offer's "ran" false: an estimate), where
+        1080p, covered by the 15 s run, has none; the request asks for 2K; the upscale's card has its expected time
         from its length's row."""
         jid = self.done_clip(prompt="twelve seconds", seconds=12, seed=74)
         self.page.wait_for_timeout(2200)
-        self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "title"), "Upscale to 1080p (experimental)")
+        self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "title"),
+                         "Upscale to 1080p or 2K (experimental)")
         self.open_popover(jid)
-        self.assertEqual(self.checked("up_res"), "1080p")
-        self.assertEqual([self.page.is_disabled(f"#up-{r}") for r in ("1080p", "2k", "4k")], [False, True, True])
+        self.assertEqual(self.checked("up_res"), "2k")
+        self.assertEqual([self.page.is_disabled(f"#up-{r}") for r in ("1080p", "2k", "4k")], [False, False, True])
         self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
-                         ["1920×1080", LATER_2K.format(12), "4K for 12 s clips comes later: 1080p takes them"])
-        self.assertIn("1080p\n~32 min", self.page.inner_text("#uppop"))      # 630 + 2 x 638 s (fitted)
-        self.assertEqual(self.page.inner_text("#upinput"), LATER_2K.format(12))
+                         ["1920×1080", "2560×1440", LATER_4K.format(12)])
+        text = self.page.inner_text("#uppop")
+        for words in ("1080p\n~32 min", "2K\n~1.2 h", "4K\nlater"):                 # 630 + 2 x 638, 814 + 2 x 1822 s
+            self.assertIn(words, text)
+        self.assertEqual(self.page.inner_text("#upinput"), UP_LEN_UNRUN)
+        self.page.click('#uppop label[for="up-1080p"]')
+        self.assertTrue(self.page.is_hidden("#upinput"))                              # 1080p: covered, no note
+        self.page.click('#uppop label[for="up-2k"]')
+        self.assertEqual(self.page.inner_text("#upinput"), UP_LEN_UNRUN)
         with self.page.expect_request("**/api/upscale") as request:
             self.page.click("#upgo")
-        self.assertEqual(json.loads(request.value.post_data), {"id": jid, "resolution": "1080p", "strength": "balanced"})
+        self.assertEqual(json.loads(request.value.post_data), {"id": jid, "resolution": "2k", "strength": "balanced"})
         self.page.wait_for_selector("#uppop", state="hidden")
         job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
-        self.assertEqual(self.page.evaluate("id => upEta(known.get(id))", job["id"]), 1906)
+        self.assertEqual(self.page.evaluate("id => upEta(known.get(id))", job["id"]), 4458)
         self.studio.wait([job["id"]], timeout=60)
         self.page.wait_for_selector(f"{self.card(job['id'])} video", timeout=30000)
         self.assertEqual(self.page.eval_on_selector_all(f"{self.card(job['id'])} .tags .tag",
                                                         "els => els.map(e => e.textContent)"),
-                         ["1080p upscale", "Text", "12 s"])
+                         ["2K upscale", "Text", "12 s"])
+        self.assertEqual(self.page.evaluate("""() => [12, 15].map(s => upEta({seconds: s, resolution: '2k', steps: 3}))
+            .concat(upEta({seconds: 15, resolution: '2k', steps: 2}))"""), [6280, 9071, 6373])
+        self.assertEqual(self.page.evaluate("[6373, 9071].map(upTime)"), ["~1.8 h", "~2.5 h"])
 
     def test_eta_and_notes(self):
         """+15 s for an encode in the expected time; the notes for each kind of clip at a size, LightX2V Turbo's too

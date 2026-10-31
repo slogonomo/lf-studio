@@ -88,8 +88,9 @@ What this wrapper changes, and why:
   audio as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run, and for a clip of another
   length its upscaler.py and upscaler_node.py too: their upscale keeps the latent's T (NVIDIA's target has 37, which a
   5 s clip would not show), and run() checks the upscaled latent's shape before the refine. What is offered per length
-  and size (OFFER_ETA_S: 1080p every length, 2K up to 10 s, 4K at 5 s; offer, offers_table) is the server's too:
-  prepare refuses the rest with the reason, and a clip of any other count of frames is refused, never cut.
+  and size (OFFER_ETA_S: 1080p and 2K every length, 4K at 5 s; offer, offers_table; 2K at 12 and 15 s past anything
+  run, with the lean2 forward: not run on the GPU yet) is the server's too: prepare refuses the rest with the reason,
+  and a clip of any other count of frames is refused, never cut.
 - Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p, both
   at 2K, and both ends of a 10 s clip at 1080p with the lean blocks). NVIDIA's refine is text to video: it redraws the
   clip's first and last frames like any other, away from the pictures they were made from.
@@ -146,13 +147,12 @@ cancelled; the clip's orientation and "frames" (from its MP4: kept, made by H3, 
 the refine's "rows" (case_rows: video, audio, text, condition, sequence), its block "forward" ("stock", "lean" or
 "lean2") and "lean_chunks", times per stage, the latent grids the upscaler ran to, steps, sigmas, peak GPU memory,
 lowest MemAvailable, the inputs' sha256, versions, the load: its mode, and for fast the files and how many fell back to
-mmap;
-with a pin its "pin": "asked" (the ends job.json names), per end "used", "agreement_db", "frame", "fit", "box", "size"
-and "why" (check_pin's) and, when held, "latent_shape" and "latent_sha256"; "grid", "check_grid", "min_db", "noise_aug",
-"encode_seed", "noise_seed", "native_sha256" (the clip's latent) and, with an end held, "encode_s" (the pictures'
-encode), "layout" (check_pin_layout's facts), "timesteps" per step, "condition_sha256" and "refined_sha256"). Progress
-on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n, decoding and saving, in that order, and
-"[lf-studio] error <text>" last on failure.
+mmap; with a pin its "pin": "asked" (the ends job.json names), per end "used", "agreement_db", "frame", "fit", "box",
+"size" and "why" (check_pin's) and, when held, "latent_shape" and "latent_sha256"; "grid", "check_grid", "min_db",
+"noise_aug", "encode_seed", "noise_seed", "native_sha256" (the clip's latent) and, with an end held, "encode_s" (the
+pictures' encode), "layout" (check_pin_layout's facts), "timesteps" per step, "condition_sha256" and "refined_sha256").
+Progress on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n, decoding and saving, in that order,
+and "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused, or there was less memory than job.json's
 min_free_gib at its start (nothing loaded), 143 stopped by SIGTERM.
 --check validates job.json and the inputs (the pin's check too: it needs Pillow and numpy), prints the plan and exits
@@ -337,22 +337,24 @@ FRAME_CASES = {
 # and 10 s at 2K (2026-10-30). Fitted, the others: the step by the step model, 6.457e-4 S + 1.638e-8 S^2 s for the S
 # rows of its case with a prompt of TEXT_ROWS (the measured steps came within 1.4 % of it at their rows), and the base
 # by a straight line in the frames H3 makes, fitted per size to that size's measured bases (1080p: 86.1 + 1.851 a
-# frame, within 8 s of its four; 2K: 107.0 + 2.403 a frame, through its two). A size without times is not offered for
-# that length (offer_row says why): 2K takes up to 10 s whole and 4K 5 s (longer ones are past the memory measured
-# here: in pieces, later).
+# frame, within 8 s of its four; 2K: 107.0 + 2.403 a frame, through its two). 2K at 12 and 15 s are fitted the same
+# way, past the rows any step has run at (314,380 and 386,606, lean2's forward; 302,534 the most so far, at 4K): their
+# attention, ~90 % of the step there, has not run on GB10 at that length. A size without times is not offered for
+# that length (offer_row says why): 4K takes 5 s only (longer ones are past the memory measured here: in pieces, later).
 OFFER_ETA_S = {
     5: {"1080p": (315, 150), "2k": (405, 380), "4k": (625, 1685)},          # measured
     6: {"1080p": (375, 212), "2k": (487, 583)},                             # 1080p measured, 2K fitted
     7: {"1080p": (410, 256), "2k": (528, 700)},                             # fitted
     8: {"1080p": (441, 300), "2k": (568, 828)},                             # fitted
     10: {"1080p": (543, 453), "2k": (691, 1261)},                           # measured
-    12: {"1080p": (630, 638)},                                              # fitted
-    15: {"1080p": (753, 929)}}                                              # measured
+    12: {"1080p": (630, 638), "2k": (814, 1822)},                           # fitted
+    15: {"1080p": (753, 929), "2k": (977, 2698)}}                           # 1080p measured, 2K fitted
 # The lengths and sizes upscaled on the GPU through the studio, one line each (a run that lands adds its line, a run
 # that fails takes it out), or covered by the offer rule: a longer clip at the same size ran, and the step and peak
 # models held there. 6, 10 and 15 s at 1080p and 10 s at 2K ran (2026-10-30: steps within 1.4 % of the step model,
 # peaks within 0.1 GiB of the memory model); 7, 8 and 12 s at 1080p and 6, 7 and 8 s at 2K follow by that rule. A
-# length and size not here would show the page's "not run" note: its times and memory would be estimates.
+# length and size not here shows the page's "not run" note: its times and memory are estimates. 2K at 12 and 15 s are
+# not here yet: offered, not run (a 2K 15 s run, lean2's, would bring 12 s in by the offer rule).
 UPSCALE_RAN = (
     (5, "1080p"),
     (5, "2k"),

@@ -686,13 +686,13 @@ class Upscale(CliTest):
         up = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
         self.assertEqual((up["orientation"], Path(up["output"]).name), ("portrait", "regen_1440x2560_121f.mp4"))
         self.assertEqual(Path(p.stdout.strip()).name, f"lf-studio_t2va_5s_seed8_{jid[:6]}_2k_{up['id'][:6]}.mp4")
-        self.assertIn("upscale a finished clip, 16:9 or 9:16, whole, to 1080p, 2K (up to 10 s) or 4K (5 s)",
+        self.assertIn("upscale a finished clip, 16:9 or 9:16, whole, to 1080p or 2K (any length) or 4K (5 s)",
                       " ".join(self.ok("--help").stdout.split()))
-        self.assertIn("default 2k (2560x1440, or 1440x2560 for 9:16); a 12 or 15 s clip needs 1080p",
+        self.assertIn("default 2k (2560x1440, or 1440x2560 for 9:16); 4k for a 5 s clip only",
                       " ".join(self.ok("upscale", "--help").stdout.split()))
         usage = " ".join(load_cli().__doc__.split())
         self.assertIn("a finished clip (Text, Keyframes or Reference; Sol-H3 or LightX2V Turbo), 16:9 or 9:16, whole, "
-                      "to 1080p (any length), 2K (up to 10 s) or 4K (5 s), on a studio", usage)
+                      "to 1080p or 2K (any length) or 4K (5 s), on a studio", usage)
         self.assertNotIn("5 s clip", usage)
         self.assertNotIn("untested", usage)                                  # 4K has run (16:9, docs/PERFORMANCE.md)
 
@@ -704,8 +704,9 @@ class Upscale(CliTest):
         self.assertEqual(p.returncode, 2, p.stderr)
         self.assertEqual(json.loads(p.stdout), {"error": "4K for 10 s clips comes later: 1080p and 2K take them",
                                                 "http_status": 400, "id": ten})
-        p = self.sol("upscale", twelve)
-        self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: 2K for 12 s clips comes later: 1080p takes them\n"))
+        p = self.sol("upscale", twelve, "--resolution", "4k")
+        self.assertEqual((p.returncode, p.stderr),
+                         (2, "lf-cli: 4K for 12 s clips comes later: 1080p and 2K take them\n"))
         p = self.sol("upscale", "f" * 32)
         self.assertEqual((p.returncode, p.stderr), (2, "lf-cli: no such clip\n"))
         for args in (["upscale", ten, "--resolution", "8k"], ["upscale", ten, "--strength", "nvidia"],
@@ -851,13 +852,20 @@ class UpscaleTimes(unittest.TestCase):
         self.assertIn("which takes about 10 min (a 5 s clip at 1080p) to 1.6 h or more", cli.INSTRUCTIONS)
         self.assertIn("An upscale takes about 10 min (1080p, 5 s) to 1.6 h (4K, full) in all", api)
         self.assertIn("~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`", api)
-        self.assertIn("An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h, far longer than any `wait_s`", api)
-        # every length offered: the shortest is a 5 s clip at 1080p, which each text names, the longest 4K full
+        self.assertIn("An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h (a 15 s clip at 2K about 1.8 h, an "
+                      "estimate), far longer than any `wait_s`", api)
+        self.assertIn("2K at 12 and 15 s, not run yet, an estimated 1.2 and 1.8 h, 2.5 h at 15 s with `full`", api)
+        # every length offered: the shortest is a 5 s clip at 1080p, which each text names; the longest that has run
+        # 4K full, and past it 2K at 15 s, not run (an estimate, which the texts say)
         everything = [(eta(seconds, res, 2), seconds, res) for seconds, sized in regen.OFFER_ETA_S.items()
                       for res in sized]
         self.assertEqual(min(everything)[1:], (5, "1080p"))
-        self.assertEqual((round(min(everything)[0] / 60), round(max(eta(*row[1:], 3) for row in everything) / 3600, 1)),
+        ran = [row for row in everything if row[1:] in regen.UPSCALE_RAN]
+        self.assertEqual((round(min(everything)[0] / 60), round(max(eta(*row[1:], 3) for row in ran) / 3600, 1)),
                          (10, 1.6))
+        self.assertEqual([round(eta(s, "2k", steps) / 3600, 1) for s, steps in ((12, 2), (15, 2), (15, 3))],
+                         [1.2, 1.8, 2.5])
+        self.assertEqual(max(everything)[1:], (15, "2k"))
         self.assertNotIn("min at 3 s", api)
         for text in (usage, cli.INSTRUCTIONS, api):
             self.assertNotRegex(text, r"about 10 min to")
@@ -869,12 +877,17 @@ class UpscaleTimes(unittest.TestCase):
         self.assertEqual([round(eta(s, res, 2) / 60) for s, res in ((10, "1080p"), (15, "1080p"), (10, "2k"))],
                          [24, 44, 54])
         longer = "1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s"
+        unrun = "2K at 12 and 15 s, not run yet, an estimated 1.2 and 1.8 h"
         for text in (usage, tool):
-            self.assertIn(longer, text)
-            self.assertNotIn("estimate", text)
-        self.assertIn(f"longer clips take longer: {longer})", usage)
-        self.assertEqual(sorted(regen.UPSCALE_RAN), sorted((s, res) for s, sized in regen.OFFER_ETA_S.items()
-                                                           for res in sized))     # every length: run, or covered
+            self.assertIn(f"{longer}; {unrun}", text)
+            self.assertEqual(text.count("estimate"), 1)                     # those two only
+        self.assertIn(f"longer clips take longer: {longer}; {unrun}, 2.5 h at 15 s full)", usage)
+        self.assertIn("1.6 h or more (a 15 s clip at 2K about 1.8 h, an estimate)", cli.INSTRUCTIONS)
+        # every length: run, or covered, but 2K at 12 and 15 s (not run: the texts say so)
+        unrun_rows = {(12, "2k"), (15, "2k")}
+        self.assertEqual(set(regen.UPSCALE_RAN) | unrun_rows,
+                         {(s, res) for s, sized in regen.OFFER_ETA_S.items() for res in sized})
+        self.assertFalse(unrun_rows & set(regen.UPSCALE_RAN))
         for text in (usage, cli.INSTRUCTIONS, tool, api):                   # 4K has run end to end (16:9)
             self.assertNotIn("untested", text)
             self.assertNotIn("not yet run end to end", text)
