@@ -559,16 +559,17 @@ with a first frame, the 2K step from a saved 1080p result) gave frame 0 2.0-2.1 
 (2026-10-31, LightX2V Turbo Keyframes clips) it held a first frame at 5 s, within 0.3 dB of that research run, and both
 ends at 10 and 15 s, with no flash: each end a little less close to the picture than the 1080p route holds it (at 5
 and 10 s 1.6-2.1 dB further at the job's 384p check grid: the 2K step's added detail and contrast), and closer than
-the single pinned refine at 2K it replaced (1.5 dB at 5 s). The page has no note for a first frame alone at 5 s
-(`pin_routes` `ran`); for both ends, and past 5 s, it keeps its note until the maintainer has looked at those runs,
-which missed the window's bar, the 1080p route's less 1 dB (the 5 s run does not meet it either:
-[PERFORMANCE.md](PERFORMANCE.md#keep-my-frames-at-2k-the-cascade)). By the job's model it takes about 19 min for a
-5 s clip and 49-50 min at 10 s, 67-68 min at 12 s and 94-95 min at 15 s (`upscale_offers` `cascade_eta_s`, below;
-its runs took 18, 50 and 95 min), and needs the free memory of its larger refine (each refine's forward by its own
-rows: at 12 and 15 s lean at 1080p, `lean2` for the 2K step; 113 GiB at 15 s, 114 with both ends). On a clip longer
-than 5 s it has run with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30: both held, 31.9 and 32.0 dB
-from the pictures at 1080p, no flash at either end), and at 2K as above; elsewhere on long clips it has not run on the
-GPU, and the page says so.
+the single pinned refine at 2K it replaced (1.5 dB at 5 s). The page has no note for a LightX2V Turbo clip's first
+frame alone at 5 s (`pin_routes` `ran`). For both ends at 10 and 15 s it keeps its note until the maintainer has looked
+at those runs, which missed the bar set for them, the 1080p route's less 1 dB (the 5 s run does not meet it either:
+[PERFORMANCE.md](PERFORMANCE.md#keep-my-frames-at-2k-the-cascade)); the other routes at 2K (both ends at 5 s and at the
+other lengths, a first frame alone past 5 s, a last frame alone, a Sol-H3 clip's first frame) have not run, and the note
+says so. By the job's model it takes about 19 min for a 5 s clip and 49-50 min at 10 s, 67-68 min at 12 s and 94-95 min
+at 15 s (`upscale_offers` `cascade_eta_s`, below; its runs took 18, 50 and 95 min), and needs the free memory of its
+larger refine (each refine's forward by its own rows: at 12 and 15 s lean at 1080p, `lean2` for the 2K step; 113 GiB at
+15 s, 114 with both ends). On a clip longer than 5 s it has run with both ends of a LightX2V Turbo 10 s clip at 1080p
+(2026-10-30: both held, 31.9 and 32.0 dB from the pictures at 1080p, no flash at either end), and at 2K as above;
+elsewhere on long clips it has not run on the GPU, and the page says so.
 An end the clip offers but the request does not send has its reason in the record's
 `pin.why` (`not at 4K yet`, `with strength balanced only, for now`); an end sent but not held has the job's in
 `pin.result` (`the clip's frame 123 is 25.4 dB from your picture (28 needed)`, `your picture is no longer on disk`,
