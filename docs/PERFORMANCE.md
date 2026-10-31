@@ -438,11 +438,11 @@ So the page shows the Text clip's times for every 5 s clip (and a longer clip it
 the studio yet (above) that this kind of clip has not been upscaled on the GPU through the studio yet. It goes by
 route (the model, where the text comes from, what is done to the MP4), not by size: a route run at one size counts at
 the others (so a 576p clip at 2K has no note), and a 768p Keyframes clip with a first frame alone counts as one with
-both. A clip of a length that has not run at that size, nor a longer one there, would get the length's note in its
-place, that its times are estimates (none does now). With Keep my frames the progress bar adds 16 s per end at 1080p
-(measured; on a clip longer than 5 s a little short, below); at 2K it goes through the cascade, whose time is the
-job's model of it ([below](#keep-my-frames-at-2k-the-cascade)). The 2K rows of the table above are the single pinned
-refine at 2K, the route the cascade replaces.
+both. A clip of a length that has not run at that size, nor a longer one there, gets the length's note in its place,
+that its times are estimates (2K at 12 and 15 s do now: not run yet). With Keep my frames the progress bar adds 16 s
+per end at 1080p (measured; on a clip longer than 5 s a little short, below); at 2K it goes through the cascade, whose
+time is the job's model of it ([below](#keep-my-frames-at-2k-the-cascade)). The 2K rows of the table above are the
+single pinned refine at 2K, the route the cascade replaces.
 
 **The job itself, standard load** (2026-10-28, before the fast load's runs, the same staging studio and 16:9 clip, an
 earlier version of the job too; 2K, `balanced`, audio `clip`):
