@@ -42,14 +42,22 @@ What this wrapper changes, and why:
 - The strength: start_sigma re-noises from there on NVIDIA's shifted_grid; null keeps NVIDIA's schedule for the
   steps (3 steps: 0.909375, which regenerates faces: a sharper, different-looking person).
 - Memory, for GB10 again. The DiT is freed before the decode (a job is the only work in its process; at 4K the
-  decode's pixels don't fit next to it). At 4K, and for clips from 10 s at 1080p and from 6 s at 2K (more than
+  decode's pixels don't fit next to it). NVIDIA's decode then takes the ~5 GiB left plus ~3 times the clip's pixels
+  in fp32 (its .float(), *std+mean, clamp and *255 over the whole clip: 35.0 GiB allocated at 2K 10 s, 30.3 at 1080p
+  15 s), ~41 and ~50 GiB at 2K 12 and 15 s by that rule: below the refine's peak, so it runs as it is at every length
+  offered. At 4K, and for clips from 10 s at 1080p and from 6 s at 2K (more than
   LEAN_ROWS rows of their own: lean_chunks_for), every transformer block runs lean_forward: diffusers' block forward
   with its row-wise parts over the sequence in 16 chunks and q/k/v written straight into SDPA's layout (on GB10
   bit-identical to the stock forward, with 2.5x less activation memory). The stock forward with only its FFN in 8
-  chunks ran out of memory at 4K. Once the weights are in GPU memory their page cache is dropped (on GB10 it takes
-  the same memory; with the fast load only the upscaler's file and fallbacks are in it). With "preread" (the standard
-  load only, off unless asked for), 8 threads read the weight files into the page cache before the load; it did not
-  shorten the one load measured with it. job.json refuses it with the fast load, which reads past the page cache.
+  chunks ran out of memory at 4K. Past every case that has run (more than LEAN2_ROWS rows of their own: 2K at 12 and
+  15 s), the forward is "lean2" (forward_for): the lean blocks, and the DiT's video embeds, which diffusers' forward
+  keeps in fp32 through its block loop, cast to bf16 as they come out of proj_in (the cast its forward does) and freed
+  once the sequence has them (install_lean2: 21,504 bytes a video row less, ~7.7 GiB at 2K 15 s; on the CPU
+  bit-identical to lean; not run on the GPU yet). Once the weights are in GPU memory their page cache is dropped (on
+  GB10 it takes the same memory; with the fast load only the upscaler's file and fallbacks are in it). With "preread"
+  (the standard load only, off unless asked for), 8 threads read the weight files into the page cache before the
+  load; it did not shorten the one load measured with it. job.json refuses it with the fast load, which reads past the
+  page cache.
 - The output has no audio (video_noaudio.mp4, NVIDIA's encode_mp4, CRF 10): the server muxes the clip's audio in.
 - Portrait (9:16), which NVIDIA's code is not written for (its sizes are 16:9). A 16:9 clip runs NVIDIA's calls as
   before. For a 9:16 clip, run() adds portrait entries to NVIDIA's module dicts (PORTRAIT_ENTRIES: INPUT_SIZES and
@@ -80,8 +88,9 @@ What this wrapper changes, and why:
   audio as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run, and for a clip of another
   length its upscaler.py and upscaler_node.py too: their upscale keeps the latent's T (NVIDIA's target has 37, which a
   5 s clip would not show), and run() checks the upscaled latent's shape before the refine. What is offered per length
-  and size (OFFER_ETA_S: 1080p every length, 2K up to 10 s, 4K at 5 s; offer, offers_table) is the server's too:
-  prepare refuses the rest with the reason, and a clip of any other count of frames is refused, never cut.
+  and size (OFFER_ETA_S: 1080p and 2K every length, 4K at 5 s; offer, offers_table; 2K at 12 and 15 s past anything
+  run, with the lean2 forward: not run on the GPU yet) is the server's too: prepare refuses the rest with the reason,
+  and a clip of any other count of frames is refused, never cut.
 - Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p, both
   at 2K in one pinned refine there, which the cascade below replaces, and both ends of a 10 s clip at 1080p with the
   lean blocks). NVIDIA's refine is text to video: it redraws the clip's first and last frames like any other, away from
@@ -149,12 +158,12 @@ The bench wrapper it is derived from: docs/PERFORMANCE.md.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
 cancelled; the clip's orientation and "frames" (from its MP4: kept, made by H3, pad, T, A and its seconds; frame_case),
-the refine's "rows" (case_rows: video, audio, text, condition, sequence), its block "forward" ("stock" or "lean") and
-"lean_chunks" (the cascade: its 2K step's), its "route" ("whole" or "cascade"), times per stage, the latent grids the
-upscaler ran to, steps, sigmas (the cascade: its 1080p refine's), peak GPU memory, lowest
-MemAvailable, the inputs' sha256, versions, the load: its mode, and for fast the files and how many fell back to mmap;
-with a pin its "pin": "asked" (the ends job.json names), per end "used", "agreement_db", "frame", "fit", "box", "size"
-and "why" (check_pin's) and, when held, "latent_shape" and "latent_sha256"; "grid", "check_grid", "min_db", "noise_aug",
+the refine's "rows" (case_rows: video, audio, text, condition, sequence), its block "forward" ("stock", "lean" or
+"lean2") and "lean_chunks" (the cascade: its 2K step's), its "route" ("whole" or "cascade"), times per stage, the latent
+grids the upscaler ran to, steps, sigmas (the cascade: its 1080p refine's), peak GPU memory, lowest MemAvailable, the
+inputs' sha256, versions, the load: its mode, and for fast the files and how many fell back to mmap; with a pin its
+"pin": "asked" (the ends job.json names), per end "used", "agreement_db", "frame", "fit", "box", "size" and "why"
+(check_pin's) and, when held, "latent_shape" and "latent_sha256"; "grid", "check_grid", "min_db", "noise_aug",
 "encode_seed", "noise_seed", "native_sha256" (the clip's latent) and, with an end held, "encode_s" (the pictures'
 encode), "layout" (check_pin_layout's facts), "timesteps" per step, "condition_sha256" and "refined_sha256"; for the
 cascade its 2K step's); for the cascade "cascade": {"from": "1080p", "steps_1080p", "sigmas_1080p", "latent_1080p"
@@ -163,8 +172,7 @@ cascade its 2K step's); for the cascade "cascade": {"from": "1080p", "steps_1080
 1080p refine's), "upscale_route_2k", "low_2k_sha256" (the 2K step's input), "sigma_2k": 0.4, "steps_2k": 1,
 "sigmas_2k", "latent_2k", "steps_s_2k", "times_s" (upscale_1080p, refine_1080p, upscale_2k, refine_2k)}). Progress
 on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n (n: every step of the route, 3 for the
-cascade), decoding and saving, in that order, and
-"[lf-studio] error <text>" last on failure.
+cascade), decoding and saving, in that order, and "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused, or there was less memory than job.json's
 min_free_gib at its start (nothing loaded), 143 stopped by SIGTERM.
 --check validates job.json and the inputs (the pin's check too: it needs Pillow and numpy), prints the plan and exits
@@ -247,6 +255,13 @@ MAX_STEPS = 4
 # lean from 10 s at 1080p (147,690 rows) and from 6 s at 2K (169,726), where the stock forward's activations would
 # take the memory the 4K run needed lean_forward for (run on the GPU at 1080p 10 and 15 s and at 2K 10 s).
 LEAN_ROWS, LEAN_CHUNKS = 140_000, 16
+# "lean2": lean_forward and the DiT's video embeds in bf16, freed once they are in the sequence (install_lean2: on the
+# CPU bit-identical to lean, tests/test_upscale.py), where the clip's own rows are more than LEAN2_ROWS, the most of any
+# case that has run on the GPU (4K at 5 s, lean). So every case that ran keeps its forward, and only 2K at 12 and 15 s
+# (314,180 and 386,406 rows of their own) go lean2: past the lean forward's memory there (forward_for). Not run on the
+# GPU yet, nor has attention at that many rows on GB10 (cuDNN's SDPA ran up to 302,534 rows, 4K at 5 s).
+LEAN2_ROWS = 302_334
+FORWARDS = ("stock", "lean", "lean2")
 VAE_BATCH = 26                   # NVIDIA's default
 VAE_SEED = 42                    # NVIDIA's encode_video default (the posterior sample of the final MP4)
 PIXEL_MEAN, PIXEL_STD = (.485, .456, .406), (.229, .224, .225)    # the video VAE's pixels (ImageNet's), as NVIDIA's
@@ -288,11 +303,16 @@ GUARD_GIB = 5
 # 2K), 10.8 at 302,334 (5 s at 4K). From each 2026-10-30 run's own start the model's lowest MemAvailable is within
 # 0.5 GiB of the measured one (tests/test_upscale.py has them); from the earlier 5 s runs' it is up to 0.8 GiB higher
 # and up to 1.4 GiB lower. A clip of another length needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start (need_gib;
-# min_free_for) where that is more than the floor: none does at the default 110 GiB (the most, 2K at 10 s, 109 with Keep
-# my frames or without).
+# min_free_for) where that is more than the floor: at the default 110 GiB only 2K at 15 s does, 115 (116 with an end
+# or both kept), lean2's, an estimate; the others need 109 at most (2K at 10 and 12 s, with Keep my frames or without).
+# lean2 (not run on the GPU yet): an estimate from the lean forward's line until its first run. Its peak is lean's less
+# the fp32 video embeds diffusers' forward keeps through its block loop, 5,376 x 4 = 21,504 bytes a video row (the
+# itemized lean peak at 4K: 92,288 bytes a row, 21,504 of them those embeds, against 92,278 measured), counted over the
+# whole sequence (its audio and text rows, ~0.4 % of it at 2K 12 and 15 s, ~0.03 GiB too little); its overhead the lean
+# line's, carried past the rows it was fitted to (to 386,406 at 2K 15 s, from 302,334).
 MODEL_GIB = 68.4
-ROW_BYTES = {"stock": 181_800, "lean": 92_300}
-OVERHEAD_GIB = {"stock": (3.5, 5.0), "lean": (2.1, 2.8)}     # GiB, plus GiB per 100,000 of the clip's own rows
+ROW_BYTES = {"stock": 181_800, "lean": 92_300, "lean2": 92_300 - 21_504}
+OVERHEAD_GIB = {"stock": (3.5, 5.0), "lean": (2.1, 2.8), "lean2": (2.1, 2.8)}    # GiB, + GiB per 100,000 own rows
 FLOOR_MARGIN_GIB = 3
 TEXT_ROWS = 200                  # a prompt's rows, for the model (169 to 387 in the studio's runs)
 START_SLACK_GIB = 0.5            # what the job's own start takes after the server's check (job.json min_free_gib)
@@ -337,22 +357,24 @@ FRAME_CASES = {
 # and 10 s at 2K (2026-10-30). Fitted, the others: the step by the step model, 6.457e-4 S + 1.638e-8 S^2 s for the S
 # rows of its case with a prompt of TEXT_ROWS (the measured steps came within 1.4 % of it at their rows), and the base
 # by a straight line in the frames H3 makes, fitted per size to that size's measured bases (1080p: 86.1 + 1.851 a
-# frame, within 8 s of its four; 2K: 107.0 + 2.403 a frame, through its two). A size without times is not offered for
-# that length (offer_row says why): 2K takes up to 10 s whole and 4K 5 s (longer ones are past the memory measured
-# here: in pieces, later).
+# frame, within 8 s of its four; 2K: 107.0 + 2.403 a frame, through its two). 2K at 12 and 15 s are fitted the same
+# way, past the rows any step has run at (314,380 and 386,606, lean2's forward; 302,534 the most so far, at 4K): their
+# attention, ~90 % of the step there, has not run on GB10 at that length. A size without times is not offered for
+# that length (offer_row says why): 4K takes 5 s only (longer ones are past the memory measured here: in pieces, later).
 OFFER_ETA_S = {
     5: {"1080p": (315, 150), "2k": (405, 380), "4k": (625, 1685)},          # measured
     6: {"1080p": (375, 212), "2k": (487, 583)},                             # 1080p measured, 2K fitted
     7: {"1080p": (410, 256), "2k": (528, 700)},                             # fitted
     8: {"1080p": (441, 300), "2k": (568, 828)},                             # fitted
     10: {"1080p": (543, 453), "2k": (691, 1261)},                           # measured
-    12: {"1080p": (630, 638)},                                              # fitted
-    15: {"1080p": (753, 929)}}                                              # measured
+    12: {"1080p": (630, 638), "2k": (814, 1822)},                           # fitted
+    15: {"1080p": (753, 929), "2k": (977, 2698)}}                           # 1080p measured, 2K fitted
 # The lengths and sizes upscaled on the GPU through the studio, one line each (a run that lands adds its line, a run
 # that fails takes it out), or covered by the offer rule: a longer clip at the same size ran, and the step and peak
 # models held there. 6, 10 and 15 s at 1080p and 10 s at 2K ran (2026-10-30: steps within 1.4 % of the step model,
 # peaks within 0.1 GiB of the memory model); 7, 8 and 12 s at 1080p and 6, 7 and 8 s at 2K follow by that rule. A
-# length and size not here would show the page's "not run" note: its times and memory would be estimates.
+# length and size not here shows the page's "not run" note: its times and memory are estimates. 2K at 12 and 15 s are
+# not here yet: offered, not run (a 2K 15 s run, lean2's, would bring 12 s in by the offer rule).
 UPSCALE_RAN = (
     (5, "1080p"),
     (5, "2k"),
@@ -802,16 +824,24 @@ def case_rows(case, resolution, ends=0, text=TEXT_ROWS):
     return rows
 
 
-def lean_chunks_for(case, resolution):
-    """LEAN_CHUNKS where the clip's own rows (video and audio: not its prompt's or a pin's, so every 5 s run stays as
-    measured) are more than LEAN_ROWS, else None (the stock block forward)."""
+def forward_for(case, resolution):
+    """The block forward of a case (FORWARDS) by the clip's own rows (video and audio: not its prompt's or a pin's,
+    so every 5 s run stays as measured): "lean2" past LEAN2_ROWS (2K at 12 and 15 s), "lean" past LEAN_ROWS, else
+    "stock"."""
     rows = case_rows(case, resolution)
-    return LEAN_CHUNKS if rows["video"] + rows["audio"] > LEAN_ROWS else None
+    own = rows["video"] + rows["audio"]
+    return "lean2" if own > LEAN2_ROWS else "lean" if own > LEAN_ROWS else "stock"
+
+
+def lean_chunks_for(case, resolution):
+    """LEAN_CHUNKS where the case's forward runs lean_forward ("lean" or "lean2": forward_for), else None (the stock
+    block forward)."""
+    return None if forward_for(case, resolution) == "stock" else LEAN_CHUNKS
 
 
 def peak_gib(rows, forward):
     """The memory model's GPU memory allocated at the refine's peak, in GiB, for a sequence of `rows` (case_rows, or a
-    receipt's "rows") with the block forward `forward` ("stock" or "lean"): MODEL_GIB and ROW_BYTES a row."""
+    receipt's "rows") with the block forward `forward` (FORWARDS): MODEL_GIB and ROW_BYTES a row."""
     return MODEL_GIB + rows["sequence"] * ROW_BYTES[forward] / 2 ** 30
 
 
@@ -826,7 +856,7 @@ def need_gib(case, resolution, ends=0):
     """The MemAvailable the memory model says a case needs to start, in whole GiB: allocated at the refine's peak
     (peak_gib), the overhead (overhead_gib), the guard and the margin."""
     rows = case_rows(case, resolution, ends)
-    forward = "lean" if lean_chunks_for(case, resolution) else "stock"
+    forward = forward_for(case, resolution)
     return math.ceil(peak_gib(rows, forward) + overhead_gib(rows, forward) + GUARD_GIB + FLOOR_MARGIN_GIB)
 
 
@@ -900,7 +930,7 @@ def offers_table():
 def offer(kept, resolution, ends=0):
     """The Upscale of a clip that keeps `kept` frames (FRAME_CASES; KeyError off it) at a size, with `ends` ends of a
     pin: {"route": route_for's ("whole": the clip in one pass of the refine; "cascade": a pinned 2K, made at 1080p
-    first), "seconds", "rows" (case_rows at the size; the prompt's an estimate), "forward" ("stock" or "lean"),
+    first), "seconds", "rows" (case_rows at the size; the prompt's an estimate), "forward" (forward_for, at the size),
     "lean_chunks", "floor_gib" (min_free_for at MIN_FREE_GIB), "eta_s", "strengths", "ran"} and, for the cascade,
     "cascade": {"from" (the size it is made at first), "rows_<from>", "forward_<from>", "lean_chunks_<from>" (that
     stage's), "sigma_<size>", "steps_<size>" (the step at the size), "eta_s" (cascade_eta_s, in all)}; or {"why"}
@@ -909,16 +939,16 @@ def offer(kept, resolution, ends=0):
     row = offer_row(case["seconds"], resolution)
     if "why" in row:
         return row
-    lean = lean_chunks_for(case, resolution)
     offered = {"route": route_for(resolution, ends), "seconds": case["seconds"],
-               "rows": case_rows(case, resolution, ends), "forward": "lean" if lean else "stock", "lean_chunks": lean,
+               "rows": case_rows(case, resolution, ends), "forward": forward_for(case, resolution),
+               "lean_chunks": lean_chunks_for(case, resolution),
                "floor_gib": min_free_for(resolution, MIN_FREE_GIB, kept, ends), "eta_s": row["eta_s"],
                "strengths": list(STRENGTHS), "ran": row["ran"]}
     if offered["route"] == "cascade":
         first = CASCADE_FROM[resolution]
-        chunks = lean_chunks_for(case, first)
         offered["cascade"] = {"from": first, f"rows_{first}": case_rows(case, first, ends),
-                              f"forward_{first}": "lean" if chunks else "stock", f"lean_chunks_{first}": chunks,
+                              f"forward_{first}": forward_for(case, first),
+                              f"lean_chunks_{first}": lean_chunks_for(case, first),
                               f"sigma_{resolution}": CASCADE_SIGMA, f"steps_{resolution}": CASCADE_STEPS,
                               "eta_s": cascade_eta_s(case["seconds"], ends, resolution)}
     return offered
@@ -1481,6 +1511,35 @@ def install_lean_blocks(model, chunks):
     return len(model.transformer_blocks)
 
 
+def install_lean2(model):
+    """lean2's part on top of the lean blocks: the DiT's video embeds in bf16, and freed once they are in the
+    sequence. diffusers 0.40.0's MiniMaxH3Transformer3DModel.forward (not edited) projects the video rows with
+    proj_in, which is fp32 (_keep_in_fp32_modules), keeps that fp32 output in a local (video_embeds: 21,504 bytes a
+    video row) through its whole block loop, and puts a bf16 copy of it into the packed sequence
+    (video_embeds.to(text_embeds.dtype), an index_copy). Here a hook casts proj_in's output to the sequence's dtype as
+    it comes out: the same cast of the same values, so the forward's own .to() returns that tensor as it is and the
+    sequence gets the same bits. A cast alone would still keep the bf16 embeds (10,752 bytes a video row) in that
+    local; so once the first block starts (the scatter is done, and nothing in the forward reads them again) a
+    pre-hook empties them (set_(): the tensor stays, its memory goes back to the allocator; a later read would get an
+    empty tensor, never stale memory). The pre-hook refuses a sequence of another dtype than the cast's. Every forward
+    of the refine goes through both. Returns their handles."""
+    dtype = model.context_embedder.weight.dtype       # the text stream's, which sets the packed sequence's
+    held = []
+
+    def cast(module, args, output):
+        output = output.to(dtype)
+        held.append(output)
+        return output
+
+    def release(module, args):
+        if args[0].dtype != dtype:
+            raise RuntimeError(f"lean2: the sequence is {args[0].dtype}, the video embeds were cast to {dtype}")
+        while held:
+            held.pop().set_()
+    return (model.proj_in.register_forward_hook(cast),
+            model.transformer_blocks[0].register_forward_pre_hook(release))
+
+
 def text_input(cond, torch):
     """LF Studio's conditioning.pt -> NVIDIA's text dict (encode_prompt's format)."""
     check_text(cond)
@@ -1885,8 +1944,8 @@ def run(job, files, receipt, trace):
     encode_clip, and with any count but 121 decode_released; the audio of another length than 5 s is its own
     (encode_audio, the silence too); the pin goes through refine_pinned, and at 2K through the cascade (route_for:
     the pinned refine at 1080p as a 1080p upscale runs it, NVIDIA's upscaler from that latent to the 2K grid, one step
-    there with the pin; the receipt's "route" and "cascade"); the blocks run lean_forward by each refine's rows
-    (lean_chunks_for) (the docstring)."""
+    there with the pin; the receipt's "route" and "cascade"); the blocks run lean_forward by each refine's rows, with
+    lean2's video embeds past LEAN2_ROWS (forward_for, install_lean2, set_forward) (the docstring)."""
     import torch
     sys.path.insert(0, str(job["package"]))           # -I drops PYTHONPATH and the script dir: name it explicitly
     from open_h3 import adapters, pipeline
@@ -2020,9 +2079,11 @@ def run(job, files, receipt, trace):
         say(f"fast load: {receipt['load']['files']} files, {receipt['load']['fallbacks']} of them through mmap")
     receipt["merge"] = {"weights": pipe.merger.merged, "seconds": round(pipe.merger.seconds, 2)}
     receipt["lean_chunks"] = lean_chunks_for(case, first)
-    receipt["forward"] = "lean" if receipt["lean_chunks"] else "stock"
+    receipt["forward"] = forward_for(case, first)
     if receipt["lean_chunks"]:
         install_lean_blocks(pipe.model, receipt["lean_chunks"])
+    if receipt["forward"] == "lean2":
+        install_lean2(pipe.model)
     if audio is not None:                             # else NVIDIA's silence (5 s)
         pipe.audio = audio.to(pipe.device)
     if tuple(pipe.audio.shape) != (2, AUDIO_CHANNELS, case["A"]):

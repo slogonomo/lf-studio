@@ -10,10 +10,10 @@ one more for the cascade) spread over STUB_UPSCALE_S seconds, then writes paths.
 ffmpeg testsrc2 pattern with the clip's frames, at 24 fps, no audio, as the real job's MP4 has none; upright when the
 clip's MP4, <case>/stage2/refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json, with the
 real job's "frames" (frame_case), "route" (route_for, by the ends held: "cascade" for 2K with one, else "whole"),
-"rows" (case_rows), "forward" and "lean_chunks" (lean_chunks_for; the cascade: its 2K step's), for the cascade its
-"cascade" (the real job's keys but its sigmas and hashes: "from", "steps_1080p", "latent_1080p", "rows_1080p",
-"forward_1080p", "lean_chunks_1080p", "sigma_2k", "steps_2k", "latent_2k", "times_s") and, for a job.json with a
-"pin", its "pin": per keyframe its picture checked by its sha256 as
+"rows" (case_rows), "forward" (forward_for) and "lean_chunks" (lean_chunks_for; the cascade: its 2K step's), for the
+cascade its "cascade" (the real job's keys but its sigmas and hashes: "from", "steps_1080p", "latent_1080p",
+"rows_1080p", "forward_1080p", "lean_chunks_1080p", "sigma_2k", "steps_2k", "latent_2k", "times_s") and, for a
+job.json with a "pin", its "pin": per keyframe its picture checked by its sha256 as
 the real job checks it (PIN_WHY: gone, changed; a last end of a clip that keeps fewer frames than made: past_end),
 else held at 33.0 dB (STUB_UPSCALE_PIN_DB sets others: "last=25.4", below the 28 needed, is not held: far). SIGTERM
 (Cancel) ends it at once, like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status

@@ -476,11 +476,13 @@ Only on a DGX Spark studio with `LFSTUDIO_UPSCALE=1` (off by default; `bin/env.e
 clip, from its MP4, to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regenerate-2K, run as a job of its own
 (`upscale/regen2k_job.py`, in an environment of its own). It takes **every finished clip, of every length, 16:9 or
 9:16**: Sol-H3's Text, Keyframes and Reference clips and LightX2V Turbo's Text and Keyframes clips at either size, 5
-to 15 s, whole, in one pass of NVIDIA's refine. **1080p** takes every length, **2K** clips up to 10 s, **4K** 5 s
-clips; another size is refused with the reason (`2K for 12 s clips comes later: 1080p takes them`: those need the clip
-in pieces, later). 5 s clips have run on the GPU at every size, and 6, 10 and 15 s at 1080p and 10 s at 2K
-(2026-10-30, through the studio, with their frames, their whole sound and their lip sync); the other lengths offered
-have not, but a longer clip at their size has, and their times and memory follow the job's model of those runs
+to 15 s, whole, in one pass of NVIDIA's refine. **1080p** and **2K** take every length, **4K** 5 s clips; another
+size is refused with the reason (`4K for 12 s clips comes later: 1080p and 2K take them`: those need the clip in
+pieces, later). 5 s clips have run on the GPU at every size, and 6, 10 and 15 s at 1080p and 10 s at 2K (2026-10-30,
+through the studio, with their frames, their whole sound and their lip sync); 7, 8 and 12 s at 1080p and 6, 7 and
+8 s at 2K have not, but a longer clip at their size has, and their times and memory follow the job's model of those
+runs. **2K at 12 and 15 s has not run**, nor has anything as long: its offer says so (`"ran": false`), and its times
+and memory (115 GiB free to start at 15 s, 116 with `pin`) are the model's, with the job's leaner `lean2` forward
 ([PERFORMANCE.md](PERFORMANCE.md#longer-clips)). A clip of 3 or 4 s (made up to 0.5.0), or whose MP4 has other frames
 than its length's, is refused, never cut. NVIDIA's code is written for 5 s
 16:9 (1344×768, 121 frames): the job takes other lengths through it with the frames and audio of their own (the
@@ -545,8 +547,8 @@ clip offers (`upscalable` `pin`):
 | Text, Reference | – | – |
 
 It is offered at 1080p and 2K with `balanced` only (not at 4K, nor with `faithful` or `full`, yet: `faithful` held a
-first frame only about 1 dB closer in a test), at the sizes the clip's length has (1080p alone at 12 and 15 s). Where
-the job's forward is lean (1080p from 10 s, 2K from 6 s) it runs with the lean blocks.
+first frame only about 1 dB closer in a test), at the sizes the clip's length has. Where the job's forward is lean
+(1080p from 10 s, 2K from 6 s; `lean2` at 2K for 12 and 15 s) it runs with the lean blocks.
 At 2K the clip is made at 1080p first, then brought to 2K (the job's route `cascade`; the record's `route`): the
 pinned refine at 1080p, exactly as a 1080p upscale with `pin` runs it, then NVIDIA's latent upscaler from that refined
 latent to the 2K grid, then one step from start noise 0.4 at 2K with the pictures held again, then the 2K decode. There
@@ -555,8 +557,10 @@ less than one at 1080p (frame 0 about 1 dB closer, against 4 dB), so the picture
 2K step adds the detail. Research runs (a research runner on one DGX Spark, 2026-10-29: two LightX2V Turbo 5 s clips
 with a first frame, the 2K step from a saved 1080p result) gave frame 0 2.0-2.1 dB closer to the picture than the plain
 2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no flash and the motion kept. It has not run through the
-studio yet (the page says so at 2K). By the job's model it takes about 19 min for a 5 s clip and 49-50 min at 10 s
-(`upscale_offers` `cascade_eta_s`, below), and needs the free memory of its larger refine. On a clip longer than 5 s it
+studio yet (the page says so at 2K). By the job's model it takes about 19 min for a 5 s clip and 49-50 min at 10 s,
+67-68 min at 12 s and 94-95 min at 15 s (`upscale_offers` `cascade_eta_s`, below), and needs the free memory of its
+larger refine (each refine's forward by its own rows: at 12 and 15 s lean at 1080p, `lean2` for the 2K step; 116 GiB
+at 15 s). On a clip longer than 5 s it
 has run with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30: both held, 31.9 and 32.0 dB from the
 pictures at 1080p, no flash at either end); elsewhere on long clips it has not run on the GPU, and the page says so.
 An end the clip offers but the request does not send has its reason in the record's
@@ -586,7 +590,7 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 | Key | Value |
 |---|---|
 | `id` | the finished clip (required) |
-| `resolution` | `1080p` (every length), `2k` (default; clips up to 10 s) or `4k` (5 s clips; the slowest: ~66 min in its one run so far, a 16:9 clip; not yet run with a 9:16 one): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's). A 12 or 15 s clip needs `1080p` |
+| `resolution` | `1080p` (every length), `2k` (default; every length, 12 and 15 s not run yet) or `4k` (5 s clips; the slowest at 5 s: ~66 min in its one run so far, a 16:9 clip; not yet run with a 9:16 one): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's). A clip longer than 5 s needs `1080p` or `2k` |
 | `strength` | how much it may redraw: `faithful` (start noise 0.5, 2 steps), `balanced` (0.7, 2 steps) or `full` (NVIDIA's release setting, 3 steps from 0.909: sharpest, but it redraws faces). Default `LFSTUDIO_UPSCALE_STRENGTH` (`balanced`). Provisional, until measured |
 | `audio` | what the picture is refined against: `clip` (the clip's own Stage-1 audio) or `silence` (NVIDIA's). Default `LFSTUDIO_UPSCALE_AUDIO` (`clip`). The result gets the clip's sound either way, copied |
 | `seed` | the refine's seed; default (or `null`) the clip's |
@@ -613,8 +617,8 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
   again; with `LFSTUDIO_PRELOAD=1` (the default) the studio warms up the last clip's settings again as soon as the
   upscale is done and nothing is queued.
 - 400 for a bad field (`resolution must be one of 1080p, 2k, 4k`, `pin must be auto or off`, `unknown key "steps"
-  (...)`, ...), a size the clip's length does not have (`2K for 12 s clips comes later: 1080p takes them`, `4K for 10 s
-  clips comes later: 1080p and 2K take them`), `an upscale can't be upscaled again`, `Upscale takes clips of the
+  (...)`, ...), a size the clip's length does not have (`4K for 10 s clips comes later: 1080p and 2K take them`),
+  `an upscale can't be upscaled again`, `Upscale takes clips of the
   lengths the studio makes, 5 to 15 s, not 3 s` (or `4 s`: Sol-H3's clips of those lengths, made up to 0.5.0),
   `Upscale can't take this clip: its MP4 has 145 frames, not the frames of a 6 s clip`,
   `nothing is left of the prompt without its keyframe line: the Upscale needs text` (or
@@ -665,8 +669,8 @@ length and size (`null` with the Upscale off):
  "10": {"1080p": {"eta_s": [543, 453], "ran": true},
         "2k": {"eta_s": [691, 1261], "ran": true, "cascade_eta_s": [2931, 2996]},
         "4k": {"why": "4K for 10 s clips comes later: 1080p and 2K take them"}},
- "12": {"1080p": {"eta_s": [630, 638], "ran": true},
-        "2k": {"why": "2K for 12 s clips comes later: 1080p takes them"}, "4k": {"why": "..."}}, ...}
+ "12": {"1080p": {"eta_s": [630, 638], "ran": true}, "2k": {"eta_s": [814, 1822], "ran": false},
+        "4k": {"why": "4K for 12 s clips comes later: 1080p and 2K take them"}}, ...}
 ```
 
 for every length a model's Upscale takes (`"5"` to `"15"`): `eta_s` is the seconds before the refine (closing the
@@ -930,12 +934,13 @@ LightX2V Turbo clip's job stops within about 20 s).
 from there: without `--wait`, `--out` or `--poster` it prints the upscale's own id; with them it waits and saves the
 MP4, by default as `lf-studio_<task>_<seconds>s_seed<seed>_<clip id6>_<resolution>_<upscale id6>.mp4`. It sends only
 the choices given, so the studio's defaults hold for the rest (2K, `LFSTUDIO_UPSCALE_STRENGTH`,
-`LFSTUDIO_UPSCALE_AUDIO`, the clip's seed), and holds at switchboard as `generate` does (`--hold`); a 12 or 15 s clip
-needs `--resolution 1080p` (2K and 4K are refused for it, with the reason). An upscale takes about 10 min (1080p, 5 s)
-to 1.6 h (4K, full) in all (4K over an hour; 1080p 10 min and 2K 19 min for a 5 s clip), with a ~22 s load (measured
-in the studio's job; ~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback); longer clips take
-longer (1080p 24 min at 10 s and 44 min at 15 s, 2K 54 min at 10 s, from their runs), so `--timeout` and a later
-`wait` are the usual way.
+`LFSTUDIO_UPSCALE_AUDIO`, the clip's seed), and holds at switchboard as `generate` does (`--hold`); a clip longer
+than 5 s needs `--resolution 1080p` or `2k` (4K is refused for it, with the reason). An upscale takes about 10 min
+(1080p, 5 s) to 1.6 h (4K, full) in all (4K over an hour; 1080p 10 min and 2K 19 min for a 5 s clip), with a ~22 s
+load (measured in the studio's job; ~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback);
+longer clips take longer (1080p 24 min at 10 s and 44 min at 15 s, 2K 54 min at 10 s, from their runs; 2K at 12 and
+15 s, not run yet, an estimated 1.2 and 1.8 h, 2.5 h at 15 s with `full`), so `--timeout` and a later `wait` are the
+usual way.
 `--pin auto|off` is Keep my frames
 ([Upscale](#upscale-experimental-post-apiupscale); at 2K made at 1080p first, then brought to 2K: about 19 min for a
 5 s clip and 49-50 min at 10 s by the job's model, not run through a studio yet): it goes only to a studio whose
@@ -944,8 +949,8 @@ true` (an older studio never keeps them, so the request goes without it); when s
 stopped, `/api/state` can't be read without starting it, so the request goes with `pin`, and again without it if the
 studio answers `unknown key "pin"`. `status` shows it as `2k upscale of <clip id8>, balanced, ...` (`2k upscale of
 <clip id8> (lightx2v-turbo 576p), ...` for a clip of another model; `..., first frame kept` or `..., last frame not
-kept (25.4 dB)` once done with the pin), `cancel` stops it within about 20 s, and the studio's refusals (`2K for 12 s
-clips comes later: 1080p takes them`, the Upscale off, ...) are exit 2, with its words.
+kept (25.4 dB)` once done with the pin), `cancel` stops it within about 20 s, and the studio's refusals (`4K for 12 s
+clips comes later: 1080p and 2K take them`, the Upscale off, ...) are exit 2, with its words.
 
 **Waiting** is a loop of `GET /api/jobs/<id>/video?wait=15`, so the MP4 comes on the connection that saw the clip
 finish. It shows one progress line per change on stderr (`queued 5cfd57b0 (fl2va, landscape, 5 s, seed 1234),
@@ -1023,7 +1028,7 @@ it reads anything: it exits with 2 and names each old name and its new one on st
 | `status` | `id` | one clip's record; without an id, the clips this session submitted, then the queue and the newest clips. Never waits, downloads or starts a stopped studio. |
 | `cancel` | `id` (required) | cancels a queued or running clip |
 | `fetch` | `id` (required), `out`, `poster`, `wake` (default false) | saves a finished clip (also one made in the page); refuses on a studio switchboard has stopped unless `wake` is true |
-| `upscale` | `id` (required), `resolution`, `strength`, `audio`, `seed`, `pin` (`auto` or `off`), `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished clip, 16:9 or 9:16, of any mode, model or length ([Upscale](#upscale-experimental-post-apiupscale): a 12 or 15 s clip needs `resolution` `1080p`), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. `pin` (Keep my frames) goes only to a studio that takes it, as `lf-cli upscale --pin`. Each call queues another upscale |
+| `upscale` | `id` (required), `resolution`, `strength`, `audio`, `seed`, `pin` (`auto` or `off`), `wait_s`, `out`, `poster` | experimental, on a studio with `LFSTUDIO_UPSCALE=1`: queues an upscale of a finished clip, 16:9 or 9:16, of any mode, model or length ([Upscale](#upscale-experimental-post-apiupscale): a clip longer than 5 s needs `resolution` `1080p` or `2k`), waits up to `wait_s` and saves the MP4 when it is done; else `wait` with the id it returns. `pin` (Keep my frames) goes only to a studio that takes it, as `lf-cli upscale --pin`. Each call queues another upscale |
 | `models` | none | the studio's models ([Models](#models-experimental-lightx2v-turbo)): what each makes now, its options, what not yet and why, its time per clip; `structuredContent` is `{"model_choice", "models"}` as `lf-cli models --json`. Read-only, and never starts a stopped studio |
 | `prompt_guide` | none | the [prompt guide](#prompt-guide) |
 
@@ -1065,8 +1070,8 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
 - **spark-switchboard:** as the CLI; a stopped studio makes `wait` and `fetch` answer that `fetch` with `wake: true`
   would start it.
 - **`upscale`** answers `Queued upscale <id> of clip <clip id> (2k, balanced).`, then as `generate`.
-  An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h, far longer than any `wait_s`: the usual result says it
-  is still running, and a later `wait` saves it.
+  An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h (a 15 s clip at 2K about 1.8 h, an estimate), far
+  longer than any `wait_s`: the usual result says it is still running, and a later `wait` saves it.
 
 ### Waiting values per client
 

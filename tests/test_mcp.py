@@ -238,7 +238,8 @@ class Protocol(McpTest):
                          {"type": "integer", "enum": [5, 6, 7, 8, 10, 12, 15], "default": 5})   # 3 and 4 s went after 0.5.0
         upscale = r["tools"][5]["description"]
         for words in ("Experimental", "Clips of every length, 16:9 or 9:16", "of every mode and model",
-                      "1080p takes every length, 2K up to 10 s, 4K 5 s clips; another size is refused with the reason",
+                      "1080p and 2K take every length (2K at 12 and 15 s has not run on the GPU yet), 4K 5 s clips; "
+                      "another size is refused with the reason",
                       "Keyframes or Reference clip", "stretched to 768p", "keeps all its frames (a 5 s one at 4K its "
                       "first 121)", "pin (Keep my frames, experimental)", "at 1080p and 2K with balanced",
                       "2K is 1440x2560", "redraws faces", "longer clips take longer (1080p 24 min at 10 s",
@@ -247,7 +248,7 @@ class Protocol(McpTest):
         self.assertNotIn("5 s clips, 16:9", upscale)
         self.assertEqual(r["tools"][5]["inputSchema"]["properties"]["resolution"],
                          {"type": "string", "enum": ["1080p", "2k", "4k"], "default": "2k",
-                          "description": "Default 2k; a 12 or 15 s clip needs 1080p"})
+                          "description": "Default 2k; 4k for a 5 s clip only"})
         self.assertNotIn("untested", upscale)
         self.assertNotIn("draft", upscale)                                       # from the clip's MP4 only
         self.assertEqual(set(r["tools"][5]["inputSchema"]["properties"]),

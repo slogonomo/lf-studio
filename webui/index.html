@@ -427,8 +427,8 @@ const FMT={landscape:'16:9',portrait:'9:16'}, TASK={t2va:'Text',fl2va:'Keyframes
 // refine step, plus ~8 min with the standard load (j.load: its 2K run took 498 s more in all, 433 s of it the load and
 // 56 s the encode, which loads its VAE through mmap; neither depends on the resolution). At 5 s from the job's own runs
 // with the fast load on one DGX Spark, a 16:9 clip to each resolution; 6, 10 and 15 s at 1080p and 10 s at 2K from
-// their runs too, the other lengths from the job's model of those runs (docs/PERFORMANCE.md). An upscale's record has
-// its clip's length, so its bar has its times.
+// their runs too, the other lengths from the job's model of those runs (docs/PERFORMANCE.md; 2K at 12 and 15 s past
+// anything run: ~1.2 and ~1.8 h). An upscale's record has its clip's length, so its bar has its times.
 // The popover shows upEta for 2 steps with the studio's load (/api/state "upscale_load"), upTime, for each size the
 // clip's length has, and greys out the others with the reason.
 const isUp=j=>j.kind==='upscale';
@@ -466,8 +466,8 @@ const upEta=j=>{const e=(upOffer(j,j.resolution)||{}).eta_s;if(!e)return 0;     
 // last keyframe whole, 124 frames, at 1080p and 2K), and its 768p clip with a last keyframe cut to 121 frames (run at
 // 1080p before such a clip kept all 124 there, its route at 4K now). Any other route has not: UP_UNRUN says so, and
 // its times are a Text clip's. A clip of a length and size that has not run at all, nor a longer one at that size
-// (its offer's "ran": false; none now, but a run that fails takes its line out), gets UP_LEN_UNRUN in its place: one
-// note
+// (its offer's "ran": false: 2K at 12 and 15 s, past anything run; and a run that fails takes its line out), gets
+// UP_LEN_UNRUN in its place: one note
 const UP_RAN=['sol-h3 clip clip','sol-h3 encode clip','lightx2v-turbo clip stretch','lightx2v-turbo generation clip',
   'lightx2v-turbo generation stretch','lightx2v-turbo generation trim'];
 const UP_UNRUN="This kind of clip has not been upscaled on the GPU through the studio yet: the times are a Text clip's";
