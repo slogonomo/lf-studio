@@ -1010,13 +1010,14 @@ size and length).
   Sol-H3 draws the same 362 frames with the same transformer (stock Diffusers refusing them is checked on the CPU with
   a small random-weight model); the later 15 s runs, at 576p and 768p, made their 362 frames that way and kept the
   studio's 361 (289 at 768p 12 s). One run each.
-- **Not measured:** 6, 7 and 8 s, 12 s at 576p, Keyframes clips at 768p past 10 s and at 576p past 14 s, and the
-  mirrored end of the sound at 6 and 15 s (8 ms). The studio's estimates (`eta_s`) come from the runs above: the
-  prompt encode (12 s), the process (23 s), 4 steps by the rows, the decode at 0.67 s per frame and megapixel, and 2 s
-  for the poster: 200 s for 5 s at 576p and 350 s at 768p, 400 and 820 s for 10 s, 500 s for 12 s at 576p and 1070 s
-  at 768p, 660 and 1440 s for 15 s; within 8 % of every run of the first session (the job's process, plus the measured
-  or the estimated prompt encode, plus the poster's 2 s), and within 2.2 % of the three longer ones (660 s against
-  646 s at 576p 15 s, 1070 against 1050 at 768p 12 s, 1440 against 1439 at 768p 15 s).
+- **Not measured:** 6, 7 and 8 s, 12 s at 576p, Keyframes clips at 768p past 10 s and at 576p past 14 s with one
+  keyframe (one 15 s clip with both ran: below), and the mirrored end of the sound at 6 and 15 s (8 ms). The studio's
+  estimates (`eta_s`) come from the runs above: the prompt encode (12 s), the process (23 s), 4 steps by the rows, the
+  decode at 0.67 s per frame and megapixel, and 2 s for the poster: 200 s for 5 s at 576p and 350 s at 768p, 400 and
+  820 s for 10 s, 500 s for 12 s at 576p and 1070 s at 768p, 660 and 1440 s for 15 s; within 8 % of every run of the
+  first session (the job's process, plus the measured or the estimated prompt encode, plus the poster's 2 s), and within
+  2.2 % of the three longer ones (660 s against 646 s at 576p 15 s, 1070 against 1050 at 768p 12 s, 1440 against 1439 at
+  768p 15 s).
 - **The studio's queue** (a staging studio on the same DGX Spark, 2026-10-29, with this version's LightX2V Turbo before
   the Upscale took its clips: a second studio with its own port and state, driven by `lf-cli`, one clip each). From the
   prompt encode to the poster: 191-204 s for 5 s at 576p (Text, a first frame, first + last, a last frame alone;
@@ -1029,7 +1030,9 @@ size and length).
   or GPU memory left behind; the refusals (Reference, and the Upscale of such a clip, which that version did not offer
   yet) came back with their reasons. In the Upscale's staging run later that day (this version), a 576p Text clip took
   188 s and a 768p clip with first and last keyframes 363 s (350 s), its 124 frames kept; the first closed a Sol-H3
-  Reference session in 6.8 s.
+  Reference session in 6.8 s. In the staging run of 2026-10-31 a 576p 16:9 15 s Keyframes clip with both keyframes
+  (one picture first and last, the clip for the 15 s cascade at 2K) took 675.5 s (660 s), all 362 frames made and
+  kept, its last 35.1 dB from the last picture.
 
 ## Replay bench: Stage 2 on saved drafts
 

@@ -764,11 +764,12 @@ took 173-190 s for 5 s at 576p and 328-350 s at 768p, 387 s and 813 s for 10 s, 
 run each (2026-10-29), 632 s for 15 s at 576p, and 1036 s and 1425 s for 12 and 15 s at 768p. Its prompt encode took
 9-18 s. In the studio's queue (staging studios on one DGX Spark, 2026-10-29, one clip each), a 5 s clip took 188-204 s
 at 576p and 338 s at 768p (363 s with first and last keyframes), and a 10 s clip at 576p 399 s, from the prompt encode
-to the poster ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)). Until it has measured a clip of a size and
-length, the studio shows its estimate for it, from those runs (`eta_s`: about 3:20 at 576p and 5:50 at 768p for 5 s,
-6:40 and 13:40 for 10 s, 11:00 and 24:00 for 15 s), and the clip's own time after that. 6, 7 and 8 s, 12 s at 576p, and
-Keyframes clips longer than 14 s at 576p or 10 s at 768p (only Text ran at those lengths) have not run on the GPU: their
-times and memory floors are estimates.
+to the poster ([PERFORMANCE.md](PERFORMANCE.md#experimental-lightx2v-turbo)); on 2026-10-31 a 15 s Keyframes clip at
+576p with both keyframes 675.5 s. Until it has measured a clip of a size and length, the studio shows its estimate for
+it, from those runs (`eta_s`: about 3:20 at 576p and 5:50 at 768p for 5 s, 6:40 and 13:40 for 10 s, 11:00 and 24:00
+for 15 s), and the clip's own time after that. 6, 7 and 8 s, 12 s at 576p, Keyframes clips longer than 10 s at 768p
+(only Text ran at those lengths) and 15 s ones at 576p with one keyframe have not run on the GPU: their times and memory
+floors are estimates.
 
 **Files and names:** a LightX2V Turbo clip downloads as
 `lf-studio_lightx2v-turbo-<resolution>_<task>_<seconds>s_seed<seed>_<id6>.mp4`, and its `LFSTUDIO_PUBLISH_DIR` copy

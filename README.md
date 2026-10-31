@@ -133,13 +133,13 @@ models` and the MCP tool `models` list what each model makes.
   The prompt encode adds 9-18 s ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#experimental-lightx2v-turbo)). Through the
   studio's own queue (staging studios on one DGX Spark, 2026-10-29, one clip each), 5 s clips took 3.1-3.4 min at
   576p and 5.6 min at 768p (6 min with first and last keyframes), and a 10 s clip at 576p 6.7 min, prompt encode
-  included. The studio shows an estimate per size and length until it has measured a clip of its own (about 3:20 at
-  576p and 5:50 at 768p for 5 s, 11:00 and 24:00 for 15 s). A clip closes the Sol-H3 models first when they are
-  loaded (7 s in two staging runs, up to 40 s when a worker doesn't answer), and the next Sol-H3 clip loads them
-  again. A 768p clip of 12 s or more needs more free memory
-  to start (103 GiB at 12 s, 107 at 15 s, against 100). 6, 7 and 8 s, 12 s at 576p, and Keyframes clips longer than
-  14 s at 576p or 10 s at 768p (only Text ran at those lengths) have not run on the GPU: their times and memory floors
-  are estimates from the runs above.
+  included; on 2026-10-31 a 15 s Keyframes clip at 576p with both keyframes took 11.3 min. The studio shows an estimate
+  per size and length until it has measured a clip of its own (about 3:20 at 576p and 5:50 at 768p for 5 s, 11:00 and
+  24:00 for 15 s). A clip closes the Sol-H3 models first when they are loaded (7 s in two staging runs, up to 40 s when
+  a worker doesn't answer), and the next Sol-H3 clip loads them again. A 768p clip of 12 s or more needs more free
+  memory to start (103 GiB at 12 s, 107 at 15 s, against 100). 6, 7 and 8 s, 12 s at 576p, Keyframes clips longer than
+  10 s at 768p (only Text ran at those lengths) and 15 s ones at 576p with one keyframe have not run on the GPU: their
+  times and memory floors are estimates from the runs above.
 - **Not yet:** keeping its model loaded between clips, and Reference. Its clips of every length can be upscaled
   ([Upscale](#experimental-upscale)).
 
