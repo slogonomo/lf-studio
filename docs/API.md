@@ -557,7 +557,7 @@ less than one at 1080p (frame 0 about 1 dB closer, against 4 dB), so the picture
 2K step adds the detail. Research runs (a research runner on one DGX Spark, 2026-10-29: two LightX2V Turbo 5 s clips
 with a first frame, the 2K step from a saved 1080p result) gave frame 0 2.0-2.1 dB closer to the picture than the plain
 2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no flash and the motion kept. Through the studio
-(2026-10-31, LightX2V Turbo Keyframes clips) it held a first frame at 5 s, within 0.3 dB of that research run, and both
+(2026-10-31, LightX2V Turbo Keyframes clips) it held a first frame at 5 s as closely as that research run, and both
 ends at 10 and 15 s, with no flash: each end a little less close to the picture than the 1080p route holds it (at 5
 and 10 s 1.6-2.1 dB further at the job's 384p check grid: the 2K step's added detail and contrast), and closer than
 the single pinned refine at 2K it replaced (1.5 dB at 5 s). The page has no note for a LightX2V Turbo clip's first

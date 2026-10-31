@@ -117,7 +117,7 @@ What this wrapper changes, and why:
   then the 2K decode. Each refine's block forward goes by its own rows. The research runner's arms
   (a 9:16 and a 16:9 LightX2V Turbo clip, a first frame, the 2K step from a 1080p pinned run's saved latent): frame 0
   +2.0 / +2.1 dB against the unpinned 2K, the face +3.4 / +4.8 dB, detail x2.2-2.5, no flash; a single pass pinned at
-  2K, which this replaces, about +1 dB. Through the studio the 5 s run's frame 0 came within 0.3 dB of the research
+  2K, which this replaces, about +1 dB. Through the studio the 5 s run's frame 0 came as close as the research
   arm's, and at the check's grid each end held at 5 and 10 s came 1.6-2.1 dB further from its picture than the 1080p
   pinned refine's (at 5 s 1.5 closer than the single pass): the 2K step's added detail and contrast, at every frame.
   With no end held at 2K the refine is NVIDIA's at 2K, as without a pin.
@@ -414,7 +414,7 @@ UPSCALE_RAN = (
 # and the 2K step only adds detail. The research runner's arms (2026-10-29, a 9:16 and a 16:9 LightX2V Turbo clip, 5 s,
 # a first frame, from a 1080p pinned run's saved latent) against the unpinned 2K: frame 0 +2.0 / +2.1 dB, the face
 # +3.4 / +4.8 dB, detail x2.2-2.5, no flash; 2 steps from 0.5 gave no more, and the 2K step without the pin less.
-# Through the studio (2026-10-31, LightX2V Turbo Keyframes clips): a first end at 5 s within 0.3 dB of its research
+# Through the studio (2026-10-31, LightX2V Turbo Keyframes clips): a first end at 5 s as close as its research
 # arm; both ends at 10 and 15 s held as at 5 s, each end at 5 and 10 s 1.6-2.1 dB further from its picture than the
 # 1080p pinned refine's at the check's grid: the 2K step's added detail and contrast (docs/PERFORMANCE.md).
 # CASCADE_FROM maps the size to the one it is made at first; 4K keeps no pin.

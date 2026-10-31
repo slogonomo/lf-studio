@@ -868,7 +868,7 @@ frame at 5 s on the research runs' 9:16 clip, at their seed; both ends at 10 s o
 and last. Every end asked was held (the job's check: 31.2 dB at 5 s, 36.4-37.0 dB at 10 and 15 s), with no flash at
 either end, every frame, the clip's whole sound, the last second clean, and the lip sync kept where the clip speaks.
 
-- **5 s, against its research arm:** within 0.3 dB (frame 0 against the picture 26.04 dB at 2K, the arm's 26.03; the
+- **5 s, against its research arm:** as close (frame 0 against the picture 26.04 dB at 2K, the arm's 26.03; the
   face 25.18 and 25.09; the two upscales a mean 44.9 dB apart), not bit for bit: its input is the studio's, the arm's
   was built by hand. Against the clip's unpinned 2K (research, 2026-10-28) frame 0 came 2.04 dB closer, the face 3.53
   and the region 2.45 (the arm: 2.03, 3.45, 2.45). It took 17.9 min, under the 20 min set for it.
