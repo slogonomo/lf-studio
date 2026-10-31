@@ -648,9 +648,10 @@ files are in a directory of their own (its input folder too, whose links keep th
 moves only them; a clip can't be deleted while an upscale of it is
 queued or running (409). It fails, without a retry, below its floor of free memory once the models are closed:
 `LFSTUDIO_UPSCALE_MIN_FREE_GIB` for a 5 s clip (default 110; 5 GiB more at 4K), and for a longer clip what its length,
-size and Keep my frames need by the job's memory model where that is more (the cascade: its larger refine's; none at
-the default; 109 GiB at most, 2K at 10 s; with the setting at 100: `not enough free memory for an upscale: ... 109 GiB
-needed (what a 2K 10 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=100)`). Its job gets that floor (job.json
+size and Keep my frames need by the job's memory model where that is more (the cascade: its larger refine's; at the
+default only 2K at 15 s, 115 GiB, 116 with `pin`; the others 109 at most, 2K at 10 and 12 s; with the setting at 100:
+`not enough free memory for an upscale: ... 109 GiB needed (what a 2K 10 s upscale needs, more than
+LFSTUDIO_UPSCALE_MIN_FREE_GIB=100)`). Its job gets that floor (job.json
 `min_free_gib`) and checks it again as it starts. It also fails when the memory guard kills it
 (`LFSTUDIO_UPSCALE_GUARD_GIB`, 5 GiB for 3 s); `error` says why (the job's own error line when it has one). A finished
 upscale also has `phases_s`, `peak_gib` and `low_mem_gib` from its job.
@@ -677,11 +678,11 @@ for every length a model's Upscale takes (`"5"` to `"15"`): `eta_s` is the secon
 models, the job's start, reading the clip, the fast load, the decode and the MP4) and per refine step (an upscale
 takes `base + steps × step`, ~8 min more with the standard load, ~15 s more for a text encoded first; measured, or
 from the job's model of the runs), `ran` whether that length and size has been upscaled on the GPU through the studio,
-or a longer clip at that size has (else its times are estimates; every size offered has, for now), `cascade_eta_s` at
-2K the time in all with Keep my frames holding one end and both (the cascade, made at 1080p first: 2K's base, 2 steps
-at 1080p and one at 2K, each with the pictures' rows, NVIDIA's upscaler and the pictures' encode; the job's model, not
-run through the studio yet: about 19 min for a 5 s clip and 49-50 min at 10 s), `why` the reason a
-size is not offered for that length (a request for it gets 400 with it). The page's popover takes its times, its
+or a longer clip at that size has (else its times are estimates; every size offered has but 2K at 12 and 15 s, not
+run yet), `cascade_eta_s` at 2K the time in all with Keep my frames holding one end and both (the cascade, made at
+1080p first: 2K's base, 2 steps at 1080p and one at 2K, each with the pictures' rows, NVIDIA's upscaler and the
+pictures' encode; the job's model, not run through the studio yet: about 19 min for a 5 s clip and 49-50 min at
+10 s), `why` the reason a size is not offered for that length (a request for it gets 400 with it). The page's popover takes its times, its
 greyed sizes and its notes from it, and an upscale's expected time by its clip's length. And every finished job in
 `/api/state`, `/api/jobs` and the API record has `upscalable`: `{"ok": true, "clip_audio": <has its audio>}` or
 `{"ok": false,
