@@ -756,9 +756,9 @@ class StudioSettingsTests(unittest.TestCase):
     def test_min_free_for(self):
         """4K needs 5 GiB more than the floor (its job used ~105 GiB, 2K ~101); a floor of 0 stays off. A 5 s clip
         (121 or 124 frames, with a pin or not) needs that at any floor; a longer one that or what its case needs
-        (route_need_gib), whichever is more: at the default 110 every length needs 110 (2K at 10 and 12 s need 109,
-        with a pin too) but 2K at 15 s, 115 (116 with an end or both kept: the cascade's 2K step; lean2's, an
-        estimate); below it, a case's own need (2K at 8 s 102; with a pin 106, its cascade's 1080p stage)."""
+        (route_need_gib), whichever is more: at the default 110 every length needs 110 (2K at 10 s needs 109, at 12 s
+        108, 109 with a pin) but 2K at 15 s, 113 (114 with both ends kept: the cascade's 2K step; lean2's, fitted to
+        its runs); below it, a case's own need (2K at 8 s 102; with a pin 106, its cascade's 1080p stage)."""
         self.assertEqual([job_module.min_free_for(res, 110.0) for res in ("1080p", "2k", "4k")], [110.0, 110.0, 115.0])
         self.assertEqual(job_module.min_free_for("4k", 0.0), 0.0)
         self.assertEqual(job_module.min_free_for("4k", 100.0), 105.0)
@@ -775,11 +775,11 @@ class StudioSettingsTests(unittest.TestCase):
                                              ("2k", 185, 0, 90.0, 102.0), ("2k", 185, 1, 90.0, 106.0),
                                              ("2k", 153, 2, 90.0, 102.0), ("2k", 192, 2, 100.0, 107.0),
                                              ("2k", 243, 2, 100.0, 109.0), ("2k", 241, 1, 0.0, 0.0),
-                                             ("2k", 289, 2, 110.0, 110.0), ("2k", 294, 0, 100.0, 109.0),
-                                             ("2k", 289, 1, 90.0, 109.0), ("2k", 361, 0, 110.0, 115.0),
-                                             ("2k", 362, 1, 110.0, 116.0), ("2k", 361, 2, 110.0, 116.0),
-                                             ("2k", 361, 1, 90.0, 116.0), ("2k", 361, 0, 120.0, 120.0),
-                                             ("2k", 362, 2, 0.0, 0.0)):
+                                             ("2k", 289, 2, 110.0, 110.0), ("2k", 294, 0, 100.0, 108.0),
+                                             ("2k", 289, 1, 90.0, 109.0), ("2k", 361, 0, 110.0, 113.0),
+                                             ("2k", 362, 1, 110.0, 113.0), ("2k", 361, 2, 110.0, 114.0),
+                                             ("2k", 361, 1, 90.0, 113.0), ("2k", 362, 2, 90.0, 114.0),
+                                             ("2k", 361, 0, 120.0, 120.0), ("2k", 362, 2, 0.0, 0.0)):
             with self.subTest(res=res, kept=kept, ends=ends, floor=floor):
                 self.assertEqual(job_module.min_free_for(res, floor, kept, ends), want)
         for kept in (145, 73):                                      # Sol-H3's old 3 s too
@@ -816,9 +816,9 @@ class OfferTests(unittest.TestCase):
 
     def test_the_table(self):
         """1080p and 2K every length, 4K 5 s; every length and size offered has run on the GPU, or a longer clip at
-        that size has (UPSCALE_RAN: 6, 10 and 15 s at 1080p and 10 s at 2K ran; a run that fails takes its line out),
-        but 2K at 12 and 15 s (lean2's: not run yet, "ran" false, the page's note); every size not offered says why,
-        naming the sizes that take the clip."""
+        that size has (UPSCALE_RAN: 6, 10 and 15 s at 1080p and 10 and 15 s at 2K ran, 2K 15 s on 2026-10-31 with
+        lean2, which brings 2K 12 s in; a run that fails takes its line out: "ran" false, the page's note); every size
+        not offered says why, naming the sizes that take the clip."""
         table = job_module.offers_table()
         self.assertEqual(json.loads(json.dumps(table)), table)                 # as /api/state carries it
         self.assertEqual(list(table), ["5", "6", "7", "8", "10", "12", "15"])
@@ -835,15 +835,15 @@ class OfferTests(unittest.TestCase):
                           {"eta_s": [691, 1261], "ran": True, "cascade_eta_s": [2931, 2996]},
                           {"eta_s": [753, 929], "ran": True}))
         self.assertEqual((table["12"]["2k"], table["15"]["2k"]),
-                         ({"eta_s": [814, 1822], "ran": False, "cascade_eta_s": [3998, 4073]},
-                          {"eta_s": [977, 2698], "ran": False, "cascade_eta_s": [5636, 5725]}))
+                         ({"eta_s": [821, 1822], "ran": True, "cascade_eta_s": [4005, 4080]},
+                          {"eta_s": [991, 2680], "ran": True, "cascade_eta_s": [5632, 5721]}))
         for seconds, sizes in table.items():
             self.assertEqual(list(sizes), list(job_module.SIZES))
             for size, row in sizes.items():          # 2K's Keep my frames through the cascade: its time with 1, 2 ends
                 self.assertEqual(set(row), ({"eta_s", "ran"} | ({"cascade_eta_s"} if size == "2k" else set()))
                                  if size in offered[seconds] else {"why"})
                 if "eta_s" in row:
-                    self.assertEqual(row["ran"], (seconds, size) not in (("12", "2k"), ("15", "2k")), (seconds, size))
+                    self.assertTrue(row["ran"], (seconds, size))                  # no "not run" note now
                     self.assertEqual(row["eta_s"], list(job_module.OFFER_ETA_S[int(seconds)][size]))
                 if "cascade_eta_s" in row:
                     self.assertEqual(row["cascade_eta_s"], [job_module.cascade_eta_s(int(seconds), ends)
@@ -852,15 +852,13 @@ class OfferTests(unittest.TestCase):
                if "why" in row}
         self.assertEqual(why, {(s, "4k"): f"4K for {s} s clips comes later: 1080p and 2K take them"
                                for s in ("6", "7", "8", "10", "12", "15")})
-        ran = ((5, "1080p"), (5, "2k"), (5, "4k"), (6, "1080p"), (10, "1080p"), (15, "1080p"), (10, "2k"))
-        covered = ((7, "1080p"), (8, "1080p"), (12, "1080p"), (6, "2k"), (7, "2k"), (8, "2k"))     # the offer rule
+        ran = ((5, "1080p"), (5, "2k"), (5, "4k"), (6, "1080p"), (10, "1080p"), (15, "1080p"), (10, "2k"), (15, "2k"))
+        covered = ((7, "1080p"), (8, "1080p"), (12, "1080p"), (6, "2k"), (7, "2k"), (8, "2k"), (12, "2k"))  # offer rule
         self.assertEqual(sorted(job_module.UPSCALE_RAN), sorted(ran + covered))
         for seconds, size in covered:              # a longer clip at the same size ran
             self.assertTrue(any(s > seconds and z == size for s, z in ran), (seconds, size))
         self.assertEqual({(int(seconds), size) for seconds, sizes in table.items() for size in sizes
-                          if "eta_s" in sizes[size]}, set(job_module.UPSCALE_RAN) | {(12, "2k"), (15, "2k")})
-        for seconds in (12, 15):                    # not run: no line until a run lands
-            self.assertNotIn((seconds, "2k"), job_module.UPSCALE_RAN)
+                          if "eta_s" in sizes[size]}, set(job_module.UPSCALE_RAN))
         # one line each: a run that fails takes its line out, and its length shows the page's "not run" note
         source = (REPO / "upscale" / "regen2k_job.py").read_text()
         for seconds, size in ran + covered:
@@ -875,16 +873,18 @@ class OfferTests(unittest.TestCase):
 
     def test_the_times(self):
         """OFFER_ETA_S: the measured rows as their runs gave them (5 s at each size; 6, 10 and 15 s at 1080p and 10 s at
-        2K, 2026-10-30: each run's time from the job's start less its two steps and the encode of its text or
-        pictures, plus 40 s for closing the studio's models, and the mean of its steps, which came within 2 % of the
-        step model); the others fitted: the step by the step model at their case's rows with a prompt of TEXT_ROWS,
-        the base by a straight line in the frames H3 makes through the measured bases of that size (least squares);
-        2K at 12 and 15 s too, past the rows any step has run at (lean2's)."""
+        2K, 2026-10-30, and 15 s at 2K, 2026-10-31, lean2's: each run's time from the job's start less its two steps
+        and the encode of its text or pictures, plus 40 s for closing the studio's models, and the mean of its steps,
+        which came within 2 % of the step model); the others fitted: the step by the step model at their case's rows
+        with a prompt of TEXT_ROWS, the base by a straight line in the frames H3 makes through the measured bases of
+        that size (least squares: 1080p 86.1 + 1.851 a frame through its four, within 8 s of them; 2K 97.4 + 2.462
+        through its three, within 5 s); 2K at 12 s too (lean2's)."""
         measured = {(5, "1080p"): (315, 150), (5, "2k"): (405, 380), (5, "4k"): (625, 1685),
                     (6, "1080p"): (375, 212), (10, "1080p"): (543, 453), (15, "1080p"): (753, 929),
-                    (10, "2k"): (691, 1261)}
+                    (10, "2k"): (691, 1261), (15, "2k"): (991, 2680)}
         runs = {(6, "1080p"): (759.7, (213.06, 211.75), 0), (10, "1080p"): (1423.0, (454.62, 450.45), 14.8),
-                (15, "1080p"): (2587.0, (926.84, 930.29), 16.9), (10, "2k"): (3188.1, (1261.15, 1260.82), 14.8)}
+                (15, "1080p"): (2587.0, (926.84, 930.29), 16.9), (10, "2k"): (3188.1, (1261.15, 1260.82), 14.8),
+                (15, "2k"): (6326.2, (2680.71, 2678.39), 16.3)}
 
         def model_step(seconds, size):
             kept = next(k for k, (s, *_) in CASES.items() if s == seconds)
@@ -894,13 +894,15 @@ class OfferTests(unittest.TestCase):
             self.assertEqual(measured[key], (round(total - sum(steps) - encode + 40), round(sum(steps) / 2)), key)
             self.assertLess(abs(measured[key][1] / model_step(*key) - 1), 0.02, key)
         made = {seconds: made for seconds, made, *_ in CASES.values()}
-        fitted = []
+        fitted, lines = [], {}
         for size, sized in ((size, {s: row[size] for s, row in job_module.OFFER_ETA_S.items() if size in row})
                             for size in job_module.SIZES):
             points = [(made[s], base) for (s, z), (base, _) in measured.items() if z == size]
             mx, my = (sum(v) / len(points) for v in zip(*points))
             slope = (sum((x - mx) * (y - my) for x, y in points) / sum((x - mx) ** 2 for x, _ in points)
                      if len(points) > 1 else 0)
+            lines[size] = (round(my - slope * mx, 1), round(slope, 3),
+                           math.ceil(max(abs(my + slope * (x - mx) - y) for x, y in points)))
             for seconds, row in sized.items():
                 if (seconds, size) in measured:
                     self.assertEqual(row, measured[(seconds, size)], (seconds, size))
@@ -909,9 +911,13 @@ class OfferTests(unittest.TestCase):
                     self.assertEqual(row, (round(my + slope * (made[seconds] - mx)), round(model_step(seconds, size))),
                                      (seconds, size))
         self.assertEqual(fitted, [(7, "1080p"), (8, "1080p"), (12, "1080p"), (6, "2k"), (7, "2k"), (8, "2k"),
-                                  (12, "2k"), (15, "2k")])
+                                  (12, "2k")])
+        self.assertEqual({size: lines[size] for size in ("1080p", "2k")},
+                         {"1080p": (86.1, 1.851, 8), "2k": (97.4, 2.462, 5)})          # and within 8 and 5 s
+        self.assertEqual({s: job_module.OFFER_ETA_S[s]["2k"][0] for s in (6, 7, 8, 12)},
+                         {6: 486, 7: 528, 8: 570, 12: 821})
         self.assertEqual((job_module.OFFER_ETA_S[12]["2k"], job_module.OFFER_ETA_S[15]["2k"]),
-                         ((814, 1822), (977, 2698)))    # 74 and 106 min balanced, 105 and 151 min full
+                         ((821, 1822), (991, 2680)))    # 74 and 106 min balanced, 105 and 151 min full
 
     def test_the_cascades_time(self):
         """Keep my frames at 2K goes through the cascade: its time (offer_row "cascade_eta_s", cascade_eta_s) is 2K's
@@ -920,8 +926,11 @@ class OfferTests(unittest.TestCase):
         each picture's encode at both grids (3 s at 1080p, 5 s at 2K). At 5 s about 19 min with one end and 19.5
         with both: about the unpinned 2K's 19.4, and 1.3 min less than the single-pass pinned 2K it replaces (both
         ends: 405 + 2 x 417 + 10 = 1249 s by the same model; measured 1202 s through the studio); at 10 s 49-50 min,
-        against 53.5 unpinned; at 12 and 15 s (2K's fitted step there, lean2's) 67-68 and 94-95 min, against 74 and
-        106 unpinned. The same for every count of frames of a length (the rows are the frames made's)."""
+        against 53.5 unpinned; at 12 and 15 s (lean2's 2K step: at 12 s the step model, at 15 s its measured step)
+        67-68 and 94-95 min, against 74 and 106 unpinned. The same for every count of frames of a length (the rows are
+        the frames made's). The cascade's runs through the studio (2026-10-31) held the model's parts: every step
+        within 1 % of the step model at its receipt's rows, NVIDIA's upscaler within 0.2 s of CASCADE_UPSCALE_S by
+        its latent frames, the pictures' encode within 0.4 s an end of PIN_ENCODE_S."""
         self.assertEqual((job_module.STEP_MODEL, job_module.CASCADE_UPSCALE_S, job_module.PIN_ENCODE_S),
                          ((6.457e-4, 1.638e-8), 5, {"1080p": 3, "2k": 5}))
         self.assertEqual((job_module.CASCADE_FROM, job_module.CASCADE_SIGMA, job_module.CASCADE_STEPS),
@@ -943,8 +952,18 @@ class OfferTests(unittest.TestCase):
                 self.assertEqual(job_module.cascade_eta_s(seconds, ends), round(want), (kept, ends))
                 self.assertEqual(job_module.step_s(1000), model(1000))
         self.assertEqual({s: [job_module.cascade_eta_s(s, ends) for ends in (1, 2)] for s in (5, 6, 7, 8, 10, 12, 15)},
-                         {5: [1129, 1169], 6: [1547, 1594], 7: [1797, 1847], 8: [2057, 2111], 10: [2931, 2996],
-                          12: [3998, 4073], 15: [5636, 5725]})
+                         {5: [1129, 1169], 6: [1546, 1593], 7: [1797, 1847], 8: [2059, 2113], 10: [2931, 2996],
+                          12: [4005, 4080], 15: [5632, 5721]})
+        runs = {   # the receipts' rows at 1080p and 2K, steps there, T, upscaler s, ends held, the pictures' encode s
+            "5 s 9:16, a first end": ((78129, 137409), ((150.62, 149.84), (395.15,)), 37, 5.0, 1, 8.31),
+            "10 s, both ends": ((152050, 267490), ((476.86, 473.62), (1332.01,)), 72, 9.66, 2, 16.48),
+            "15 s, both ends": ((223871, 393911), ((959.93, 961.13), (2771.7,)), 107, 14.32, 2, 16.47)}
+        for name, (rows, steps, latents, upscale, ends, encode) in runs.items():
+            for size_rows, size_steps in zip(rows, steps):
+                for step in size_steps:
+                    self.assertLess(abs(step / job_module.step_s(size_rows) - 1), 0.01, (name, size_rows, step))
+            self.assertLess(abs(upscale - job_module.CASCADE_UPSCALE_S * latents / 37), 0.2, name)
+            self.assertLess(abs(encode / ends - sum(job_module.PIN_ENCODE_S.values())), 0.4, name)
         # the step model's extra for the condition rows at 5 s, as measured through the studio (2026-10-29/30): ~6.5 s
         # a step per end at 1080p, ~37 s a step with both ends at 2K
         five = job_module.frame_case(124)
@@ -1017,14 +1036,16 @@ class OfferTests(unittest.TestCase):
                                ("2k", 153): 169726, ("4k", 121): 302334})
 
     def test_lean2_only_past_every_case_that_ran(self):
-        """lean2 where the clip's own rows pass LEAN2_ROWS, the most of any case run on the GPU (4K at 5 s, 302,334):
-        every case that ran keeps the forward it ran with (the 5 s runs and the long clips' of 2026-10-30, with a pin
-        too: forward_for does not count its rows), and of the lengths and sizes the studio makes only 2K at 12 and
-        15 s (314,180 and 386,406) and 4K past 5 s (not offered) go lean2; lean2 runs the lean blocks (16 chunks)."""
+        """lean2 where the clip's own rows pass LEAN2_ROWS, the most of any case run lean on the GPU (4K at 5 s,
+        302,334): every case that ran stock or lean keeps the forward it ran with (the 5 s runs, the long clips' of
+        2026-10-30 and the cascade's stages of 2026-10-31, with a pin too: forward_for does not count its rows), and of
+        the lengths and sizes the studio makes only 2K at 12 and 15 s (314,180 and 386,406) and 4K past 5 s (not
+        offered) go lean2, as 2K at 15 s ran (2026-10-31, whole and the cascade's 2K step); lean2 runs the lean blocks
+        (16 chunks)."""
         self.assertEqual((job_module.LEAN2_ROWS, job_module.FORWARDS), (302_334, ("stock", "lean", "lean2")))
         ran = {(121, "1080p"): "stock", (124, "1080p"): "stock", (121, "2k"): "stock", (124, "2k"): "stock",
                (121, "4k"): "lean", (153, "1080p"): "stock", (241, "1080p"): "lean", (243, "1080p"): "lean",
-               (361, "1080p"): "lean", (241, "2k"): "lean"}
+               (361, "1080p"): "lean", (362, "1080p"): "lean", (241, "2k"): "lean", (243, "2k"): "lean"}
         for (kept, size), forward in ran.items():
             case = job_module.frame_case(kept)
             self.assertEqual(job_module.forward_for(case, size), forward, (kept, size))
@@ -1032,6 +1053,8 @@ class OfferTests(unittest.TestCase):
             self.assertLessEqual(own, job_module.LEAN2_ROWS, (kept, size))
         self.assertEqual(max(sum(job_module.case_rows(job_module.frame_case(kept), size)[k] for k in ("video", "audio"))
                              for kept, size in ran), job_module.LEAN2_ROWS)
+        for kept in (361, 362):                     # 2K 15 s, whole (361 frames) and the cascade's 2K step (362)
+            self.assertEqual(job_module.forward_for(job_module.frame_case(kept), "2k"), "lean2", kept)
         lean2 = {}
         for kept, (seconds, *_) in CASES.items():
             for size in job_module.SIZES:
@@ -1048,9 +1071,9 @@ class OfferTests(unittest.TestCase):
         """The peak model reproduces the job's 5 s runs of 2026-10-28 (a 16:9 clip; allocated at the peak 81.29 / 91.08
         / 94.46 GiB at 1080p / 2K / 4K) and their lowest MemAvailable from their start (27.4 GiB from ~116.5, 15.7 from
         116.7, 11.1 from 116.4) within 0.6 GiB; the overhead is a straight line in the clip's own rows per
-        forward. The floors of the other lengths it gives stay within today's 110 GiB but 2K at 15 s's, lean2's
-        estimate: 115, 116 with an end or both kept; the others need 109 at most (2K at 10 and 12 s), with Keep my
-        frames or without."""
+        forward. The floors of the other lengths it gives stay within today's 110 GiB but 2K at 15 s's, lean2's: 113,
+        114 with both ends kept; the others need 109 at most (2K at 10 s, and at 12 s with an end kept or both), with
+        Keep my frames or without."""
         for size, allocated, start, low in (("1080p", 81.29, 116.5, 27.4), ("2k", 91.08, 116.7, 15.7),
                                             ("4k", 94.46, 116.4, 11.1)):
             case = job_module.frame_case(121)
@@ -1059,7 +1082,7 @@ class OfferTests(unittest.TestCase):
             self.assertAlmostEqual(job_module.peak_gib(rows, forward), allocated, delta=0.06)
             lowest = start - job_module.peak_gib(rows, forward) - job_module.overhead_gib(rows, forward)
             self.assertLess(abs(lowest - low), 0.6, size)
-        self.assertEqual(job_module.OVERHEAD_GIB, {"stock": (3.5, 5.0), "lean": (2.1, 2.8), "lean2": (2.1, 2.8)})
+        self.assertEqual(job_module.OVERHEAD_GIB, {"stock": (3.5, 5.0), "lean": (2.1, 2.8), "lean2": (10.6, 0.0)})
         self.assertEqual([round(job_module.overhead_gib({"video": own, "audio": 0}, forward), 2)
                           for forward, own in (("stock", 0), ("stock", 100_000), ("lean", 0), ("lean", 100_000))],
                          [3.5, 8.5, 2.1, 4.9])
@@ -1072,7 +1095,7 @@ class OfferTests(unittest.TestCase):
             ("1080p", 8): (106, 106, 107), ("1080p", 10): (96, 96, 96), ("1080p", 12): (99, 100, 100),
             ("1080p", 15): (104, 104, 104), ("2k", 5): (110, 110, 111), ("2k", 6): (98, 99, 99),
             ("2k", 7): (100, 101, 101), ("2k", 8): (102, 103, 103), ("2k", 10): (109, 109, 109),
-            ("2k", 12): (109, 109, 109), ("2k", 15): (115, 116, 116), ("4k", 5): (113, 114, 115)})
+            ("2k", 12): (108, 109, 109), ("2k", 15): (113, 113, 114), ("4k", 5): (113, 114, 115)})
         # a route's need: its largest stage's; the cascade (2K with a pin) also its 1080p stage's, more at 6 to 8 s
         # (the stock forward at 1080p against the lean one at 2K); none above 110 but 2K at 15 s, its 2K step's
         # (lean2's), more than its 1080p stage's 104
@@ -1088,20 +1111,40 @@ class OfferTests(unittest.TestCase):
                           for kept, seconds in ((121, 5), (153, 6), (169, 7), (185, 8), (241, 10), (289, 12),
                                                 (361, 15))},
                          {5: (110, 111), 6: (102, 102), 7: (104, 105), 8: (106, 107), 10: (109, 109), 12: (109, 109),
-                          15: (116, 116)})
+                          15: (113, 114)})
         floors = {(kept, size, ends): job_module.offer(kept, size, ends)["floor_gib"] for kept in CASES
                   for size in job_module.SIZES for ends in (0, 1, 2) if "why" not in job_module.offer(kept, size)}
         self.assertEqual({key: floor for key, floor in floors.items() if floor != (115 if key[1] == "4k" else 110)},
-                         {(kept, "2k", ends): (115.0, 116.0, 116.0)[ends] for kept in (361, 362) for ends in (0, 1, 2)})
-        self.assertLessEqual(max(floors.values()), 116)        # the runs start at 116.3-116.6 GiB free
+                         {(kept, "2k", ends): (113.0, 113.0, 114.0)[ends] for kept in (361, 362) for ends in (0, 1, 2)})
+        self.assertLessEqual(max(floors.values()), 116)        # the runs start at 116.3-116.8 GiB free
 
     def test_lean2s_memory(self):
-        """lean2's model, an estimate until its first run: lean's bytes a row less the fp32 video embeds diffusers'
-        forward keeps (5,376 x 4 = 21,504 bytes a video row: 93.9 GiB at 2K 15 s, against lean's 101.6), lean's
-        overhead line. 2K at 12 s then needs 109 GiB to start, as 2K at 10 s; 2K at 15 s 115, 116 with an end or both
-        kept: the most the box gives (117.7 idle, 116.3-116.6 at the long runs' starts), so its lowest MemAvailable
-        from 116.5 is ~9.7 GiB (~9.2 with both ends), against the guard's 5. The lean forward there would need 123."""
-        self.assertEqual(job_module.ROW_BYTES, {"stock": 181_800, "lean": 92_300, "lean2": 70_796})
+        """lean2's model, fitted to its two runs (2026-10-31, 2K 15 s: whole, and the cascade's 2K step with both ends,
+        each from its receipt's own rows and MemAvailable at its start): 71,100 bytes a row, between the 71,135 and
+        71,036 they measured (lean's bytes less the fp32 video embeds diffusers' forward keeps, 5,376 x 4 = 21,504 a
+        video row, gave 70,796), so the peak within 0.05 GiB of each; a flat overhead, the higher of theirs (9.9 and
+        10.5 GiB) rounded up, at 12 s's fewer rows too, so the model's lowest MemAvailable is no higher than either
+        run's (and within 1 GiB; the lean line's would be 12.9 GiB at those rows, 2.4-3.0 too much). 2K at 12 s then
+        needs 108 GiB to start, 109 with an end or both, as 2K at 10 s; 2K at 15 s 113, 114 with both ends: its lowest
+        MemAvailable from 116.5 is ~11.9 GiB (~11.4 with both ends), against the guard's 5. The lean forward there
+        would need 123."""
+        self.assertEqual(job_module.ROW_BYTES, {"stock": 181_800, "lean": 92_300, "lean2": 71_100})
+        runs = {   # the receipts' rows; start, peak allocated, lowest MemAvailable (GiB)
+            "15 s 9:16, whole": ({"video": 385200, "audio": 1206, "text": 772, "condition": 0}, 116.6, 94.05, 12.64),
+            "15 s, the cascade's 2K step with both ends": (
+                {"video": 385200, "audio": 1206, "text": 305, "condition": 7200}, 116.8, 94.46, 11.83)}
+        self.assertEqual(job_module.forward_for(job_module.frame_case(361), "2k"), "lean2")
+        overheads = []
+        for name, (rows, start, peak, lowest) in runs.items():
+            rows = dict(rows, sequence=sum(rows.values()))
+            self.assertLess(abs(job_module.peak_gib(rows, "lean2") - peak), 0.05, name)
+            self.assertLess(abs((peak - job_module.MODEL_GIB) * 2 ** 30 / rows["sequence"] - 71_100), 100, name)
+            low = start - job_module.peak_gib(rows, "lean2") - job_module.overhead_gib(rows, "lean2")
+            self.assertLessEqual(low, lowest, name)
+            self.assertLess(lowest - low, 1, name)
+            overheads.append(start - peak - lowest)
+            self.assertGreater(job_module.overhead_gib(rows, "lean") - overheads[-1], 2.4, name)
+        self.assertEqual(job_module.OVERHEAD_GIB["lean2"], (math.ceil(max(overheads) * 10) / 10, 0.0))
         need, low = {}, {}
         for kept in (289, 294, 361, 362):
             case = job_module.frame_case(kept)
@@ -1110,12 +1153,13 @@ class OfferTests(unittest.TestCase):
                 need[(kept, ends)] = job_module.need_gib(case, "2k", ends)
                 low[(kept, ends)] = round(116.5 - job_module.peak_gib(rows, "lean2")
                                           - job_module.overhead_gib(rows, "lean2"), 1)
-        self.assertEqual(need, {(kept, ends): 109 if kept < 300 else (115, 116, 116)[ends]
+        self.assertEqual(need, {(kept, ends): (108, 109, 109)[ends] if kept < 300 else (113, 113, 114)[ends]
                                 for kept in (289, 294, 361, 362) for ends in (0, 1, 2)})
         self.assertEqual({key: value for key, value in low.items() if key[0] in (289, 361)},
-                         {(289, 0): 16.5, (289, 1): 16.2, (289, 2): 16.0, (361, 0): 9.7, (361, 1): 9.5, (361, 2): 9.2})
+                         {(289, 0): 16.7, (289, 1): 16.4, (289, 2): 16.2, (361, 0): 11.9, (361, 1): 11.7,
+                          (361, 2): 11.4})
         fifteen = job_module.case_rows(job_module.frame_case(361), "2k")
-        self.assertEqual(round(job_module.peak_gib(fifteen, "lean2"), 1), 93.9)
+        self.assertEqual(round(job_module.peak_gib(fifteen, "lean2"), 1), 94.0)
         self.assertEqual(round(job_module.peak_gib(fifteen, "lean"), 1), 101.6)
         self.assertEqual(math.ceil(job_module.peak_gib(fifteen, "lean") + job_module.overhead_gib(fifteen, "lean")
                                    + job_module.GUARD_GIB + job_module.FLOOR_MARGIN_GIB), 123)
@@ -1639,10 +1683,10 @@ class InputTests(Fixture):
         with self.assertRaisesRegex(JobError, r"^4K for 15 s clips comes later: 1080p and 2K take them$"):
             job_module.plan(dict(job_module.parse_job(self.job(resolution="4k"), "/"), orientation="landscape",
                                  frames=job_module.frame_case(361)), schedules, grid)
-        # 2K at 12 and 15 s: lean2 by its rows, not run yet; at 15 s the case's own floor, past the setting's 110;
+        # 2K at 12 and 15 s: lean2 by its rows, run at 15 s; at 15 s the case's own floor, past the setting's 110;
         # with Keep my frames the cascade, its 1080p stage lean and its 2K step lean2 (the floor its 2K step's)
-        for kept, ends, forward_floor in ((289, (), 110), (362, (), 115), (361, ("first",), 116),
-                                          (362, ("first", "last"), 116), (289, ("first", "last"), 110)):
+        for kept, ends, forward_floor in ((289, (), 110), (362, (), 113), (361, ("first",), 113),
+                                          (362, ("first", "last"), 114), (289, ("first", "last"), 110)):
             job = dict(job_module.parse_job(self.job(**({"pin": pin(*ends)} if ends else {})), "/"),
                        orientation="landscape", frames=job_module.frame_case(kept))
             planned = job_module.plan(job, schedules, grid)
@@ -1650,7 +1694,7 @@ class InputTests(Fixture):
             self.assertEqual({k: planned["offer"][k] for k in ("seconds", "forward", "lean_chunks", "floor_gib",
                                                                  "eta_s", "ran")},
                              {"seconds": seconds, "forward": "lean2", "lean_chunks": 16, "floor_gib": forward_floor,
-                              "eta_s": list(job_module.OFFER_ETA_S[seconds]["2k"]), "ran": False}, (kept, ends))
+                              "eta_s": list(job_module.OFFER_ETA_S[seconds]["2k"]), "ran": True}, (kept, ends))
             self.assertEqual(planned["offer"]["route"], "cascade" if ends else "whole")
             if ends:
                 self.assertEqual({k: planned["offer"]["cascade"][k]

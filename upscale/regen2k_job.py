@@ -49,15 +49,15 @@ What this wrapper changes, and why:
   LEAN_ROWS rows of their own: lean_chunks_for), every transformer block runs lean_forward: diffusers' block forward
   with its row-wise parts over the sequence in 16 chunks and q/k/v written straight into SDPA's layout (on GB10
   bit-identical to the stock forward, with 2.5x less activation memory). The stock forward with only its FFN in 8
-  chunks ran out of memory at 4K. Past every case that has run (more than LEAN2_ROWS rows of their own: 2K at 12 and
+  chunks ran out of memory at 4K. Past every case that ran lean (more than LEAN2_ROWS rows of their own: 2K at 12 and
   15 s), the forward is "lean2" (forward_for): the lean blocks, and the DiT's video embeds, which diffusers' forward
   keeps in fp32 through its block loop, cast to bf16 as they come out of proj_in (the cast its forward does) and freed
   once the sequence has them (install_lean2: 21,504 bytes a video row less, ~7.7 GiB at 2K 15 s; on the CPU
-  bit-identical to lean; not run on the GPU yet). Once the weights are in GPU memory their page cache is dropped (on
-  GB10 it takes the same memory; with the fast load only the upscaler's file and fallbacks are in it). With "preread"
-  (the standard load only, off unless asked for), 8 threads read the weight files into the page cache before the
-  load; it did not shorten the one load measured with it. job.json refuses it with the fast load, which reads past the
-  page cache.
+  bit-identical to lean; run on the GPU at 2K 15 s, 2026-10-31, below). Once the weights are in GPU memory their page
+  cache is dropped (on GB10 it takes the same memory; with the fast load only the upscaler's file and fallbacks are in
+  it). With "preread" (the standard load only, off unless asked for), 8 threads read the weight files into the page
+  cache before the load; it did not shorten the one load measured with it. job.json refuses it with the fast load,
+  which reads past the page cache.
 - The output has no audio (video_noaudio.mp4, NVIDIA's encode_mp4, CRF 10): the server muxes the clip's audio in.
 - Portrait (9:16), which NVIDIA's code is not written for (its sizes are 16:9). A 16:9 clip runs NVIDIA's calls as
   before. For a 9:16 clip, run() adds portrait entries to NVIDIA's module dicts (PORTRAIT_ENTRIES: INPUT_SIZES and
@@ -82,19 +82,19 @@ What this wrapper changes, and why:
   latents (encode_audio: the clip's audio padded with silence or cut to A x 800 samples, and a silence of that length
   where it has none: NVIDIA's round(frames / 24 * 32000) gives one latent too many at 6 and 15 s); the output has all
   its frames. A 124-frame clip came out with all 124 through the studio at 1080p and 2K (2026-10-29/30), and clips of
-  6, 10 and 15 s at 1080p and of 10 s at 2K with all their frames and their whole sound (2026-10-30, below); the other
-  lengths follow the job's model of those runs (UPSCALE_RAN, OFFER_ETA_S, need_gib). A 121-frame
-  clip runs NVIDIA's own encode_video and decode, as before, and at 5 s the refine has NVIDIA's silence or the clip's
-  audio as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run, and for a clip of another
-  length its upscaler.py and upscaler_node.py too: their upscale keeps the latent's T (NVIDIA's target has 37, which a
-  5 s clip would not show), and run() checks the upscaled latent's shape before the refine. What is offered per length
-  and size (OFFER_ETA_S: 1080p and 2K every length, 4K at 5 s; offer, offers_table; 2K at 12 and 15 s past anything
-  run, with the lean2 forward: not run on the GPU yet) is the server's too: prepare refuses the rest with the reason,
-  and a clip of any other count of frames is refused, never cut.
+  6, 10 and 15 s at 1080p and of 10 s at 2K with all their frames and their whole sound (2026-10-30, below), and of
+  15 s at 2K (2026-10-31); the other lengths follow the job's model of those runs (UPSCALE_RAN, OFFER_ETA_S,
+  need_gib). A 121-frame clip runs NVIDIA's own encode_video and decode, as before, and at 5 s the refine has NVIDIA's
+  silence or the clip's audio as before. check_package pins NVIDIA's pipeline.py (sha256) when the copies run, and
+  for a clip of another length its upscaler.py and upscaler_node.py too: their upscale keeps the latent's T (NVIDIA's
+  target has 37, which a 5 s clip would not show), and run() checks the upscaled latent's shape before the refine.
+  What is offered per length and size (OFFER_ETA_S: 1080p and 2K every length, 4K at 5 s; offer, offers_table; 2K at
+  12 and 15 s with the lean2 forward) is the server's too: prepare refuses the rest with the reason, and a clip of any
+  other count of frames is refused, never cut.
 - Keep my frames (job.json "pin"; experimental; run through the studio, 2026-10-29/30: either end or both at 1080p, both
   at 2K in one pinned refine there, which the cascade below replaces, and both ends of a 10 s clip at 1080p with the
-  lean blocks). NVIDIA's refine is text to video: it redraws the clip's first and last frames like any other, away from
-  the pictures they were made from.
+  lean blocks; the cascade on 2026-10-31, below). NVIDIA's refine is text to video: it redraws the clip's first and
+  last frames like any other, away from the pictures they were made from.
   With a pin, the clip's keyframes are held as H3 holds a keyframe, the bench wrapper's K1 refine for either end or
   both (refine_pinned): each picture fitted to the refine's grid as the clip's model fitted it to its canvas
   (keyframe_image: H3's cover-crop as a box in the picture, one LANCZOS step from it), encoded on encode_clip's VAE
@@ -105,18 +105,22 @@ What this wrapper changes, and why:
   672x384, luma PSNR, and an end below 28 dB, one whose picture is gone or changed (sha256), or a last end the clip
   stops short of (a clip that keeps fewer frames than H3 made) is not held; the receipt says why, and the job never
   refuses for it. With no end held the refine is NVIDIA's.
-- Keep my frames at 2K, the cascade (route_for; experimental, not yet run through the studio). Held in a refine at 2K
-  the pictures come out far less close than at 1080p, but the 1080p pinned frame alone resized to 2K is closer to the
-  picture than either. So a 2K upscale with an end held is made at 1080p first: the pinned refine at 1080p exactly as
-  a 1080p upscale with Keep my frames runs it (NVIDIA's Pipeline built at 1080p with job.json's steps and
-  start_sigma, its upscale from 768p, refine_pinned with the pictures at the 1080p grid, the job's seed), then
-  NVIDIA's latent upscaler (open_h3.upscaler.upscale, as its own 4K route runs it from 2K) from that refined latent
-  to the 2K grid, with the Pipeline's target and kept rows set as NVIDIA's sets them at 2K, then one step from
-  sigma 0.4 (NVIDIA's shifted_grid(0.4, 1)) at 2K with the same pictures at the 2K grid (encoded on the same VAE) and
-  the same seeds, then the 2K decode. Each refine's block forward goes by its own rows. The research runner's arms
+- Keep my frames at 2K, the cascade (route_for; experimental; run through the studio on 2026-10-31 with LightX2V
+  Turbo Keyframes clips: a first end at 5 s, both ends at 10 and 15 s). Held in a refine at 2K the pictures come out
+  far less close than at 1080p, but the 1080p pinned frame alone resized to 2K is closer to the picture than either.
+  So a 2K upscale with an end held is made at 1080p first: the pinned refine at 1080p exactly as a 1080p upscale with
+  Keep my frames runs it (NVIDIA's Pipeline built at 1080p with job.json's steps and start_sigma, its upscale from
+  768p, refine_pinned with the pictures at the 1080p grid, the job's seed), then NVIDIA's latent upscaler
+  (open_h3.upscaler.upscale, as its own 4K route runs it from 2K) from that refined latent to the 2K grid, with the
+  Pipeline's target and kept rows set as NVIDIA's sets them at 2K, then one step from sigma 0.4 (NVIDIA's
+  shifted_grid(0.4, 1)) at 2K with the same pictures at the 2K grid (encoded on the same VAE) and the same seeds,
+  then the 2K decode. Each refine's block forward goes by its own rows. The research runner's arms
   (a 9:16 and a 16:9 LightX2V Turbo clip, a first frame, the 2K step from a 1080p pinned run's saved latent): frame 0
   +2.0 / +2.1 dB against the unpinned 2K, the face +3.4 / +4.8 dB, detail x2.2-2.5, no flash; a single pass pinned at
-  2K, which this replaces, about +1 dB. With no end held at 2K the refine is NVIDIA's at 2K, as without a pin.
+  2K, which this replaces, about +1 dB. Through the studio the 5 s run's frame 0 came within 0.3 dB of the research
+  arm's, and at the check's grid each end held at 5 and 10 s came 1.6-2.1 dB further from its picture than the 1080p
+  pinned refine's (at 5 s 1.5 closer than the single pass): the 2K step's added detail and contrast, at every frame.
+  With no end held at 2K the refine is NVIDIA's at 2K, as without a pin.
 
 The input: job.json "case", a folder in the shape of a Sol-H3 clip's own: stage2/refined_*.mp4 (the clip's MP4,
 through NVIDIA's encode_video at 768p: 1344x768, or 768x1344 for 9:16), qwen/conditioning.pt (text alone: t2va) and,
@@ -146,14 +150,20 @@ one with a last keyframe (cut to 121 frames) through this job to 1080p: 553.6-56
 night it took LightX2V Turbo clips with a last keyframe whole (124 frames) to 1080p in 557.8-560.1 s and to 2K in
 1118.9 s, as a Text clip; a pin added 16-17 s with one end and 30-34 s with both at 1080p, 83 s with both in one
 pinned refine at 2K (the pictures' encode and longer steps; peak allocated +0.4 / +0.7 GiB at 1080p, +1.3 GiB at 2K,
-where the lowest MemAvailable was 14.1 GiB; at 2K Keep my frames is the cascade now, not run through the studio yet). On
+where the lowest MemAvailable was 14.1 GiB; at 2K Keep my frames is the cascade now, run on 2026-10-31, below). On
 2026-10-30 it took clips of other lengths whole, through the studio (one run each, from 116.3-116.6 GiB free, the times
 with a 15-17 s encode of the text but for the 6 s Text clip and the LightX2V Turbo clip (its own text; 6.1 s for its
 pictures)): 6 s at 1080p (153 frames, the stock forward) in 759.7 s, steps of 213+212 s, peak allocated 84.78 GiB,
 lowest MemAvailable 23.5 GiB; 10 s at 1080p (241, lean) in 1423.0 s, steps of 455+450 s, 81.15 GiB, 29.0 GiB, and a
 LightX2V Turbo 10 s clip (243) with both ends kept in 1459.2 s, steps of 474+474 s, 81.54 GiB, 28.8 GiB; 15 s 9:16 at
 1080p (361, lean) in 2587.0 s, steps of 927+930 s, 87.37 GiB, 20.4 GiB; 10 s at 2K (241, lean) in 3188.1 s, steps of
-1261+1261 s, 90.83 GiB, 16.7 GiB. The other lengths follow the model of these runs (OFFER_ETA_S, MODEL_GIB, need_gib).
+1261+1261 s, 90.83 GiB, 16.7 GiB. On 2026-10-31 (from 116.5-116.8 GiB free): 15 s 9:16 at 2K (a Sol-H3 Keyframes clip,
+361, lean2, no pin) in 6326.2 s with a 16.3 s encode of its text, steps of 2681+2678 s, 94.05 GiB, 12.64 GiB; and the
+cascade, LightX2V Turbo Keyframes clips with their own text: 5 s 9:16 with a first end (121, stock) in 1071.8 s, steps
+of 151+150 s at 1080p and 395 s at 2K, 81.66 and 91.69 GiB, 17.16 GiB; 10 s with both ends (243, lean) in 2979.4 s,
+steps of 477+474 and 1332 s, 81.54 and 91.43 GiB, 17.65 GiB; 15 s with both ends (362, lean, then lean2 at 2K) in
+5673.6 s, steps of 960+961 and 2772 s, 87.75 and 94.46 GiB, 11.83 GiB. The other lengths follow the model of these
+runs (OFFER_ETA_S, MODEL_GIB, need_gib).
 The bench wrapper it is derived from: docs/PERFORMANCE.md.
 
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
@@ -257,9 +267,10 @@ MAX_STEPS = 4
 LEAN_ROWS, LEAN_CHUNKS = 140_000, 16
 # "lean2": lean_forward and the DiT's video embeds in bf16, freed once they are in the sequence (install_lean2: on the
 # CPU bit-identical to lean, tests/test_upscale.py), where the clip's own rows are more than LEAN2_ROWS, the most of any
-# case that has run on the GPU (4K at 5 s, lean). So every case that ran keeps its forward, and only 2K at 12 and 15 s
-# (314,180 and 386,406 rows of their own) go lean2: past the lean forward's memory there (forward_for). Not run on the
-# GPU yet, nor has attention at that many rows on GB10 (cuDNN's SDPA ran up to 302,534 rows, 4K at 5 s).
+# case that ran lean on the GPU (4K at 5 s). So every case that ran lean keeps its forward, and only 2K at 12 and 15 s
+# (314,180 and 386,406 rows of their own) go lean2: past the lean forward's memory there (forward_for). Run on the GPU
+# at 2K 15 s (2026-10-31: whole, 387,178 rows, and the cascade's 2K step, 393,911), where cuDNN's attention was right
+# at 314k-394k rows on GB10 (a probe against fp32 attention: worst relative error ~0.003).
 LEAN2_ROWS = 302_334
 FORWARDS = ("stock", "lean", "lean2")
 VAE_BATCH = 26                   # NVIDIA's default
@@ -302,17 +313,20 @@ GUARD_GIB = 5
 # 2K); lean 6.0-6.4 at 147,690 (10 s at 1080p, with both ends kept too), 8.5 at 219,486 (15 s), 9.0 at 260,010 (10 s at
 # 2K), 10.8 at 302,334 (5 s at 4K). From each 2026-10-30 run's own start the model's lowest MemAvailable is within
 # 0.5 GiB of the measured one (tests/test_upscale.py has them); from the earlier 5 s runs' it is up to 0.8 GiB higher
-# and up to 1.4 GiB lower. A clip of another length needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start (need_gib;
-# min_free_for) where that is more than the floor: at the default 110 GiB only 2K at 15 s does, 115 (116 with an end
-# or both kept), lean2's, an estimate; the others need 109 at most (2K at 10 and 12 s, with Keep my frames or without).
-# lean2 (not run on the GPU yet): an estimate from the lean forward's line until its first run. Its peak is lean's less
-# the fp32 video embeds diffusers' forward keeps through its block loop, 5,376 x 4 = 21,504 bytes a video row (the
-# itemized lean peak at 4K: 92,288 bytes a row, 21,504 of them those embeds, against 92,278 measured), counted over the
-# whole sequence (its audio and text rows, ~0.4 % of it at 2K 12 and 15 s, ~0.03 GiB too little); its overhead the lean
-# line's, carried past the rows it was fitted to (to 386,406 at 2K 15 s, from 302,334).
+# and up to 1.4 GiB lower. On 2026-10-31's runs, stock and lean (the cascade's stages too), the peak held within
+# 0.11 GiB and the model's lowest MemAvailable came 0.5-2.4 GiB lower than the measured one. A clip of another length
+# needs both, GUARD_GIB and FLOOR_MARGIN_GIB to start (need_gib; min_free_for) where that is more than the floor: at the
+# default 110 GiB only 2K at 15 s does, 113 (114 with both ends kept); the others need 109 at most (2K at 10 s, and at
+# 12 s with an end kept or both).
+# lean2, from its two runs (2026-10-31, 2K 15 s: whole, 387,178 rows, and the cascade's 2K step with both ends,
+# 393,911): 94.05 and 94.46 GiB allocated at the peak, 71,135 and 71,036 bytes a row, so 71,100 (the model 0.01 GiB
+# under the one, 0.02 over the other; lean's 92,300 less the 21,504 bytes a video row of the fp32 video embeds lean2
+# frees gave 70,796, ~0.1 GiB under both). Its overhead was 9.9 and 10.5 GiB at 386,406 own rows, 2.4-3.0 below the
+# lean line's 12.9 there: flat at the higher, rounded up, at 12 s's fewer rows too (not run there: no less than 15 s's).
+# From each run's own start the model's lowest MemAvailable is 0.7 and 0.1 GiB lower than the measured one.
 MODEL_GIB = 68.4
-ROW_BYTES = {"stock": 181_800, "lean": 92_300, "lean2": 92_300 - 21_504}
-OVERHEAD_GIB = {"stock": (3.5, 5.0), "lean": (2.1, 2.8), "lean2": (2.1, 2.8)}    # GiB, + GiB per 100,000 own rows
+ROW_BYTES = {"stock": 181_800, "lean": 92_300, "lean2": 71_100}
+OVERHEAD_GIB = {"stock": (3.5, 5.0), "lean": (2.1, 2.8), "lean2": (10.6, 0.0)}   # GiB, + GiB per 100,000 own rows
 FLOOR_MARGIN_GIB = 3
 TEXT_ROWS = 200                  # a prompt's rows, for the model (169 to 387 in the studio's runs)
 START_SLACK_GIB = 0.5            # what the job's own start takes after the server's check (job.json min_free_gib)
@@ -353,28 +367,28 @@ FRAME_CASES = {
 # seconds before the refine (the base: closing the studio's models ~40 s, the job's start, the encodes, the fast load,
 # the decode and the MP4) and per refine step. Measured, from the job's runs through a staging studio with the fast
 # load (the base the run's time less its two steps and any encode of its text or pictures, plus 40 s; the step their
-# mean): 5 s at each size (2026-10-28, a 16:9 clip, rounded to 5 s; docs/PERFORMANCE.md), and 6, 10 and 15 s at 1080p
-# and 10 s at 2K (2026-10-30). Fitted, the others: the step by the step model, 6.457e-4 S + 1.638e-8 S^2 s for the S
-# rows of its case with a prompt of TEXT_ROWS (the measured steps came within 1.4 % of it at their rows), and the base
-# by a straight line in the frames H3 makes, fitted per size to that size's measured bases (1080p: 86.1 + 1.851 a
-# frame, within 8 s of its four; 2K: 107.0 + 2.403 a frame, through its two). 2K at 12 and 15 s are fitted the same
-# way, past the rows any step has run at (314,380 and 386,606, lean2's forward; 302,534 the most so far, at 4K): their
-# attention, ~90 % of the step there, has not run on GB10 at that length. A size without times is not offered for
-# that length (offer_row says why): 4K takes 5 s only (longer ones are past the memory measured here: in pieces, later).
+# mean): 5 s at each size (2026-10-28, a 16:9 clip, rounded to 5 s; docs/PERFORMANCE.md), 6, 10 and 15 s at 1080p
+# and 10 s at 2K (2026-10-30), and 15 s at 2K (2026-10-31, lean2's). Fitted, the others: the step by the step model,
+# 6.457e-4 S + 1.638e-8 S^2 s for the S rows of its case with a prompt of TEXT_ROWS (the measured steps came within
+# 1.4 % of it at their rows, 2026-10-31's too, the cascade's at 1080p and 2K among them), and the base by a straight
+# line in the frames H3 makes, fitted per size to that size's measured bases (least squares; 1080p: 86.1 + 1.851 a
+# frame, within 8 s of its four; 2K: 97.4 + 2.462 a frame, within 5 s of its three). 2K at 12 s is fitted the same
+# way (314,380 rows, lean2's forward, between 10 s's and 15 s's). A size without times is not offered for that length
+# (offer_row says why): 4K takes 5 s only (longer ones are past the memory measured here: in pieces, later).
 OFFER_ETA_S = {
     5: {"1080p": (315, 150), "2k": (405, 380), "4k": (625, 1685)},          # measured
-    6: {"1080p": (375, 212), "2k": (487, 583)},                             # 1080p measured, 2K fitted
+    6: {"1080p": (375, 212), "2k": (486, 583)},                             # 1080p measured, 2K fitted
     7: {"1080p": (410, 256), "2k": (528, 700)},                             # fitted
-    8: {"1080p": (441, 300), "2k": (568, 828)},                             # fitted
+    8: {"1080p": (441, 300), "2k": (570, 828)},                             # fitted
     10: {"1080p": (543, 453), "2k": (691, 1261)},                           # measured
-    12: {"1080p": (630, 638), "2k": (814, 1822)},                           # fitted
-    15: {"1080p": (753, 929), "2k": (977, 2698)}}                           # 1080p measured, 2K fitted
+    12: {"1080p": (630, 638), "2k": (821, 1822)},                           # fitted
+    15: {"1080p": (753, 929), "2k": (991, 2680)}}                           # measured
 # The lengths and sizes upscaled on the GPU through the studio, one line each (a run that lands adds its line, a run
 # that fails takes it out), or covered by the offer rule: a longer clip at the same size ran, and the step and peak
 # models held there. 6, 10 and 15 s at 1080p and 10 s at 2K ran (2026-10-30: steps within 1.4 % of the step model,
-# peaks within 0.1 GiB of the memory model); 7, 8 and 12 s at 1080p and 6, 7 and 8 s at 2K follow by that rule. A
-# length and size not here shows the page's "not run" note: its times and memory are estimates. 2K at 12 and 15 s are
-# not here yet: offered, not run (a 2K 15 s run, lean2's, would bring 12 s in by the offer rule).
+# peaks within 0.1 GiB of the memory model), and 15 s at 2K (2026-10-31: its steps 1 % under the step model, its
+# peak 0.12 GiB over lean2's model then); 7, 8 and 12 s at 1080p and 6, 7, 8 and 12 s at 2K follow by that rule. A
+# length and size not here shows the page's "not run" note: its times and memory are estimates (none offered now).
 UPSCALE_RAN = (
     (5, "1080p"),
     (5, "2k"),
@@ -389,6 +403,8 @@ UPSCALE_RAN = (
     (7, "2k"),                   # the offer rule: 10 s ran
     (8, "2k"),                   # the offer rule: 10 s ran
     (10, "2k"),
+    (12, "2k"),                  # the offer rule: 15 s ran
+    (15, "2k"),
 )
 # Keep my frames at 2K goes through 1080p first, the cascade (route_for): the pinned refine at 1080p with the strength's
 # steps, exactly as a 1080p upscale with Keep my frames runs it, then NVIDIA's latent upscaler from that refined
@@ -398,13 +414,18 @@ UPSCALE_RAN = (
 # and the 2K step only adds detail. The research runner's arms (2026-10-29, a 9:16 and a 16:9 LightX2V Turbo clip, 5 s,
 # a first frame, from a 1080p pinned run's saved latent) against the unpinned 2K: frame 0 +2.0 / +2.1 dB, the face
 # +3.4 / +4.8 dB, detail x2.2-2.5, no flash; 2 steps from 0.5 gave no more, and the 2K step without the pin less.
+# Through the studio (2026-10-31, LightX2V Turbo Keyframes clips): a first end at 5 s within 0.3 dB of its research
+# arm; both ends at 10 and 15 s held as at 5 s, each end at 5 and 10 s 1.6-2.1 dB further from its picture than the
+# 1080p pinned refine's at the check's grid: the 2K step's added detail and contrast (docs/PERFORMANCE.md).
 # CASCADE_FROM maps the size to the one it is made at first; 4K keeps no pin.
 CASCADE_FROM = {"2k": "1080p"}
 CASCADE_SIGMA, CASCADE_STEPS = 0.4, 1
 # The cascade's time (cascade_eta_s), from the step model of OFFER_ETA_S: STEP_MODEL's a S + b S^2 seconds a step for S
 # rows (case_rows), the pin's condition rows its extra per step; NVIDIA's latent upscaler from 1080p to 2K (5.4-5.6 s
-# at 5 s in the research runner's arms, its saved latent's read included; per latent frame beyond); each picture's
-# encode at each grid (3.0-3.1 s at 1080p and 10.5 s for both ends at 2K, through the studio, 2026-10-29/30).
+# at 5 s in the research runner's arms, its saved latent's read included; per latent frame beyond: 5.0 / 9.66 / 14.32 s
+# at 5 / 10 / 15 s through the studio, 2026-10-31, against 5.0 / 9.73 / 14.46); each picture's encode at each grid
+# (3.0-3.1 s at 1080p and 10.5 s for both ends at 2K, through the studio, 2026-10-29/30; 8.3 s an end at both grids,
+# 2026-10-31). The cascade's steps of 2026-10-31 came within 1 % of the step model at both sizes.
 STEP_MODEL = (6.457e-4, 1.638e-8)
 CASCADE_UPSCALE_S = 5
 PIN_ENCODE_S = {"1080p": 3, "2k": 5}
@@ -666,7 +687,7 @@ def min_free_for(resolution, floor, kept=NVIDIA_FRAMES, ends=0):
     needs to start. A 5 s clip: the floor (LFSTUDIO_UPSCALE_MIN_FREE_GIB), plus FLOOR_4K_EXTRA_GIB at 4K (see
     MIN_FREE_GIB), as measured, whatever the floor is set to. Another length: that, or what its case needs by the
     memory model where that is more (route_need_gib: each stage of its route; at the default 110 GiB only 2K at
-    15 s, 115, 116 with an end or both kept). A floor of 0 (no check) stays 0."""
+    15 s, 113, 114 with both ends kept). A floor of 0 (no check) stays 0."""
     if floor <= 0:
         return floor
     floor = floor + FLOOR_4K_EXTRA_GIB if resolution == "4k" else floor
