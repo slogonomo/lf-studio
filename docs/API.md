@@ -478,13 +478,12 @@ clip, from its MP4, to 1080p, 2K (2560×1440) or 4K with NVIDIA's Open-H3-Regene
 9:16**: Sol-H3's Text, Keyframes and Reference clips and LightX2V Turbo's Text and Keyframes clips at either size, 5
 to 15 s, whole, in one pass of NVIDIA's refine. **1080p** and **2K** take every length, **4K** 5 s clips; another
 size is refused with the reason (`4K for 12 s clips comes later: 1080p and 2K take them`: those need the clip in
-pieces, later). 5 s clips have run on the GPU at every size, and 6, 10 and 15 s at 1080p and 10 s at 2K (2026-10-30,
-through the studio, with their frames, their whole sound and their lip sync); 7, 8 and 12 s at 1080p and 6, 7 and
-8 s at 2K have not, but a longer clip at their size has, and their times and memory follow the job's model of those
-runs. **2K at 12 and 15 s has not run**, nor has anything as long: its offer says so (`"ran": false`), and its times
-and memory (115 GiB free to start at 15 s, 116 with `pin`) are the model's, with the job's leaner `lean2` forward
-([PERFORMANCE.md](PERFORMANCE.md#longer-clips)). A clip of 3 or 4 s (made up to 0.5.0), or whose MP4 has other frames
-than its length's, is refused, never cut. NVIDIA's code is written for 5 s
+pieces, later). 5 s clips have run on the GPU at every size, 6, 10 and 15 s at 1080p and 10 s at 2K (2026-10-30), and
+15 s at 2K (2026-10-31: 6326 s, 1 h 45 min, with the job's leaner `lean2` forward), through the studio, with their
+frames, their whole sound and their lip sync; 7, 8 and 12 s at 1080p and 6, 7, 8 and 12 s at 2K have not, but a longer
+clip at their size has, and their times and memory follow the job's model of those runs. 2K at 15 s needs 113 GiB free
+to start, 114 with `pin` holding both ends ([PERFORMANCE.md](PERFORMANCE.md#longer-clips)). A clip of 3 or 4 s (made up
+to 0.5.0), or whose MP4 has other frames than its length's, is refused, never cut. NVIDIA's code is written for 5 s
 16:9 (1344×768, 121 frames): the job takes other lengths through it with the frames and audio of their own (the
 clip's frames, and 3 copies of the last one where it keeps fewer than H3 made, as NVIDIA's encode does at 5 s), and a
 9:16 clip (768×1344) with the shapes turned, without changing NVIDIA's files; the 9:16 result is upright (1080×1920,
@@ -556,13 +555,20 @@ is no field for it: a 2K request with an end held takes it. In research runs a r
 less than one at 1080p (frame 0 about 1 dB closer, against 4 dB), so the picture is made where the pin holds and the
 2K step adds the detail. Research runs (a research runner on one DGX Spark, 2026-10-29: two LightX2V Turbo 5 s clips
 with a first frame, the 2K step from a saved 1080p result) gave frame 0 2.0-2.1 dB closer to the picture than the plain
-2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no flash and the motion kept. It has not run through the
-studio yet (the page says so at 2K). By the job's model it takes about 19 min for a 5 s clip and 49-50 min at 10 s,
-67-68 min at 12 s and 94-95 min at 15 s (`upscale_offers` `cascade_eta_s`, below), and needs the free memory of its
-larger refine (each refine's forward by its own rows: at 12 and 15 s lean at 1080p, `lean2` for the 2K step; 116 GiB
-at 15 s). On a clip longer than 5 s it
-has run with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30: both held, 31.9 and 32.0 dB from the
-pictures at 1080p, no flash at either end); elsewhere on long clips it has not run on the GPU, and the page says so.
+2K (the face 3.4-4.8 dB), with 2.2-2.5 times its fine detail, no flash and the motion kept. Through the studio
+(2026-10-31, LightX2V Turbo Keyframes clips) it held a first frame at 5 s, within 0.3 dB of that research run, and both
+ends at 10 and 15 s, with no flash: each end a little less close to the picture than the 1080p route holds it (at 5
+and 10 s 1.6-2.1 dB further at the job's 384p check grid: the 2K step's added detail and contrast), and closer than
+the single pinned refine at 2K it replaced (1.5 dB at 5 s). The page has no note for a first frame alone at 5 s
+(`pin_routes` `ran`); for both ends, and past 5 s, it keeps its note until the maintainer has looked at those runs,
+which missed the window's bar, the 1080p route's less 1 dB (the 5 s run does not meet it either:
+[PERFORMANCE.md](PERFORMANCE.md#keep-my-frames-at-2k-the-cascade)). By the job's model it takes about 19 min for a
+5 s clip and 49-50 min at 10 s, 67-68 min at 12 s and 94-95 min at 15 s (`upscale_offers` `cascade_eta_s`, below;
+its runs took 18, 50 and 95 min), and needs the free memory of its larger refine (each refine's forward by its own
+rows: at 12 and 15 s lean at 1080p, `lean2` for the 2K step; 113 GiB at 15 s, 114 with both ends). On a clip longer
+than 5 s it has run with both ends of a LightX2V Turbo 10 s clip at 1080p (2026-10-30: both held, 31.9 and 32.0 dB
+from the pictures at 1080p, no flash at either end), and at 2K as above; elsewhere on long clips it has not run on the
+GPU, and the page says so.
 An end the clip offers but the request does not send has its reason in the record's
 `pin.why` (`not at 4K yet`, `with strength balanced only, for now`); an end sent but not held has the job's in
 `pin.result` (`the clip's frame 123 is 25.4 dB from your picture (28 needed)`, `your picture is no longer on disk`,
@@ -577,8 +583,9 @@ plain upscale was already close to the picture, gained 2.3-2.4 dB at each end (3
 unchanged.
 The cost at 1080p: +16 s per end (+32 s for both: each picture's encode on the VAE already loaded, 3 s, and 2.7 % more
 rows per end), 0.4-0.7 GiB more GPU memory at the peak. The one pinned refine at 2K took +83 s for both ends and 1.3 GiB
-more, the lowest MemAvailable 14.1 GiB (16.0 GiB without); the cascade's 2K step has the same rows
-([PERFORMANCE.md](PERFORMANCE.md#experimental-upscale-open-h3-regenerate-2k)). On a long clip an end's rows cost more:
+more, the lowest MemAvailable 14.1 GiB (16.0 GiB without); the cascade with a first end at 5 s took 1071.8 s in all,
+91.69 GiB at its peak (its 2K step) and 17.2 GiB free at the lowest
+([PERFORMANCE.md](PERFORMANCE.md#keep-my-frames-at-2k-the-cascade)). On a long clip an end's rows cost more:
 both ends of the 10 s clip at 1080p added about 45 s (an estimate: that run had no unpinned twin), where the page
 counts the 5 s 32 s.
 
@@ -590,7 +597,7 @@ curl -sS --fail-with-body -H 'Accept: application/json' -H 'Content-Type: applic
 | Key | Value |
 |---|---|
 | `id` | the finished clip (required) |
-| `resolution` | `1080p` (every length), `2k` (default; every length, 12 and 15 s not run yet) or `4k` (5 s clips; the slowest at 5 s: ~66 min in its one run so far, a 16:9 clip; not yet run with a 9:16 one): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's). A clip longer than 5 s needs `1080p` or `2k` |
+| `resolution` | `1080p` (every length), `2k` (default; every length) or `4k` (5 s clips; the slowest at 5 s: ~66 min in its one run so far, a 16:9 clip; not yet run with a 9:16 one): 1920×1080, 2560×1440 or 3840×2160 for a 16:9 clip, 1080×1920, 1440×2560 or 2160×3840 for a 9:16 one (`orientation` in the record: the clip's). A clip longer than 5 s needs `1080p` or `2k` |
 | `strength` | how much it may redraw: `faithful` (start noise 0.5, 2 steps), `balanced` (0.7, 2 steps) or `full` (NVIDIA's release setting, 3 steps from 0.909: sharpest, but it redraws faces). Default `LFSTUDIO_UPSCALE_STRENGTH` (`balanced`). Provisional, until measured |
 | `audio` | what the picture is refined against: `clip` (the clip's own Stage-1 audio) or `silence` (NVIDIA's). Default `LFSTUDIO_UPSCALE_AUDIO` (`clip`). The result gets the clip's sound either way, copied |
 | `seed` | the refine's seed; default (or `null`) the clip's |
@@ -649,7 +656,8 @@ moves only them; a clip can't be deleted while an upscale of it is
 queued or running (409). It fails, without a retry, below its floor of free memory once the models are closed:
 `LFSTUDIO_UPSCALE_MIN_FREE_GIB` for a 5 s clip (default 110; 5 GiB more at 4K), and for a longer clip what its length,
 size and Keep my frames need by the job's memory model where that is more (the cascade: its larger refine's; at the
-default only 2K at 15 s, 115 GiB, 116 with `pin`; the others 109 at most, 2K at 10 and 12 s; with the setting at 100:
+default only 2K at 15 s, 113 GiB, 114 with `pin` holding both ends; the others 109 at most, 2K at 10 s and at 12 s with
+`pin`; with the setting at 100:
 `not enough free memory for an upscale: ... 109 GiB needed (what a 2K 10 s upscale needs, more than
 LFSTUDIO_UPSCALE_MIN_FREE_GIB=100)`). Its job gets that floor (job.json
 `min_free_gib`) and checks it again as it starts. It also fails when the memory guard kills it
@@ -670,7 +678,7 @@ length and size (`null` with the Upscale off):
  "10": {"1080p": {"eta_s": [543, 453], "ran": true},
         "2k": {"eta_s": [691, 1261], "ran": true, "cascade_eta_s": [2931, 2996]},
         "4k": {"why": "4K for 10 s clips comes later: 1080p and 2K take them"}},
- "12": {"1080p": {"eta_s": [630, 638], "ran": true}, "2k": {"eta_s": [814, 1822], "ran": false},
+ "12": {"1080p": {"eta_s": [630, 638], "ran": true}, "2k": {"eta_s": [821, 1822], "ran": true},
         "4k": {"why": "4K for 12 s clips comes later: 1080p and 2K take them"}}, ...}
 ```
 
@@ -678,11 +686,11 @@ for every length a model's Upscale takes (`"5"` to `"15"`): `eta_s` is the secon
 models, the job's start, reading the clip, the fast load, the decode and the MP4) and per refine step (an upscale
 takes `base + steps × step`, ~8 min more with the standard load, ~15 s more for a text encoded first; measured, or
 from the job's model of the runs), `ran` whether that length and size has been upscaled on the GPU through the studio,
-or a longer clip at that size has (else its times are estimates; every size offered has but 2K at 12 and 15 s, not
-run yet), `cascade_eta_s` at 2K the time in all with Keep my frames holding one end and both (the cascade, made at
-1080p first: 2K's base, 2 steps at 1080p and one at 2K, each with the pictures' rows, NVIDIA's upscaler and the
-pictures' encode; the job's model, not run through the studio yet: about 19 min for a 5 s clip and 49-50 min at
-10 s), `why` the reason a size is not offered for that length (a request for it gets 400 with it). The page's popover takes its times, its
+or a longer clip at that size has (else its times are estimates; every size offered has now: false only where a run
+failed and its line went), `cascade_eta_s` at 2K the time in all with Keep my frames holding one end and both (the
+cascade, made at 1080p first: 2K's base, 2 steps at 1080p and one at 2K, each with the pictures' rows, NVIDIA's
+upscaler and the pictures' encode; the job's model, which its runs of 2026-10-31 held within a minute: about 19 min for
+a 5 s clip and 49-50 min at 10 s), `why` the reason a size is not offered for that length (a request for it gets 400 with it). The page's popover takes its times, its
 greyed sizes and its notes from it, and an upscale's expected time by its clip's length. And every finished job in
 `/api/state`, `/api/jobs` and the API record has `upscalable`: `{"ok": true, "clip_audio": <has its audio>}` or
 `{"ok": false,
@@ -694,7 +702,8 @@ where they differ between the sizes (a 5 s clip with a last keyframe: `{"1080p":
 for a longer one, which keeps them all, nor for Sol-H3's); `"pin"`, the ends it can keep (`["first"]`, `["last"]` or
 `["first", "last"]`), with `"pin_routes"`, where: `{resolution: {"strengths", "ran" (on the GPU through the studio,
 at the clip's length), "route" (`cascade` at 2K: made at 1080p first; else `whole`)}}` for each size it is offered at
-(`1080p` and `2k` for now, those the clip's length has; at 2K `ran` is false for now); and
+(`1080p` and `2k` for now, those the clip's length has; at 2K `ran` is true only for a LightX2V Turbo clip's first
+frame alone at 5 s, for now); and
 `"pin_why"`, `{end: why not}` for an end it has but can't keep (`Sol-H3 clips stop 3 frames before your last picture, so
 the Upscale can't hold it`, a few frames by its length: 7 at
 8 s; `the clip was made before 0.5.2, which did not hold your first frame`,
@@ -939,12 +948,13 @@ the choices given, so the studio's defaults hold for the rest (2K, `LFSTUDIO_UPS
 than 5 s needs `--resolution 1080p` or `2k` (4K is refused for it, with the reason). An upscale takes about 10 min
 (1080p, 5 s) to 1.6 h (4K, full) in all (4K over an hour; 1080p 10 min and 2K 19 min for a 5 s clip), with a ~22 s
 load (measured in the studio's job; ~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`, the fallback);
-longer clips take longer (1080p 24 min at 10 s and 44 min at 15 s, 2K 54 min at 10 s, from their runs; 2K at 12 and
-15 s, not run yet, an estimated 1.2 and 1.8 h, 2.5 h at 15 s with `full`), so `--timeout` and a later `wait` are the
-usual way.
+longer clips take longer (1080p 24 min at 10 s and 44 min at 15 s, 2K 54 min at 10 s and 1 h 45 min at 15 s, from
+their runs, 2.5 h at 15 s with `full`; 2K at 12 s an estimated 1.2 h), so `--timeout` and a later `wait` are the usual
+way.
 `--pin auto|off` is Keep my frames
 ([Upscale](#upscale-experimental-post-apiupscale); at 2K made at 1080p first, then brought to 2K: about 19 min for a
-5 s clip and 49-50 min at 10 s by the job's model, not run through a studio yet): it goes only to a studio whose
+5 s clip and 49-50 min at 10 s, as its runs took, and a little less close to your pictures than 1080p): it goes only to
+a studio whose
 `/api/state` has `"upscale_pin":
 true` (an older studio never keeps them, so the request goes without it); when spark-switchboard has the studio
 stopped, `/api/state` can't be read without starting it, so the request goes with `pin`, and again without it if the
@@ -1071,7 +1081,7 @@ an unreachable studio are `isError` results with the message. A cancelled clip i
 - **spark-switchboard:** as the CLI; a stopped studio makes `wait` and `fetch` answer that `fetch` with `wake: true`
   would start it.
 - **`upscale`** answers `Queued upscale <id> of clip <clip id> (2k, balanced).`, then as `generate`.
-  An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h (a 15 s clip at 2K about 1.8 h, an estimate), far
+  An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h or more (a 15 s clip at 2K about 1 h 45 min), far
   longer than any `wait_s`: the usual result says it is still running, and a later `wait` saves it.
 
 ### Waiting values per client

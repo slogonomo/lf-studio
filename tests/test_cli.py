@@ -854,9 +854,10 @@ class UpscaleTimes(unittest.TestCase):
         self.assertIn("which takes about 10 min (a 5 s clip at 1080p) to 1.6 h or more", cli.INSTRUCTIONS)
         self.assertIn("An upscale takes about 10 min (1080p, 5 s) to 1.6 h (4K, full) in all", api)
         self.assertIn("~8 min more on a studio with `LFSTUDIO_UPSCALE_LOAD=standard`", api)
-        self.assertIn("An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h (a 15 s clip at 2K about 1.8 h, an "
-                      "estimate), far longer than any `wait_s`", api)
-        self.assertIn("2K at 12 and 15 s, not run yet, an estimated 1.2 and 1.8 h, 2.5 h at 15 s with `full`", api)
+        self.assertIn("An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h or more (a 15 s clip at 2K about "
+                      "1 h 45 min), far longer than any `wait_s`", api)
+        self.assertIn("2K 54 min at 10 s and 1 h 45 min at 15 s, from their runs, 2.5 h at 15 s with `full`; 2K at "
+                      "12 s an estimated 1.2 h", api)
         # every length offered: the shortest is a 5 s clip at 1080p, which each text names; the longest, which has run
         # (2026-10-31), 2K at 15 s, 2.5 h full
         everything = [(eta(seconds, res, 2), seconds, res) for seconds, sized in regen.OFFER_ETA_S.items()
@@ -875,16 +876,21 @@ class UpscaleTimes(unittest.TestCase):
         self.assertIn("about 10 min at 1080p, 19 min at 2K and 1.1 h at 4K with 2 steps for a 5 s clip", tool)
         self.assertEqual([round(eta(5, res, 2) / 60) for res in ("1080p", "2k")], [10, 19])     # 615 s, 1165 s
         self.assertEqual(round(eta(5, "4k", 2) / 3600, 1), 1.1)                                 # 3995 s
-        # longer clips, measured (2 steps, the fast load): 1080p at 10 and 15 s, 2K at 10 s
+        # longer clips, measured (2 steps, the fast load): 1080p at 10 and 15 s, 2K at 10 s, and 2K at 15 s
+        # (2026-10-31: 6326.2 s, 1 h 45 min, within a minute of its row's 2 steps, 6351 s); 2K at 12 s by the model
         self.assertEqual([round(eta(s, res, 2) / 60) for s, res in ((10, "1080p"), (15, "1080p"), (10, "2k"))],
                          [24, 44, 54])
-        longer = "1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s"
-        unrun = "2K at 12 and 15 s, not run yet, an estimated 1.2 and 1.8 h"
+        self.assertEqual((divmod(round(6326.2 / 60), 60), abs(eta(15, "2k", 2) - 6326.2) < 60), ((1, 45), True))
+        longer = "1080p 24 min at 10 s, 44 min at 15 s; 2K 54 min at 10 s, 1 h 45 min at 15 s"
+        twelve = "an estimated 1.2 h at 12 s"
         for text in (usage, tool):
-            self.assertIn(f"{longer}; {unrun}", text)
-            self.assertEqual(text.count("estimate"), 1)                     # those two only
-        self.assertIn(f"longer clips take longer: {longer}; {unrun}, 2.5 h at 15 s full)", usage)
-        self.assertIn("1.6 h or more (a 15 s clip at 2K about 1.8 h, an estimate)", cli.INSTRUCTIONS)
+            self.assertIn(longer, text)
+            self.assertIn(twelve, text)
+            self.assertEqual(text.count("estimate"), 1)                     # 2K at 12 s only
+            self.assertNotIn("not run yet", text)
+        self.assertIn(f"longer clips take longer: {longer} (2.5 h full), {twelve});", usage)
+        self.assertIn(f"longer clips take longer ({longer}, {twelve})", tool)
+        self.assertIn("1.6 h or more (a 15 s clip at 2K about 1 h 45 min)", cli.INSTRUCTIONS)
         # every length: run, or covered (2K at 15 s ran on 2026-10-31, and 12 s by the offer rule)
         self.assertEqual(set(regen.UPSCALE_RAN), {(s, res) for s, sized in regen.OFFER_ETA_S.items() for res in sized})
         for text in (usage, cli.INSTRUCTIONS, tool, api):                   # 4K has run end to end (16:9)
@@ -895,9 +901,10 @@ class UpscaleTimes(unittest.TestCase):
         """Keep my frames at 2K goes through the job's cascade (made at 1080p first): its time in all is the job's
         cascade_eta_s (upscale_offers "cascade_eta_s", which the page's upEta takes for an upscale with route
         "cascade"): about 19 min for a 5 s clip with one end or both, as the unpinned 2K, 49-50 min at 10 s, 67-68 and
-        94-95 min at 12 and 15 s (against 74 and 106 without it); the usage, the --pin help, the MCP tool (about as
-        long as without it: its description has no room for more) and docs/API.md say so, and that it has not run
-        through a studio."""
+        94-95 min at 12 and 15 s (against 74 and 106 without it); its runs through a studio (2026-10-31: one end at
+        5 s, both at 10 and 15 s) took 18, 50 and 95 min, each within a minute of it. The usage, the --pin help, the
+        MCP tool (about as long as without it: its description has little room for more) and docs/API.md say so, and
+        that it holds the pictures a little less closely than 1080p."""
         _, regen, eta, _ = self.model()
         five, ten, twelve, fifteen = ([regen.cascade_eta_s(seconds, ends) for ends in (1, 2)]
                                       for seconds in (5, 10, 12, 15))
@@ -905,19 +912,30 @@ class UpscaleTimes(unittest.TestCase):
                          ([19, 19], 19, [49, 50]))
         self.assertEqual(([round(s / 60) for s in twelve + fifteen], [round(eta(s, "2k", 2) / 60) for s in (12, 15)]),
                          ([67, 68, 94, 95], [74, 106]))
+        runs = {(5, 1): 1071.8, (10, 2): 2979.4, (15, 2): 5673.6}          # the job's start to the MP4
+        self.assertEqual([round(s / 60) for s in runs.values()], [18, 50, 95])
+        for (seconds, ends), took in runs.items():
+            self.assertLess(abs(regen.cascade_eta_s(seconds, ends) - took), 60, seconds)
         cli = load_cli()
         usage = " ".join(cli.__doc__.split())
         self.assertIn("--pin auto at 2K is made at 1080p first, then brought to 2K: about 19 min at 5 s, as without "
-                      "it, 49-50 min at 10 s, 67-68 and 94-95 min at 12 and 15 s (by the job's model: not run through "
-                      "a studio yet)", usage)
+                      "it, 49-50 min at 10 s, 67-68 and 94-95 min at 12 and 15 s (its runs at 5, 10 and 15 s took 18, "
+                      "50 and 95 min); it holds your pictures a little less closely than 1080p does, closer than 2K "
+                      "without it: for the closest match, use 1080p", usage)
         tool = next(t for t in cli.TOOLS if t["name"] == "upscale")["description"]
-        self.assertIn("(at 2K made at 1080p first, not yet run: about as long as without it)", tool)
+        self.assertIn("(at 2K made at 1080p first: about as long as without it, held a little less closely than at "
+                      "1080p)", tool)
         sub = next(a for a in cli.parser()._actions if isinstance(a, argparse._SubParsersAction))
         pin = next(a for a in sub.choices["upscale"]._actions if "--pin" in a.option_strings)
-        self.assertIn("at 2K made at 1080p first, then brought to 2K", pin.help)
+        self.assertIn("at 2K made at 1080p first, then brought to 2K, a little less close to your pictures than 1080p",
+                      pin.help)
         api = " ".join((REPO / "docs" / "API.md").read_text().split())
         self.assertIn("made at 1080p first, then brought to 2K", api)
         self.assertIn("about 19 min for a 5 s clip and 49-50 min at 10 s", api)
+        self.assertIn("a little less close to your pictures than 1080p", api)
+        for text in (usage, tool, pin.help, api):
+            self.assertNotIn("not run through a studio", text)
+            self.assertNotIn("not yet run:", text)
 
     def test_the_popover_has_no_times_of_its_own(self):
         """The popover's sizes have no times in the page's markup, nor the page a table of them: openUpscale writes
