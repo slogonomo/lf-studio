@@ -171,7 +171,7 @@ echo LFSTUDIO_UPSCALE=1 >> ~/.config/lf-studio/env
 bin/lf-studio --check                # checks the Upscale's environment, package and weights too
 ```
 
-Then restart the studio. It upscales every finished clip (1080p every length, 2K up to 10 s, 4K 5 s clips). For a
+Then restart the studio. It upscales every finished clip (1080p and 2K every length, 4K 5 s clips). For a
 Keyframes or Reference clip it first encodes the prompt as text alone, a t2va encode: that needs t2va in
 `LFSTUDIO_TASKS` (the default has it), so that step 70 writes its path manifest, `paths-t2va.json`. Without it those
 clips' Upscale buttons are greyed out with that reason; Text clips are not affected. What the step does:
@@ -547,8 +547,9 @@ Nothing needs to change for a working install. The patch is the same, so `instal
 so are the Upscale's environment and weights. What is new is off unless you turn it on:
 
 - **The Upscale** (`LFSTUDIO_UPSCALE=1`) now takes every finished clip: Keyframes and Reference clips too, LightX2V
-  Turbo's, and clips of every length (1080p every length, 2K up to 10 s, 4K 5 s clips; 6, 10 and 15 s at 1080p and 10 s
-  at 2K have run on the GPU, the other lengths follow the job's model of those runs). A Keyframes or Reference clip's
+  Turbo's, and clips of every length (1080p and 2K every length, 4K 5 s clips; 6, 10 and 15 s at 1080p and 10 and
+  15 s at 2K have run on the GPU, the other lengths follow the job's model of those runs; 2K at 15 s needs 113 GiB
+  free, 114 with Keep my frames holding both ends). A Keyframes or Reference clip's
   prompt is encoded first without its pictures, which needs the t2va path manifest (`paths-t2va.json` from
   `install/70-manifests.sh`; the default `LFSTUDIO_TASKS` has t2va). `bin/lf-studio --check` also checks that the prompt
   encode, `bench/h3turbo_encode.py` in this repo, is there.

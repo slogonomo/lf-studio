@@ -5,12 +5,15 @@
 
 The server runs it as it runs the real job (LFSTUDIO_UPSCALE_SCRIPT; tests/stub/studio.py sets that): in its own
 process group, with its output in worker.log. It reads job.json, prints the real job's progress lines
-("[lf-studio] phase encoding", "loading", "refine 1/N" ... "refine N/N", "decoding", "saving"; N = the job's steps)
-spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (a small ffmpeg testsrc2 pattern with
-the clip's frames, at 24 fps, no audio, as the real job's MP4 has none; upright when the clip's MP4,
-<case>/stage2/refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json, with the real job's
-"frames" (frame_case), "rows" (case_rows), "forward" and "lean_chunks" (lean_chunks_for) and, for a job.json with a
-"pin", its "pin": per keyframe its picture checked by its sha256 as
+("[lf-studio] phase encoding", "loading", "refine 1/N" ... "refine N/N", "decoding", "saving"; N = the job's steps,
+one more for the cascade) spread over STUB_UPSCALE_S seconds, then writes paths.output/video_noaudio.mp4 (a small
+ffmpeg testsrc2 pattern with the clip's frames, at 24 fps, no audio, as the real job's MP4 has none; upright when the
+clip's MP4, <case>/stage2/refined_*.mp4, is, as the real job takes the orientation from it) and receipt.json, with the
+real job's "frames" (frame_case), "route" (route_for, by the ends held: "cascade" for 2K with one, else "whole"),
+"rows" (case_rows), "forward" (forward_for) and "lean_chunks" (lean_chunks_for; the cascade: its 2K step's), for the
+cascade its "cascade" (the real job's keys but its sigmas and hashes: "from", "steps_1080p", "latent_1080p",
+"rows_1080p", "forward_1080p", "lean_chunks_1080p", "sigma_2k", "steps_2k", "latent_2k", "times_s") and, for a
+job.json with a "pin", its "pin": per keyframe its picture checked by its sha256 as
 the real job checks it (PIN_WHY: gone, changed; a last end of a clip that keeps fewer frames than made: past_end),
 else held at 33.0 dB (STUB_UPSCALE_PIN_DB sets others: "last=25.4", below the 28 needed, is not held: far). SIGTERM
 (Cancel) ends it at once, like the real job between two GPU calls: a "cancelled" receipt, an error line, exit status
@@ -191,14 +194,28 @@ def main(argv):
         return 2
     regen = real_job()
     receipt["frames"] = frames = regen.frame_case(kept)
-    lean = regen.lean_chunks_for(frames, job["resolution"])
-    receipt.update(rows=regen.case_rows(frames, job["resolution"], len((job.get("pin") or {}).get("keyframes", ()))),
-                   forward="lean" if lean else "stock", lean_chunks=lean)
     if "pin" in job:
         receipt["pin"] = check_pin(job["pin"], frames)
+    held = sum(bool((receipt.get("pin") or {}).get(end, {}).get("used")) for end in regen.ANCHORS)
+    receipt["route"] = route = regen.route_for(job["resolution"], held)
+    receipt.update(rows=regen.case_rows(frames, job["resolution"], held),
+                   forward=regen.forward_for(frames, job["resolution"]),
+                   lean_chunks=regen.lean_chunks_for(frames, job["resolution"]))
+    steps = job["steps"] + (regen.CASCADE_STEPS if route == "cascade" else 0)
+    if route == "cascade":
+        first, to = regen.CASCADE_FROM[job["resolution"]], job["resolution"]
+
+        def grid(size):
+            height, width = (regen.NVIDIA_ENTRIES["RESOLUTIONS"][size][i] // 16 for i in (0, 1))
+            return [24, frames["T"]] + ([height, width] if receipt["orientation"] == "landscape" else [width, height])
+        receipt["cascade"] = {"from": first, f"steps_{first}": job["steps"], f"latent_{first}": grid(first),
+                              f"rows_{first}": regen.case_rows(frames, first, held),
+                              f"forward_{first}": regen.forward_for(frames, first),
+                              f"lean_chunks_{first}": regen.lean_chunks_for(frames, first),
+                              f"sigma_{to}": regen.CASCADE_SIGMA, f"steps_{to}": regen.CASCADE_STEPS,
+                              f"latent_{to}": grid(to), "times_s": {}}
     started, status = time.time(), 0
-    phases = ["encoding", "loading"] + [f"refine {i}/{job['steps']}" for i in range(1, job["steps"] + 1)] + \
-        ["decoding", "saving"]
+    phases = ["encoding", "loading"] + [f"refine {i}/{steps}" for i in range(1, steps + 1)] + ["decoding", "saving"]
     pause = float(os.environ.get("STUB_UPSCALE_S", "2")) / len(phases)
     try:
         write_json(out / "receipt.json", receipt)
@@ -209,6 +226,10 @@ def main(argv):
             t0, key = time.time(), name.split()[0]                # refine k/N: one time for all steps
             time.sleep(pause)
             receipt["times_s"][key] = round(receipt["times_s"].get(key, 0) + time.time() - t0, 2)
+            if route == "cascade" and key == "refine":           # the cascade's own: per stage
+                stage = f"refine_{first}" if int(name.split()[1].split("/")[0]) <= job["steps"] else f"refine_{to}"
+                times = receipt["cascade"]["times_s"]
+                times[stage] = round(times.get(stage, 0) + time.time() - t0, 2)
         width, height = SIZE[job["resolution"]][::1 if receipt["orientation"] == "landscape" else -1]
         partial = out / ".video_noaudio.mp4.partial.mp4"
         output = os.environ.get("STUB_UPSCALE_OUTPUT")

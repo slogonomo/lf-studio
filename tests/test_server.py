@@ -2194,15 +2194,17 @@ class CancelRace(CancelTest):
 UPSCALE_LENGTH = "Upscale takes clips of the lengths the studio makes, 5 to 15 s, not {} s"
 UPSCALE_FRAMES = "Upscale can't take this clip: its MP4 has {} frames, not the frames of a {} s clip"
 # the job's reasons a size is not offered for a length (upscale/regen2k_job.py offer_row)
-LATER_2K = "2K for {} s clips comes later: 1080p takes them"
 LATER_4K = "4K for {} s clips comes later: 1080p and 2K take them"
 NOTHING_LEFT = "nothing is left of the prompt without its keyframe line: the Upscale needs text"
 TEXT_CLIP = {"ok": True, "clip_audio": True}     # a Sol-H3 Text clip's upscalable, as before every clip was taken
 # where a clip's Keep my frames is offered (upscalable "pin_routes"; the server's PIN_ROUTES): 1080p and 2K,
-# balanced; run on the GPU through the studio at 1080p, and at 2K too with both ends of a LightX2V Turbo clip
-# (PIN_ROUTES_BOTH)
-PIN_ROUTES = {"1080p": {"strengths": ["balanced"], "ran": True}, "2k": {"strengths": ["balanced"], "ran": False}}
-PIN_ROUTES_BOTH = {**PIN_ROUTES, "2k": dict(PIN_ROUTES["2k"], ran=True)}
+# balanced, at 2K through the job's cascade (made at 1080p first); run on the GPU through the studio at 1080p, and at
+# 2K (the cascade, 2026-10-31) for a LightX2V Turbo 5 s clip's first frame alone (PIN_ROUTES_FIRST), not yet for its
+# both ends (PIN_ROUTES_BOTH: as the others), whose runs at 10 and 15 s keep the note until the owner has looked
+PIN_ROUTES = {"1080p": {"strengths": ["balanced"], "ran": True, "route": "whole"},
+              "2k": {"strengths": ["balanced"], "ran": False, "route": "cascade"}}
+PIN_ROUTES_BOTH = PIN_ROUTES
+PIN_ROUTES_FIRST = {**PIN_ROUTES, "2k": dict(PIN_ROUTES["2k"], ran=True)}
 PIN_GONE, PIN_CHANGED = "your picture is no longer on disk", "your picture changed since the clip was made"
 SOL_LAST = "Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it"
 FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
@@ -2380,23 +2382,31 @@ class Upscale(UpscaleTest):
         self.assertEqual(len(self.upscale_dirs()), 2)
 
     def test_long_clips(self):
-        """Clips longer than 5 s, whole: 10 s at 1080p and 2K and 15 s at 1080p (241 and 361 frames: the input linked,
-        job.json's floor, the job's frames in its receipt, the output named by them with the clip's whole sound); /api/state
-        has the job's offers per length (2K up to 10 s, 4K at 5 s), and a size not offered for a clip's length is
-        refused with the reason, nothing queued."""
+        """Clips longer than 5 s, whole: 10 and 15 s at 1080p and 2K (241 and 361 frames: the input linked,
+        job.json's floor, the job's frames and forward in its receipt, the output named by them with the clip's whole
+        sound); /api/state has the job's offers per length (1080p and 2K every length, all run on the GPU or covered
+        by a longer run, 4K at 5 s), and a size not offered for a clip's length is refused with the reason, nothing
+        queued."""
         st = self.studio.state()
         offers = st["upscale_offers"]
         self.assertEqual(sorted(offers, key=int), ["5", "6", "7", "8", "10", "12", "15"])
         self.assertEqual(offers["5"], {"1080p": {"eta_s": [315, 150], "ran": True}, "2k": {"eta_s": [405, 380],
-                                       "ran": True}, "4k": {"eta_s": [625, 1685], "ran": True}})
+                                       "ran": True, "cascade_eta_s": [1129, 1169]},
+                                       "4k": {"eta_s": [625, 1685], "ran": True}})
         self.assertEqual(offers["10"], {"1080p": {"eta_s": [543, 453], "ran": True},
-                                        "2k": {"eta_s": [691, 1261], "ran": True}, "4k": {"why": LATER_4K.format(10)}})
-        self.assertEqual(offers["15"]["2k"], {"why": LATER_2K.format(15)})
+                                        "2k": {"eta_s": [691, 1261], "ran": True, "cascade_eta_s": [2931, 2996]},
+                                        "4k": {"why": LATER_4K.format(10)}})
+        self.assertEqual((offers["12"]["2k"], offers["15"]["2k"]),
+                         ({"eta_s": [821, 1822], "ran": True, "cascade_eta_s": [4005, 4080]},
+                          {"eta_s": [991, 2680], "ran": True, "cascade_eta_s": [5632, 5721]}))
+        self.assertTrue(all(row["ran"] for sizes in offers.values() for row in sizes.values() if "eta_s" in row))
+        self.assertEqual(offers["15"]["4k"], {"why": LATER_4K.format(15)})
         ten, fifteen = self.clip(seconds=10, seed=3), self.clip(seconds=15, seed=4)
         for parent in (ten, fifteen):
             self.assertEqual(self.studio.job(parent["id"])["upscalable"], TEXT_CLIP)      # nothing new per clip
         for parent, resolution, frames, size in ((ten, "1080p", 241, "1920x1080"), (ten, "2k", 241, "2560x1440"),
-                                                 (fifteen, "1080p", 361, "1920x1080")):
+                                                 (fifteen, "1080p", 361, "1920x1080"),
+                                                 (fifteen, "2k", 361, "2560x1440")):
             with self.subTest(seconds=parent["seconds"], resolution=resolution):
                 job = self.done(self.upscale(parent["id"], resolution=resolution))
                 self.assertEqual((job["seconds"], job["video"], job["frames"]), (parent["seconds"], "clip", frames))
@@ -2404,12 +2414,14 @@ class Upscale(UpscaleTest):
                 self.assertEqual(inode(view / "stage2" / Path(parent["output"]).name), inode(parent["output"]))
                 self.assertEqual(Path(parent["output"]).name, f"refined_336x192_{frames}f.mp4")
                 data = json.loads((self.regen(job) / "job.json").read_text())
-                self.assertEqual((data["resolution"], data["min_free_gib"]), (resolution, 110))
+                self.assertEqual((data["resolution"], data["min_free_gib"]),
+                                 (resolution, 113 if (frames, resolution) == (361, "2k") else 110))   # its case's
                 receipt = json.loads((self.regen(job) / "receipt.json").read_text())
                 made, latents, audio = {241: (243, 72, 405), 361: (362, 107, 603)}[frames]
                 self.assertEqual(receipt["frames"], {"kept": frames, "made": made, "pad": 3, "T": latents,
                                                      "A": audio, "seconds": parent["seconds"]})
-                self.assertEqual(receipt["forward"], "lean")                     # the clip's rows past 140,000
+                self.assertEqual(receipt["forward"], "lean2" if (frames, resolution) == (361, "2k") else "lean")
+                # the clip's rows past 140,000; at 2K 15 s past 302,334 too
                 self.assertEqual(Path(job["output"]).name, f"regen_{size}_{frames}f.mp4")
                 mine, its = probe(job["output"]), probe(parent["output"])
                 self.assertEqual(mine["video"]["nb_frames"], str(frames))
@@ -2419,9 +2431,8 @@ class Upscale(UpscaleTest):
                 self.assertEqual((source["seconds"], source["frames"]),
                                  (parent["seconds"], {"clip": frames, "made": made, "kept": frames}))
         before = len(self.studio.state()["jobs"])
-        for parent, fields, why in ((fifteen, {}, LATER_2K.format(15)),                  # 2K: the default
-                                    (fifteen, {"resolution": "2k", "strength": "full"}, LATER_2K.format(15)),
-                                    (fifteen, {"resolution": "4k"}, "4K for 15 s clips comes later: 1080p takes them"),
+        for parent, fields, why in ((fifteen, {"resolution": "4k"}, LATER_4K.format(15)),
+                                    (fifteen, {"resolution": "4k", "strength": "full"}, LATER_4K.format(15)),
                                     (ten, {"resolution": "4k"}, LATER_4K.format(10))):
             self.assertEqual(self.studio.upscale(parent["id"], **fields), (400, {"error": why}), fields)
         self.assertEqual(len(self.studio.state()["jobs"]), before)                     # nothing queued
@@ -2539,9 +2550,9 @@ class UpscaleRefusals(UpscaleTest):
 
     def test_clips_it_cannot_upscale(self):
         """Every length is taken (a 10 s, a 6 s 9:16 and an 8 s Keyframes clip are upscalable), at the sizes the job
-        offers for it: a size it does not offer is refused with the reason (4K for 10 s clips, 2K for 12 s ones; the
-        default size is 2K); a Keyframes clip whose prompt is nothing but its keyframe line (no text without it) and a
-        failed clip are not."""
+        offers for it: a size it does not offer is refused with the reason (4K for 6, 10 and 12 s clips); a 12 s clip
+        goes to 2K, the default size, and to 1080p; a Keyframes clip whose prompt is nothing but its keyframe line (no
+        text without it) and a failed clip are not."""
         ten = self.clip(seconds=10, seed=2)
         six = self.clip(orientation="portrait", seconds=6, seed=6)     # 3 and 4 s went after 0.5.0: see OldLengths
         fl2va = self.clip(task="fl2va", seed=3, seconds=8, files={"first_frame": [("f.png", png())]})
@@ -2552,8 +2563,7 @@ class UpscaleRefusals(UpscaleTest):
         failed = self.studio.wait([self.generate(prompt="STUB_FAIL", seed=4)])[0]
         for job, fields, code, why in ((ten, {"resolution": "4k"}, 400, LATER_4K.format(10)),
                                        (six, {"resolution": "4k"}, 400, LATER_4K.format(6)),
-                                       (twelve, {}, 400, LATER_2K.format(12)),
-                                       (twelve, {"resolution": "2k"}, 400, LATER_2K.format(12)),
+                                       (twelve, {"resolution": "4k"}, 400, LATER_4K.format(12)),
                                        (bare, {}, 400, NOTHING_LEFT), (failed, {}, 409, "the clip failed")):
             self.assertEqual(self.studio.upscale(job["id"], **fields), (code, {"error": why}), (job["id"], fields))
         found = {j["id"]: j.get("upscalable") for j in self.studio.state()["jobs"]}
@@ -2567,6 +2577,9 @@ class UpscaleRefusals(UpscaleTest):
         self.done(uid)
         self.assertEqual(self.studio.upscale(uid), (400, {"error": "an upscale can't be upscaled again"}))
         self.assertEqual(self.done(self.upscale(twelve["id"], resolution="1080p"))["frames"], 289)
+        job = self.done(self.upscale(twelve["id"]))                                     # 2K, the default
+        self.assertEqual((job["resolution"], job["frames"], Path(job["output"]).name),
+                         ("2k", 289, "regen_2560x1440_289f.mp4"))
         self.assertEqual(self.done(self.upscale(six["id"], resolution="2k"))["frames"], 153)
 
     def test_missing_files(self):
@@ -2919,6 +2932,25 @@ class UpscaleMemory(UpscaleTest):
         self.assertEqual((json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], job["pin"]["ends"]),
                          (110, ["first"]))
 
+    def test_floor_of_2k_at_15_s(self):
+        """2K at 15 s needs more than the default 110 by the job's model (lean2's, fitted to its runs): 113, with Keep
+        my frames holding one end too; the reason names the case. job.json carries that floor."""
+        parent = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=15, files={"first_frame": [("f.png", png())]})
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"]["pin"], ["first"])
+        self.studio.set_memory(112.5)
+        job = self.studio.wait([self.upscale(parent["id"], resolution="2k")], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"], job["pin"]["ends"]), ("failed", (
+            "UpscaleFailed: not enough free memory for an upscale: 112.5 GiB available with the models closed, 113 GiB "
+            "needed (what a 2K 15 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=110); close other apps"),
+            ["first"]))
+        self.assertEqual((self.upscale_dirs(), self.job_pids()), ([], []))
+        self.studio.set_memory(113.5)
+        uid = self.upscale(parent["id"], resolution="2k")                              # with its pin: 113 is enough
+        self.upscaling(uid)
+        job = self.studio.job(uid)
+        self.assertEqual((json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], job["pin"]["ends"]),
+                         (113, ["first"]))
+
     def test_guard(self):
         uid = self.upscale(self.clip()["id"])
         pid = self.upscaling(uid)
@@ -2949,8 +2981,8 @@ class UpscaleMemory(UpscaleTest):
 
 class UpscaleMemoryLowSetting(UpscaleTest):
     """LFSTUDIO_UPSCALE_MIN_FREE_GIB below the default: a 5 s clip needs that (and 5 more at 4K), as before; a longer
-    clip what its case needs where that is more (2K at 10 s: 109; at 8 s 102, 103 with Keep my frames), with the
-    reason; the job gets the same floor."""
+    clip what its case needs where that is more (2K at 10 s: 109; at 8 s 102, 106 with Keep my frames: its cascade's
+    1080p refine), with the reason; the job gets the same floor."""
     env = {"LFSTUDIO_UPSCALE_MIN_FREE_GIB": "90", "STUB_UPSCALE_S": "1"}
 
     def test_floor_per_case(self):
@@ -2968,17 +3000,23 @@ class UpscaleMemoryLowSetting(UpscaleTest):
         self.assertEqual(job["status"], "done", job.get("error"))                      # 95 at 4K: as before
 
     def test_floor_with_a_pin(self):
-        """Keep my frames' condition rows count: an 8 s Keyframes clip at 2K needs 103 GiB with its first frame kept,
-        102 without."""
+        """Keep my frames at 2K goes through the cascade, whose floor is its larger refine's: an 8 s Keyframes clip at
+        2K with its first frame kept needs 106 GiB (its 1080p refine, the stock forward, with the pin's condition
+        rows; its 2K step, lean, 103), 102 without the pin; at 1080p with it 106 too."""
         eight = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=8, files={"first_frame": [("f.png", png())]})
-        self.studio.set_memory(102.5)
+        self.studio.set_memory(105.5)
         job = self.studio.wait([self.upscale(eight["id"], resolution="2k")], timeout=30)[0]
-        self.assertEqual((job["status"], job["error"], job["pin"]["ends"]), ("failed", (
-            "UpscaleFailed: not enough free memory for an upscale: 102.5 GiB available with the models closed, 103 GiB "
+        self.assertEqual((job["status"], job["error"], job["pin"]["ends"], job["route"]), ("failed", (
+            "UpscaleFailed: not enough free memory for an upscale: 105.5 GiB available with the models closed, 106 GiB "
             "needed (what a 2K 8 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=90); close other apps"),
-            ["first"]))
+            ["first"], "cascade"))
         job = self.done(self.upscale(eight["id"], resolution="2k", pin="off"))
         self.assertEqual(json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], 102)
+        self.assertEqual(job["route"], "whole")
+        self.studio.set_memory(106)
+        job = self.done(self.upscale(eight["id"], resolution="2k"))
+        self.assertEqual((json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], job["route"]),
+                         (106, "cascade"))
 
 
 class UpscaleMemoryChecksOff(UpscaleTest):
@@ -3449,8 +3487,9 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
     def test_long_clips_of_every_kind(self):
         """Every kind of clip at other lengths: an 8 s Keyframes clip with both ends holds its first frame (Keep my
         frames at 1080p and 2K, not run on the GPU at that length: "ran" false) and says why not its last, 7 frames
-        past its end at 8 s; a 12 s one only at 1080p (2K is not offered for 12 s clips); a 6 s Reference clip and a
-        12 s Text clip as at 5 s."""
+        past its end at 8 s; a 12 s one at 1080p and 2K too, where it goes through the cascade (the stand-in job's
+        receipt: lean at 1080p, lean2 for its 2K step; the floor the setting's); a 6 s Reference clip and a 12 s Text
+        clip as at 5 s."""
         both = {"first_frame": [("f.png", png())], "last_frame": [("l.png", png(40, 24))]}
         unrun = {"1080p": dict(PIN_ROUTES["1080p"], ran=False), "2k": dict(PIN_ROUTES["2k"], ran=False)}
         eight = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=8, seed=31, files=both)
@@ -3467,7 +3506,14 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
                          (192, "stock", 2040))                       # 1080p 8 s: the stock forward, one end's rows
         twelve = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=12, seed=32,
                            files={"first_frame": [("f.png", png())]})
-        self.assertEqual(self.studio.job(twelve["id"])["upscalable"]["pin_routes"], {"1080p": unrun["1080p"]})
+        self.assertEqual(self.studio.job(twelve["id"])["upscalable"]["pin_routes"], unrun)     # 2K too, not run
+        job = self.done(self.upscale(twelve["id"]))                                       # 2K, the default
+        receipt = json.loads((self.regen(job) / "receipt.json").read_text())
+        self.assertEqual((job["route"], job["frames"], job["pin"]["ends"], receipt["route"], receipt["forward"],
+                          receipt["lean_chunks"], receipt["cascade"]["forward_1080p"],
+                          receipt["cascade"]["lean_chunks_1080p"]),
+                         ("cascade", 289, ["first"], "cascade", "lean2", 16, "lean", 16))
+        self.assertEqual(json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], 110)
         ref = self.clip(task="ref2va", prompt=REFERENCE_PROMPT, seconds=6, seed=33,
                         files={"ref_images": [("r.png", png())]})
         self.assertEqual(self.studio.job(ref["id"])["upscalable"], {"ok": True, "clip_audio": True, "text": "encode"})
@@ -3998,8 +4044,10 @@ class ServerParts(unittest.TestCase):
                             self.assertEqual(regen.FRAME_CASES[kept]["seconds"], seconds, what)
                             row = table[str(seconds)]
                             self.assertEqual(set(row), set(regen.SIZES), what)
-                            for size, offer in row.items():
-                                self.assertTrue(set(offer) in ({"eta_s", "ran"}, {"why"}), (what, size, offer))
+                            for size, offer in row.items():         # 2K: also Keep my frames' cascade's time
+                                self.assertTrue(set(offer) in ({"eta_s", "ran"}, {"eta_s", "ran", "cascade_eta_s"},
+                                                               {"why"}), (what, size, offer))
+                                self.assertEqual("cascade_eta_s" in offer, size == "2k" and "eta_s" in offer)
                             self.assertIn("eta_s", row["1080p"], what)
                             self.assertEqual(regen.offer(kept, "1080p")["eta_s"], row["1080p"]["eta_s"])
                             seen.add(kept)
@@ -4058,7 +4106,8 @@ class ServerParts(unittest.TestCase):
         self.assertEqual(sol_last("refined_1344x768_73f.mp4"), "not for this clip's keyframes yet")
         refusal = server_function("offer_refusal")
         self.assertIsNone(refusal(regen.offer(241, "2k"), "full"))
-        self.assertEqual(refusal(regen.offer(289, "2k"), "balanced"), LATER_2K.format(12))
+        self.assertIsNone(refusal(regen.offer(289, "2k"), "balanced"))
+        self.assertEqual(refusal(regen.offer(289, "4k"), "balanced"), LATER_4K.format(12))
         self.assertEqual(refusal(dict(regen.offer(121, "4k"), strengths=["balanced"]), "full"),
                          "strength full is not offered for this clip at this size: balanced")
 
@@ -4262,12 +4311,15 @@ class ServerParts(unittest.TestCase):
         """PIN_ROUTES changed by one line: a route taken out (one that fails its GPU run) is no longer offered, with
         why, while the others still are; "ran" per route and size (the page's note where a route has not run), as the
         table says and with one route's sizes changed, and per length ("1080p/10": a 10 s clip at 1080p; a size alone
-        is 5 s); the sizes the job offers for a clip's length only (2K not at 12 s); PIN_SIZES ("1080p",) takes 2K out,
-        with why."""
+        is 5 s; "2k/15", a 15 s clip at 2K, as a run of it would add); the sizes the job offers for a clip's length
+        only (2K at 12 s too now; without its times, as before, not); PIN_SIZES ("1080p",) takes 2K out, with why. At
+        2K each route goes through the job's cascade (route "cascade"), run through the studio for a LightX2V Turbo 5 s
+        clip's first frame alone (2026-10-31): only that line names 2K; both ends at 2K, at 5, 10 and 15 s, keep the
+        note (a run that lands, or the owner's look, adds "2k" or "2k/<seconds>" to its line, and the note goes)."""
         made = ("first", "last")
 
         def clip(ends, seconds=5):
-            frames = {5: 124, 10: 243, 12: 294}[seconds]               # a clip with a last keyframe keeps them all
+            frames = {5: 124, 10: 243, 12: 294, 15: 362}[seconds]      # a clip with a last keyframe keeps them all
             job = {"id": "x", "model": TURBO, "task": "fl2va", "seconds": seconds, "orientation": "landscape",
                    "status": "done", **{f"{end}_frame": f"{end}.png" for end in ends}}
             sources = {"pcm": types.SimpleNamespace(is_file=lambda: True), "conditioning": None, "text": "generation",
@@ -4284,35 +4336,50 @@ class ServerParts(unittest.TestCase):
 
         def plan(parts, ends, resolution):
             return parts["pin_plan"](*clip(ends), resolution, "balanced", "auto")
-        unrun = {"strengths": ["balanced"], "ran": False}
+        unrun = {"strengths": ["balanced"], "ran": False, "route": "whole"}
 
         def routes(*ran):
-            return {"1080p": dict(unrun, ran="1080p" in ran), "2k": dict(unrun, ran="2k" in ran)}
+            return {"1080p": dict(unrun, ran="1080p" in ran), "2k": dict(unrun, ran="2k" in ran, route="cascade")}
         parts = self.pin_parts()
-        self.assertEqual([offered(parts, ends) for ends in (["last"], made)],
-                         [{"pin": ["last"], "pin_routes": routes("1080p")},
-                          {"pin": list(made), "pin_routes": routes("1080p", "2k")}])
+        self.assertEqual([offered(parts, ends) for ends in (["first"], ["last"], made)],
+                         [{"pin": ["first"], "pin_routes": routes("1080p", "2k")},
+                          {"pin": ["last"], "pin_routes": routes("1080p")},
+                          {"pin": list(made), "pin_routes": routes("1080p")}])
+        self.assertEqual({key: route["ran"] for key, route in parts["PIN_ROUTES"].items()
+                          if any(ran.startswith("2k") for ran in route["ran"])}, {(TURBO, "first"): ("1080p", "2k")})
+        self.assertEqual([offered(parts, ["first"], seconds)["pin_routes"] for seconds in (10, 15)], [routes()] * 2)
+        self.assertEqual([offered(parts, made, seconds)["pin_routes"] for seconds in (10, 15)],
+                         [routes("1080p"), routes()])                # both ends at 2K 10 and 15 s: the note
+        parts = self.pin_parts(ran=('(TURBO, "first")', ("1080p",)))          # its 2K line out: the note again
+        self.assertEqual(offered(parts, ["first"])["pin_routes"], routes("1080p"))
+        parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k", "1080p/10")))     # the cascade's run
+        self.assertEqual(offered(parts, made), {"pin": list(made), "pin_routes": routes("1080p", "2k")})
         not_yet = "not for this clip's keyframes yet"
         parts = self.pin_parts(drop='(TURBO, "last")')
         self.assertEqual(offered(parts, ["last"]), {"pin_why": {"last": not_yet}})
         self.assertEqual(plan(parts, ["last"], "1080p"), {"asked": "auto", "ends": [], "why": {"last": not_yet}})
-        self.assertEqual(offered(parts, made), {"pin": list(made), "pin_routes": routes("1080p", "2k")})  # its own
+        self.assertEqual(offered(parts, made), {"pin": list(made), "pin_routes": routes("1080p")})  # its own
         self.assertEqual(plan(parts, made, "1080p")["ends"], list(made))
         parts = self.pin_parts(ran=('(TURBO, "first+last")', ()))
         self.assertEqual(offered(parts, made)["pin_routes"], routes())
         self.assertEqual(offered(parts, ["last"])["pin_routes"], routes("1080p"))                # the others not
         parts = self.pin_parts(ran=('(TURBO, "last")', ("1080p", "2k")))
         self.assertEqual(offered(parts, ["last"])["pin_routes"], routes("1080p", "2k"))
-        self.assertEqual(offered(parts, made)["pin_routes"], routes("1080p", "2k"))
+        self.assertEqual(offered(parts, made)["pin_routes"], routes("1080p"))
         parts = self.pin_parts()
         self.assertEqual(offered(parts, made, 10), {"pin": list(made), "pin_routes": routes("1080p")})   # 1080p/10
         parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k")))
         self.assertEqual(offered(parts, made, 10), {"pin": list(made), "pin_routes": routes()})     # not at 10 s
-        self.assertEqual(offered(parts, made, 12), {"pin": list(made), "pin_routes": {"1080p": unrun}})  # no 2K
+        self.assertEqual(offered(parts, made, 12), {"pin": list(made), "pin_routes": routes()})   # 2K at 12 s too
+        with mock.patch.dict(parts["regen"].OFFER_ETA_S, {12: {"1080p": (630, 638)}}):          # 2K not offered
+            self.assertEqual(offered(parts, made, 12), {"pin": list(made), "pin_routes": {"1080p": unrun}})
         parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k", "1080p/10")))
         self.assertEqual(offered(parts, made, 10)["pin_routes"], routes("1080p"))
         self.assertEqual(offered(parts, made)["pin_routes"], routes("1080p", "2k"))
-        self.assertEqual(offered(parts, made, 12)["pin_routes"], {"1080p": unrun})
+        self.assertEqual(offered(parts, made, 12)["pin_routes"], routes())
+        parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k", "2k/15")))     # a 2K 15 s run's line
+        self.assertEqual(offered(parts, made, 15)["pin_routes"], routes("2k"))
+        self.assertEqual(offered(parts, made, 12)["pin_routes"], routes())
         parts = self.pin_parts(sizes=("1080p",))
         self.assertEqual(offered(parts, ["last"]), {"pin": ["last"], "pin_routes": {"1080p": dict(unrun, ran=True)}})
         self.assertEqual([plan(parts, ["last"], size) for size in ("1080p", "2k")],
@@ -5436,7 +5503,7 @@ class TurboUpscale(TurboTest):
         parent = self.done(self.turbo(task="fl2va", prompt=prompt, files={"first_frame": [("a.png", png())]}))
         self.assertEqual(self.studio.job(parent["id"])["upscalable"],
                          {"ok": True, "clip_audio": True, "text": "generation", "video": "stretch", "pin": ["first"],
-                          "pin_routes": PIN_ROUTES})
+                          "pin_routes": PIN_ROUTES_FIRST})
         job = self.done(self.upscale(parent["id"]))
         self.assertEqual(job["text"], {"source": "generation", "prompt": parent["text_only"]["prompt"],
                                        "dropped": parent["text_only"]["dropped"]})
@@ -5536,7 +5603,8 @@ class TurboUpscale(TurboTest):
                                       files={"first_frame": [("a.png", png())]}))
         shutil.rmtree(Path(parent["output"]).parents[1] / "qwen-text")          # an older clip, say
         self.assertEqual(self.studio.job(parent["id"])["upscalable"],
-                         {"ok": True, "clip_audio": True, "text": "encode", "pin": ["first"], "pin_routes": PIN_ROUTES})
+                         {"ok": True, "clip_audio": True, "text": "encode", "pin": ["first"],
+                          "pin_routes": PIN_ROUTES_FIRST})
         job = self.done(self.upscale(parent["id"]))
         self.assertEqual((job["text"]["source"], job["text"]["prompt"]), ("encode", "A kite."))
         run = self.runs("encodes.log")[-1]
@@ -5620,8 +5688,8 @@ class TurboPin(TurboTest):
             with self.subTest(ends):
                 parent = self.keyframes_clip(files, seed=seed)
                 u = self.studio.job(parent["id"])["upscalable"]
-                self.assertEqual((u["pin"], u["pin_routes"]),
-                                 (ends, PIN_ROUTES_BOTH if len(ends) > 1 else PIN_ROUTES))
+                self.assertEqual((u["pin"], u["pin_routes"]), (ends, {"first": PIN_ROUTES_FIRST, "last": PIN_ROUTES,
+                                                                      "first+last": PIN_ROUTES_BOTH}["+".join(ends)]))
                 self.assertNotIn("pin_why", u)
                 job = self.done(self.upscale(parent["id"], resolution="1080p"))
                 view = self.regen(job).parent / "input"
@@ -5647,6 +5715,64 @@ class TurboPin(TurboTest):
         self.assertIn("1080p, balanced, audio clip, seed 21, keeping its first frame)", log)
         self.assertIn("seed 23, keeping its first and last frames)", log)
 
+    def test_2k_goes_through_the_cascade(self):
+        """Keep my frames at 2K: the record's route "cascade" from the request (the job's route_for: 2K with an end
+        sent), job.json as at 1080p (the strength's steps and start_sigma, no field of its own: the job takes the
+        cascade by itself), the stand-in job's receipt with its route, its cascade and 3 steps; once done the record's
+        route is the job's: "whole" where its check held no end. 1080p, pin off and 4K: "whole"."""
+        parent = self.keyframes_clip({"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}, seed=7)
+        uid = self.upscale(parent["id"], resolution="2k")
+        self.assertEqual(self.studio.job(uid)["route"], "cascade")
+        job = self.done(uid)
+        self.assertEqual((job["route"], job["pin"]["ends"]), ("cascade", ["first", "last"]))
+        data = json.loads((self.regen(job) / "job.json").read_text())
+        self.assertEqual((data["resolution"], data["steps"], data["start_sigma"],
+                          [k["anchor"] for k in data["pin"]["keyframes"]]), ("2k", 2, 0.7, ["first", "last"]))
+        self.assertEqual(set(data) - load_regen().JOB_KEYS, set())
+        receipt = json.loads((self.regen(job) / "receipt.json").read_text())
+        record = receipt["cascade"]
+        self.assertEqual((receipt["route"], {k: record[k] for k in ("from", "steps_1080p", "sigma_2k", "steps_2k",
+                                                                    "latent_1080p", "latent_2k")}),
+                         ("cascade", {"from": "1080p", "steps_1080p": 2, "sigma_2k": 0.4, "steps_2k": 1,
+                                      "latent_1080p": [24, 37, 68, 120], "latent_2k": [24, 37, 90, 160]}))
+        self.assertEqual(set(record["times_s"]), {"refine_1080p", "refine_2k"})
+        self.assertEqual((receipt["rows"]["condition"], record["rows_1080p"]["condition"]), (7200, 4080))
+        self.assertIn("[lf-studio] phase refine 3/3\n", (self.regen(job) / "worker.log").read_text())
+        for fields in ({"resolution": "1080p"}, {"resolution": "2k", "pin": "off"}, {"resolution": "4k"}):
+            with self.subTest(fields):
+                uid = self.upscale(parent["id"], **fields)
+                self.assertEqual(self.studio.job(uid)["route"], "whole")
+                job = self.done(uid)
+                receipt = json.loads((self.regen(job) / "receipt.json").read_text())
+                self.assertEqual((job["route"], receipt["route"], "cascade" in receipt), ("whole", "whole", False))
+        self.restart(STUB_UPSCALE_PIN_DB="first=21.0,last=20.5")            # the job's check holds neither end
+        uid = self.upscale(parent["id"], resolution="2k")
+        self.assertEqual(self.studio.job(uid)["route"], "cascade")          # both sent: the job decides
+        job = self.done(uid)
+        self.assertEqual((job["route"], [r["used"] for r in job["pin"]["result"].values()]), ("whole", [False, False]))
+        self.assertNotIn("refine 3/3", (self.regen(job) / "worker.log").read_text())
+
+    def test_the_floor_of_both_ends_at_2k_15_s(self):
+        """Both ends of a 15 s clip at 2K need 114 GiB, the cascade's 2K step's with their condition rows (lean2's),
+        113 with pin off; the reason names the case, and job.json carries the floor the server checked."""
+        line = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second mark; "
+                "Picture 2 aligns with the 15.00-second mark.\nA dancer turns slowly.")
+        parent = self.done(self.turbo(task="fl2va", prompt=line, seconds=15, seed=11,
+                                      files={"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}))
+        self.assertEqual(probe(parent["output"])["video"]["nb_frames"], "362")          # every frame made
+        self.assertEqual(self.studio.job(parent["id"])["upscalable"]["pin"], ["first", "last"])
+        self.studio.set_memory(113.5)
+        job = self.studio.wait([self.upscale(parent["id"], resolution="2k")], timeout=30)[0]
+        self.assertEqual((job["status"], job["error"], job["pin"]["ends"], job["route"]), ("failed", (
+            "UpscaleFailed: not enough free memory for an upscale: 113.5 GiB available with the models closed, 114 GiB "
+            "needed (what a 2K 15 s upscale needs, more than LFSTUDIO_UPSCALE_MIN_FREE_GIB=110); close other apps"),
+            ["first", "last"], "cascade"))
+        uid = self.upscale(parent["id"], resolution="2k", pin="off")                   # without it: 113 is enough
+        self.upscaling(uid)
+        job = self.studio.job(uid)
+        self.assertEqual((json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], job["route"]),
+                         (113, "whole"))
+
     def test_where_no_end_is_sent(self):
         """pin off; 4K; Faithful and Full: no pin in job.json, nothing linked, the record says why; the other keys
         of a request as before."""
@@ -5664,14 +5790,14 @@ class TurboPin(TurboTest):
                 self.assertFalse((self.regen(job).parent / "input" / "keyframe").exists())
 
     def test_pictures_gone_or_changed(self):
-        """A picture deleted: that end is not offered (pin_why), the other's route is its own. A picture changed (a
-        new file under the same name): /api/state does not hash pictures, so it is offered until a request hashes it,
-        which sends no end then; from then on /api/state says why."""
+        """A picture deleted: that end is not offered (pin_why), the other's route is its own (a first frame alone, run
+        at 2K too). A picture changed (a new file under the same name): /api/state does not hash pictures, so it is
+        offered until a request hashes it, which sends no end then; from then on /api/state says why."""
         parent = self.keyframes_clip({"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}, seed=3)
         rec = self.studio.job(parent["id"])
         Path(rec["last_frame"]).unlink()
         self.assertEqual({k: v for k, v in self.studio.job(parent["id"])["upscalable"].items() if "pin" in k},
-                         {"pin": ["first"], "pin_routes": PIN_ROUTES, "pin_why": {"last": PIN_GONE}})
+                         {"pin": ["first"], "pin_routes": PIN_ROUTES_FIRST, "pin_why": {"last": PIN_GONE}})
         Path(rec["first_frame"]).write_bytes(png(16, 24))
         self.assertEqual(self.studio.job(parent["id"])["upscalable"]["pin"], ["first"])     # not hashed here
         job = self.done(self.upscale(parent["id"], resolution="1080p"))

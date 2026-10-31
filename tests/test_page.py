@@ -37,7 +37,6 @@ UP_PIN_UNRUN = "Keeping your frames has not been run on the GPU through the stud
 # place (UP_LEN_UNRUN)
 UP_LEN_UNRUN = "Clips of this length have not been upscaled on the GPU through the studio yet: the times are estimates"
 FILES_GONE = "the clip's working files (its session directory) are gone, so it can't be upscaled"
-LATER_2K = "2K for {} s clips comes later: 1080p takes them"
 LATER_4K = "4K for {} s clips comes later: 1080p and 2K take them"
 SOL_LAST = "Last frame not kept: Sol-H3 clips stop 3 frames before your last picture, so the Upscale can't hold it"
 
@@ -1597,24 +1596,29 @@ class UpscalePage(UpscaleCards, PageTest):
                          ["1920×1080", "2560×1440", "3840×2160"])
         # the progress bar's expected seconds (docs/PERFORMANCE.md; /api/state upscale_offers by the record's length, 5 s
         # without one): the fast load, ~8 min more with the standard load (the record's "load"); a record of an older
-        # studio's upscale from the draft counts as any other; 10 s and 15 s from their runs; none for a size a length
-        # does not have
+        # studio's upscale from the draft counts as any other; 10 s and 15 s from their runs, 2K at 15 s from the job's
+        # model (not run); none for a size a length does not have
         self.assertEqual(self.page.evaluate("""[{resolution: '2k', steps: 2, load: 'fast'},
             {resolution: '2k', steps: 3}, {resolution: '1080p', steps: 2},
             {resolution: '2k', steps: 2, load: 'standard'}, {resolution: '4k', steps: 2},
             {resolution: '1080p', steps: 2, source: 'draft'}, {resolution: '1080p', steps: 2, seconds: 10},
             {resolution: '2k', steps: 2, seconds: 10}, {resolution: '1080p', steps: 3, seconds: 15},
-            {resolution: '2k', steps: 2, seconds: 15}].map(upEta)"""),
-                         [1165, 1545, 615, 1665, 3995, 615, 1449, 3213, 3540, 0])
+            {resolution: '2k', steps: 2, seconds: 15}, {resolution: '4k', steps: 2, seconds: 15}].map(upEta)"""),
+                         [1165, 1545, 615, 1665, 3995, 615, 1449, 3213, 3540, 6351, 0])
         # its times are upEta's for 2 steps with the studio's load (/api/state upscale_load), and follow it each time
         # it opens (one evaluate: no poll in between)
         self.assertEqual(self.page.evaluate("""['1080p', '2k', '4k'].flatMap(r => ['fast', 'standard'].map(load =>
             upEta({resolution: r, steps: 2, load})))"""), [615, 1115, 1165, 1665, 3995, 4495])
-        # Keep my frames: +16 / +32 s at 1080p and +60 / +83 s at 2K for one end and both (measured, but one end at 2K:
-        # an estimate), nothing for an upscale that sends none
-        self.assertEqual(self.page.evaluate("""[['1080p', ['first']], ['1080p', ['first', 'last']], ['2k', ['last']],
-            ['2k', ['first', 'last']], ['2k', []], ['4k', []]].map(([resolution, ends]) =>
-            upEta({resolution, steps: 2, pin: {asked: 'auto', ends}}))"""), [631, 647, 1225, 1248, 1165, 3995])
+        # Keep my frames: +16 / +32 s at 1080p for one end and both (measured); at 2K the cascade's own time in all
+        # with one end and both (upscale_offers "cascade_eta_s", by the record's route "cascade": the job's model), with
+        # the standard load and an encode as any other; nothing for an upscale that sends none, nor for a 2K record
+        # without the route (none is made now: the single-pass pinned 2K is gone)
+        self.assertEqual(self.page.evaluate("""[['1080p', ['first']], ['1080p', ['first', 'last']],
+            ['2k', ['last'], 'cascade'], ['2k', ['first', 'last'], 'cascade'], ['2k', []], ['4k', []],
+            ['2k', ['first']], ['2k', ['first'], 'cascade', 'standard', 'encode']].map(([resolution, ends, route, load,
+            source]) => upEta({resolution, steps: 2, route, load, text: source && {source},
+                               pin: {asked: 'auto', ends}}))"""),
+                         [631, 647, 1129, 1169, 1165, 3995, 1165, 1129 + 500 + 15])
         self.page.keyboard.press("Escape")
         self.assertTrue(self.page.is_hidden("#uppop"))
         times = self.page.evaluate("""id => {
@@ -1798,8 +1802,23 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.open_popover(long)                      # 8 s: its times, 4K greyed, its first frame kept
         self.assertEqual([self.checked(n) for n in ("up_res", "up_strength")], ["2k", "balanced"])
         text = self.page.inner_text("#uppop")
-        for words in ("1080p\n~17 min", "2K\n~37 min", "4K\nlater"):
-            self.assertIn(words, text)
+        for words in ("1080p\n~17 min", "2K\n~34 min", "4K\nlater"):     # 2K with Keep my frames: the cascade's
+            self.assertIn(words, text)                                     # 2059 s; 1080p as without it
+        self.assertEqual((self.page.inner_text("#uppincascade"), self.page.is_visible("#uppincascade")),
+                         ("Made at 1080p first, then brought to 2K", True))
+        self.page.click("#uppinrow")                                         # unticked: 2K's own time
+        self.assertIn("2K\n~37 min", self.page.inner_text("#uppop"))
+        self.page.click("#uppinrow")
+        self.assertIn("2K\n~34 min", self.page.inner_text("#uppop"))
+        self.page.click('#uppop input[name="up_strength"][value="faithful"]')     # no pin there: 2K's own time
+        self.assertEqual((self.page.inner_text("#uppinnote"), self.page.is_visible("#uppincascade")),
+                         ("With Balanced only, for now", False))
+        self.assertIn("2K\n~37 min", self.page.inner_text("#uppop"))
+        self.page.click('#uppop input[name="up_strength"][value="balanced"]')
+        self.page.click('#uppop label[for="up-1080p"]')                         # at 1080p in one pass: no line
+        self.assertFalse(self.page.is_visible("#uppincascade"))
+        self.assertIn("2K\n~34 min", self.page.inner_text("#uppop"))           # the box ticked: 2K would be it
+        self.page.click('#uppop label[for="up-2k"]')
         self.assertEqual((self.page.is_disabled("#up-4k"), self.page.get_attribute('#uppop label[for="up-4k"]', "title")),
                          (True, LATER_4K.format(8)))
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt without its keyframe line, encoded first "
@@ -1812,6 +1831,7 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
                                                            f"(~15 s). {UP_PIN_UNRUN}")     # its first frame: kept
         self.assertEqual((self.page.inner_text("#uppinlabel"), self.page.is_checked("#uppin")),
                          ("Keep my first frame", True))
+        self.assertIn("2K\n~19 min", self.page.inner_text("#uppop"))    # 5 s, one end: the cascade's 1129 s
         self.page.keyboard.press("Escape")
         self.open_popover(ref)
         self.assertEqual(self.page.inner_text("#upinput"), "Uses your prompt with the references taken out, encoded "
@@ -1830,31 +1850,41 @@ class UpscaleEveryClipPage(UpscaleCards, PageTest):
         self.page.click(f"{card} .cancel")
         self.page.wait_for_selector(f'{card}[data-status="cancelled"]', timeout=20000)
 
-    def test_a_clip_whose_length_has_no_2k(self):
-        """A 12 s clip: 2K (the studio's default) and 4K greyed with the reason, 1080p picked, its time from the job's
-        model (covered by the 15 s run: no note); the request asks for 1080p; the upscale's card has its expected time
-        from its length's row."""
+    def test_a_12_s_clip_at_2k(self):
+        """A 12 s clip: 1080p and 2K (the studio's default, picked), 4K greyed with the reason; 2K's time from the job's
+        model, and no note at either size: each is covered by its 15 s run (2K's on 2026-10-31; its offer's "ran"
+        true); the request asks for 2K; the upscale's card has its expected time from its length's row."""
         jid = self.done_clip(prompt="twelve seconds", seconds=12, seed=74)
         self.page.wait_for_timeout(2200)
-        self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "title"), "Upscale to 1080p (experimental)")
+        self.assertEqual(self.page.get_attribute(f"{self.card(jid)} .act.up", "title"),
+                         "Upscale to 1080p or 2K (experimental)")
         self.open_popover(jid)
-        self.assertEqual(self.checked("up_res"), "1080p")
-        self.assertEqual([self.page.is_disabled(f"#up-{r}") for r in ("1080p", "2k", "4k")], [False, True, True])
+        self.assertEqual(self.checked("up_res"), "2k")
+        self.assertEqual([self.page.is_disabled(f"#up-{r}") for r in ("1080p", "2k", "4k")], [False, False, True])
         self.assertEqual([self.page.get_attribute(f'#uppop label[for="up-{r}"]', "title") for r in ("1080p", "2k", "4k")],
-                         ["1920×1080", LATER_2K.format(12), "4K for 12 s clips comes later: 1080p takes them"])
-        self.assertIn("1080p\n~32 min", self.page.inner_text("#uppop"))      # 630 + 2 x 638 s (fitted)
-        self.assertEqual(self.page.inner_text("#upinput"), LATER_2K.format(12))
+                         ["1920×1080", "2560×1440", LATER_4K.format(12)])
+        text = self.page.inner_text("#uppop")
+        for words in ("1080p\n~32 min", "2K\n~1.2 h", "4K\nlater"):                 # 630 + 2 x 638, 821 + 2 x 1822 s
+            self.assertIn(words, text)
+        self.assertTrue(self.page.is_hidden("#upinput"))                              # 2K: covered, no note
+        self.page.click('#uppop label[for="up-1080p"]')
+        self.assertTrue(self.page.is_hidden("#upinput"))                              # 1080p: covered, no note
+        self.page.click('#uppop label[for="up-2k"]')
+        self.assertTrue(self.page.is_hidden("#upinput"))
         with self.page.expect_request("**/api/upscale") as request:
             self.page.click("#upgo")
-        self.assertEqual(json.loads(request.value.post_data), {"id": jid, "resolution": "1080p", "strength": "balanced"})
+        self.assertEqual(json.loads(request.value.post_data), {"id": jid, "resolution": "2k", "strength": "balanced"})
         self.page.wait_for_selector("#uppop", state="hidden")
         job = next(j for j in self.studio.state()["jobs"] if j.get("kind") == "upscale")
-        self.assertEqual(self.page.evaluate("id => upEta(known.get(id))", job["id"]), 1906)
+        self.assertEqual(self.page.evaluate("id => upEta(known.get(id))", job["id"]), 4465)
         self.studio.wait([job["id"]], timeout=60)
         self.page.wait_for_selector(f"{self.card(job['id'])} video", timeout=30000)
         self.assertEqual(self.page.eval_on_selector_all(f"{self.card(job['id'])} .tags .tag",
                                                         "els => els.map(e => e.textContent)"),
-                         ["1080p upscale", "Text", "12 s"])
+                         ["2K upscale", "Text", "12 s"])
+        self.assertEqual(self.page.evaluate("""() => [12, 15].map(s => upEta({seconds: s, resolution: '2k', steps: 3}))
+            .concat(upEta({seconds: 15, resolution: '2k', steps: 2}))"""), [6287, 9031, 6351])
+        self.assertEqual(self.page.evaluate("[6351, 9031].map(upTime)"), ["~1.8 h", "~2.5 h"])
 
     def test_eta_and_notes(self):
         """+15 s for an encode in the expected time; the notes for each kind of clip at a size, LightX2V Turbo's too
@@ -2384,11 +2414,13 @@ class ModelCards(ModelPage):
 class ModelUpscale(ModelPage):
     """The Upscale of a LightX2V Turbo Keyframes clip at 576p with a last keyframe: the popover says what is done to it
     at each size (its text made with the clip, stretched to 768p; at 4K cut to its first 121 frames) and has Keep my
-    first and last frames, checked, off with the reason at 4K and at another strength than Balanced, at 2K as at 1080p;
-    the request says pin auto or off; the upscale's card names the model and size of its clip and the frames kept. One
-    with a last keyframe alone has Keep my last frame, and only at a size where its route has not run on the GPU through
-    the studio (pin_routes "ran": 2K) the note that it has not. A Sol-H3 clip with both keyframes keeps its first frame
-    only, and the popover says why not its last."""
+    first and last frames, checked, off with the reason at 4K and at another strength than Balanced, at 2K as at 1080p
+    with the line that it is made at 1080p first there (the job's cascade), whose time 2K then shows; the request says
+    pin auto or off; the upscale's card names the model and size of its clip and the frames kept. Only at a size where
+    its route has not run on the GPU through the studio (pin_routes "ran": 2K, the cascade) the note that it has not;
+    one with a last keyframe alone has Keep my last frame, one with a first keyframe alone Keep my first frame and no
+    note at 2K either (its cascade ran). A Sol-H3 clip with both keyframes keeps its first frame only, and the popover
+    says why not its last."""
 
     def notes(self):
         return self.page.inner_text("#upinput")
@@ -2409,14 +2441,18 @@ class ModelUpscale(ModelPage):
         self.page.click(f"{self.card(jid)} .act.up")
         self.page.wait_for_selector("#uppop", state="visible")
         common = "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first"
-        self.assertEqual(self.notes(), common)          # 2K: every frame; its route has run (UP_RAN), both ends at 2K
-        kept = "Kept where the clip already shows your picture"
+        self.assertEqual(self.notes(), f"{common}. {UP_PIN_UNRUN}")    # 2K: every frame; its route has run (UP_RAN),
+        kept = "Kept where the clip already shows your picture"        # Keep my frames' cascade at 2K has not
         self.assertEqual(self.pin(), ["Keep my first and last frames", kept, True, False])     # at 2K as at 1080p
+        self.assertEqual((self.page.inner_text("#uppincascade"), self.page.is_visible("#uppincascade")),
+                         ("Made at 1080p first, then brought to 2K", True))
+        self.assertIn("2K\n~19 min", self.page.inner_text("#uppop"))    # the cascade with both ends: 1169 s
         self.page.click('#uppop label[for="up-4k"]')
         self.assertEqual(self.notes(), f"{common}. At 4K its first 121 frames: the last 3, up to your last keyframe, "
                                        f"are left out. {UP_UNRUN}")
         self.assertEqual(self.pin(), ["Keep my first and last frames", "Not at 4K yet", True, True])
         self.assertEqual(self.page.get_attribute("#uppinrow", "title"), "Not at 4K yet")
+        self.assertFalse(self.page.is_visible("#uppincascade"))
         self.page.click('#uppop label[for="up-1080p"]')
         self.page.click('#uppop input[name="up_strength"][value="faithful"]')
         self.assertEqual(self.pin()[1:], ["With Balanced only, for now", True, True])
@@ -2484,6 +2520,38 @@ class ModelUpscale(ModelPage):
             return ['2k', '1080p'].map(res => {document.getElementById('up-' + res).checked = true;
               upRefresh({...j, upscalable: u}); return document.getElementById('upinput').textContent;});}""")
         self.assertEqual(seen, [common, f"{common}. {UP_PIN_UNRUN}"])
+        self.page.keyboard.press("Escape")
+
+    def test_a_first_keyframe_alone(self):
+        """Keep my first frame, with no note at 2K: its cascade ran through the studio at 5 s (2026-10-31; the
+        server's PIN_ROUTES "ran" has "2k"), as at 1080p; its line that it is made at 1080p first, and its time: the
+        cascade's, ~19 min as 2K's without the box at 5 s, so told apart with the standard load (~8 min more)."""
+        prompt = ("How the reference pictures align with the target video - Picture 1 aligns with the 0.00-second "
+                  "mark.\nA dancer turns slowly.")
+        first = {"first_frame": [("a.png", png())]}
+        jid = self.studio.turbo(task="fl2va", prompt=prompt, seed=84, files=first)[1]["id"]
+        self.assertEqual(self.studio.wait([jid], timeout=60)[0]["status"], "done")
+        self.page.wait_for_selector(f"{self.card(jid)} video")
+        self.page.wait_for_timeout(2200)                                     # a poll with upscalable
+        self.page.click(f"{self.card(jid)} .act.up")
+        self.page.wait_for_selector("#uppop", state="visible")
+        common = "Uses your prompt without its keyframe line. From the 576p clip, stretched to 768p first"
+        self.assertEqual(self.pin(), ["Keep my first frame", "Kept where the clip already shows your picture", True,
+                                      False])
+        self.assertEqual(self.notes(), common)                                        # its route has run at 2K
+        self.assertEqual((self.page.inner_text("#uppincascade"), self.page.is_visible("#uppincascade")),
+                         ("Made at 1080p first, then brought to 2K", True))
+        self.assertIn("2K\n~19 min", self.page.inner_text("#uppop"))    # the cascade with one end: 1129 s
+        # with the standard load (one evaluate: no poll in between): ticked, unticked (2K's own, 405 + 2 x 380 s) and
+        # ticked again; then the studio's load, ticked
+        seen = self.page.evaluate("""() => {const j = known.get(up.id), box = document.getElementById('uppin'),
+            load = state.upscale_load, small = document.querySelector('#uppop label[for="up-2k"] small'), seen = [];
+            state.upscale_load = 'standard';
+            for (const ticked of [true, false, true]) {box.checked = ticked; upTimes(j); seen.push(small.textContent);}
+            state.upscale_load = load; upTimes(j); seen.push(small.textContent); return seen;}""")
+        self.assertEqual(seen, ["~27 min", "~28 min", "~27 min", "~19 min"])       # 1629 and 1665 s, then 1129 s
+        self.page.click('#uppop label[for="up-1080p"]')
+        self.assertEqual(self.notes(), common)                                        # and at 1080p
         self.page.keyboard.press("Escape")
 
     def test_a_sol_h3_clip_with_both_keyframes(self):
