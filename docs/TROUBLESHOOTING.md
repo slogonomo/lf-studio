@@ -400,10 +400,11 @@ is made at 1080p first, with your pictures held, and then brought to 2K by one s
 fine detail and a little contrast over the whole clip. Through the studio (2026-10-31) each end it held came out about
 1.5-2 dB further from its picture than the 1080p upscale's (luma PSNR at the job's 384p check grid): the 2K step's look,
 the same at every frame, with no flash at the held frame. That is still closer than 2K without the box (at 5 s frame 0
-came 2 dB closer to the picture than the plain 2K, and 1.5 dB closer than the single pinned refine at 2K it replaced).
-If matching your pictures matters most, upscale to 1080p. The runs with both ends at 10 and 15 s held every end about as
-the 5 s run held its one, but more than 1 dB further from the pictures than 1080p, the bar set for them (one the 5 s run
-does not meet either), so the popover keeps its note there until the maintainer has looked at them.
+came 2 dB closer to the picture than the plain 2K and about 1 dB closer than the single pinned refine at 2K it replaced,
+at the output size; 1.5 dB at the check grid). If matching your pictures matters most, upscale to 1080p. The runs with
+both ends at 10 and 15 s held every end about as the 5 s run held its one, but more than 1 dB further from the pictures
+than 1080p, the bar set for them (one the 5 s run does not meet either), so the popover keeps its note there until the
+maintainer has looked at them.
 
 **A 2K upscale with Keep my frames shows `refine 1/3` to `refine 3/3`.** At 2K the clip is made at 1080p first, then
 brought to 2K (the job's cascade): its two steps at 1080p, then NVIDIA's upscaler to 2K and one step there.

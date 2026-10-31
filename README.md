@@ -242,20 +242,21 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     flash and the motion kept; in the same research one pinned refine at 2K had brought it only about 1 dB closer
     (through the studio, both ends of a clip without a face came 4.7-5.0 dB closer that way). Through the studio
     (2026-10-31, LightX2V Turbo Keyframes clips) it has run with a first frame at 5 s in 18 min, and with both ends of
-    a 10 s clip in 50 min and of a 15 s clip in 1 h 35 min: every end held, with no flash and the clip's lip sync.
-    **It holds your pictures a little less closely than 1080p does**: each end came out about 1.5-2 dB further from its
-    picture (luma PSNR at the job's 384p check grid), as the 2K step adds fine detail and a little contrast over the
-    whole clip. It holds them closer than 2K without the box: at 5 s frame 0 came 2 dB closer to the picture than the
-    plain 2K, and 1.5 dB closer than one pinned refine at 2K, the route it replaced. If matching your pictures matters
-    most, use 1080p. The popover has no note for a LightX2V Turbo clip's first frame alone at 5 s. For both ends at 10
-    and 15 s it keeps its note that keeping your frames has not run there until the maintainer has looked at those
-    runs: they held every end about as closely as the 5 s run, but the bar set for them, within 1 dB of 1080p, is one
-    that neither they nor the 5 s run meet. The other routes at 2K (both ends at 5 s and at the other lengths, a first
-    frame alone past 5 s, a last frame alone, a Sol-H3 clip's first frame) have not run, and the note says so. Its
-    time is the job's model, which those runs came within a minute of: about 19 min at 5 s (as without the box),
-    49-50 min at 10 s, 67-68 min at 12 s and 94-95 min at 15 s (against 74 and 106 min without the box). Its 2K
-    step at 12 and 15 s runs `lean2`, as 2K without the box does there, and needs 113 GiB free at 15 s with one end,
-    114 with both (its 2K step's pictures add rows); the 15 s run came down to 11.8 GiB free from 116.8.
+    a 10 s clip in 50 min and of a 15 s clip in 1 h 35 min: every end held, with no flash, and the lip sync kept where
+    the clip speaks. **It holds your pictures a little less closely than 1080p does**: each end came out about 1.5-2 dB
+    further from its picture (luma PSNR at the job's 384p check grid), as the 2K step adds fine detail and a little
+    contrast over the whole clip. It holds them closer than 2K without the box: at 5 s frame 0 came 2 dB closer to the
+    picture than the plain 2K and about 1 dB closer than one pinned refine at 2K, the route it replaced (at the output
+    size; 1.5 dB at the check grid). If matching your pictures matters most, use 1080p. The popover has no note for a
+    LightX2V Turbo clip's first frame alone at 5 s. For both ends at 10 and 15 s it keeps its note that keeping your
+    frames has not run there until the maintainer has looked at those runs: they held every end about as closely as the
+    5 s run, but the bar set for them, within 1 dB of 1080p, is one that neither they nor the 5 s run meet. The other
+    routes at 2K (both ends at 5 s and at the other lengths, a first frame alone past 5 s, a last frame alone, a Sol-H3
+    clip's first frame) have not run, and the note says so. Its time is the job's model, which those runs came within a
+    minute of: about 19 min at 5 s (as without the box), 49-50 min at 10 s, 67-68 min at 12 s and 94-95 min at 15 s
+    (against 74 and 106 min without the box). Its 2K step at 12 and 15 s runs `lean2`, as 2K without the box does there,
+    and needs 113 GiB free at 15 s with one end, 114 with both (its 2K step's pictures add rows); the 15 s run came down
+    to 11.8 GiB free from 116.8.
   - On clips longer than 5 s it is offered at the sizes their length has. It has run with both ends of a LightX2V
     Turbo 10 s clip at 1080p (2026-10-30), with the lean block forward: both ends held, 31.9 and 32.0 dB from your
     pictures (luma PSNR at 1080p), as close as the best 5 s pinned run, with no flash at either end; and at 2K
