@@ -95,6 +95,18 @@ What this wrapper changes, and why:
   672x384, luma PSNR, and an end below 28 dB, one whose picture is gone or changed (sha256), or a last end the clip
   stops short of (a clip that keeps fewer frames than H3 made) is not held; the receipt says why, and the job never
   refuses for it. With no end held the refine is NVIDIA's.
+- Keep my frames at 2K, the cascade (route_for; experimental, not yet run through the studio). Held in a refine at 2K
+  the pictures come out far less close than at 1080p, but the 1080p pinned frame alone resized to 2K is closer to the
+  picture than either. So a 2K upscale with an end held is made at 1080p first: the pinned refine at 1080p exactly as
+  a 1080p upscale with Keep my frames runs it (NVIDIA's Pipeline built at 1080p with job.json's steps and
+  start_sigma, its upscale from 768p, refine_pinned with the pictures at the 1080p grid, the job's seed), then
+  NVIDIA's latent upscaler (open_h3.upscaler.upscale, as its own 4K route runs it from 2K) from that refined latent
+  to the 2K grid, with the Pipeline's target and kept rows set as NVIDIA's sets them at 2K, then one step from
+  sigma 0.4 (NVIDIA's shifted_grid(0.4, 1)) at 2K with the same pictures at the 2K grid (encoded on the same VAE) and
+  the same seeds, then the 2K decode. Each refine's block forward goes by its own rows. The research runner's arms
+  (a 9:16 and a 16:9 LightX2V Turbo clip, a first frame, the 2K step from a 1080p pinned run's saved latent): frame 0
+  +2.0 / +2.1 dB against the unpinned 2K, the face +3.4 / +4.8 dB, detail x2.2-2.5, no flash; a single pass pinned at
+  2K, which this replaces, about +1 dB. With no end held at 2K the refine is NVIDIA's at 2K, as without a pin.
 
 The input: job.json "case", a folder in the shape of a Sol-H3 clip's own: stage2/refined_*.mp4 (the clip's MP4,
 through NVIDIA's encode_video at 768p: 1344x768, or 768x1344 for 9:16), qwen/conditioning.pt (text alone: t2va) and,
@@ -136,13 +148,20 @@ these runs (OFFER_ETA_S, MODEL_GIB, need_gib). The bench wrapper it is derived f
 Output, in paths.output (default: the directory of job.json): video_noaudio.mp4 and receipt.json (state done, failed or
 cancelled; the clip's orientation and "frames" (from its MP4: kept, made by H3, pad, T, A and its seconds; frame_case),
 the refine's "rows" (case_rows: video, audio, text, condition, sequence), its block "forward" ("stock" or "lean") and
-"lean_chunks", times per stage, the latent grids the upscaler ran to, steps, sigmas, peak GPU memory, lowest
+"lean_chunks" (the cascade: its 2K step's), its "route" ("whole" or "cascade"), times per stage, the latent grids the
+upscaler ran to, steps, sigmas (the cascade: its 1080p refine's), peak GPU memory, lowest
 MemAvailable, the inputs' sha256, versions, the load: its mode, and for fast the files and how many fell back to mmap;
 with a pin its "pin": "asked" (the ends job.json names), per end "used", "agreement_db", "frame", "fit", "box", "size"
 and "why" (check_pin's) and, when held, "latent_shape" and "latent_sha256"; "grid", "check_grid", "min_db", "noise_aug",
 "encode_seed", "noise_seed", "native_sha256" (the clip's latent) and, with an end held, "encode_s" (the pictures'
-encode), "layout" (check_pin_layout's facts), "timesteps" per step, "condition_sha256" and "refined_sha256"). Progress
-on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n, decoding and saving, in that order, and
+encode), "layout" (check_pin_layout's facts), "timesteps" per step, "condition_sha256" and "refined_sha256"; for the
+cascade its 2K step's); for the cascade "cascade": {"from": "1080p", "steps_1080p", "sigmas_1080p", "latent_1080p"
+(the refined 1080p latent's shape), "rows_1080p", "forward_1080p", "lean_chunks_1080p", "steps_s_1080p", "pin_1080p"
+("grid", "latents": per end its "shape" and "sha256", "layout", "timesteps", "condition_sha256", "refined_sha256": the
+1080p refine's), "upscale_route_2k", "low_2k_sha256" (the 2K step's input), "sigma_2k": 0.4, "steps_2k": 1,
+"sigmas_2k", "latent_2k", "steps_s_2k", "times_s" (upscale_1080p, refine_1080p, upscale_2k, refine_2k)}). Progress
+on stdout: "[lf-studio] phase <name>" for encoding, loading, refine k/n (n: every step of the route, 3 for the
+cascade), decoding and saving, in that order, and
 "[lf-studio] error <text>" last on failure.
 Exit status: 0 done, 1 failed, 2 the job or its inputs were refused, or there was less memory than job.json's
 min_free_gib at its start (nothing loaded), 143 stopped by SIGTERM.
@@ -347,6 +366,24 @@ UPSCALE_RAN = (
     (8, "2k"),                   # the offer rule: 10 s ran
     (10, "2k"),
 )
+# Keep my frames at 2K goes through 1080p first, the cascade (route_for): the pinned refine at 1080p with the strength's
+# steps, exactly as a 1080p upscale with Keep my frames runs it, then NVIDIA's latent upscaler from that refined
+# latent to the 2K grid, then CASCADE_STEPS step from CASCADE_SIGMA at 2K with the pin. A pinned refine at 2K holds the
+# pictures far less than at 1080p (frame 0 about 1 dB closer, against 4 dB), but the 1080p pinned frame alone,
+# resized to 2K, is closer to the picture than either 2K refine: so the picture is made at 1080p, where the pin holds,
+# and the 2K step only adds detail. The research runner's arms (2026-10-29, a 9:16 and a 16:9 LightX2V Turbo clip, 5 s,
+# a first frame, from a 1080p pinned run's saved latent) against the unpinned 2K: frame 0 +2.0 / +2.1 dB, the face
+# +3.4 / +4.8 dB, detail x2.2-2.5, no flash; 2 steps from 0.5 gave no more, and the 2K step without the pin less.
+# CASCADE_FROM maps the size to the one it is made at first; 4K keeps no pin.
+CASCADE_FROM = {"2k": "1080p"}
+CASCADE_SIGMA, CASCADE_STEPS = 0.4, 1
+# The cascade's time (cascade_eta_s), from the step model of OFFER_ETA_S: STEP_MODEL's a S + b S^2 seconds a step for S
+# rows (case_rows), the pin's condition rows its extra per step; NVIDIA's latent upscaler from 1080p to 2K (4.6-5.6 s
+# at 5 s in the research runner's arms, per latent frame beyond); each picture's encode at each grid (3.0-3.1 s at
+# 1080p and 10.5 s for both ends at 2K, through the studio, 2026-10-29/30).
+STEP_MODEL = (6.457e-4, 1.638e-8)
+CASCADE_UPSCALE_S = 5
+PIN_ENCODE_S = {"1080p": 3, "2k": 5}
 SIZE_NAMES = {"1080p": "1080p", "2k": "2K", "4k": "4K"}
 # the refine's rows per latent frame at each size (its computed grid in 2x2 patches; 9:16 the same): 2040, 3600, 8160
 ROWS_PER_FRAME = {name: (height // 32) * (width // 32)
@@ -604,12 +641,13 @@ def min_free_for(resolution, floor, kept=NVIDIA_FRAMES, ends=0):
     """The MemAvailable an upscale of a clip that keeps `kept` frames, at this resolution and with `ends` ends of a pin,
     needs to start. A 5 s clip: the floor (LFSTUDIO_UPSCALE_MIN_FREE_GIB), plus FLOOR_4K_EXTRA_GIB at 4K (see
     MIN_FREE_GIB), as measured, whatever the floor is set to. Another length: that, or what its case needs by the
-    memory model where that is more (need_gib: none at the default 110 GiB). A floor of 0 (no check) stays 0."""
+    memory model where that is more (route_need_gib: each stage of its route; none at the default 110 GiB). A floor
+    of 0 (no check) stays 0."""
     if floor <= 0:
         return floor
     floor = floor + FLOOR_4K_EXTRA_GIB if resolution == "4k" else floor
     case = frame_case(kept)
-    return floor if case["seconds"] == 5 else max(floor, float(need_gib(case, resolution, ends)))
+    return floor if case["seconds"] == 5 else max(floor, float(route_need_gib(case, resolution, ends)))
 
 
 # ---------------------------------------------------------------- inputs (standard library only)
@@ -790,13 +828,59 @@ def need_gib(case, resolution, ends=0):
     return math.ceil(peak_gib(rows, forward) + overhead_gib(rows, forward) + GUARD_GIB + FLOOR_MARGIN_GIB)
 
 
+def route_for(resolution, ends):
+    """An upscale's route at a size with `ends` ends of a pin held (or, before the job's check, sent): "cascade" where
+    a pinned upscale at that size is made at a smaller one first (CASCADE_FROM: 2K through 1080p), else "whole" (the
+    clip in one pass of the refine at that size). A pin that holds no end is "whole": NVIDIA's refine at the size."""
+    return "cascade" if ends and resolution in CASCADE_FROM else "whole"
+
+
+def stage_sizes(resolution, ends):
+    """The sizes the refine runs at, in order: [1080p, 2K] for the cascade, else [resolution]."""
+    return [CASCADE_FROM[resolution], resolution] if route_for(resolution, ends) == "cascade" else [resolution]
+
+
+def route_need_gib(case, resolution, ends=0):
+    """need_gib for an upscale's route: its largest stage's (each stage with its own rows and block forward, the pin's
+    condition rows at each grid). The cascade keeps only small latents between its stages (the refined 1080p latent,
+    24 x T x 68 x 120 floats: 29 MB at 5 s), which the model leaves out, as it does the latents of a single pass."""
+    return max(need_gib(case, size, ends) for size in stage_sizes(resolution, ends))
+
+
+def step_s(rows):
+    """The step model (STEP_MODEL): a refine step's seconds for a sequence of `rows` rows."""
+    a, b = STEP_MODEL
+    return a * rows + b * rows ** 2
+
+
+def cascade_eta_s(seconds, ends, resolution="2k", steps=STRENGTHS["balanced"][1]):
+    """The cascade's time in all for a clip of that length with `ends` ends held (the fast load; Balanced, the pin's
+    only strength): the size's base (OFFER_ETA_S), `steps` steps at the size it is made at first and CASCADE_STEPS at
+    the size, each its length's step there (OFFER_ETA_S: measured, or the step model) plus the condition rows' extra
+    by the step model, NVIDIA's latent upscaler between them (CASCADE_UPSCALE_S at 5 s, per latent frame), and each
+    picture's encode at both grids (PIN_ENCODE_S). Whole seconds."""
+    first, times = CASCADE_FROM[resolution], OFFER_ETA_S[seconds]
+    case = frame_case(min(kept for kept, entry in FRAME_CASES.items() if entry["seconds"] == seconds))
+
+    def step(size):          # its length's step at that size, and the extra of the pin's condition rows
+        held, alone = (case_rows(case, size, n)["sequence"] for n in (ends, 0))
+        return times[size][1] + step_s(held) - step_s(alone)
+    return round(times[resolution][0] + steps * step(first) + CASCADE_STEPS * step(resolution)
+                 + CASCADE_UPSCALE_S * case["T"] / NATIVE_SHAPE[1]
+                 + ends * (PIN_ENCODE_S[first] + PIN_ENCODE_S[resolution]))
+
+
 def offer_row(seconds, resolution):
     """OFFER_ETA_S's answer for a length and size: {"eta_s": [base, step], "ran": whether it ran on the GPU through
-    the studio, or a longer clip at that size did (UPSCALE_RAN)}, or {"why": the reason it is not offered, naming the
-    sizes that are}."""
+    the studio, or a longer clip at that size did (UPSCALE_RAN)} and, at a size Keep my frames goes through the
+    cascade at (2K), "cascade_eta_s": [its time in all with one end held, with both] (cascade_eta_s); or {"why": the
+    reason it is not offered, naming the sizes that are}."""
     times = OFFER_ETA_S.get(seconds, {})
     if resolution in times:
-        return {"eta_s": list(times[resolution]), "ran": (seconds, resolution) in UPSCALE_RAN}
+        row = {"eta_s": list(times[resolution]), "ran": (seconds, resolution) in UPSCALE_RAN}
+        if CASCADE_FROM.get(resolution) in times:
+            row["cascade_eta_s"] = [cascade_eta_s(seconds, ends, resolution) for ends in (1, 2)]
+        return row
     name, sizes = SIZE_NAMES[resolution], [SIZE_NAMES[size] for size in SIZES if size in times]
     if not sizes:
         return {"why": f"Upscale takes no {seconds:g} s clips"}
@@ -813,18 +897,29 @@ def offers_table():
 
 def offer(kept, resolution, ends=0):
     """The Upscale of a clip that keeps `kept` frames (FRAME_CASES; KeyError off it) at a size, with `ends` ends of a
-    pin: {"route": "whole" (the clip in one pass of the refine), "seconds", "rows" (case_rows; the prompt's an
-    estimate), "forward" ("stock" or "lean"), "lean_chunks", "floor_gib" (min_free_for at MIN_FREE_GIB), "eta_s",
-    "strengths", "ran"}, or {"why"} where that size is not offered for its length (offer_row)."""
+    pin: {"route": route_for's ("whole": the clip in one pass of the refine; "cascade": a pinned 2K, made at 1080p
+    first), "seconds", "rows" (case_rows at the size; the prompt's an estimate), "forward" ("stock" or "lean"),
+    "lean_chunks", "floor_gib" (min_free_for at MIN_FREE_GIB), "eta_s", "strengths", "ran"} and, for the cascade,
+    "cascade": {"from" (the size it is made at first), "rows_<from>", "forward_<from>", "lean_chunks_<from>" (that
+    stage's), "sigma_<size>", "steps_<size>" (the step at the size), "eta_s" (cascade_eta_s, in all)}; or {"why"}
+    where that size is not offered for its length (offer_row)."""
     case = frame_case(kept)
     row = offer_row(case["seconds"], resolution)
     if "why" in row:
         return row
     lean = lean_chunks_for(case, resolution)
-    return {"route": "whole", "seconds": case["seconds"], "rows": case_rows(case, resolution, ends),
-            "forward": "lean" if lean else "stock", "lean_chunks": lean,
-            "floor_gib": min_free_for(resolution, MIN_FREE_GIB, kept, ends), "eta_s": row["eta_s"],
-            "strengths": list(STRENGTHS), "ran": row["ran"]}
+    offered = {"route": route_for(resolution, ends), "seconds": case["seconds"],
+               "rows": case_rows(case, resolution, ends), "forward": "lean" if lean else "stock", "lean_chunks": lean,
+               "floor_gib": min_free_for(resolution, MIN_FREE_GIB, kept, ends), "eta_s": row["eta_s"],
+               "strengths": list(STRENGTHS), "ran": row["ran"]}
+    if offered["route"] == "cascade":
+        first = CASCADE_FROM[resolution]
+        chunks = lean_chunks_for(case, first)
+        offered["cascade"] = {"from": first, f"rows_{first}": case_rows(case, first, ends),
+                              f"forward_{first}": "lean" if chunks else "stock", f"lean_chunks_{first}": chunks,
+                              f"sigma_{resolution}": CASCADE_SIGMA, f"steps_{resolution}": CASCADE_STEPS,
+                              "eta_s": cascade_eta_s(case["seconds"], ends, resolution)}
+    return offered
 
 
 def weight_paths(job, upscaler_file=UPSCALER_FILE):
@@ -924,6 +1019,13 @@ def plan(job, schedules, shifted_grid):
     if job.get("pin_check"):                      # check_pin's answer per end
         planned["pin"] = {anchor: {key: record[key] for key in ("used", "agreement_db", "frame", "why")}
                           for anchor, record in job["pin_check"].items()}
+    held = sum(record["used"] for record in (job.get("pin_check") or {}).values())
+    planned["route"] = route_for(job["resolution"], held)          # by the ends the check keeps
+    if planned["route"] == "cascade":                               # the job's sigmas at 1080p, then the 2K step
+        first, size = CASCADE_FROM[job["resolution"]], job["resolution"]
+        planned["cascade"] = {"from": first, f"steps_{first}": len(sigmas) - 1, f"sigmas_{first}": sigmas,
+                              f"sigma_{size}": CASCADE_SIGMA, f"steps_{size}": CASCADE_STEPS,
+                              f"sigmas_{size}": list(shifted_grid(CASCADE_SIGMA, CASCADE_STEPS))}
     return planned
 
 
@@ -1352,6 +1454,16 @@ def lean_forward(block, hidden_states, temb, adaln_indices, rotary_emb, attentio
     return result
 
 
+def set_forward(model, chunks):
+    """The transformer blocks' forward for the next refine of the cascade, where its stages' rows differ: lean_forward
+    in `chunks` pieces (install_lean_blocks), or with None the stock one again (the lean one taken off)."""
+    if chunks:
+        return install_lean_blocks(model, chunks)
+    for block in model.transformer_blocks:
+        vars(block).pop("forward", None)
+    return len(model.transformer_blocks)
+
+
 def install_lean_blocks(model, chunks):
     """Every transformer block of the DiT runs lean_forward, with SDPA pinned to cuDNN (the standard forward's own
     attention, _native_cudnn). Returns the number of blocks."""
@@ -1637,20 +1749,26 @@ def refine_pinned(pipe, low, text, seed, keyframes, made, noise_aug=PIN_NOISE_AU
     return unpatchify_video_rows(state, geometry)[0], facts
 
 
-def check_package(adapters, pipeline, resolution, orientation="landscape", own=False, latents=NATIVE_SHAPE[1]):
+def check_package(adapters, pipeline, resolution, orientation="landscape", own=False, latents=NATIVE_SHAPE[1],
+                  cascade=False):
     """NVIDIA's package is the one this wrapper was written against: its file names and shapes. For a 9:16 clip also
     the files the portrait route builds on (NVIDIA_FILES, by sha256), the landscape entries its portrait ones are
     made from, and no portrait key of NVIDIA's own in the dicts it adds to. With `own` (the run uses encode_clip or
     decode_released, copies of NVIDIA's code) also its pipeline.py, by sha256. For a clip of `latents` other than
     5 s's 37 (its T) every file of NVIDIA_FILES: its upscaler.py and upscaler_node.py keep the latent's T, where
-    NVIDIA's target has 37."""
+    NVIDIA's target has 37. With `cascade` (Keep my frames at 2K: NVIDIA's upscaler from the 1080p grid, where NVIDIA's
+    pipeline runs it from 768p and 2K only, and the 1080p entry of RESOLUTIONS) every file of NVIDIA_FILES too, and
+    the size of the one it is made at first."""
     found = {"LORA_FILE": adapters.LORA_FILE, "CURVE_FILE": adapters.CURVE_FILE, "CURVE_TABLE": adapters.CURVE_TABLE,
              "UPSCALER_FILE": pipeline.UPSCALER_FILE, "NATIVE_SHAPE": tuple(pipeline.NATIVE_SHAPE)}
     wanted = {"LORA_FILE": LORA_FILE, "CURVE_FILE": CURVE_FILE, "CURVE_TABLE": CURVE_TABLE,
               "UPSCALER_FILE": UPSCALER_FILE, "NATIVE_SHAPE": NATIVE_SHAPE}
     height, width, keep = pipeline.RESOLUTIONS[resolution]
     found["size"], wanted["size"] = (width, keep), SIZES[resolution]
-    if orientation == "portrait" or latents != NATIVE_SHAPE[1]:
+    if cascade:
+        first = CASCADE_FROM[resolution]
+        found["first_size"], wanted["first_size"] = tuple(pipeline.RESOLUTIONS[first][1:]), SIZES[first]
+    if orientation == "portrait" or latents != NATIVE_SHAPE[1] or cascade:
         found.update(nvidia_files(Path(pipeline.__file__).resolve().parent.parent))
         wanted.update(NVIDIA_FILES)
     elif own:
@@ -1763,8 +1881,10 @@ def run(job, files, receipt, trace):
     one adds its portrait entries to NVIDIA's dicts, and runs upscale_route and keep_columns; a clip of any other
     count of frames (124, or another length's) or one with an end of the pin kept (check_pin) goes through
     encode_clip, and with any count but 121 decode_released; the audio of another length than 5 s is its own
-    (encode_audio, the silence too); the pin goes through refine_pinned; the blocks run lean_forward by the clip's
-    rows (lean_chunks_for) (the docstring)."""
+    (encode_audio, the silence too); the pin goes through refine_pinned, and at 2K through the cascade (route_for:
+    the pinned refine at 1080p as a 1080p upscale runs it, NVIDIA's upscaler from that latent to the 2K grid, one step
+    there with the pin; the receipt's "route" and "cascade"); the blocks run lean_forward by each refine's rows
+    (lean_chunks_for) (the docstring)."""
     import torch
     sys.path.insert(0, str(job["package"]))           # -I drops PYTHONPATH and the script dir: name it explicitly
     from open_h3 import adapters, pipeline
@@ -1775,9 +1895,14 @@ def run(job, files, receipt, trace):
     pin = receipt.get("pin")                          # with an end the check kept: the keyframes' rows in the refine
     used = [anchor for anchor in ANCHORS if pin and pin.get(anchor, {}).get("used")]
     own = kept != NVIDIA_FRAMES or bool(used)         # encode_clip (and decode_released), NVIDIA's with the frames
-    check_package(adapters, pipeline, job["resolution"], job["orientation"], own=own, latents=case["T"])
-    if portrait:
+    cascade = route_for(job["resolution"], len(used)) == "cascade"     # Keep my frames at 2K: made at 1080p first
+    check_package(adapters, pipeline, job["resolution"], job["orientation"], own=own, latents=case["T"],
+                  cascade=cascade)
+    if portrait or cascade:
         from open_h3 import upscaler
+    if cascade:
+        from open_h3.sigmas import shifted_grid
+    if portrait:
         add_portrait_entries(pipeline)
     receipt["versions"] = versions(torch)
     torch.cuda.set_device(0)
@@ -1825,7 +1950,8 @@ def run(job, files, receipt, trace):
     # the final MP4 (and the pin's pictures) and the clip's audio through the VAEs, loaded, used and freed before
     # the DiT
     phase("encoding")
-    keyframes = {}
+    keyframes, below = {}, {}       # the pin's latents at the size's grid; for the cascade also at the 1080p one
+    first = CASCADE_FROM.get(job["resolution"])
     if pin:
         for anchor in pin["asked"]:
             end = pin[anchor]
@@ -1835,19 +1961,36 @@ def run(job, files, receipt, trace):
     if own:
         size = pipeline.INPUT_SIZES[shape["size"]]   # what NVIDIA's encode_video reads the clip at
         pixels = pin_pixels(job, tuple(pin["grid"])) if used else []
-        native, keyframes, seconds = timed("encode_video", lambda: encode_clip(
-            base, files["final"], size, kept, pad, VAE_SEED, torch, keyframes=pixels,
+        lower = []
+        if cascade and pixels:      # the same pictures at the 1080p grid (one changed since the first read: neither)
+            lower = pin_pixels(job, computed_grid(job["orientation"], first))
+            pixels = [(anchor, frame) for anchor, frame in pixels if anchor in {a for a, _ in lower}]
+        native, encoded, seconds = timed("encode_video", lambda: encode_clip(
+            base, files["final"], size, kept, pad, VAE_SEED, torch,
+            keyframes=pixels + [((first, anchor), frame) for anchor, frame in lower],
             encode_seed=job["pin"]["encode_seed"] if pixels else None))
+        keyframes = {anchor: encoded[anchor] for anchor, _ in pixels}
+        below = {anchor: encoded[(first, anchor)] for anchor, _ in lower}
         if pixels:
             pin["encode_s"] = round(seconds, 2)
             for anchor, latent in keyframes.items():
                 pin[anchor].update(latent_shape=list(latent.shape), latent_sha256=tensor_sha256(latent))
-            say(f"pin: {', '.join(keyframes)} at {pin['grid'][0]}x{pin['grid'][1]} encoded in {seconds:.1f} s")
+            say(f"pin: {', '.join(keyframes)} at {pin['grid'][0]}x{pin['grid'][1]} encoded in {seconds:.1f} s" +
+                (f", and at {first}" if below else ""))
     else:
         native = timed("encode_video", lambda: pipeline.encode_video(base, files["final"], shape["size"],
                                                                      seed=VAE_SEED))
     if pin:
         pin["native_sha256"] = tensor_sha256(native)
+    # the route, now that the pictures are read: the cascade where the 2K pin holds an end, else one pass at the size
+    cascade = bool(below)
+    receipt["route"] = "cascade" if cascade else "whole"
+    first = first if cascade else job["resolution"]   # the size the (first) refine runs at
+    if cascade:
+        record = receipt["cascade"] = {"from": first, f"pin_{first}": {
+            "grid": list(computed_grid(job["orientation"], first)),
+            "latents": {anchor: {"shape": list(latent.shape), "sha256": tensor_sha256(latent)}
+                        for anchor, latent in below.items()}}}
     if pcm is not None or case["A"] != NVIDIA_AUDIO_LATENTS:     # the clip's audio, or a silence of its length
         audio = timed("encode_audio", lambda: encode_audio(base, pcm, audio_samples(case), torch))
     gc.collect()
@@ -1864,7 +2007,7 @@ def run(job, files, receipt, trace):
     adapters.StageMerger = OneShotMerger
     pipe = timed("load", lambda: pipeline.Pipeline(
         weights, base, fwd="standard", steps=job["steps"], start_sigma=job["start_sigma"],
-        resolution=shape["resolutions"][job["resolution"]], vae="standard", vae_batch=job["vae_batch"]))
+        resolution=shape["resolutions"][first], vae="standard", vae_batch=job["vae_batch"]))
     pipe.node.load_model("upscaler", pipe.device, "bf16")    # the node reads its checkpoint on first use: now
     drop_from_page_cache(loaded_files(job))
     # what the load left in the allocator's cache, the fast load's fp32 LoRA (~11.6 GiB, on the GPU from the start)
@@ -1874,7 +2017,7 @@ def run(job, files, receipt, trace):
     if job["load"] == "fast":
         say(f"fast load: {receipt['load']['files']} files, {receipt['load']['fallbacks']} of them through mmap")
     receipt["merge"] = {"weights": pipe.merger.merged, "seconds": round(pipe.merger.seconds, 2)}
-    receipt["lean_chunks"] = lean_chunks_for(case, job["resolution"])
+    receipt["lean_chunks"] = lean_chunks_for(case, first)
     receipt["forward"] = "lean" if receipt["lean_chunks"] else "stock"
     if receipt["lean_chunks"]:
         install_lean_blocks(pipe.model, receipt["lean_chunks"])
@@ -1897,31 +2040,85 @@ def run(job, files, receipt, trace):
     timed("merge_refine", lambda: pipe.set_stage("refine"))  # the merge is done; this turns the Sharp curves on
     receipt["sigmas"] = [float(s) for s in pipe.sigmas]
     receipt["steps"] = steps = len(pipe.sigmas) - 1
-
-    marks, nvidia_on_step = [], pipe.on_step
+    total = steps + (CASCADE_STEPS if cascade else 0)            # the phase lines count every step of the route
+    marks, done, nvidia_on_step = [], [0], pipe.on_step
 
     def on_step(stage, index):                        # NVIDIA calls it as each step starts
         torch.cuda.synchronize()
         marks.append(time.perf_counter())
-        trace.mark(f"refine {index + 1}/{steps}")
-        phase(f"refine {index + 1}/{steps}")
+        trace.mark(f"refine {done[0] + index + 1}/{total}")
+        phase(f"refine {done[0] + index + 1}/{total}")
         nvidia_on_step(stage, index)
     pipe.on_step = on_step
 
-    def refine():
-        if keyframes:                                 # the ends the check kept, in packed order
-            result, facts = refine_pinned(pipe, low, text, job["seed"], list(keyframes.items()), case["made"],
+    def refine(held, record):
+        """The refine of `low` at pipe's sigmas: refine_pinned with the ends `held` (in packed order), its facts
+        into `record` (the receipt's pin, or the cascade's 1080p pin); with none NVIDIA's own refine."""
+        if held:
+            result, facts = refine_pinned(pipe, low, text, job["seed"], list(held.items()), case["made"],
                                           job["pin"]["noise_aug"], job["pin"]["noise_seed"])
-            pin.update(timesteps=facts.pop("timesteps"), condition_sha256=facts.pop("condition_sha256"),
-                       layout={k: v for k, v in facts.items() if k not in ("noise_aug", "noise_seed")})
+            record.update(timesteps=facts.pop("timesteps"), condition_sha256=facts.pop("condition_sha256"),
+                          layout={k: v for k, v in facts.items() if k not in ("noise_aug", "noise_seed")})
         else:
             result = pipe.refine(low, text, job["seed"])
         torch.cuda.synchronize()
         marks.append(time.perf_counter())
         return result
-    receipt["rows"] = case_rows(case, job["resolution"], len(keyframes), receipt["text_rows"])
-    refined = timed("refine", refine)
+    held = below if cascade else keyframes            # the ends the check kept, at the first refine's grid
+    receipt["rows"] = case_rows(case, first, len(held), receipt["text_rows"])
+    refined = timed("refine", lambda: refine(held, record[f"pin_{first}"] if cascade else pin))
     receipt["steps_s"] = [round(b - a, 2) for a, b in zip(marks, marks[1:])]
+    if cascade:                                       # to the 2K grid, and one step there with the pin
+        # The research runner's recipe for the same inputs: its 2K arms took a pinned 1080p run's refined latent
+        # (saved as float32: these values), NVIDIA's upscaler.upscale to the 2K grid, and the K1 refine at
+        # shifted_grid(0.4, 1) with the job's seed (NVIDIA's noise draw at the 2K shape) and the pin's seeds (0.999,
+        # 42, 42), the picture encoded at the 2K grid: the same as here. Where a run of this job could still differ
+        # from those arms: their 1080p half ran in a process of its own, with NVIDIA's encode_video and the bench
+        # wrapper's K1 refine (encode_clip and refine_pinned give the same bit for bit on the CPU tests, the pinned
+        # refine on the GPU too); there each picture was stretched to the grid, here it is fitted as the clip's
+        # model fitted it (the same for a "stretch" clip); and their input folders were built by hand, so the text
+        # and audio a studio run gives the job need not be theirs.
+        to = job["resolution"]
+        lowest = record[f"pin_{first}"]
+        lowest["refined_sha256"] = tensor_sha256(refined)
+        record.update({f"steps_{first}": steps, f"sigmas_{first}": receipt["sigmas"],
+                       f"latent_{first}": list(refined.shape), f"rows_{first}": receipt["rows"],
+                       f"forward_{first}": receipt["forward"], f"lean_chunks_{first}": receipt["lean_chunks"],
+                       f"steps_s_{first}": receipt["steps_s"]})
+        say(f"cascade: {first} refined with {', '.join(below)} held ({lowest['layout']['sequence_rows']} rows), "
+            f"timesteps {lowest['timesteps']}")
+        del low
+        gc.collect()
+        torch.cuda.empty_cache()                      # the 1080p refine's cache back before the 2K step
+        height, width, keep = pipeline.RESOLUTIONS[shape["resolutions"][to]]
+        pipe.target_shape, pipe.keep_rows = (24, 37, height // 16, width // 16), keep    # as NVIDIA's Pipeline sets
+        pipe.sigmas = shifted_grid(CASCADE_SIGMA, CASCADE_STEPS)                           # them at 2K: [0.4, 0.0]
+        hop = upscale_route(refined.shape, pipe.target_shape, pipeline.UPSCALED_SHAPE)
+        want = (refined.shape[0], case["T"]) + tuple(pipe.target_shape[2:])
+        source = refined
+        low = timed(f"upscale_{to}", lambda: run_route(upscaler, pipe.node, source, hop, pipe.device))
+        del refined, source
+        if tuple(low.shape) != want:                  # its T kept, the 2K grid
+            raise RuntimeError(f"the latent upscaled from {first} is {tuple(low.shape)}, not {want}")
+        record.update({f"upscale_route_{to}": [list(grid[2:]) for grid in hop],
+                       f"low_{to}_sha256": tensor_sha256(low)})
+        chunks = lean_chunks_for(case, to)            # the block forward by the 2K step's own rows
+        if chunks != receipt["lean_chunks"]:
+            set_forward(pipe.model, chunks)
+        receipt["lean_chunks"], receipt["forward"] = chunks, "lean" if chunks else "stock"
+        receipt["rows"] = case_rows(case, to, len(keyframes), receipt["text_rows"])
+        marks.clear()
+        done[0] = steps
+        refined = timed(f"refine_{to}", lambda: refine(keyframes, pin))
+        record[f"steps_s_{to}"] = [round(b - a, 2) for a, b in zip(marks, marks[1:])]
+        receipt["steps_s"] = receipt["steps_s"] + record[f"steps_s_{to}"]
+        record.update({f"sigma_{to}": CASCADE_SIGMA, f"steps_{to}": CASCADE_STEPS,
+                       f"sigmas_{to}": [float(s) for s in pipe.sigmas], f"latent_{to}": list(refined.shape),
+                       "times_s": {f"upscale_{first}": times["upscale"], f"refine_{first}": times["refine"],
+                                   f"upscale_{to}": times[f"upscale_{to}"],
+                                   f"refine_{to}": times[f"refine_{to}"]}})
+        say(f"cascade: {first} -> {to} in {times[f'upscale_{to}']:.1f} s, then {CASCADE_STEPS} step from "
+            f"{CASCADE_SIGMA} in {times[f'refine_{to}']:.1f} s")
     if keyframes:
         pin["refined_sha256"] = tensor_sha256(refined)
         say(f"pin: refined with {', '.join(keyframes)} held ({pin['layout']['sequence_rows']} rows, "
