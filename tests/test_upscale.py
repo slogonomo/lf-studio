@@ -1023,7 +1023,7 @@ class OfferTests(unittest.TestCase):
 
     def test_lean2s_memory(self):
         """lean2's model, an estimate until its first run: lean's bytes a row less the fp32 video embeds diffusers'
-        forward keeps (5,376 x 4 = 21,504 bytes a video row: the lengths study's L2, 93.9 GiB at 2K 15 s), lean's
+        forward keeps (5,376 x 4 = 21,504 bytes a video row: 93.9 GiB at 2K 15 s, against lean's 101.6), lean's
         overhead line. 2K at 12 s then needs 109 GiB to start, as 2K at 10 s; 2K at 15 s 115, 116 with an end or both
         kept: the most the box gives (117.7 idle, 116.3-116.6 at the long runs' starts), so its lowest MemAvailable
         from 116.5 is ~9.7 GiB (~9.2 with both ends), against the guard's 5. The lean forward there would need 123."""
