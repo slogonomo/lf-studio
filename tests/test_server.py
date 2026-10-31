@@ -3483,8 +3483,9 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
     def test_long_clips_of_every_kind(self):
         """Every kind of clip at other lengths: an 8 s Keyframes clip with both ends holds its first frame (Keep my
         frames at 1080p and 2K, not run on the GPU at that length: "ran" false) and says why not its last, 7 frames
-        past its end at 8 s; a 12 s one only at 1080p (2K is not offered for 12 s clips); a 6 s Reference clip and a
-        12 s Text clip as at 5 s."""
+        past its end at 8 s; a 12 s one at 1080p and 2K too, where it goes through the cascade (the stand-in job's
+        receipt: lean at 1080p, lean2 for its 2K step; the floor the setting's); a 6 s Reference clip and a 12 s Text
+        clip as at 5 s."""
         both = {"first_frame": [("f.png", png())], "last_frame": [("l.png", png(40, 24))]}
         unrun = {"1080p": dict(PIN_ROUTES["1080p"], ran=False), "2k": dict(PIN_ROUTES["2k"], ran=False)}
         eight = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=8, seed=31, files=both)
@@ -3502,6 +3503,13 @@ class UpscaleEveryClip(EveryClipParts, UpscaleTest):
         twelve = self.clip(task="fl2va", prompt=KEYFRAME_PROMPT, seconds=12, seed=32,
                            files={"first_frame": [("f.png", png())]})
         self.assertEqual(self.studio.job(twelve["id"])["upscalable"]["pin_routes"], unrun)     # 2K too, not run
+        job = self.done(self.upscale(twelve["id"]))                                       # 2K, the default
+        receipt = json.loads((self.regen(job) / "receipt.json").read_text())
+        self.assertEqual((job["route"], job["frames"], job["pin"]["ends"], receipt["route"], receipt["forward"],
+                          receipt["lean_chunks"], receipt["cascade"]["forward_1080p"],
+                          receipt["cascade"]["lean_chunks_1080p"]),
+                         ("cascade", 289, ["first"], "cascade", "lean2", 16, "lean", 16))
+        self.assertEqual(json.loads((self.regen(job) / "job.json").read_text())["min_free_gib"], 110)
         ref = self.clip(task="ref2va", prompt=REFERENCE_PROMPT, seconds=6, seed=33,
                         files={"ref_images": [("r.png", png())]})
         self.assertEqual(self.studio.job(ref["id"])["upscalable"], {"ok": True, "clip_audio": True, "text": "encode"})
