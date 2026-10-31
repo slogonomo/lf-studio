@@ -220,9 +220,10 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
   (an estimate from the model) and 1.8 h for 15 s (its run took 1 h 45 min)
   ([docs/PERFORMANCE.md](docs/PERFORMANCE.md#longer-clips)). From 10 s at 1080p and 6 s at 2K the job runs the
   memory-lean block forward of its 4K run (bit-identical to the stock forward on GB10), so up to 10 s no peak passes
-  what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept; 90.8 measured at 2K for 10 s); at 2K for 12
-  and 15 s `lean2` keeps it at about 89 GiB by the model and 94.1 measured at 15 s. Every length up to 12 s needs the
-  110 GiB free a 5 s clip needs to start; at 2K the free memory came down to 16.7 GiB for 10 s and 12.6 GiB for 15 s.
+  what the 5 s 2K runs took (91.1 GiB allocated, 92.3 with both ends kept; 90.8 measured at 2K for 10 s); at 2K
+  `lean2` keeps it at about 89 GiB for 12 s by the model, and it was 94.1 GiB measured for 15 s. Every length needs
+  the 110 GiB free a 5 s clip needs to start, except 2K at 15 s (113 GiB, 114 with both ends held); at 2K the free
+  memory came down to 16.7 GiB for 10 s and 12.6 GiB for 15 s.
 - **Keep my frames** (experimental). NVIDIA's refine redraws a Keyframes clip's first and last frames like any other,
   away from your pictures. With the popover's box (on by default; the request's `pin` `auto`), the job holds your
   keyframes in the refine as MiniMax-H3 holds a keyframe, where the clip already shows them: each end only if the clip's
