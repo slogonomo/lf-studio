@@ -402,9 +402,9 @@ UPSCALE_RAN = (
 CASCADE_FROM = {"2k": "1080p"}
 CASCADE_SIGMA, CASCADE_STEPS = 0.4, 1
 # The cascade's time (cascade_eta_s), from the step model of OFFER_ETA_S: STEP_MODEL's a S + b S^2 seconds a step for S
-# rows (case_rows), the pin's condition rows its extra per step; NVIDIA's latent upscaler from 1080p to 2K (4.6-5.6 s
-# at 5 s in the research runner's arms, per latent frame beyond); each picture's encode at each grid (3.0-3.1 s at
-# 1080p and 10.5 s for both ends at 2K, through the studio, 2026-10-29/30).
+# rows (case_rows), the pin's condition rows its extra per step; NVIDIA's latent upscaler from 1080p to 2K (5.4-5.6 s
+# at 5 s in the research runner's arms, its saved latent's read included; per latent frame beyond); each picture's
+# encode at each grid (3.0-3.1 s at 1080p and 10.5 s for both ends at 2K, through the studio, 2026-10-29/30).
 STEP_MODEL = (6.457e-4, 1.638e-8)
 CASCADE_UPSCALE_S = 5
 PIN_ENCODE_S = {"1080p": 3, "2k": 5}
