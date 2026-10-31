@@ -857,14 +857,14 @@ class UpscaleTimes(unittest.TestCase):
         self.assertIn("An upscale takes about 10 min (a 5 s clip at 1080p) to 1.6 h (a 15 s clip at 2K about 1.8 h, an "
                       "estimate), far longer than any `wait_s`", api)
         self.assertIn("2K at 12 and 15 s, not run yet, an estimated 1.2 and 1.8 h, 2.5 h at 15 s with `full`", api)
-        # every length offered: the shortest is a 5 s clip at 1080p, which each text names; the longest that has run
-        # 4K full, and past it 2K at 15 s, not run (an estimate, which the texts say)
+        # every length offered: the shortest is a 5 s clip at 1080p, which each text names; the longest, which has run
+        # (2026-10-31), 2K at 15 s, 2.5 h full
         everything = [(eta(seconds, res, 2), seconds, res) for seconds, sized in regen.OFFER_ETA_S.items()
                       for res in sized]
         self.assertEqual(min(everything)[1:], (5, "1080p"))
         ran = [row for row in everything if row[1:] in regen.UPSCALE_RAN]
         self.assertEqual((round(min(everything)[0] / 60), round(max(eta(*row[1:], 3) for row in ran) / 3600, 1)),
-                         (10, 1.6))
+                         (10, 2.5))
         self.assertEqual([round(eta(s, "2k", steps) / 3600, 1) for s, steps in ((12, 2), (15, 2), (15, 3))],
                          [1.2, 1.8, 2.5])
         self.assertEqual(max(everything)[1:], (15, "2k"))
@@ -885,11 +885,8 @@ class UpscaleTimes(unittest.TestCase):
             self.assertEqual(text.count("estimate"), 1)                     # those two only
         self.assertIn(f"longer clips take longer: {longer}; {unrun}, 2.5 h at 15 s full)", usage)
         self.assertIn("1.6 h or more (a 15 s clip at 2K about 1.8 h, an estimate)", cli.INSTRUCTIONS)
-        # every length: run, or covered, but 2K at 12 and 15 s (not run: the texts say so)
-        unrun_rows = {(12, "2k"), (15, "2k")}
-        self.assertEqual(set(regen.UPSCALE_RAN) | unrun_rows,
-                         {(s, res) for s, sized in regen.OFFER_ETA_S.items() for res in sized})
-        self.assertFalse(unrun_rows & set(regen.UPSCALE_RAN))
+        # every length: run, or covered (2K at 15 s ran on 2026-10-31, and 12 s by the offer rule)
+        self.assertEqual(set(regen.UPSCALE_RAN), {(s, res) for s, sized in regen.OFFER_ETA_S.items() for res in sized})
         for text in (usage, cli.INSTRUCTIONS, tool, api):                   # 4K has run end to end (16:9)
             self.assertNotIn("untested", text)
             self.assertNotIn("not yet run end to end", text)
