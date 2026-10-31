@@ -895,9 +895,8 @@ class UpscaleTimes(unittest.TestCase):
         self.assertIn("--pin auto at 2K is made at 1080p first, then brought to 2K: about 19 min at 5 s, as without "
                       "it, 49-50 min at 10 s (by the job's model: not run through a studio yet)", usage)
         tool = next(t for t in cli.TOOLS if t["name"] == "upscale")["description"]
-        self.assertIn("(at 2K the clip is made at 1080p first with them, then brought to 2K: about 19 min for a 5 s "
-                      "clip, as without them, 49-50 min at 10 s, by the job's model: not run through a studio yet)",
-                      tool)
+        self.assertIn("(at 2K made at 1080p first, then brought to 2K: about 19 min at 5 s, 49-50 min at 10 s, not "
+                      "yet run)", tool)
         sub = next(a for a in cli.parser()._actions if isinstance(a, argparse._SubParsersAction))
         pin = next(a for a in sub.choices["upscale"]._actions if "--pin" in a.option_strings)
         self.assertIn("at 2K made at 1080p first, then brought to 2K", pin.help)
