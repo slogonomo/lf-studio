@@ -751,6 +751,93 @@ The page shows its note on these ("Clips of this length have not been upscaled o
 times are estimates"): their offers' `"ran"` is false until a run lands. A 2K 15 s run that holds the model would
 bring 12 s in by the offer rule, a longer clip at the same size having run.
 
+### Keep my frames at 2K: the cascade
+
+**Why.** A pinned refine at 2K holds the picture far less than one at 1080p. In research runs (2026-10-28, a research
+wrapper on this job, LightX2V Turbo 576p clips with a first frame; luma PSNR of frame 0 against the picture at a
+288 px short side) the pin brought frame 0 from 25.5 to 29.6 dB at 1080p (+4.1), but only from 25.2 to 26.4 and from
+27.1 to 28.5 dB at 2K (+1.2, +1.4); through the studio, both ends of a clip without a face came 4.7-5.0 dB closer in
+one pinned refine at 2K (above), so how much it falls short varies by clip. Yet the 1080p pinned frame 0 alone,
+resized to 2K (LANCZOS), was closer to the picture at full size (27.85 dB) than the unpinned 2K (23.98) and the pinned
+2K (24.97), and the band above 1080p held almost none of the 2K output's error. So the picture can be made at 1080p,
+where the pin holds, and a short pass at 2K only has to add detail.
+
+**The route** (`upscale/regen2k_job.py` `route_for`, `run`; the receipt's `"route": "cascade"` and its `"cascade"`).
+Keep my frames at 2K with an end held runs:
+
+1. the pinned refine at 1080p, exactly as a 1080p upscale with Keep my frames runs it: NVIDIA's pipeline built at
+   1080p with the strength's steps (Balanced: 2 from start noise 0.7), NVIDIA's upscale from the clip's 768p latent,
+   the pictures at the 1080p grid, the upscale's seed;
+2. NVIDIA's latent upscaler from that refined 1080p latent to the 2K grid (`open_h3.upscaler.upscale`, the call its
+   own 4K route makes from 2K), with the pipeline's target and kept rows set as NVIDIA's sets them at 2K;
+3. one step at 2K from start noise 0.4 (NVIDIA's `shifted_grid(0.4, 1)`: [0.4, 0]), with the same pictures at the 2K
+   grid (encoded on the same VAE) held as before, NVIDIA's noise under the same seed at the 2K shape;
+4. the 2K decode and the MP4, as without the pin.
+
+Each refine takes the block forward of its own rows (`forward_for`: at 6-8 s the 1080p refine is stock and the 2K
+step lean, at 10 s both lean, at 12 and 15 s the 1080p refine lean and the 2K step `lean2`, as 2K without the box
+there). With no end held (the job's check) the 2K upscale is NVIDIA's refine at 2K, as without
+the box. 1080p (with Keep my frames or without), the unpinned 2K and 4K are as before; there is no request field: the
+server sends the pin as at 1080p and the job takes the cascade by itself.
+
+**Research runs** (2026-10-29, one DGX Spark: a research runner around this job, which took the 2K step from a saved
+1080p pinned result of the same clip, made in a run of its own; 5 s LightX2V Turbo 576p clips with a first frame,
+the fast load, `balanced` at 1080p, the clip's audio, seed 4242; scored against the same clip's unpinned 2K, luma
+PSNR at the output size; fine detail: band energy above 0.4 Nyquist against the unpinned 2K's; flash: the step from
+frame 0 to 1 and 5 against the unpinned clip's, at most 1.5; motion: the mean change over frames 1-16 against the
+unpinned clip's):
+
+| Arm | Frame 0 | Face | Region | Fine detail (frame / face / region) | Flash (1 / 5) | Motion |
+|---|---|---|---|---|---|---|
+| 9:16 clip, 1 step from 0.4 with the pin | +2.03 dB | +3.45 dB | +2.45 dB | ×2.48 / 2.69 / 2.88 | 0.72 / 0.72 | ×1.14 |
+| 16:9 clip, the same | +2.13 dB | +4.83 dB | +3.09 dB | ×2.22 / 1.94 / 1.71 | 0.89 / 0.75 | ×1.24 |
+| 9:16 clip, 2 steps from 0.5 with the pin | +1.84 dB | +3.48 dB | +2.20 dB | ×2.67 / 3.06 / 2.94 | 0.59 / 0.59 | ×1.12 |
+| 9:16 clip, 1 step from 0.4, the 2K step without the pin | +1.42 dB | +1.98 dB | +1.60 dB | ×2.64 / 2.92 / 3.07 | 0.74 / 0.72 | ×1.14 |
+
+- Against the single pinned refine at 2K of the same clips (research runs of 2026-10-28), the first two came 1.04 and
+  0.90 dB closer at frame 0 and 2.30 and 2.50 dB in the region, the face about the same (+0.30, -0.17 dB).
+- Short of the +3 dB at frame 0 the research set itself, but closer than either 2K route, sharper, with no flash and
+  the motion kept: so it replaces the single pinned refine at 2K. Two steps from 0.5 gave no more, and the 2K step
+  without the pin less, so the route is one step from 0.4 with the pin.
+- Their 2K step took 412-416 s with one end (one 2K step, 5 s, stock), NVIDIA's upscaler from 1080p 5.4-5.6 s, the
+  pictures' encode at 2K 11 s (with a VAE load of its own there), peak allocated 91.73-91.74 GiB (as the single
+  pinned 2K's 91.74), lowest MemAvailable 10.7-15.3 GiB from 111-115 GiB at their start. Their 1080p half ran apart
+  (the 16:9 clip's in 604.5 s, steps of 158 s, 81.66 GiB).
+- In the product job it is one run: by the job's model (below) 1129 s with one end and 1169 s with both at 5 s,
+  closing the studio's models included (18.8 and 19.5 min), against 1165 s for the unpinned 2K and 1249 s by the
+  same model for the single pinned pass (measured 1202 s with both ends through the studio). The research's 13-15 min
+  2K arms leave out the 1080p half's two steps.
+
+**Not run yet:** the cascade through the studio, at any length (the page says so at 2K: `PIN_ROUTES` has no 2K line);
+a product run of a research clip, to compare with its arm (the same recipe: the same seeds, sigmas and noise; it can
+differ where the research's input was built by hand, and where its picture was stretched to the grid and the clip's
+model cover-cropped it); a 9:16 clip with both ends, a Sol-H3 clip's first frame, and clips longer than 5 s.
+
+**Time** (`cascade_eta_s`, `/api/state` `upscale_offers` `cascade_eta_s`; the job's model, not measured): 2K's base
+(`OFFER_ETA_S`), two steps at 1080p and one at 2K of the clip's length (`OFFER_ETA_S`: measured, or the step model),
+each with the pictures' condition rows by the step model, NVIDIA's upscaler from 1080p to 2K (5 s at 5 s, more per
+latent frame) and each picture's encode at both grids (3 s at 1080p, 5 s at 2K):
+
+| Length | One end | Both ends | 2K without Keep my frames |
+|---|---|---|---|
+| 5 s | 1129 s (19 min) | 1169 s (19 min) | 1165 s (19 min) |
+| 6 s | 1547 s (26 min) | 1594 s (27 min) | 1653 s (28 min) |
+| 7 s | 1797 s (30 min) | 1847 s (31 min) | 1928 s (32 min) |
+| 8 s | 2057 s (34 min) | 2111 s (35 min) | 2224 s (37 min) |
+| 10 s | 2931 s (49 min) | 2996 s (50 min) | 3213 s (54 min) |
+| 12 s | 3998 s (67 min) | 4073 s (68 min) | 4458 s (74 min) |
+| 15 s | 5636 s (94 min) | 5725 s (95 min) | 6373 s (106 min) |
+
+At 12 and 15 s both rows rest on 2K's fitted step there, which has not run
+([2K at 12 and 15 s](#2k-at-12-and-15-s-not-run-yet)).
+
+**Memory.** The peak is the larger refine's, the 2K step's (the same rows as the single pinned refine at 2K); the
+latents kept between the refines are small (the refined 1080p latent: 29 MB at 5 s). The floor to start
+(`route_need_gib`) is the larger of the two refines' needs: at 6-8 s the 1080p refine (the stock forward) needs more
+than the 2K step (lean): 102-107 GiB against 99-103; at 12 and 15 s the 2K step (`lean2`) needs more: 109 and 116 GiB
+against 100 and 104. Every length but 15 s starts at the default 110 GiB; at 15 s it needs 116, as 2K with Keep my
+frames needs there in one pass (an estimate until `lean2` runs).
+
 ## Experimental LightX2V Turbo
 
 Measured on one DGX Spark (GB10) on 2026-10-28/29: the studio's own job, `jobs/h3turbo_job.py`, run by hand with the
