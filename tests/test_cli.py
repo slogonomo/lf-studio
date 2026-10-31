@@ -904,7 +904,7 @@ class UpscaleTimes(unittest.TestCase):
         94-95 min at 12 and 15 s (against 74 and 106 without it); its runs through a studio (2026-10-31: one end at
         5 s, both at 10 and 15 s) took 18, 50 and 95 min, each within a minute of it. The usage, the --pin help, the
         MCP tool (about as long as without it: its description has little room for more) and docs/API.md say so, and
-        that it holds the pictures a little less closely than 1080p."""
+        that it holds the pictures a little less closely than 1080p (the usage and --pin: closer than 2K without it)."""
         _, regen, eta, _ = self.model()
         five, ten, twelve, fifteen = ([regen.cascade_eta_s(seconds, ends) for ends in (1, 2)]
                                       for seconds in (5, 10, 12, 15))
@@ -927,8 +927,8 @@ class UpscaleTimes(unittest.TestCase):
                       "1080p)", tool)
         sub = next(a for a in cli.parser()._actions if isinstance(a, argparse._SubParsersAction))
         pin = next(a for a in sub.choices["upscale"]._actions if "--pin" in a.option_strings)
-        self.assertIn("at 2K made at 1080p first, then brought to 2K, a little less close to your pictures than 1080p",
-                      pin.help)
+        self.assertIn("at 2K made at 1080p first, then brought to 2K, a little less close to your pictures than 1080p, "
+                      "closer than 2K without it", pin.help)
         api = " ".join((REPO / "docs" / "API.md").read_text().split())
         self.assertIn("made at 1080p first, then brought to 2K", api)
         self.assertIn("about 19 min for a 5 s clip and 49-50 min at 10 s", api)

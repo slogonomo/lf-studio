@@ -2636,7 +2636,7 @@ def parser():
     u.add_argument("--pin", choices=UPSCALE_PIN,
                    help="keep my frames (experimental): auto (the default) holds the clip's keyframes where it already "
                         "shows them (1080p and 2K, balanced; at 2K made at 1080p first, then brought to 2K, a little "
-                        "less close to your pictures than 1080p); off: never")
+                        "less close to your pictures than 1080p, closer than 2K without it); off: never")
     u.add_argument("--wait", action="store_true", help="wait for the upscale and save the MP4 (into the current "
                                                        "directory unless --out)")
     u.add_argument("--out", metavar="PATH", help="the MP4 file, or a directory for it (implies --wait)")
