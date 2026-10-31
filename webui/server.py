@@ -25,8 +25,8 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   refine, to 1080p, 2k (2560x1440, or 1440x2560 for 9:16; the default) or 4k with NVIDIA's Open-H3-Regenerate-2K
   (upscale/regen2k_job.py, run in its own environment; it upscales a 9:16 clip through NVIDIA's code with the shapes
   turned, see its docstring), at the sizes the job offers for the clip's length (its offer_row: 1080p and 2K every
-  length, 4K 5 s clips; /api/state "upscale_offers"; 6, 10 and 15 s at 1080p and 10 s at 2K have run on the GPU, the
-  other lengths follow the job's model of those runs; 2K at 12 and 15 s, past anything run, have not: their offers say
+  length, 4K 5 s clips; /api/state "upscale_offers"; 6, 10 and 15 s at 1080p and 10 and 15 s at 2K have run on the
+  GPU, the other lengths follow the job's model of those runs; one that has not, nor a longer one at its size, says
   so, "ran" false). strength: faithful, balanced or full (upscale/regen2k_job.py
   STRENGTHS; default LFSTUDIO_UPSCALE_STRENGTH). audio: clip or silence, what the picture is refined against (default
   LFSTUDIO_UPSCALE_AUDIO). seed: the refine's (default the clip's). pin: auto (the default) or off, Keep my frames
@@ -34,7 +34,7 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   where its route offers it (PIN_ROUTES: LightX2V Turbo's Keyframes clips, either end or both, and Sol-H3's first frame
   on a clip made with the Stage-2 pin; 1080p and 2K, balanced) and the clip shows each picture already (the job's own
   check, before anything loads: 28 dB at 384p, the sha256 the clip was made from); at 2K through the job's cascade
-  (made at 1080p first, then one step at 2K; not run through the studio yet); off, or no end held: NVIDIA's
+  (made at 1080p first, then one step at 2K; run through the studio on 2026-10-31); off, or no end held: NVIDIA's
   refine. The upscale is a job of its own (kind "upscale", parent = the clip; task, format, length, prompt and seed
   copied from it; "load" = LFSTUDIO_UPSCALE_LOAD; "parent_model" and "parent_opts", the clip's model and options;
   "video", what is done to its MP4 (upscale_sources); "frames", the frames it keeps (its MP4's: 121 at 5 s, 241 at
@@ -47,9 +47,9 @@ Sol-H3-RTX5090 variant on a workstation with one RTX 5090 (LFSTUDIO_BACKEND=rtx5
   without its pictures (upscale_text), with "rows" and "encode_s" once encoded) in the same queue, where it waits while
   any clip is queued. It frees the memory first (status "freeing memory": the session is closed), refuses to start
   below its floor of MemAvailable (the job's min_free_for: LFSTUDIO_UPSCALE_MIN_FREE_GIB for a 5 s clip, 5 GiB more at
-  4K; a longer clip what its case needs where that is more: at the default only 2K at 15 s, 115 GiB, 116 with Keep
-  my frames; job.json "min_free_gib", which the job checks again as it starts), then, in one pipeline_call so that
-  Cancel stops each step:
+  4K; a longer clip what its case needs where that is more: at the default only 2K at 15 s, 113 GiB, 114 with Keep
+  my frames holding both ends; job.json "min_free_gib", which the job checks again as it starts), then, in one
+  pipeline_call so that Cancel stops each step:
   builds its input folder (build_input: <case>/input/, the clip's MP4, audio and text alone, linked; a LightX2V Turbo
   clip at 576p stretched to 768p, every frame; one with a last keyframe (every frame made: 124 at 5 s) whole, a 5 s
   one cut to its first 121 at 4K; the pictures of the ends sent, linked into keyframe/; source.json), for a clip
@@ -1561,19 +1561,21 @@ UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
 # Keep my frames (POST /api/upscale "pin", the docstring): the clip's keyframes held in the refine where the clip
 # shows them already (the job's check_pin). PIN_ROUTES says where it is offered, by the clip's model and the ends it
 # can hold (clip_keyframes): the sizes (of those the job offers for the clip's length), the strengths, and where it has
-# run on the GPU through the studio ("ran", 2026-10-29/30; the page notes the others): a size alone is a 5 s clip at
+# run on the GPU through the studio ("ran", 2026-10-29 to 31; the page notes the others): a size alone is a 5 s clip at
 # that size, "<size>/<seconds>" a clip of that length ("1080p/10": both ends of a LightX2V Turbo 10 s clip, 2026-10-30).
 # One line per route, so a route that fails its GPU run goes with its line. Not at 4K (never run there); Balanced only
 # (Faithful held a first frame only ~1 dB closer). At 2K it goes through the job's cascade (regen.route_for: made at
-# 1080p first, then one step at 2K; upscalable's pin_routes "route"), which has not run through the studio yet: the
-# single-pass pinned 2K that ran there on 2026-10-29/30 ("2k" of first+last) is gone, and with it its line. On a
-# long clip each refine runs with the job's lean blocks where its own rows make it lean (1080p from 10 s, 2K from 6 s,
-# with lean2's embeds at 2K 12 and 15 s: regen.forward_for), as it ran at 1080p 10 s; at the other lengths and sizes
-# the note says it has not run.
+# 1080p first, then one step at 2K; upscalable's pin_routes "route"), run through the studio on 2026-10-31: a LightX2V
+# Turbo clip's first frame at 5 s ("2k" of first); both ends of its 10 and 15 s clips were held, but each came more
+# than 1 dB further from its picture than at 1080p, past that run's bar (docs/PERFORMANCE.md), so those keep the note
+# until the owner has looked ("2k/10" and "2k/15" of first+last then). The single-pass pinned 2K that ran on
+# 2026-10-29/30 ("2k" of first+last) is gone, and with it its line. On a long clip each refine runs with the job's
+# lean blocks where its own rows make it lean (1080p from 10 s, 2K from 6 s, with lean2's embeds at 2K 12 and 15 s:
+# regen.forward_for), as it ran at 1080p 10 s; at the other lengths and sizes the note says it has not run.
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
 PIN_ROUTES = {
-    (TURBO, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
+    (TURBO, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "2k")},
     (TURBO, "last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
     (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "1080p/10")},
     (SOL_H3, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
