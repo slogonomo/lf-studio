@@ -38,14 +38,13 @@ Notes for anyone changing this repo, people and coding agents alike. `CLAUDE.md`
   forward, past every case that ran lean, `LEAN2_ROWS`; one line each), per clip route (at 5 s) in the page's
   `UP_RAN`, per Keep my frames route, size and length in `PIN_ROUTES`' `"ran"` (a size alone at 5 s,
   `"<size>/<seconds>"` at another length: `"1080p/10"` for both ends, and `"2k"`, the cascade below, for a LightX2V
-  Turbo clip's first frame; both ends at 2K ran for 10 and 15 s too but have no line until the owner has looked at
-  them, docs/PERFORMANCE.md; one line per route, so a route that fails its GPU run goes out with its line;
-  `PIN_SIZES` holds the sizes). The rest shows the page's "not run on the GPU" note. Keep my frames at 2K is the job's
-  cascade (`route_for`, `CASCADE_FROM`, `CASCADE_SIGMA`: the pinned refine at 1080p as a 1080p upscale runs it,
-  NVIDIA's latent upscaler to the 2K grid, one step from 0.4 at 2K with the pin; receipt `"route"` and `"cascade"`): no
-  request field, the server sends the pin as at 1080p (the record's `"route"`, upscalable's `pin_routes` `"route"`); its
-  time is `cascade_eta_s` (`upscale_offers` `"cascade_eta_s"`, which the page's `upEta` and the 2K label take with the
-  box ticked), its floor the larger refine's (`route_need_gib`).
+  Turbo clip's first frame, `"2k/10"` and `"2k/15"` for both ends; one line per route, so a route that fails its GPU
+  run goes out with its line; `PIN_SIZES` holds the sizes). The rest shows the page's "not run on the GPU" note. Keep
+  my frames at 2K is the job's cascade (`route_for`, `CASCADE_FROM`, `CASCADE_SIGMA`: the pinned refine at 1080p as a
+  1080p upscale runs it, NVIDIA's latent upscaler to the 2K grid, one step from 0.4 at 2K with the pin; receipt
+  `"route"` and `"cascade"`): no request field, the server sends the pin as at 1080p (the record's `"route"`,
+  upscalable's `pin_routes` `"route"`); its time is `cascade_eta_s` (`upscale_offers` `"cascade_eta_s"`, which the
+  page's `upEta` and the 2K label take with the box ticked), its floor the larger refine's (`route_need_gib`).
   `OFFER_ETA_S` has the measured times where a run is and the others fitted to them, the memory model (`peak_gib`,
   `overhead_gib`, `need_gib`) is fitted to the runs (each 2026-10-30 run's lowest MemAvailable within 0.5 GiB,
   `tests/test_upscale.py`; `lean2`'s `ROW_BYTES` and `OVERHEAD_GIB` to its two runs of 2026-10-31, its overhead flat at
@@ -146,8 +145,8 @@ record's `route` before and after, job.json as at 1080p, the stand-in's cascade 
 end is held, the floor of both ends at 15 s), `ServerParts` also the
 receipts' records (`keyframe_record`, also of another shape: never an error), the picture hash cache (`image_state`:
 never a hash for `/api/state`), `PIN_ROUTES` as it is and changed by one line (a route out, a route's `"ran"` sizes and
-lengths, 2K out; `"2k"` in a LightX2V Turbo first frame's `"ran"` alone, both ends at 2K 10 and 15 s with the note, the
-cascade's `"route"` at 2K), the seam between the models' `"upscale"` tables and the
+lengths, 2K out; `"2k"` in a LightX2V Turbo first frame's `"ran"`, both ends at 2K 10 and 15 s without the note,
+the cascade's `"route"` at 2K), the seam between the models' `"upscale"` tables and the
 job's frame cases and offers (every model, task, length and set of keyframes; the stub runtime's frames too),
 `upscale_frames`, `sol_last`, `offer_refusal` and the stand-in job's refusals, `tests/test_api.py` its API record, the
 `Upscale*` classes in `tests/test_cli.py` and `tests/test_mcp.py` the client (a size refused for a clip's length with

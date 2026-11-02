@@ -561,8 +561,7 @@ with a first frame, the 2K step from a saved 1080p result) gave frame 0 2.0-2.1 
 ends at 10 and 15 s, with no flash: each end a little less close to the picture than the 1080p route holds it (at 5
 and 10 s 1.6-2.1 dB further at the job's 384p check grid: the 2K step's added detail and contrast), and closer than
 the single pinned refine at 2K it replaced (1.5 dB at 5 s). The page has no note for a LightX2V Turbo clip's first
-frame alone at 5 s (`pin_routes` `ran`). For both ends at 10 and 15 s it keeps its note until the maintainer has looked
-at those runs, which missed the bar set for them, the 1080p route's less 1 dB (the 5 s run does not meet it either:
+frame alone at 5 s, nor for both ends of its 10 and 15 s clips (`pin_routes` `ran`;
 [PERFORMANCE.md](PERFORMANCE.md#keep-my-frames-at-2k-the-cascade)); the other routes at 2K (both ends at 5 s and at the
 other lengths, a first frame alone past 5 s, a last frame alone, a Sol-H3 clip's first frame) have not run, and the note
 says so. By the job's model it takes about 19 min for a 5 s clip and 49-50 min at 10 s, 67-68 min at 12 s and 94-95 min

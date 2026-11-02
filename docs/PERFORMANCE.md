@@ -903,9 +903,9 @@ same clip, at 10 s the 1080p run of 2026-10-30; the 15 s clip was not upscaled a
   Every other check passed. The 5 s cascade, 1.75 dB under the 1080p route at the check grid, would not meet that bar
   either; its own bar was its research arm.
 - **So** Keep my frames at 2K has run through the studio for a LightX2V Turbo clip's first frame at 5 s (`PIN_ROUTES`
-  `"2k"` in that route's `"ran"`: no note); both ends at 10 and 15 s keep the page's note until the owner has looked
-  at them (then `"2k/10"` and `"2k/15"`, a line each). It holds the pictures a little less closely than 1080p does,
-  and closer than 2K without it: for the closest match to the pictures, 1080p.
+  `"2k"` in that route's `"ran"`: no note), and with both ends at 10 and 15 s (`"2k/10"` and `"2k/15"`: the
+  maintainer looked at those runs on 2026-11-01, and the bar above was the wrong one). It holds the pictures a
+  little less closely than 1080p does, and closer than 2K without it: for the closest match to the pictures, 1080p.
 
 **Not run yet** at 2K (the page says so there): a last frame alone, both ends at 5 s, a first frame alone past 5 s, a
 9:16 clip with both ends, a Sol-H3 clip's first frame, and 6-8 and 12 s.

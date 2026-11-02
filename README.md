@@ -250,10 +250,8 @@ tool `upscale` ([docs/API.md](docs/API.md#upscale-experimental-post-apiupscale))
     contrast over the whole clip. It holds them closer than 2K without the box: at 5 s frame 0 came 2 dB closer to the
     picture than the plain 2K and about 1 dB closer than one pinned refine at 2K, the route it replaced (at the output
     size; 1.5 dB at the check grid). If matching your pictures matters most, use 1080p. The popover has no note for a
-    LightX2V Turbo clip's first frame alone at 5 s. For both ends at 10 and 15 s it keeps its note that keeping your
-    frames has not run there until the maintainer has looked at those runs: they held every end about as closely as the
-    5 s run, but the bar set for them, within 1 dB of 1080p, is one that neither they nor the 5 s run meet. The other
-    routes at 2K (both ends at 5 s and at the other lengths, a first frame alone past 5 s, a last frame alone, a Sol-H3
+    LightX2V Turbo clip's first frame alone at 5 s, nor for both ends of its 10 and 15 s clips. The other routes at 2K
+    (both ends at 5 s and at the other lengths, a first frame alone past 5 s, a last frame alone, a Sol-H3
     clip's first frame) have not run, and the note says so. Its time is the job's model, which those runs came within a
     minute of: about 19 min at 5 s (as without the box), 49-50 min at 10 s, 67-68 min at 12 s and 94-95 min at 15 s
     (against 74 and 106 min without the box). Its 2K step at 12 and 15 s runs `lean2`, as 2K without the box does there,

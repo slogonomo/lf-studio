@@ -2199,8 +2199,8 @@ NOTHING_LEFT = "nothing is left of the prompt without its keyframe line: the Ups
 TEXT_CLIP = {"ok": True, "clip_audio": True}     # a Sol-H3 Text clip's upscalable, as before every clip was taken
 # where a clip's Keep my frames is offered (upscalable "pin_routes"; the server's PIN_ROUTES): 1080p and 2K,
 # balanced, at 2K through the job's cascade (made at 1080p first); run on the GPU through the studio at 1080p, and at
-# 2K (the cascade, 2026-10-31) for a LightX2V Turbo 5 s clip's first frame alone (PIN_ROUTES_FIRST), not yet for its
-# both ends (PIN_ROUTES_BOTH: as the others), whose runs at 10 and 15 s keep the note until the owner has looked
+# 2K (the cascade, 2026-10-31) for a LightX2V Turbo 5 s clip's first frame alone (PIN_ROUTES_FIRST) and for both ends
+# of its 10 and 15 s clips (their own lines), not for both ends of its 5 s clips (PIN_ROUTES_BOTH: as the others)
 PIN_ROUTES = {"1080p": {"strengths": ["balanced"], "ran": True, "route": "whole"},
               "2k": {"strengths": ["balanced"], "ran": False, "route": "cascade"}}
 PIN_ROUTES_BOTH = PIN_ROUTES
@@ -4311,11 +4311,13 @@ class ServerParts(unittest.TestCase):
         """PIN_ROUTES changed by one line: a route taken out (one that fails its GPU run) is no longer offered, with
         why, while the others still are; "ran" per route and size (the page's note where a route has not run), as the
         table says and with one route's sizes changed, and per length ("1080p/10": a 10 s clip at 1080p; a size alone
-        is 5 s; "2k/15", a 15 s clip at 2K, as a run of it would add); the sizes the job offers for a clip's length
-        only (2K at 12 s too now; without its times, as before, not); PIN_SIZES ("1080p",) takes 2K out, with why. At
-        2K each route goes through the job's cascade (route "cascade"), run through the studio for a LightX2V Turbo 5 s
-        clip's first frame alone (2026-10-31): only that line names 2K; both ends at 2K, at 5, 10 and 15 s, keep the
-        note (a run that lands, or the owner's look, adds "2k" or "2k/<seconds>" to its line, and the note goes)."""
+        is 5 s; "2k/15", a 15 s clip at 2K, its line taken out and put in); the sizes the job offers for a clip's
+        length only (2K at 12 s too now; without its times, as before, not); PIN_SIZES ("1080p",) takes 2K out, with
+        why. At 2K each route goes through the job's cascade (route "cascade"), run through the studio (2026-10-31)
+        for a LightX2V Turbo 5 s clip's first frame alone ("2k") and both ends of its 10 and 15 s clips ("2k/10" and
+        "2k/15", their lines in since the maintainer looked at those runs, 2026-11-01): only those lines name 2K; both
+        ends at 2K at 5 and 12 s, a last frame alone and a first frame alone past 5 s keep the note (a run that lands
+        adds "2k" or "2k/<seconds>" to its line, and the note goes; a run that fails takes its line out)."""
         made = ("first", "last")
 
         def clip(ends, seconds=5):
@@ -4346,10 +4348,13 @@ class ServerParts(unittest.TestCase):
                           {"pin": ["last"], "pin_routes": routes("1080p")},
                           {"pin": list(made), "pin_routes": routes("1080p")}])
         self.assertEqual({key: route["ran"] for key, route in parts["PIN_ROUTES"].items()
-                          if any(ran.startswith("2k") for ran in route["ran"])}, {(TURBO, "first"): ("1080p", "2k")})
-        self.assertEqual([offered(parts, ["first"], seconds)["pin_routes"] for seconds in (10, 15)], [routes()] * 2)
-        self.assertEqual([offered(parts, made, seconds)["pin_routes"] for seconds in (10, 15)],
-                         [routes("1080p"), routes()])                # both ends at 2K 10 and 15 s: the note
+                          if any(ran.startswith("2k") for ran in route["ran"])},
+                         {(TURBO, "first"): ("1080p", "2k"), (TURBO, "first+last"): ("1080p", "1080p/10", "2k/10",
+                                                                                      "2k/15")})
+        for ends in (["first"], ["last"]):                                    # one end past 5 s: the note
+            self.assertEqual([offered(parts, ends, seconds)["pin_routes"] for seconds in (10, 12, 15)], [routes()] * 3)
+        self.assertEqual([offered(parts, made, seconds)["pin_routes"] for seconds in (5, 10, 12, 15)],
+                         [routes("1080p"), routes("1080p", "2k"), routes(), routes("2k")])   # both at 2K 10, 15 s
         parts = self.pin_parts(ran=('(TURBO, "first")', ("1080p",)))          # its 2K line out: the note again
         self.assertEqual(offered(parts, ["first"])["pin_routes"], routes("1080p"))
         parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k", "1080p/10")))     # the cascade's run
@@ -4367,7 +4372,7 @@ class ServerParts(unittest.TestCase):
         self.assertEqual(offered(parts, ["last"])["pin_routes"], routes("1080p", "2k"))
         self.assertEqual(offered(parts, made)["pin_routes"], routes("1080p"))
         parts = self.pin_parts()
-        self.assertEqual(offered(parts, made, 10), {"pin": list(made), "pin_routes": routes("1080p")})   # 1080p/10
+        self.assertEqual(offered(parts, made, 10), {"pin": list(made), "pin_routes": routes("1080p", "2k")})  # x/10
         parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k")))
         self.assertEqual(offered(parts, made, 10), {"pin": list(made), "pin_routes": routes()})     # not at 10 s
         self.assertEqual(offered(parts, made, 12), {"pin": list(made), "pin_routes": routes()})   # 2K at 12 s too
@@ -4380,6 +4385,9 @@ class ServerParts(unittest.TestCase):
         parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "2k", "2k/15")))     # a 2K 15 s run's line
         self.assertEqual(offered(parts, made, 15)["pin_routes"], routes("2k"))
         self.assertEqual(offered(parts, made, 12)["pin_routes"], routes())
+        parts = self.pin_parts(ran=('(TURBO, "first+last")', ("1080p", "1080p/10", "2k/10")))  # its line out again
+        self.assertEqual([offered(parts, made, seconds)["pin_routes"] for seconds in (10, 15)],
+                         [routes("1080p", "2k"), routes()])                    # the note at 15 s only
         parts = self.pin_parts(sizes=("1080p",))
         self.assertEqual(offered(parts, ["last"]), {"pin": ["last"], "pin_routes": {"1080p": dict(unrun, ran=True)}})
         self.assertEqual([plan(parts, ["last"], size) for size in ("1080p", "2k")],
@@ -5760,7 +5768,9 @@ class TurboPin(TurboTest):
         parent = self.done(self.turbo(task="fl2va", prompt=line, seconds=15, seed=11,
                                       files={"first_frame": [("a.png", png())], "last_frame": [("b.png", png())]}))
         self.assertEqual(probe(parent["output"])["video"]["nb_frames"], "362")          # every frame made
-        self.assertEqual(self.studio.job(parent["id"])["upscalable"]["pin"], ["first", "last"])
+        u = self.studio.job(parent["id"])["upscalable"]
+        self.assertEqual((u["pin"], u["pin_routes"]), (["first", "last"], {      # run at 2K (2026-10-31): no note
+            "1080p": dict(PIN_ROUTES["1080p"], ran=False), "2k": dict(PIN_ROUTES["2k"], ran=True)}))
         self.studio.set_memory(113.5)
         job = self.studio.wait([self.upscale(parent["id"], resolution="2k")], timeout=30)[0]
         self.assertEqual((job["status"], job["error"], job["pin"]["ends"], job["route"]), ("failed", (

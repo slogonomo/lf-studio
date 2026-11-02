@@ -390,7 +390,7 @@ not say what the job needs. Where Keep my frames has not run on the GPU through 
 Turbo clip's first frame alone at 5 s), the popover says `Keeping your frames has not been run on the GPU through the
 studio yet: its times are estimates`: it is offered all the same, and its time there is the job's model (at 2K the
 cascade's, [PERFORMANCE.md](PERFORMANCE.md#keep-my-frames-at-2k-the-cascade)). Both ends of a LightX2V Turbo clip at 2K
-have run for 10 and 15 s (2026-10-31), and keep the note for now (below). On a longer clip at 1080p it adds the 5 s
+have run for 10 and 15 s (2026-10-31), with no note. On a longer clip at 1080p it adds the 5 s
 seconds per end, a little short: both ends for 10 s add about 45 s, not 32
 ([PERFORMANCE.md](PERFORMANCE.md#longer-clips)). On a 12 or 15 s clip it is offered at 1080p and 2K, as at the other
 lengths.
@@ -402,9 +402,7 @@ fine detail and a little contrast over the whole clip. Through the studio (2026-
 the same at every frame, with no flash at the held frame. That is still closer than 2K without the box (at 5 s frame 0
 came 2 dB closer to the picture than the plain 2K and about 1 dB closer than the single pinned refine at 2K it replaced,
 at the output size; 1.5 dB at the check grid). If matching your pictures matters most, upscale to 1080p. The runs with
-both ends at 10 and 15 s held every end about as the 5 s run held its one, but more than 1 dB further from the pictures
-than 1080p, the bar set for them (one the 5 s run does not meet either), so the popover keeps its note there until the
-maintainer has looked at them.
+both ends at 10 and 15 s held every end about as the 5 s run held its one.
 
 **A 2K upscale with Keep my frames shows `refine 1/3` to `refine 3/3`.** At 2K the clip is made at 1080p first, then
 brought to 2K (the job's cascade): its two steps at 1080p, then NVIDIA's upscaler to 2K and one step there.
