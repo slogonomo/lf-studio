@@ -1567,18 +1567,19 @@ UPSCALE_OFFERS = ({seconds: row for seconds, row in regen.offers_table().items()
 # One line per route, so a route that fails its GPU run goes with its line. Not at 4K (never run there); Balanced only
 # (Faithful held a first frame only ~1 dB closer). At 2K it goes through the job's cascade (regen.route_for: made at
 # 1080p first, then one step at 2K; upscalable's pin_routes "route"), run through the studio on 2026-10-31: a LightX2V
-# Turbo clip's first frame at 5 s ("2k" of first); both ends of its 10 and 15 s clips were held, but each came more
-# than 1 dB further from its picture than at 1080p, past that run's bar (docs/PERFORMANCE.md), so those keep the note
-# until the owner has looked ("2k/10" and "2k/15" of first+last then). The single-pass pinned 2K that ran on
-# 2026-10-29/30 ("2k" of first+last) is gone, and with it its line. On a long clip each refine runs with the job's
-# lean blocks where its own rows make it lean (1080p from 10 s, 2K from 6 s, with lean2's embeds at 2K 12 and 15 s:
-# regen.forward_for), as it ran at 1080p 10 s; at the other lengths and sizes the note says it has not run.
+# Turbo clip's first frame at 5 s ("2k" of first) and both ends of its 10 and 15 s clips ("2k/10" and "2k/15" of
+# first+last: every end held, each a little further from its picture than at 1080p, docs/PERFORMANCE.md; their lines
+# went in once the maintainer had looked at those runs, 2026-11-01); both ends at 2K at 5 s and at the other lengths
+# have not run. The single-pass pinned 2K that ran on 2026-10-29/30 ("2k" of first+last) is gone, and with it its
+# line. On a long clip each refine runs with the job's lean blocks where its own rows make it lean (1080p from 10 s, 2K
+# from 6 s, with lean2's embeds at 2K 12 and 15 s: regen.forward_for), as it ran at 1080p 10 s and at 2K 10 and 15 s;
+# at the other lengths and sizes the note says it has not run.
 PIN = ("auto", "off")
 PIN_SIZES = ("1080p", "2k")      # ("1080p",) takes 2K out
 PIN_ROUTES = {
     (TURBO, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "2k")},
     (TURBO, "last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
-    (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "1080p/10")},
+    (TURBO, "first+last"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p", "1080p/10", "2k/10", "2k/15")},
     (SOL_H3, "first"): {"sizes": PIN_SIZES, "strengths": ("balanced",), "ran": ("1080p",)},
 }
 # why an end of a Keyframes clip is not held, besides the job's own reasons (regen.PIN_WHY: the picture gone or
